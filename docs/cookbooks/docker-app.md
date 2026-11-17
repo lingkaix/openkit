@@ -133,6 +133,4 @@ The app entrypoint accepts either `OPENKIT_HTTP_PORT` or `PORT`, requires them t
 
 ## Image Boundary
 
-Caddy is locked to the current app image because the app image needs one public HTTP port for the SPA and NanoCore APIs.
-
-The release `app` image includes Caddy as its current HTTP frontend, which the [container image packaging specification](../specs/20260708-container_image_packaging.md) permits.
+Caddy, App persistence, and runtime persistence belong to the root `Caddyfile`, [container image packaging](../specs/20260708-container_image_packaging.md), and [Deployment](../deployment.md). This recipe keeps the build, shell, and smoke commands.

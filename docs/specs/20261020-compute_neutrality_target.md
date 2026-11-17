@@ -12,6 +12,18 @@ This Draft records the proposed placement and carriage mapping, migration order,
 
 The [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md), [Architecture](../core/architecture.md#compute-and-harness-neutrality) and [Product Vision](../product-vision.md) own the principles. Existing specifications retain execution, continuity, evidence and transport authority. This Draft introduces no protocol, retained format or lifecycle state.
 
+## Scope
+
+Owns the proposed placement and carriage mapping and the boundary between fake-case receipts and real-platform qualification. This Draft approves no implementation.
+
+Does not own execution. [Worker Runtime Communication](20260629-worker_runtime_communication_model.md) owns the execution port.
+
+Does not own native continuation. [AgentSession Continuity](20260704-agent_session_continuity.md) owns it.
+
+Does not own retained provenance. [Work Data Retention](20260921-work_data_retention_format.md) owns it.
+
+Core: [Architecture](../core/architecture.md).
+
 ## Placement And Carriage Mapping
 
 Both an OpenKit Worker on admitted compute and an external harness map onto the existing [Execution Backend Port](20260629-worker_runtime_communication_model.md#execution-backend-port). The scheduler retains one attempt when the harness and its executor occupy different platforms. Their native identities remain distinct.
@@ -65,20 +77,30 @@ For R3, the proposed qualification distinguishes actual receiver receipts, scope
 
 ## Validation Status
 
-The paper mechanism-by-platform matrix is complete; the fake-backend results and remaining qualification limits are stated below. It examined retention, mediation, execution lifetime, storage, Gateway, telemetry, Knowledge and product workflows. Its conclusions are design evidence, not provider qualification.
+The paper mechanism-by-platform matrix remains design evidence, not Provider qualification. Main has executed receipts for all five adopted fake cases in the existing Worker-governance owner tests. Lost-submit inspection returns null, not an empty list. Provider-mutation retry proves receiver-owned image settlement, not permission to replay an arbitrary mutation. The stale-Tool-call case also passes on main.
 
-The lost-submit and provider-mutation-retry cases passed on `bc3dca1c3ba497f92d2a7ea416ad7166fd953773`; the stale-tool-call case passed on the landed commit `9c267c2258901236d1cdae6b8c4bc324016b505c`.
+In the withheld-native-transcript case, the fake backend withholds a manifest-declared native stream while immutable capture is on. The real collection owner retains failed transcript-collection evidence and a quarantined raw bundle, publishes no normalized index or withheld-body reference, and fails the Turn. This does not resolve the earlier measured-identity probe.
 
-The withheld-input case is proven for the native-transcript alternative against production commit `efeccc989c170f77fd30379546ae66d651fc6bf1`. The existing `worker-governance-turn-executor.test.ts` fake backend withholds a manifest-declared native stream while the immutable capture binding is on. The real collection owner retains failed transcript-collection evidence and a quarantined raw bundle, publishes no normalized index or reference to the withheld body, and fails the Turn. This is not qualification of the earlier measured-identity probe or an external adapter.
+In the executor-replacement case, two disposable fake executors share one backend-owned native conversation. Successor preparation, native storage binding and admission commit carry its exact locator and digest into a fresh Turn, package, attempt, deadline and route tokens. A predecessor token cannot authenticate the successor lineage. Transcript collection never reconstructs the native session. This component proof extends the existing fake without adding an executor-replacement capability, harness or retained format. Neither case qualifies a real external adapter.
 
-The external-session/executor-replacement case is proven against production commit `efeccc989c170f77fd30379546ae66d651fc6bf1` in the same existing owner test. Two disposable fake executors share one backend-owned native conversation. The actual successor preparation, native storage binding and admission commit carry its exact locator/digest into a fresh Turn, package, attempt, deadline and route tokens; a predecessor token cannot authenticate the successor lineage. Transcript collection is not used to reconstruct the native session. This component proof extends the existing fake, without adding an executor-replacement capability, harness or retained format. It does not qualify a real external adapter.
+The five adopted cases are:
 
-The five cases are:
+- Lose a submit reply, return null inspection, acknowledge kill, and allow a late create. Expect unknown or closing, no replay of the original submission, and healthy work on another Thread.
+- Preserve an external native session across executor replacement. Expect the preserved locator and digest, fresh authority, and no transcript reconstruction.
+- Withhold the native transcript. Expect incomplete collection, a quarantined raw bundle, and no complete success. This is not a measured-identity probe.
+- Send a stale Tool call after a new Turn. Expect the current Turn to refuse it before a deeper operation check. The refusal does not undo an external effect.
+- Retry a provider mutation. Expect the receiver to return the prior result for the same input and to conflict on a changed digest.
 
-- Lose a submit reply, return an empty list, acknowledge kill and allow a late create. Expect unknown/closing, no replay or conflicting reattachment, and healthy sibling progress.
-- Preserve an external session across executor replacement. Expect exact native-owner identity and fresh authority, without transcript reconstruction.
-- Withhold native transcript or measured harness identity. Expect explicit unavailable coverage; missing required data must not appear complete.
-- Send a stale tool call after a new Turn. Expect current Turn and operation checks to refuse it.
-- Retry a provider mutation. Expect receiver-owned deduplication or proved non-execution before replay.
+Use the existing owner tests and fake backend. Add no test harness. Real remote list, kill, and late-create qualification remains with the durable-execution owner. Real-platform validation remains separately authorized.
 
-Use the existing owner tests and fake backend; add no test harness. Real-platform validation remains separately authorized and requires accounts and reachable ingress. No external run or runtime acceptance is claimed here.
+## Implementation
+
+- `apps/nanocore/src/runtime/`
+
+## Implementation Gaps
+
+- Executor replacement preserves the external native session, and withheld native transcript fails closed - those two proofs are on unmerged origin/cn-fake and are not on main - #750
+
+## Decisions
+
+- [Compute and harness neutrality](../decisions/20261020-compute_and_harness_neutrality.md)

@@ -8,7 +8,7 @@ branch: lane/ga-p22-combined
 
 ## Intent Revision 1
 
-The coordinator selected D53 as a separate feature after bounded MCP preview, before the coupled Equal-member cutover. Restore the accepted internal deletion recovery export for private Thread history while retaining its original private owners. The [Multi-User Workspace owner](../../specs/20260715-multi_user_workspace_system.md#pre-cutover-deletion-projection) requires the exact current deletion request, original recovery owner, registry transition and request-derived export identity. Ordinary exports keep their existing audience requirements. No member-tier, initiating-actor schema, durable state, compatibility or identifier mechanism is added here.
+The coordinator selected D53 as a separate feature after bounded MCP preview, before the coupled Equal-member cutover. Restore the accepted internal deletion recovery export for private Thread history while retaining its original private owners. The [Multi-User Workspace owner](../../specs/20260715-multi_user_workspace_system.md#governed-deletion) requires the exact current deletion request, original recovery owner, registry transition and request-derived export identity. Ordinary exports keep their existing audience requirements. No member-tier, initiating-actor schema, durable state, compatibility or identifier mechanism is added here.
 
 ## Method And Expected Evidence
 

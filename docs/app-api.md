@@ -67,14 +67,14 @@ This guide does not own the semantic contracts, executable route facts, package 
 - `docs/specs/20260528-core_client_boundary.md`
 - `docs/specs/20260531-human_attention_intervention_model.md`
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
-- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
+- `docs/specs/20260708-pi_ai_unified_llm_backend.md#provider-adoption-rules`
 - `docs/specs/20260708-pi_ai_unified_llm_backend.md`
 - `docs/specs/20260703-policy_enforcement_mapping.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260703-vault_secret_injection.md`
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260704-app_api_openapi_projection.md`
-- `docs/specs/20260704-capability_usage_gateway_foundation.md`
+- `docs/specs/20260703-audit_usage_evidence_records.md#capability-usage`
 - `docs/specs/20260704-chat_mode_assistant.md`
 - `docs/specs/20261002-goal.md`
 - `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`
@@ -87,7 +87,7 @@ This guide does not own the semantic contracts, executable route facts, package 
 - `docs/specs/20260704-workflow_coordinator_internal_agent.md`
 - `docs/specs/20260704-workspace_backup_export_import.md`
 - `docs/specs/20260704-workspace_data_source_catalog.md`
-- `docs/specs/20260709-quick_chat_workspace.md`
+- `docs/specs/20260715-multi_user_workspace_system.md#personal-workspace`
 - `docs/specs/20261002-remote_mcp_interface.md`
 - `docs/specs/20260713-work_resource_interaction_model.md`
 - `docs/specs/20260715-multi_user_workspace_system.md`

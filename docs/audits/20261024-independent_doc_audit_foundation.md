@@ -9,14 +9,14 @@ This non-authorizing record holds the foundation group of the [independent docum
 
 - Group base SHA: `4aa0e655f36beb6771201fb4658c1555e6a1c85a` (`main` on 2026-10-24). Issue #440 had no comments and held no group in this scope.
 - Core documents: `docs/core/doctrine.md`, `docs/core/core-concepts.md`, `docs/core/README.md`, and `docs/core/AGENTS.md` (audit only, no edit).
-- Specifications: `docs/specs/20260709-quick_chat_workspace.md` and `docs/specs/20260711-scheduler_recurring_event_triggers.md`.
+- Specifications: `docs/specs/20260715-multi_user_workspace_system.md#personal-workspace` and `docs/specs/20260711-scheduler_recurring_event_triggers.md`.
 - Cited decisions read: `20261015-private_assistant_timeline_and_rolling_context.md`, `20261016-retire_stateless_quick_chat.md`, `20260924-schedule_admission_numbers_are_empirical.md`, `20261002-specification_numeric_values_are_defaults.md`, and `20261014-pre_stable_data_continuity.md`.
 - G3 inspection: three read-only inspector contexts (FND-PW for the personal Workspace, FND-RT for recurring triggers, FND-CC for the Core invariants of `core-concepts.md` and a doctrine spot check). They read code only and ran no tests. The auditor verified each finding listed below against the code before it was kept.
 
 ## G2 Core Against Specifications
 
 - FND-G2-01: `docs/core/README.md` showed the aspect-file template with a body line `Status: Accepted`. Every current Core document uses YAML frontmatter `status: Accepted`, and the documentation model validates frontmatter. Disposition: editorial fix to the template.
-- FND-G2-02: `docs/core/doctrine.md` says that agent-principal activation "remains unclaimed". That is an implementation-status statement inside Core. Code partly activates agent principals for the I16 agent gate (`apps/nanocore/src/policy/statements.ts`, `apps/nanocore/src/policy/agent-gate-provider.ts`, `apps/nanocore/src/policy/README.md:42`), and `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` lists agent-principal authority as Not Started. Disposition: no edit in this group, because the owner of the status fact is the Policy specification set. Carried to the policy group (move the status fact into the owning specification projection) and to the mediation group (the interception projection).
+- FND-G2-02: `docs/core/doctrine.md` says that agent-principal activation "remains unclaimed". That is an implementation-status statement inside Core. Code partly activates agent principals for the I16 agent gate (`apps/nanocore/src/policy/statements.ts`, `apps/nanocore/src/policy/agent-gate-provider.ts`, `apps/nanocore/src/policy/README.md:42`), and `docs/specs/20260703-policy_enforcement_mapping.md` lists agent-principal authority as Not Started. Disposition: no edit in this group, because the owner of the status fact is the Policy specification set. Carried to the policy group (move the status fact into the owning specification projection) and to the mediation group (the interception projection).
 - FND-G2-03: `docs/core/core-concepts.md` says that Protocol owns the concrete trigger-source values, while `docs/core/protocol.md` says that Core Concepts owns `TriggerSource`. Carried to the protocol group, which owns the value list.
 - No other conflict between the two specifications and the four Core documents was found. Both specifications cite their Core references and keep the Core vocabulary.
 
@@ -56,7 +56,7 @@ Counts are from the inventory diff between the group base SHA and the working tr
 | File | Normative sentences | Numbers | Backticked identifiers | Headings | Links |
 | --- | --- | --- | --- | --- | --- |
 | `docs/core/README.md` | 27 unchanged, 0 removed | 0 | 97 unchanged | 24 unchanged | 0 |
-| `docs/specs/20260709-quick_chat_workspace.md` | 27 unchanged, 0 removed | 0 | 44 unchanged, 1 added | 25 unchanged | 3 unchanged |
+| `docs/specs/20260715-multi_user_workspace_system.md#personal-workspace` | 27 unchanged, 0 removed | 0 | 44 unchanged, 1 added | 25 unchanged | 3 unchanged |
 | `docs/specs/20260711-scheduler_recurring_event_triggers.md` | 69 unchanged, 0 removed, 1 added | 1 unchanged | 123 unchanged, 3 added | 27 unchanged | 10 unchanged, 1 added |
 
 The added normative-pattern sentence is the projection fact that scheduled User maintenance admits only the local User. The removed projection status sentences ("remains pending" and "require integration before this feature is complete") are projection text, not normative sentences, and FND-RT-01 to FND-RT-03 record their correction. The moved paragraph keeps its text. No heading anchor or file moved, so no inbound link changed.

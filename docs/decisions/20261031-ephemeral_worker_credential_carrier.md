@@ -7,7 +7,7 @@ decider: Engineer
 
 ## Decision
 
-NanoCore owns general credential-file delivery and its lifecycle through the existing Vault reference, grant, plan, receipt and use owners. A placement-neutral binding names material reference/version/format, target, access and REQUIRED ephemeral protection outside retained, captured and exported storage. The placement returns its realized protection; Core refuses any shortfall. The [credential declaration owner](../specs/20260709-worker_credential_access_declarations.md) owns this contract. Deliver, replace, revoke and inspection use the existing unified Vault operation family, Policy/PermissionDecision, Audit and uniform agent surface. Material never crosses that surface. Automatic replacement is a caller of the same operations.
+NanoCore owns general credential-file delivery and its lifecycle through the existing Vault reference, grant, plan, receipt and use owners. A placement-neutral binding names material reference/version/format, target, access and REQUIRED ephemeral protection outside retained, captured and exported storage. The placement returns its realized protection; Core refuses any shortfall. The [credential declaration owner](../specs/20260703-vault_secret_injection.md#credential-access-declarations) owns this contract. Deliver, replace, revoke and inspection use the existing unified Vault operation family, Policy/PermissionDecision, Audit and uniform agent surface. Material never crosses that surface. Automatic replacement is a caller of the same operations.
 
 NanoHost is the sole v0.1.0 realization. Its carrier is one per-Sandbox tmpfs with nodev, nosuid and noexec, mode 0700 and admitted Worker ownership, outside every retained root in its already-private backend mount domain. Read-only single-file mounts cover verified empty points after image seeding. Root-controlled sources and exact installed views are proved before receipts. Same-inode host rewrite uses no rename or remount. Removal follows proved native absence; uncertainty fences the existing lifecycle. The [NanoHost runtime owner](../specs/20260802-nanohost_runtime_and_transport.md) owns these adapter details. No proof of non-swapping or dump exclusion is required, and no host security change is implied.
 
@@ -30,7 +30,7 @@ A placement cannot establish the required protection or a consumer cannot safely
 
 ## Affected Owners
 
-- [Worker Credential Access Declarations](../specs/20260709-worker_credential_access_declarations.md)
+- [Worker Credential Access Declarations](../specs/20260703-vault_secret_injection.md#credential-access-declarations)
 - [Core Vault](../specs/20260703-vault_secret_injection.md)
 - [NanoHost Runtime And Transport](../specs/20260802-nanohost_runtime_and_transport.md)
 - [Persistent Worker Volumes](../specs/20260910-persistent_worker_volumes.md)

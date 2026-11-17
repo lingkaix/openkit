@@ -9,13 +9,13 @@ Calibrated premises about scope and optimization target, formed from team shape 
 
 ### The Deployment Target Is One Small Team, Not A Fleet
 
-OpenKit is optimized for one small team, typically under ten people, running the single-process profile that `docs/specs/20260703-runtime_scheduling_scale.md` states rather than a fleet.
+OpenKit is optimized for one small team, typically under ten people, running the single-process profile that `docs/specs/20260703-durable_scheduler_design.md#scale-limits` states rather than a fleet.
 
 The team-size statement is a design and verification profile, not a hard authorization or membership limit. Nothing enforces a user count: no admission check, policy rule, seat record, license, or configuration value derives from it, and exceeding it produces no error. What it does is decide where effort goes — one writer instead of coordination, one configured target instead of scheduling policy, inspectable interruption instead of transparent recovery — and which shapes verification is expected to prove.
 
-Rests on: the current internal-development posture, in which the product is dogfooded by its own small team; the single-writer, single-slot profile that `docs/specs/20260703-runtime_scheduling_scale.md` states; and no measured contention from real concurrent demand. The enforceable counts inside that shape are contracts owned by that specification, not consequences of this premise, so they are cited here rather than repeated.
+Rests on: the current internal-development posture, in which the product is dogfooded by its own small team; one writer for the data root; and the authored active-Turn bound in `packages/worker-protocol/src/harness-control.ts`, which `packages/config-schema/src/server.ts` can override. Saturation of that bound is observed contention. Membership and resource headroom stay separate from admission. The enforceable counts inside that shape are contracts owned by that specification, not consequences of this premise, so they are cited here rather than repeated.
 
-Overturned by: sustained contention observed in real use — work queueing behind the single worker slot, writer-lock waits or failures under ordinary load, or a deployment whose membership makes the single-writer data root the binding constraint. Any of those retires the premise. The observation alone authorizes nothing; `docs/core/doctrine.md` states what an accepted current design has to supply before implementation, configuration, or test obligations may follow a replacement profile.
+Overturned by: sustained contention observed in real use — work saturating the authored active-Turn bound, writer-lock waits or failures under ordinary load, or a deployment whose membership makes the single-writer data root the binding constraint. Any of those retires the premise. The observation alone authorizes nothing; `docs/core/doctrine.md` states what an accepted current design has to supply before implementation, configuration, or test obligations may follow a replacement profile.
 
 ### The Initial Combined Deployment Recommendation Is 2 Cores, 8 GiB, And 30 GiB
 
@@ -37,7 +37,7 @@ This guide does not own any contract or implementation fact linked below. Core d
 
 - Deployment scope and semantic invariance: `docs/core/doctrine.md`, `docs/core/architecture.md`
 - Core mode, startup, configuration, identity, authentication, and storage: `docs/specs/20260628-nanocore_config_identity_contract.md`, `docs/specs/20260704-nanocore_bootstrap_readiness.md`, `docs/specs/20260704-remote_auth_credential_bootstrap.md`, `docs/specs/20260703-storage_layout_record_ownership.md`
-- Worker placement, scheduling scale, sandboxing, and session continuity: `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/core/sandbox.md`, `docs/core/agent-session.md`, `docs/specs/20260704-agent_session_continuity.md`, `docs/specs/20260802-nanohost_runtime_and_transport.md`
+- Worker placement, scheduling scale, sandboxing, and session continuity: `docs/specs/20260703-durable_scheduler_design.md#scale-limits`, `docs/core/sandbox.md`, `docs/core/agent-session.md`, `docs/specs/20260704-agent_session_continuity.md`, `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - Communication, worker control, workspace transfer, and capability supply: `docs/core/communication.md`, `docs/core/mediation.md`, `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-worker_agent_capability.md`
 - Vault and provider credentials: `docs/core/vault.md`, `docs/specs/20260704-vault_backend_implementation.md`, `docs/specs/20260721-provider_subscription_accounts.md`
 - Administrator-directed App/Web update delivery: `docs/specs/20260910-app_update_delivery.md`

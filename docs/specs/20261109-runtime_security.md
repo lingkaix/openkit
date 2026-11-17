@@ -5,48 +5,24 @@ kind: mechanism
 date: "2026-11-09"
 aspect: security
 ---
+
 # Runtime Security
 
-## Owns
+This specification owns runtime detection, notification, response, credential inventory, and route-group switches for one OpenKit Server.
 
-The runtime values and workflows that the [Security](../core/security.md) charter leaves to specifications, inside one instance: passive defense, inventory, feeds and matching; the security trigger, its events, rules and identifiers; notification placement, investigation authority and the pause; the review gate's points, influence rule and decision request; the conversation presets; the inbound credential list; inert deception and bounded containment; route-group switches; upstream routes.
+## Scope
 
-## Does Not Own
+Owns:
 
-The charter's principles, terms, threat model and invariants; Policy, Identity and Mediation semantics, which this spec amends through their owners; classes, response targets and release security ([development security](20261109-development_security.md)); hosts, networks, backups, Sandbox containment and ordinary model content safety.
+- Runtime detection, notification, investigation, pause, suspect-only containment, the review gate, context permissions, inbound credential inventory, and route-group switches.
 
-## Core References
+Does not own:
 
-[Security](../core/security.md), [Doctrine](../core/doctrine.md), [Identity](../core/identity.md), [Policy](../core/policy.md), [Mediation](../core/mediation.md), [AgentSession](../core/agent-session.md), [Knowledge](../core/knowledge.md), [Communication](../core/communication.md), [Protocol](../core/protocol.md), [Sandbox](../core/sandbox.md), [Evidence](../core/evidence.md).
-
-## Summary
-
-An instance reachable from the Internet must notice when its components become vulnerable or its credentials are attacked, tell a person fast, and help them respond without giving an attacker a new lever.
-
-- **Detect and notify.** Throttling, an SBOM inventory with stated gaps, bounded feeds, and one closed trigger (daily advisory matching, hourly exploitation signals, 5-minute audit watch) that writes items, with no model, into each administrator's own security Thread. Channels get fixed text only.
-- **Respond.** Read-and-propose investigation, a narrow pause, and deterministic containment limited to the suspect. Inert MCP canaries and honey credentials supply exact signals.
-- **Restrict and bound.** A restrict-only gate at risk points in externally influenced agent contexts; agent operations bounded by agent grant ∩ initiator authority ∩ conversation envelope, and replies by their audience.
-- **Credentials.** One principal per inbound credential, one list, one revocation path.
-- **Switches.** Existing route descriptors identify owners and Policy denies. Admission enforces each switch; people operate switches that affect others.
-
-Every check sits at a Core boundary that every harness and Sandbox backend crosses (charter principle 10).
-
-## Goals / Non-goals
-
-**Goals:** inventory-backed advisory matches with class and deadline within a day, exploitation signals within an hour and exact decoy restrictions within 60 seconds while enabled; credential attacks and sensitive events reported within one watch interval; people reached outside the App; risk-point effects of influenced contexts checked at the boundary; one place to see and revoke inbound credentials; usable by any operator.
-
-**Non-goals:** host intrusion detection; defense against a malicious sole administrator; network DoS; reachability analysis; automatic repair; Workspace-scoped signals in v0.1.0; gating App update admission on findings in v0.1.0 (findings gate only the release, part 1).
-
-## Background
-
-At 835ffb0a4:
-- **Authentication.** No bearer-failure audit and no explicit sign-in limiter (`auth/middleware.ts`). Session list and revoke are served by the auth library (`app.ts:1934`, `auth/better-auth-adapter.ts:24–28`), with no Web view.
-- **Pending Requests.** Closed requesters; a later Core-local Turn publishes outcomes; one non-terminal Turn per Thread; Core-local Turns have no AgentSession (`protocol.md:209–211`); an ended source is ineligible for unsent attention (`20260930-pending_requests.md:304`).
-- **Attention and Discord.** No repeat of a sent or unknown delivery; audience and account are rechecked synchronously (`notifications/attention.ts:48`, `channels/discord.ts:48,59`); `inspect` returns request content (`discord.ts:518–540`); direct messages only.
-- **Administration entry.** A private Thread in the personal Workspace; Tools run as the human (`administration-tools.ts:5–14`).
-- **Policy.** The Subject separates principal, actor and on-behalf-of (`policy.md:117`); an agent acting for a User evaluates as the User (`:119`); `OutputAudience` bounds Assistant output (`:303–311`). Policy is one Server document applied through configuration (`policy/configuration.ts:95–135`), and `preparePolicyDocument` classifies the full diff (`policy/statements.ts:388–457`). No Workspace-administrator Policy writing exists.
-- **Gate seam.** Binding states `inactive`, `shadow`, `active`; timeout ≤ 60 s; failure `escalate-to-human`; circuit breaker (`policy-v1.ts:133–165`); transient output; `combineResults` ranks `allow` last and the final Kernel evaluation always runs (`interception.ts:643–660`).
-- **Gateway** capabilities cover only chat completions and responses (`profile-capabilities.ts:5–10`). **Admission** has only the shutdown refusal (`app.ts:396–411`).
+- Policy, Identity, and Mediation semantics. Their owners keep them. This specification amends those owners.
+- Classes, response times, and release security. [Development Security](20261109-development_security.md) owns them.
+- Hosts, networks, backups, and Sandbox containment. The host and sandbox owners keep them.
+- Ordinary model content safety. The model-content owner keeps it.
+- The retained-format register. [Retained Format Register](20261017-retained_format_register.md) owns each register row.
 
 ## Threat Model
 
@@ -55,6 +31,12 @@ The charter's threat model applies. This spec answers its runtime rows: credenti
 ## Decision
 
 One mechanism composed from existing owners, with no new approval model, scheduler, notifier, Turn category or authorization engine: E1–E8 (detection, notification, response), E9 (review gate), E10 (context permissions and Policy administration), E11 (credentials), E12 (deception and suspect-only containment), E13 (route-group switches) and the pause, each at the v0.1.0 cut stated below. The rulings are in [Security Program Rulings](../decisions/20261109-security_program_rulings.md).
+
+The mechanism is off by default except the CSP, the hold, the ingress fact, the influence bit, the agent-principal amendment, the intersection, the audience rule, the ceiling, the credential list, and route-group descriptor coverage. E12 sensors follow explicit trigger enablement in observation-only mode. Active containment also needs reviewed qualification and its approved bounded preset. RSS endpoints require operator selection. The gate becomes active only after an administrator activates a route that passed the eval. Until then the person fallback applies to influenced contexts.
+
+There is no data migration. A missing ingress fact reads as "not recorded". A context with no recorded bit counts as influenced. Existing tokens are unchanged.
+
+These owners receive the amendments this contract states: Security, Policy, Mediation, the LLM Gateway, Identity, remote authentication, Protocol, AgentSession, context compaction, Knowledge, personal Memory, Pending Requests, Communication, recurring triggers, the execution backend, the scheduler, the control journal, Operation Definition, Vault injection, MCP supply, the Chat mode Assistant, Audit, the retained format register, bootstrap readiness, and Web serving.
 
 ## Contract / Expected Behavior
 
@@ -106,7 +88,7 @@ Feeds are Server configuration that only administrators change. Kinds are closed
 - **Signal matching.** RSS contributes identifiers as evidence, not affected-version claims or instructions. An unmatched or ambiguous identifier produces a visible assessment/coverage gap, not an invented component match. No free-text assessment sets K. K requires KEV, `MAL-`, or a person-recorded vendor confirmation, as the development owner specifies.
 - **Cadence.** While healthy and enabled, exploitation sources poll no more than 3,600 seconds apart, separately from daily inventory matching and the audit watch. Check due sources on enable/boot. Existing per-feed reports record last success, failure and staleness; missed intervals stay visible.
 - **Classes and targets** are part 1's, shared by both specs. A `MAL-` record is K. Feeds only add findings or raise classes; only a person's answer changes a disposition, and only for that finding.
-- **Bounds.** 10 s connect and 60 s total per request; 32 MiB and 100,000 records per document, streamed; 5 minutes per feed run. `osv-api` follows no redirects; other kinds follow up to 3, same origin only. Truncation marks coverage "incomplete"; malformed records are skipped and counted.
+- **Bounds.** 10 s connect and 60 s total per request; 32 MiB and 100,000 records per document, streamed; 5 minutes per feed run. `osv-api` follows no redirects; other kinds follow up to 3, same origin only. Truncation marks coverage "incomplete"; malformed records are skipped and counted. Assessment stops after 1,000,000 match checks. CVSS vector text above 4096 characters is refused. An SBOM inventory document uses the same 32 MiB and 100,000-record ceilings.
 - **Isolation.** Each feed is its own bounded step; the watch never waits on a feed; no failure clears a finding. A finding becomes `fixed` only when the inventory no longer contains the matched version.
 - **Feed text** is untrusted: stored quoted under the feed name, never executed, never choosing an upgrade target. RSS parsing disables external entities and fetches no linked pages. A source disappearing, being removed or changing to “Reference” never lowers a finding or changes its disposition. A raise preserves the original class clock and advances E6's triage revision.
 
@@ -114,7 +96,7 @@ Feeds are Server configuration that only administrators change. Kinds are closed
 
 ### Security Trigger (E4)
 
-**Trigger and grants.** One closed Server trigger on the recurring trigger owner's interface, off by default, running daily inventory matching, exploitation polling at most 3,600 seconds apart and a 300-second audit watch, moving with that owner through the durable engine cutover. No run calls a Provider.
+**Trigger and grants.** One closed Server trigger on the recurring trigger owner's interface, off by default, running daily inventory matching, exploitation polling at most 3,600 seconds apart and a 300-second audit watch, moving with that owner through the durable engine cutover. No run calls a Provider. Native security page requests use limits from 1 through 128; returned event and alarm arrays contain at most 128 entries and may be empty. A token Workspace view admits at most 512 entries. The refusal set is HTTP 403 `forbidden`, HTTP 409 `recovery_required`, and HTTP 409 `unsupported_retained_format`.
 - **Delegated grant.** The trigger is an `automation` principal. The enabling administrator delegates a fixed grant: read Server audit and the inventory, call the configured feeds, raise security requests to current server administrators. It never exceeds that administrator's authority and is suspended when that authority ends (`policy.md:123`).
 - **Containment preset.** Sensors begin observation-only. After reviewing false trips, limits and reserved recovery capacity, an administrator may enable the fixed E12 grant for a distinct deterministic containment principal. Verified sensor events invoke the separately admitted `containment` consumer outside notification Turns; they never wait for the audit watch. Audit/feed readers gain no containment authority. The existing Server control journal owns consumer progress and receipt linkage; E12 and the [port contract](20260629-worker_runtime_communication_model.md#containment-consumer) define admission and recovery.
 - **Alarm grant.** A separate fixed system grant raises the monitor alarm (R1 "monitoring off", R8) with fixed text to every current administrator, so revoking the delegation cannot silence it.
@@ -254,13 +236,13 @@ A second, fast model checks risk points, as Claude Code auto mode and Codex auto
 
 **Binding.** Activating a route that passed the eval writes ordinary Policy statements: an `agent-principal` `security-review` with no grant beyond its input disclosure, and one `gate` binding per point at stage `decide`, failure `escalate-to-human`, timeout 2,000 ms. The existing participant provider sends one decision request instead of running its loop.
 
-**Input.** Principal and on-behalf-of, operation, target, destination audience and influence sources. Outbound effects add their exact payload (≤ 8 KiB); definition changes add both digests and the bounded new text. That text is marked as untrusted data. No secret values, only Vault reference names; the influencing content itself is not sent.
+**Input.** Principal and on-behalf-of, operation, target, destination audience and influence sources. Outbound effects add their exact payload (≤ 8 KiB). The whole serialized action has a separate ceiling of 128 KiB. Definition changes add both digests and the bounded new text. That text is marked as untrusted data. No secret values, only Vault reference names; the influencing content itself is not sent.
 
 **Mapping.** Output `{decision, reasonCode, confidence?}` stays transient; evidence keeps its digest.
 
 | Gate answer | Contributed result |
 | --- | --- |
-| `allow` at or above the threshold (default 0.9) | `not_applicable` |
+| `allow` at or above the current default 0.9 | `not_applicable` |
 | `block` | `deny` |
 | `escalate`, a lower probability, `refusal`, timeout, malformed output, open circuit, exhausted budget | `require_escalation` |
 
@@ -327,7 +309,7 @@ Refresh tokens and agent-to-agent credentials do not exist. Discord ingress is a
 1. **One principal per inbound credential.** The credential selects exactly one principal; its scope and binding remain mandatory restrictions alongside Policy; it never adds authority. *Else an MCP client cannot be restricted or revoked apart from its user.*
 2. **One list and one surface (API, CLI, Web)** for issue, list, rotate, revoke and expiry, over each kind's existing store. *Else theft response means searching five places.*
 3. **Attenuation.** A child credential's principal acts on behalf of its issuer, so the E10 intersection bounds it; nothing is encoded in the token. *Else a child could exceed its issuer.*
-4. **Cascading revocation.** Verification requires every issuer up the chain to be active. *Else children outlive a revoked or disabled issuer.*
+4. **Cascading revocation.** Verification requires every issuer up the chain to be active. Traversal stops at 64 ancestors. Issuer links stay private. The public list omits them. *Else children outlive a revoked or disabled issuer.*
 5. **Opaque, hashed, online-verified** (as today). JWT, macaroons and Biscuit are rejected: Core checks every request against its own store and attenuation lives in Policy, so offline formats only add key rotation and revocation lag.
 6. **Sandbox credentials** stay short-lived, run-bound and in memory, listed as run rows; ending the run revokes them.
 
@@ -335,7 +317,7 @@ Refresh tokens and agent-to-agent credentials do not exist. Discord ingress is a
 
 **v0.1.0 cut.**
 - **MCP client principal.** Issuing a token "for an MCP client" creates an `IntegrationIdentity` owned by the user and binds the Token to it. The chosen scope (`workspace` or `workspace-readonly`, never `server-admin`) stays on the Token and is the principal's default grant. Calls are evaluated on behalf of the user (E10) and attributed to the client. Existing user tokens keep working.
-- **Credential list.** Each user sees and revokes their own Tokens (including MCP client tokens), Web sessions (through the served endpoints), Discord pairings and run rows. Server administrators also see NanoHost transport tokens and, within the existing token operations' authority, other users' Tokens; `user.disable` ends another user's sessions and MCP client tokens.
+- **Credential list.** The inventory kinds are `access-token`, `auth-session`, `discord-pairing`, `worker-run`, and `nanohost-transport`. A revoke result is `revoked` or `ending`. These kinds are not the four human Token states. Each user sees and revokes their own Tokens (including MCP client tokens), Web sessions (through the served endpoints), Discord pairings and run rows. Server administrators also see NanoHost transport tokens and, within the existing token operations' authority, other users' Tokens; `user.disable` ends another user's sessions and MCP client tokens.
 - **Audit.** Pairing and unpairing are recorded as `channel.pairing.bind` and `channel.pairing.unbind` (E5).
 - **Identity amendment.** An `IntegrationIdentity` may be user-owned and span Workspaces; a Token binds to exactly one principal.
 
@@ -368,7 +350,7 @@ Secret exclusions, grant constraints, expiry and revocation remain Vault/Identit
 
 Code validates the complete resulting deny diff against the fixed template. The grant permits no generic Policy editing, widening, recovery, unpause, credential issuance, data deletion or external effect. It adds no conversation preset. A broader mandatory Sandbox isolation-loss response remains independently governed by its existing owner.
 
-**Static bounds.** Before A1 enablement, apply static bounds to sensor input/verification, work, distinct pending targets and evidence/notice cardinality per source, run, Workspace and Server. Reserve capacity for administrator authentication, revocation, recovery and critical alarms. Coalesce excess observations into bounded durable counts and explicit gaps; never report dropped work as contained. Exhaustion may reject work only within the approved affected scope and must not automatically close a shared route group. Flood tests must demonstrate recovery and alarm progress. Bounds are release-authored constants of the existing Gateway/auth, Policy, control-journal, evidence and notice owners, not a budget engine or new configuration shape. Before activation, approval evidence states the finite values, window and current committed/pending usage. The customer-impact cap counts all currently quarantined runs across windows until human release; an action timeout never frees that impact allowance. Admission counts distinct accepted targets from existing journal/Policy facts, including earlier restrictions after human release; it reserves cumulative capacity atomically with Core intent. Retry and concurrent sensors cannot reset a window or evade a cap. Existing trigger reports/Audit summaries carry bounded, saturated excess counts and explicit loss gaps; count uncertainty refuses new restrictions rather than assumes spare capacity. Retain cap-window facts through the window; missing history is a gap, never spare allowance.
+**Static bounds.** Before A1 enablement, apply static bounds to sensor input/verification, work, distinct pending targets and evidence/notice cardinality per source, run, Workspace and Server. Reserve capacity for administrator authentication, revocation, recovery and critical alarms. Coalesce excess observations into bounded durable counts and explicit gaps; never report dropped work as contained. Exhaustion may reject work only within the approved affected scope and must not automatically close a shared route group. Flood tests must demonstrate recovery and alarm progress. Bounds are release-authored constants of the existing Gateway/auth, Policy, control-journal, evidence and notice owners, not a budget engine or new configuration shape. The current release-authored containment bounds are current Server 8 and Workspace 2. Cumulative bounds are Server 16 and Workspace 4 per 3600 seconds. Pending bounds are Server 16 and Workspace 4. The action bound is 60 seconds. The review bound is 86400 seconds. The template version is `containment` v1. Observation bounds are 1 per run, 16 per Workspace window, 64 per Server window, and 16 gaps per window. The review deadline is a reminder. It never releases a restriction. Before activation, approval evidence states the finite values, window and current committed/pending usage. The customer-impact cap counts all currently quarantined runs across windows until human release; an action timeout never frees that impact allowance. Admission counts distinct accepted targets from existing journal/Policy facts, including earlier restrictions after human release; it reserves cumulative capacity atomically with Core intent. Retry and concurrent sensors cannot reset a window or evade a cap. Existing trigger reports/Audit summaries carry bounded, saturated excess counts and explicit loss gaps; count uncertainty refuses new restrictions rather than assumes spare capacity. Retain cap-window facts through the window; missing history is a gap, never spare allowance.
 
 **Consumer and durable outcome.** The sensor invokes the explicitly admitted deterministic Core `containment` consumer outside the notification Turn. Its only effects are the table's existing control operations. The [Execution Backend Port consumer contract](20260629-worker_runtime_communication_model.md#containment-consumer), [scheduler admission](20260703-durable_scheduler_design.md#containment-control-admission) and [Server journal](20261019-durable_execution_and_control_store.md#containment-consumer) own its exact admission and progress. The journal's existing `definitionVersion` gains the single value `containment`; existing `fence`, `cancel`, `inspect-cleanup`, `collect`, `release` and `consume-receipt` steps carry operations. An existing non-effect `human-wait` step carries the review deadline; no new step kind is added. No Worker launch package or publication Turn gains control authority.
 
@@ -429,135 +411,43 @@ Ordinary work gains no agent step: checks stay at current boundaries. The gate f
 
 ## Proposed Design
 
-**Retained changes** (one register row each, with the identifier declarations above as their format): the trigger state family (switch, state, cursor, outbox with per-recipient acknowledgement, occurrences, triage revisions, Thread generations, last report, feeds); the security-notice attention source; `automation`; the event list, including the pairing events; the security identifiers; the pause setting; the hold state; the Item ingress fact; the influence bit on AgentSessions, sessionless context records, Knowledge and Memory; the gate settings; the context attributes in PermissionDecision summaries; the Token principal binding and the `IntegrationIdentity` owner. The existing feed-kind core gains only `rss`. E12 reuses ordinary Policy, credential, Vault, Audit, evidence and command records; E13 adds source-only descriptor metadata and ordinary Policy denies. The only further retained values are `quarantine` in the existing Policy lifetime anchor kind and `containment` in the existing Server journal definition field. Existing references carry sensor/operation linkage and deadlines. No new record, field, table, step kind, run status or actuator enum is declared. Another retained shape requires a separate accepted decision. Gate output stays transient.
+**Retained changes** (one register row each, with the identifier declarations above as their format): the trigger state family (switch, state, cursor, outbox with per-recipient acknowledgement, occurrences, triage revisions, Thread generations, last report, feeds); the security-notice attention source; `automation`; the event list, including the pairing events; the security identifiers; the pause setting; the hold state; the Item ingress fact; the influence bit on AgentSessions, sessionless context records, Knowledge and Memory; the gate settings; the context attributes in PermissionDecision summaries; the Token principal binding and the `IntegrationIdentity` owner. The existing feed-kind core gains only `rss`. E12 reuses ordinary Policy, credential, Vault, Audit, evidence and command records; E13 adds source-only descriptor metadata and ordinary Policy denies. For the E12 journal and Policy lifetime anchor, the further retained values are `quarantine` in the Policy lifetime anchor kind, `containment` in the Server journal definition field, and the Policy action `security.containment`. The enforcement point is `security.containment@admit`. That action is an ordinary Policy action. It is not a new enum family. Existing step kinds are reused. Existing references carry sensor and operation linkage and deadlines. E12 declares no new record, table, step kind, run status, or actuator enum. This sentence does not cover the rest of the program. The retained Token row has `run_subject_json` for one private honey credential. It links that credential to its run and plan. The human owner remains. The field does not create general automation membership. Another retained shape requires a separate accepted decision. Gate output stays transient.
 
-## Current Implementation Projection
+E10 checks the complete Policy diff and refuses self-relaxation; review decisions preserve the actual requester's on-behalf-of identity. The first human Policy proposal carries the three fixed context-preset activations, with no boot write or auto-confirm. Requested Assistant entry and continuation derive private-owner or Workspace-member context from the actual Thread; a mandatory context class narrows current requester/credential authority, and history/Tools/generation/publication repeat currentness. Missing activation or unresolved audience denies. Activation is not an Agent grant; absent-initiator work remains refused outside an established exact context, and Goal/Task delegation keeps its existing envelope. E11 retains the private native issuer reference and co-locates the optional client Integration selection on the original Token row; Original SDK/native MCP and command Audit cases cover binding, rotation, current owner and actual ancestor/issuer loss. Both rotations preserve identity, owner and original issuer, and the shared compiler intersects actual current owner/issuer Kernels with credential scope. No new identity store or evaluator. The original Token family cascades across both rotation directions while independent clients and issuers remain bounded separately. Unified API, CLI and Web inventory exposes each user's own Tokens, served sessions, Discord pairing and Worker runs, plus the existing administrator NanoHost/other-Token view; each revoke calls its original owner. The scheduler retains the exact initiating Token/AuthSession through native asynchronous Task effects. Verified current issuers contribute only restrictive I16 gates and exact Tool prohibitions or approval requirements through the same selectors and Policy pipeline. The same actual Thread context also bounds each issuer Kernel using that issuer's own current User and membership facts; a child credential cannot acquire another human's private Assistant context through Token ownership. Remaining mounted/final native rechecks and unsupported-context paths retain their existing fail-closed owners. E13 has source descriptors, current native effect rechecks and the actorless shared compiler projection. Activation and real-use qualification are separate from these rules.
 
-E10 checks the complete Policy diff and refuses self-relaxation; review decisions preserve the actual requester's on-behalf-of identity. The first human Policy proposal carries the three fixed context-preset activations, with no boot write or auto-confirm. Requested Assistant entry and continuation derive private-owner or Workspace-member context from the actual Thread; a mandatory context class narrows current requester/credential authority, and history/Tools/generation/publication repeat currentness. Missing activation or unresolved audience denies. Activation is not an Agent grant; absent-initiator work remains refused outside an established exact context, and Goal/Task delegation keeps its existing envelope. E11 retains the private native issuer reference and co-locates the optional client Integration selection on the original Token row; Original SDK/native MCP and command Audit cases cover binding, rotation, current owner and actual ancestor/issuer loss. Both rotations preserve identity, owner and original issuer, and the shared compiler intersects actual current owner/issuer Kernels with credential scope. No new identity store or evaluator. The original Token family cascades across both rotation directions while independent clients and issuers remain bounded separately. Unified API, CLI and Web inventory exposes each user's own Tokens, served sessions, Discord pairing and Worker runs, plus the existing administrator NanoHost/other-Token view; each revoke calls its original owner. The scheduler retains the exact initiating Token/AuthSession through native asynchronous Task effects. Verified current issuers contribute only restrictive I16 gates and exact Tool prohibitions or approval requirements through the same selectors and Policy pipeline. The same actual Thread context also bounds each issuer Kernel using that issuer's own current User and membership facts; a child credential cannot acquire another human's private Assistant context through Token ownership. Remaining mounted/final native rechecks and unsupported-context paths retain their existing fail-closed owners. E13 has source descriptors, current native effect rechecks and the actorless shared compiler projection. Broader dev completion and activation/real-use acceptance are separate claims. The E1 sign-in limiter and trusted hop count ([#736](https://github.com/lingkaix/openkit/issues/736)), the producers of `server.config.update`, the pairing events and `auth.revoked-credential-presented` ([#737](https://github.com/lingkaix/openkit/issues/737)), the Pause ([#738](https://github.com/lingkaix/openkit/issues/738)), the E6 fixed text for `inspect` and `answer` and the delivery deadline word ([#739](https://github.com/lingkaix/openkit/issues/739)) and the E9 Knowledge and Memory spread ([#740](https://github.com/lingkaix/openkit/issues/740)) have no implementation.
+## Acceptance
 
-## Alternatives Considered
+Every case uses adversarial input and shows refusal before any effect.
+A stateful case also holds across a restart.
+Review-route qualification is a real-environment proof on one native route and one bridged route.
+That proof includes a two-Turn send after compaction.
+The proof is not evidence that the production app supplies the route.
+Before enabling A1, qualify injected calls across distinct healthy runs, repeated incidents and cumulative caps, observation-to-active approval, and review deadlines. Flood sensors and Policy/evidence/notice paths while proving administrator authentication, revocation, recovery and critical-alarm progress.
 
-- A model on the alert path.
-- Duplicating owners: a new Turn category, event store, notifier or hooks.
-- Tool allowlists, a second authorization layer.
-- A gate that may allow (widens authority) or runs on every operation (slows all work).
-- Gating only Turns with external Items in view: summaries and compaction launder influence.
-- Per-Item lineage now: precise but costly.
-- An OpenAI-only gate; free-form permission matrices; capability-token formats; reusing shutdown admission for the pause.
+## Implementation
 
-## Consequences
+<a id="current-implementation-projection"></a>
 
-- Administrators get a daily report, occasional requests and link-only channel messages; an item stays in each administrator's queue until they answer it.
-- Most tool-using contexts become influenced, so their risk points wait for a decision request, or a person without a route; the gate's budget and cache carry the cost.
-- Shared Threads may get narrower answers than private ones.
-- E1, E7, E9, E10, E11, E12 and E13 change authentication, attribution or effect release, so acceptance evidence follows them.
-- Sensor false positives interrupt work; service recovery needs fresh authorized admission. Shared resource impact stays outside autonomous A1.
+- `apps/nanocore/src/security/`
+- `apps/nanocore/src/auth/`
+- `apps/nanocore/src/storage/`
+- `apps/nanocore/src/policy/`
+- `packages/config-schema/`
+- `packages/app-api-schemas/`
 
-## Rollout / Migration Plan
+## Implementation Gaps
 
-| Owner | Amendment |
-| --- | --- |
-| [Security](../core/security.md) | New core charter (promoted with this spec) |
-| [Policy](../core/policy.md), [Policy model](20260629-openkit_policy_model.md) | Agent principal for agent-for-User work (`:119`); self-initiated rule; investigation and review principals; trigger grants; restrict-only gates without shadow (`:263`); intersection; context attributes; presets; audience rule for agent replies; default statements; full-diff `policy.write` ceiling |
-| [Mediation](../core/mediation.md), [LLM Gateway](20260526-llm_gateway_responses_api.md) | Distinct, truthful roles (`:60`); the `decision` category and capability; the OpenAI adapter; the structured-output bridge |
-| [Identity](../core/identity.md), [Remote auth](20260704-remote_auth_credential_bootstrap.md) | One principal per Token; user-owned `IntegrationIdentity`; MCP client issue; credential list; cascade; limiter; trusted hops; revoked signal |
-| [Protocol](../core/protocol.md) | Core-local trigger workflow; the Item ingress fact; the influence bit as a fact on sessionless agent Turns |
-| [AgentSession](../core/agent-session.md), [AgentSession continuity](20260704-agent_session_continuity.md) | The influence bit on AgentSessions, inherited by replacement and successor reuse |
-| [Context compaction](20260902-agent_runtime_context_compaction.md) | The bit survives rolling context, retained summaries and compaction |
-| [Knowledge](../core/knowledge.md), [Knowledge store](20260703-knowledge_store_implementation.md), [personal Memory](20260909-personal_memory_and_knowledge_learning.md) | Carried influence bit: encoding, validation, propagation through governed retrieval |
-| [Pending Requests](20260930-pending_requests.md), [Communication](../core/communication.md) | Requester `automation`; copies stay open after the decision; a durable security notice is an attention source of its own, eligible independent of its request's state; an answer or withdrawal by a non-recipient never ends it (answer authority unchanged) |
-| [Recurring Triggers](20260711-scheduler_recurring_event_triggers.md) | Hourly signals, observation-first sensors, separately admitted containment consumer, current grants and independent alarm/notice drain |
-| [Protocol](../core/protocol.md), [Execution Backend Port](20260629-worker_runtime_communication_model.md#containment-consumer), [scheduler](20260703-durable_scheduler_design.md#containment-control-admission), [control journal](20261019-durable_execution_and_control_store.md#containment-consumer) | Explicit `containment` consumer, durable bounded intent, event-to-receipt lineage, current checks and original-effect inspection |
-| [Operation Definition](20261002-operation_definition.md), [Policy model](20260629-openkit_policy_model.md) | Source-only owner/switch descriptors, current admission denies and exact containment preset |
-| [Vault injection](20260703-vault_secret_injection.md), [MCP supply](20260704-worker_mcp_tool_supply.md) | Existing honey delivery/credential lifecycle and inert canary admission/refusal |
-| [Chat mode Assistant](20260704-chat_mode_assistant.md) (Administration entry); attention; Discord adapter | Security Thread placement and private context projection; Subject with on-behalf-of; fixed text; reminder and renotice; pairing events |
-| [Audit](20260703-audit_usage_evidence_records.md), [retained format register](20261017-retained_format_register.md) | Event list, names, fields, families |
-| [Bootstrap readiness](20260704-nanocore_bootstrap_readiness.md); [MCP supply](20260704-worker_mcp_tool_supply.md); Web serving | Pause; tool-definition hold; CSP |
+- Sign-in limiting is per source and per account, and forwarded headers count only after an administrator sets the trusted proxy hop count - On main, the stock library limiter applies to address and path, forwarded-header handling stays at the library default, and no sign-in failure event is written - #736
+- `server.config.update`, `channel.pairing.bind`, `channel.pairing.unbind`, and `auth.revoked-credential-presented` have producers - On main, these four events have no producer - #737
+- The persistent "pause agent work" setting - On main, the setting does not exist - #738
+- Discord automation delivery, inspect, and answer use fixed deadline-and-App-link text - On main, Discord shows the question text - #739
+- Knowledge and Memory written from an influenced context carry the external-influence bit, and governed retrieval sets it - On main, the optional Git revision-metadata bit is admitted and preserved, but automatic recording from an influenced context and governed-retrieval propagation remain unimplemented - #740
+- A K copy unanswered after 12 hours gets one reminder - On main, no emitter creates that reminder - #760
+- At most 8 open security requests per Thread, and overflow becomes one request - On main, that sublimit and overflow are not established - #760
+- Bearer failures notify immediately when the same source repeats the next day - On main, the 100-per-source counter does not establish that next-day detector - #760
+- On enable, the view suggests the first three feed kinds - On main, no enable view suggests those kinds - #760
+- A route is offered only after the eval floor, and the gate adds at most 1 second at p95 - On main, the production app supplies no security-review decision route and no qualification record - #760
 
-**Defaults.** Off by default except the CSP, the hold, the ingress fact, the influence bit, the agent-principal amendment, the intersection, the audience rule, the ceiling, the credential list and route-group descriptor coverage. E12 sensors follow explicit trigger enablement in observation-only mode; active containment additionally needs reviewed qualification and its approved bounded preset; RSS endpoints require operator selection. The gate becomes active only after an administrator activates a route that passed the eval; until then the person fallback applies to influenced contexts.
+## Decisions
 
-**Migration.** No data migration. A missing ingress fact reads as "not recorded"; a context with no recorded bit counts as influenced; existing tokens are unchanged.
-
-## Testing Strategy / Acceptance Criteria
-
-Every case uses adversarial input and shows refusal before any effect; stateful cases also hold across a restart.
-
-| Area | Cases |
-| --- | --- |
-| E1 | 429 after the threshold per account and per source; forged headers ignored without trusted hops; one record per crossing; a guessed id produces no record |
-| E2, E3 | RSS matches raise to at least C and never set K; an existing K stays K; unmatched aliases remain gaps. Hourly due polling holds across restart and never delays the watch. Removed/changed items never lower or close findings; hostile XML cannot fetch entities/links or execute text. Inventory equals the SBOMs, with gaps shown; `MAL-` and KEV as K; no feed lowers a class; oversized, slow, redirected, malformed and over-paginated feeds stay bounded and marked without delaying the watch; a failure clears nothing |
-| E4 | A crash at each step gives one request per row with recomputed ids, and a partial tuple becomes `recovery_required`; busy, archived and revoked-recipient cases; turning off or losing authority before a scan, and across a restart, still alarms every administrator before `off`. **Drain regression:** raise B's stop alarm → reach `off` → A withdraws B's request before delivery → restart → B still receives the notice without monitoring being re-enabled. No Provider call |
-| E5 | One fixture per event and rule, including pairing; a missing field is reported as unsupported |
-| E6 | A fake Discord transport receives only fixed text, including for cross-user and rebound accounts. A answers or withdraws B's copy before delivery, including across a restart, and B's notice survives and is delivered. Concurrent answers give one decision; repeated disagreement gives one `conflict` per revision; restart replay gives the same decision, conflict and ids; an old answer after `fixed` leaves `fixed`. Overdue and expired answers reopen; the reminder is created once |
-| E7 | With a valid configuration delegation, an injected report drives dispatch, prepare and recover; each is denied before effect and audited with the on-behalf-of chain; a security Task has no egress |
-| E9 | The eval passes on native OpenAI and one bridged route. A stub `allow` never turns `deny` or `require_approval` into `allow`; every failure kind escalates. **Two-Turn regression:** Turn 1 reads a remote MCP Tool result; compaction replaces it with a model summary; Turn 2 in the same context attempts a channel send to another person, and the gate or a person still decides. The same holds for sessionless work, a resumed or forked context, and a second session reading Knowledge written by the first. An owner-only context makes no call. A cache hit is identical and audited |
-| E10 | Private material never enters a shared-Thread reply; an agent with a wider grant is held to its requester; self-initiated work outside an established trigger context is refused; an unresolved audience refuses delivery; `policy.write` refuses removing a prohibition, deactivating a required gate and a grant beyond the author's authority; an out-of-scope write is denied; no author approves their own widening |
-| E11 | An MCP client token acts as its own principal within the user's authority and Token scope; revoking it or disabling the user stops it; every listed kind, including own sessions, revokes from the list |
-| E12 | Preserve listing/guessing refusal, exact verified trips, no upstream effect, reader/actor separation, redaction, current grants, 60-second active restriction and person-led fresh recovery. Before enabling A1, qualify injected calls across distinct healthy runs, repeat incidents/cumulative caps, observation-to-active approval and review deadlines. Flood sensors, Policy/evidence/notices while proving administrator auth, revocation, recovery and critical-alarm progress. Reject quarantine statements carrying notAfter, uses or both; generic expiry processing cannot end a valid quarantine with neither. Missing/late/elapsed journal review deadlines never release it. Test delegation loss, monitoring off, restart and action expiry after failed/unknown stop; quarantine always persists. Crash before deny, after deny/before stop, and after stop/incomplete acknowledgement; recover from current Policy/original receipts, never blind replay. Human/shared/recovery targets and over-cap actions are refused; no shared route is closed automatically |
-| E13 | Missing owner/switch fails coverage and admission; current denies block every projection, queued and approved work; restart preserves the switch; cached allow cannot bypass it; human recovery remains available; shared switches refuse automatic A1 |
-| Pause | Refuses new agent Turns, Task starts and queued dispatch; answers, cancellation, revocation and unpause still work; survives a restart |
-
-## Risks & Mitigations
-
-| Risk | Mitigation |
-| --- | --- |
-| Alert fatigue | Classes, deduplication, bounds, digests |
-| False sense of coverage | "Not covered" and "incomplete", with reasons |
-| Feed outage or hostile feed | Isolation and bounds; failures clear nothing |
-| The gate misses an injection | One layer among several; eval floor on the block rate |
-| The sticky bit over-counts and slows work | Only risk points fire; cache; false-positive ceiling; latency budget; per-Item lineage later |
-| Decision Provider sees action data | Minimal structured input with no secrets; settings state what is sent; prefer zero-retention routes |
-| Sole administrator away | K reminder; exact-target A1; broader containment stays human; part 2 for managed instances |
-
-## Open Questions
-
-- None blocking.
-- [Non-blocking] The engineer may adjust the v0.1.0 split, the eval thresholds, the gate budget and the timing of the Workspace-administrator scope.
-
-## Deferred / Future Work
-
-The following work is tracked after v0.1.0:
-
-- [Contained response](https://github.com/lingkaix/openkit/issues/654) (#654): broader A2/A3 actuator registration and bounded automation beyond E12.
-- [Automated repair](https://github.com/lingkaix/openkit/issues/655) (#655).
-- [Off-host audit export](https://github.com/lingkaix/openkit/issues/656) (#656).
-- [Workspace security notices](https://github.com/lingkaix/openkit/issues/657) (#657).
-- [Policy denial and Vault refusal signals](https://github.com/lingkaix/openkit/issues/658) (#658).
-- [Containment loss notice](https://github.com/lingkaix/openkit/issues/659) (#659).
-- [Spend anomaly warning](https://github.com/lingkaix/openkit/issues/660) (#660).
-- [Configuration posture report](https://github.com/lingkaix/openkit/issues/662) (#662).
-- [Review gate expansion](https://github.com/lingkaix/openkit/issues/663) (#663), including diverse-Provider A2 quorum without new authorization.
-- [Agent principals for internal agents](https://github.com/lingkaix/openkit/issues/664) (#664).
-- [Per-token principals](https://github.com/lingkaix/openkit/issues/665) (#665).
-- [Shared credential lifecycle store](https://github.com/lingkaix/openkit/issues/666) (#666).
-- [OAuth for MCP clients](https://github.com/lingkaix/openkit/issues/667) (#667).
-- [Agent-to-agent credentials](https://github.com/lingkaix/openkit/issues/668) (#668).
-- [External-person identity](https://github.com/lingkaix/openkit/issues/669) (#669).
-- [Group conversations](https://github.com/lingkaix/openkit/issues/670) (#670).
-- [Delegation chain in audit](https://github.com/lingkaix/openkit/issues/671) (#671).
-- [Per-Item content lineage](https://github.com/lingkaix/openkit/issues/672) (#672).
-- [Credential checks on Knowledge and Memory writes](https://github.com/lingkaix/openkit/issues/673) (#673).
-- [Administrator session controls](https://github.com/lingkaix/openkit/issues/674) (#674).
-- [Workspace-administrator Policy scope](https://github.com/lingkaix/openkit/issues/675) (#675).
-- [Step-up authentication](https://github.com/lingkaix/openkit/issues/676) (#676).
-- [Two-factor authentication and passkeys](https://github.com/lingkaix/openkit/issues/677) (#677).
-- [Per-Workspace model routes](https://github.com/lingkaix/openkit/issues/678) (#678).
-- [Extension withdrawal list](https://github.com/lingkaix/openkit/issues/679) (#679).
-- [Extension permission summary](https://github.com/lingkaix/openkit/issues/680) (#680).
-- [MCP package identity](https://github.com/lingkaix/openkit/issues/681) (#681).
-- [Isolated frames for MCP Apps](https://github.com/lingkaix/openkit/issues/682) (#682).
-- [Cross-Workspace authorization suite](https://github.com/lingkaix/openkit/issues/683) (#683).
-- [Egress qualification per backend](https://github.com/lingkaix/openkit/issues/684) (#684).
-- [Instance pull requests from a fork](https://github.com/lingkaix/openkit/issues/685) (#685).
-- [GitHub App credential kind](https://github.com/lingkaix/openkit/issues/686) (#686).
-- [Offline advisory data](https://github.com/lingkaix/openkit/issues/687) (#687).
-- [Automatic read-only investigation](https://github.com/lingkaix/openkit/issues/688) (#688).
-- [Plain-language briefing feeds](https://github.com/lingkaix/openkit/issues/689) (#689).
-
-Further after-v0.1.0 features: intent-bound grants, deterministic invariant monitoring, reviewed rule synthesis, general defense funnel budget orchestration and authorized external deception. E12's minimum static bounds, reserved recovery capacity and flood qualification are v0.1.0 prerequisites, not deferred. Canary credentials ([#661](https://github.com/lingkaix/openkit/issues/661)) are in E12's v0.1.0 cut, not deferred.
-
-Development and release deferrals are linked by [Development Security](20261109-development_security.md#deferred--future-work).
-
-## Links
-
-[OSV schema](https://ossf.github.io/osv-schema/) · [OSV API](https://google.github.io/osv.dev/api/) · [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) · [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) · [Lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) · [CaMeL](https://arxiv.org/abs/2503.18813)
+- [Security Program Rulings](../decisions/20261109-security_program_rulings.md)

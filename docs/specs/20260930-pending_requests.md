@@ -2,88 +2,15 @@
 status: Accepted
 implementation: Partial
 kind: concept
-date: "2026-09-30"
-updated: "2026-10-16"
 aspect: policy
 ---
 # Pending Requests
 
-## Owns
-
-- The pending request concept for approval requests and user-input requests: its definition, its durable record, and its lifecycle of raise, resolve, end, and deliver.
-- The captured call binding of an approval that governs a call, the claim that makes its execution at most once, and the recorded execution disposition.
-- The publication of a request's outcome as Items, the delivery association between the outcome and the Turn that delivers it, when such a Turn is admitted, and the closeout of an outcome that no requester can receive.
-- The per-Thread bound on outstanding requests, the invalidating events, and the mapping of outcomes onto Approval status.
-- The semantics of the answer and withdraw commands, and the pending-request semantics of the existing approval response command.
-- The canonical-load validation of the record against its Items and receipts.
-- External attention references, delivery attempts, and the exact channel response projection for these requests.
-
-## Does Not Own
-
-- Turn lifecycle, Turn triggers, and Item semantics, owned by `docs/core/protocol.md`, which states the pending request semantics this specification implements.
-- The Action Center card and its controls, owned by [Human Attention And Intervention Model](20260531-human_attention_intervention_model.md).
-- Gateway MCP transport, catalog, schema snapshots, and upstream execution, owned by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md).
-- Built-in tool identity, the tool call envelope, and `CapabilityCall`, owned by [Worker Agent Capability](20260703-worker_agent_capability.md).
-- Policy evaluation and `PermissionDecision`, owned by [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) and `docs/core/policy.md`.
-- Artifact Review, Workspace Sync Review, and Knowledge Review, which keep their own durable identity and already accept a response after their source Turn is terminal.
-- The Goal, its Plan versions, and its completion disposition. [Goal](20261002-goal.md) owns those records. This specification owns the command-intent approval that selects one exact Plan version or accepts one exact completion candidate.
-
-## Core References
-
-- `docs/core/protocol.md`
-- `docs/core/communication.md`
-- `docs/core/policy.md`
-- `docs/core/work-model.md`
-- `docs/core/agent-session.md`
-
-## Related Docs
-
-- [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md)
-- [Worker Agent Capability](20260703-worker_agent_capability.md)
-- [Human Attention And Intervention Model](20260531-human_attention_intervention_model.md)
-- [Task Mode Worker Delegation](20260704-task_mode_worker_delegation.md)
-- [Chat Mode Assistant](20260704-chat_mode_assistant.md)
-- [Goal](20261002-goal.md)
-- [Goal Contract Gap Rulings](../decisions/20261002-goal_contract_gap_rulings.md)
-- [Work Data Retention Format](20260921-work_data_retention_format.md)
-- [Delayed User Input](superseded/20260921-delayed_user_input.md), historical evidence from the Draft this specification supersedes
-- [Earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)
-
-## Summary
-
-An agent that needs a person's approval or answer raises a pending request and keeps working. The request is durable, is not a Turn status, and has no default deadline. The responsible user, or a currently usable administrator credential under the administrator eligibility rule in `docs/core/policy.md`, resolves it out of band. The recorded actor is the actor who decided. For an approval that governs a tool call, the gateway then re-evaluates the captured call against current facts and executes it at most once. The outcome reaches the agent on a later Turn of the same Thread. One record owns both kinds of request, and every producer that used to pause a Turn in `awaiting_human` moves onto it.
-
-## Goals / Non-goals
-
-Goals:
-- One mechanism for every approval and every user-input request, whatever the requester, with a variable approver. Human approval eligibility follows Administrator Eligibility and the request's responsible-user rule. No agent approver is activated.
-- The approver sees exactly the effect that will execute, and nothing depends on the agent reproducing its arguments.
-- A request survives the end of the Turn and of the AgentSession that raised it.
-- A late answer is a legitimate arrival, not a recovery error.
-
-Non-goals:
-- A default deadline or expiry timer. A configurable deadline policy may be added later.
-- An agent approver. The approver field exists; no agent approver is activated.
-- Agent-initiated withdrawal. It is designed here, aligned with MCP `tasks/cancel`, and not enabled, because the MCP draft is unreleased.
-- Native MCP Tasks on the wire. The semantics already align with SEP-2848, so a later switch changes only the wire.
-- A ninth pending-request owner, a second list of waiting work, a fifth Turn terminal, or a new Turn status.
-- Secret answers. A secret question stays visible and cannot be answered.
-
-## Background
-
-The earlier design coupled both request kinds to the Turn. An approval or question set the Turn to `awaiting_human` with a `humanGate`, the worker was stopped through a `human-gate` interrupt, its AgentSession was suspended and then closed, and a later Task claimed a granted MCP effect by re-proposing the call within one hour. The engineer ruled that this came from binding the AgentSession and Turn lifetimes together, and replaced it with the decisions recorded in [pending tool calls](../decisions/20260930-pending_tool_calls.md), [no default deadline](../decisions/20260930-pending_requests_have_no_deadline.md), and [AgentSession as an execution binding](../decisions/20260929-agent_session_is_an_execution_binding.md).
-
-The superseded Delayed User Input Draft gathered evidence that this specification carries forward without repeating it:
-- **Eight owners.** Eight pending-request owners existed when this record was accepted. Goal Plan and Goal Review are no longer separate owners. Plan approval and completion acceptance are approvals on this record. Artifact Review and Workspace Sync Review still accept a response after their source Turn is terminal and keep independent durable identity. Approval and user input were the only two whose admission and lifecycle stayed on the Turn. This specification decouples those two. It is their durable record, not a ninth owner, and Action Center stays the one list of waiting work.
-- **Late answers looked broken.** A late answer to an approval surfaced as `recovery_required` because the gate was no longer exact and active. `recovery_required` stays correct for a missing receipt, a contradictory owner, or an interrupted effect, and is never the result of a person simply answering late.
-- **Unused statuses.** `expired`, `superseded`, and `withdrawn` were declared with no production writer, and the one-hour MCP expiry was a read-time check while the Approval stayed `pending`.
-- **Link-back.** Link-back uses the Item `id`, an in-package reference. It may fail to resolve and must never point at the wrong record. `seq` is only a per-file truncation counter.
-- **Configuration apply.** A configuration apply is a late response to an earlier proposal. Its marker Item belongs on the Turn that executes the apply, with link-back to the proposing Item, and is never written onto an already terminal proposing Turn.
-- **Ending evidence.** Evidence that a request ended carries the request identity, the reason, the deciding actor, the time, and a link back to the initiating Item. `StatusItemSchema` has no structured slots for those facts, so this record holds them and the Item carries a readable summary; no new retention container is added.
+This specification owns the Pending Request lifecycle, captured-call execution, and Discord attention responses.
 
 ## Decision
 
-A pending request is the durable record of one approval request or one user-input request. It is raised by a governed call or command, resolved or ended by a person or an invalidating event, and delivered to its requester by a later Turn on the same Thread. Raising it never changes the status of the Turn that raised it. The record is the source of the request's state and of the Approval status, and Items remain its communication record.
+A pending request is the durable record of one approval request or one user-input request. It is raised by a governed call or command, resolved or ended by a person or an invalidating event, and delivered to its requester by a later Turn on the same Thread. Raising it never changes the status of the Turn that raised it. The record is the source of the request's state and of the Approval status, and Items remain its communication record. A producer that used to pause a Turn in `awaiting_human` raises a pending request instead. No agent approver is activated. The approver field exists. Native MCP Tasks are not on the wire. Link-back uses the Item `id`. It may fail to resolve and must never point at the wrong record. `seq` is only a per-file truncation counter. A configuration apply writes its marker Item on the Turn that executes the apply, with link-back to the proposing Item. It is never written onto an already terminal proposing Turn. Evidence that a request ended carries the request identity, the reason, the deciding actor, the time, and a link back to the initiating Item. `StatusItemSchema` has no structured slots for those facts. This record holds them. The Item carries a readable summary. No new retention container is added.
 
 ## Contract / Expected Behavior
 
@@ -101,7 +28,7 @@ A pending request has one kind, `approval` or `user-input`, and one requester:
 Exclusions:
 - In-Sandbox tool use never raises an approval.
 - A native runtime permission prompt never becomes a request; it receives the pinned runtime's shortest-lived allow by default without interrupting the Turn, and a user's explicit native deny rule stays ([decision](../decisions/20261001-sandbox_full_capability_rulings.md)).
-- A review verdict is not a request here; it stays with its own owner.
+- A review verdict is not a request here. Artifact Review, Workspace Sync Review, and Knowledge Review keep their own durable identity and may accept a response after their source Turn is terminal.
 - A native effect that has no gateway operation cannot be approved.
 
 ### The Record
@@ -170,9 +97,9 @@ Execution after a grant, for an approval that governs an agent's captured call, 
 3. **Main submission and execution.** After asynchronous input preparation and the claim acknowledgement, the existing Main effect owner synchronously checks current identity, Workspace membership, responsible-user and Agent authority, Thread supply, schema, Policy and Vault grants immediately before contact. The database worker records the original execution `CapabilityCall`, `PermissionDecision` and required Audit as one local tuple, correlated by the request-derived execution call identity, under the [native writer boundary](20261019-durable_execution_and_control_store.md#write-and-space-budget). Main awaits FULL acknowledgement before contact and rechecks current authority after awaited commits. If the authority check fails, the native writer commits the failed execution call and its existing submission-refusal PermissionDecision with `upstreamContacted=false`, required Audit and no usage, then Main posts the native `execution-error` disposition without contact. A later submission refusal preserves the earlier Approval winner and links the request through its existing context rather than claiming a second winner. Otherwise the gateway executes the exact captured call with the ordinary timeout and result bounds.
 4. **Disposition.** The claim moves to `finished` with `approved-executed` (the call succeeded), `execution-error` (it failed and its outcome is known), or `outcome-unknown` (contact may have happened and the outcome cannot be established). The execution `CapabilityCall` is recorded as `succeeded`, `failed`, or `unknown`, with its upstream-contact knowledge. Usage follows the ordinary rule: none when upstream is proved not contacted.
 
-The contacted execution's tool-call measurement uses the [Capability Usage recorder](20260704-capability_usage_gateway_foundation.md#call-and-usage-identity)'s independent `use` UUIDv7 default. Keep its `capabilityCallId` and complete measurement-equivalence facts separate from identity. An equivalent stored measurement returns its retained ID after replay or reopen; only a new measurement allocates. The same claim permits at most one contact, an uncontacted call creates no usage, and unknown claims never execute again. This declares no request-derived or call-derived usage identity. Allocation triggers, measurement semantics, retention and recovery remain unchanged.
+The contacted execution's tool-call measurement uses the [Capability Usage recorder](20260703-audit_usage_evidence_records.md#call-and-usage-identity)'s independent `use` UUIDv7 default. Keep its `capabilityCallId` and complete measurement-equivalence facts separate from identity. An equivalent stored measurement returns its retained ID after replay or reopen; only a new measurement allocates. The same claim permits at most one contact, an uncontacted call creates no usage, and unknown claims never execute again. This declares no request-derived or call-derived usage identity. Allocation triggers, measurement semantics, retention and recovery remain unchanged.
 
-For MCP schema re-evaluation at Main submission, a `tracking` entry compares the requested tool name and complete retained `inputSchema` between the captured and current snapshots. A missing tool or changed input schema yields `execution-error` after the claim, without upstream contact. Compare the complete schema by canonical JSON equality, including nested descriptions and annotations. Other-tool changes and top-level tool metadata changes outside `inputSchema` do not refuse the call. A `pinned` entry retains whole-snapshot refusal. The catalog revision, eligibility, authority, Policy, credential and native claim checks still apply at their owned boundaries. This uses the retained snapshots without a new durable field ([accepted #117 decision](../decisions/20261012-requested_mcp_tool_schema_at_grant.md)); [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns upstream execution.
+For MCP schema re-evaluation at Main submission, a `tracking` entry compares the requested tool name and complete retained `inputSchema` between the captured and current snapshots. A missing tool or changed input schema yields `execution-error` after the claim, without upstream contact. A retained captured call whose tool left the supply keeps the decision `granted` and ends after the claim as `execution-error` with reason `tool-left-supply`, with no contact and no usage. Compare the complete schema by canonical JSON equality, including nested descriptions and annotations. Other-tool changes and top-level tool metadata changes outside `inputSchema` do not refuse the call. A `pinned` entry retains whole-snapshot refusal. The catalog revision, eligibility, authority, Policy, credential and native claim checks still apply at their owned boundaries. This uses the retained snapshots without a new durable field ([accepted #117 decision](../decisions/20261012-requested_mcp_tool_schema_at_grant.md)); [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns upstream execution.
 
 The synchronous Main submission check is the linearization point for Main-owned authority. Revocation before this check prevents contact even when the native claim is already acknowledged. The native compare-and-set separately orders withdrawal, archive, competing responses and native-owned business mutations: one that wins before the claim prevents the effect, and a claimed request can no longer end. There is no lock, lease, snapshot, global gate or cross-owner atomicity claim. An ended request can no longer be claimed.
 
@@ -183,7 +110,7 @@ A denial records `denied-not-executed` without re-evaluation. A crash before the
 ### End
 
 A pending request ends without resolution:
-- **Withdrawal.** The command `pending_request.withdraw`, projected as `POST /api/app/operations/pending-request.withdraw` with `pendingRequestId`, `workspaceId`, `threadId`, and command `requestId`, lets the responsible user, or a currently usable administrator credential under the administrator eligibility rule in `docs/core/policy.md`, withdraw a `pending` request. The recorded ending actor is the actor who withdrew. The Approval becomes `withdrawn`. Agent withdrawal is defined with the same effect and is not enabled.
+- **Withdrawal.** The command `pending_request.withdraw`, projected as `POST /api/app/operations/pending-request.withdraw` with `pendingRequestId`, `workspaceId`, `threadId`, and command `requestId`, lets the responsible user, or a currently usable administrator credential under the administrator eligibility rule in `docs/core/policy.md`, withdraw a `pending` request. The recorded ending actor is the actor who withdrew. The Approval becomes `withdrawn`. Agent withdrawal is defined with the same effect and is not enabled. The Approval status values this owner writes are `granted`, `denied`, `withdrawn`, and `expired`. `superseded` stays reserved and has no writer.
 - **Invalidating events.** Archive of the Thread, deletion of the Workspace, loss of the responsible user's membership or authority, and removal of the requesting Agent or loss of its authority. Cancellation of a Goal and supersession of an open Plan proposal are the invalidating events the following bullets define, and they end only the open requests those bullets name. The Approval becomes `expired` for a request one of these events ends. The command that archives a Thread or deletes a Workspace, ends that scope's pending requests in its own write, and archive closes out the Thread's outcomes as Closeout defines. Loss of membership or authority is detected and written at the next response, withdrawal, execution, or delivery attempt; no process scans for it.
 - **Goal cancellation.** Cancellation of a Goal ends every open Plan approval and every open completion request of that Goal in the cancellation's own write. Open means the request is still pending. Each ends as invalidated, with the reason that the Goal was cancelled. The person sees that reason where the request is shown, including the `status` Item summary Deliver requires for an ended request. A granted but unconsumed Plan approval or completion grant of that Goal is not ended by this write. Its consumption attempt is refused with a conflict, does not execute, and records `denied-not-executed` with the reason that the Goal was cancelled under the existing command-intent invalidation rules. The decision is recorded in [Goal Contract Gap Rulings](../decisions/20261002-goal_contract_gap_rulings.md).
 - **Plan supersession.** A new Plan proposal ends every older open Plan proposal of the same Goal in that proposal's own write. Open means the request is still pending. Each ends as invalidated, with the reason that a newer Plan proposal superseded it, by the same immediate invalidation as Goal cancellation of an open request. The person sees that reason where the request is shown, including the `status` Item summary. This does not end the active Plan version, a completion request, or a granted but unconsumed Plan grant. The decision is recorded in [Goal Contract Gap Rulings](../decisions/20261002-goal_contract_gap_rulings.md).
@@ -253,7 +180,7 @@ Archive closes out inside the archive command, in this order:
 3. **Publication.** A selected outcome that already has a publication Turn, because an earlier delivery attempt was refused, gets no new Item. Every other selected outcome gets its Items, as Deliver lists them, on one Core-local closeout Turn. For a command-intent grant turned into `denied-not-executed` by this archive, or a selected outstanding invalidation, Core writes the invalidation `status` Item on that closeout Turn; that Turn serves as the invalidation Turn defined in Deliver.
 4. **Result.** Only selected original outcomes become `closed-out`. Publishing a separate invalidation leaves the decision's delivery state unchanged, so a decision already delivered remains `delivered`. All of this is written before the Thread's archived status, so no Turn is ever admitted to an archived Thread.
 
-Loss of the requesting Agent's authority closes out that requester's final outcomes that are `undelivered` in the same way: in the command that detects the loss when the Thread has no non-terminal Turn, and otherwise at that Turn's terminal barrier, where admission finds that the requester can no longer execute and admits the Core-local closeout Turn instead of a delivering Turn.
+Loss of the requesting Agent's authority closes out that requester's final outcomes that are `undelivered` in the same way: in the command that detects the loss when the Thread has no non-terminal Turn, and otherwise at that Turn's terminal barrier, where admission finds that the requester can no longer execute and admits the Core-local closeout Turn instead of a delivering Turn. More than 16 outcomes waiting at archive are all published on that one closeout Turn. The delivery bound of 16 does not cap archive closeout.
 
 A closed-out outcome is never delivered later, even when an archived Thread is restored, and an ended request is never reopened. Deleting a Workspace deletes its Threads' requests with their history under the deletion owner and writes no Item.
 
@@ -337,102 +264,42 @@ The channel invokes the existing approval or answer command with one stable comm
 - An explicit retry after definite no-send failure repeats current source, recipient, and binding checks.
 - Notification failures leave the exact Pending Request and any recorded Core outcome unchanged.
 
-## Current Implementation Projection
+## Scope
 
-The first channel slice composes private Discord signatures, account pairing and revocation, exact denial and non-secret answer responses, inbound deduplication, and shared attention delivery. Native settings, generated OpenAPI and CLI, Web settings, and the operator manuals project the same definitions. Pairing is an explicit Web-only one-time-secret operation. Fake-backed regressions establish the adapter and Core boundaries; they do not prove a real Discord send. Approval grants retain the App confirmation path. Email has the shared link-only payload contract, with no SMTP adapter or real-send claim.
+- Action Center row shape belongs to [Human Attention](20260531-human_attention_intervention_model.md).
+- The effect of a consumed command belongs to that effect's owner.
+- Account binding storage belongs to Server Control.
+- Security notice drain and triage belong to [Runtime Security](20261109-runtime_security.md).
+- Goal and Plan selection belong to [Goal](20261002-goal.md).
 
-The `approval.respond`, `question.answer` and `pending-request.withdraw` definitions project to JSON, OpenAPI, `client.operations` and the bundled CLI. `apps/nanocore/src/pending-request-operations.ts` joins them to the existing captured-call, command receipt and later-Turn delivery owners; their former routes and client mappings are absent. Approval opaque-child admission reads only canonical or Approval-map lineage after selected-Workspace authorization; answers and withdrawals use body-Workspace and addressed-Thread admission, leaving canonical-record and decision outcomes to the Pending Request owner.
+## Acceptance
 
-The complete contract is not established by the implemented slices. Selected Worker MCP approval-required calls already retain pending captured arguments and binding, return a pending result without upstream contact, and execute the captured call through the approval response path rather than requiring a later model re-issue. `apps/nanocore/src/worker-mcp-routes.ts` and `apps/nanocore/src/runtime/captured-pending-call.ts` implement that slice. Host-push execution and its builtin supply are removed. A retained captured `repository_push` call ends after claim as `execution-error` with reason `tool-left-supply`, using the existing supply-change predicate in the Main submission check (`apps/nanocore/src/runtime/pending-request-flow.ts`). These observations do not establish complete Assistant clarification, Goal consumption, delivery, restart, or archive acceptance coverage.
+Each supported worker runtime, under its existing runtime owner, exercises `work_input_request` and an approval-required call through its real distribution against synthetic providers. The required observation includes an idle AgentSession wake and a successor that resumes. This is an observation required for acceptance. It does not record that this review ran it.
 
-## Alternatives Considered
+## Implementation
 
-- **Keep the Turn-pausing gate for non-worker requesters.** Rejected, because it keeps two approval mechanisms against the one-mechanism decision.
-- **Write the decision on the raising Turn.** Rejected, because a terminal Turn is never reopened and a reply is never back-filled where the request arose.
-- **Deliver the decision on the active Turn when the Thread is busy.** Rejected, because that Turn belongs to another run and its agent would not see it; the delivering Turn is where the requester learns the outcome.
-- **Append closeout Items to the Thread's active Turn at archive.** Rejected, because that Turn may be the one that raised the request, where a reply is never back-filled; archive with something to close out waits for an idle Thread instead.
-- **Extend `ApprovalRequest`, `PermissionDecision`, or the `CapabilityCall` ledger to hold the captured arguments.** Rejected, because none can hold full arguments additively under their contracts, and user-input requests would still need a lifecycle owner.
-- **A background delivery runner.** Rejected, because admission at the command, the terminal barrier, and boot covers every case without a new process.
-- **Admit a closeout Turn after archive.** Rejected, because archive prevents new Turns; closeout is written before the archived status instead.
-- **Migrate earlier-version requests and gates.** Rejected by the engineer's data-retirement decision.
-- **A default expiry.** Rejected by the engineer.
+- `apps/nanocore/src/runtime/`
+- `apps/nanocore/src/channels/`
+- `packages/protocol/src/`
+- `packages/app-api-schemas/src/`
 
-## Consequences
+## Implementation Gaps
 
-- A Task is its Thread and all of its Turns; the delivering Turn is part of the Task.
-- The protocol loses `awaiting_human`, `humanGate`, AgentSession `suspended`, and StopReason `ask_user`, and every exhaustive switch over them stops compiling until it is corrected, as intended.
-- An approval-required call does not stop the worker, and a pending request does not hold scheduler capacity.
-- The approver may see a request long after it was raised; the card discloses its age, and execution re-evaluates it.
+- Discord automation delivery, inspect, and answer use fixed deadline-and-App-link text - On main, Discord shows the question text - #739
+- A security trigger raises at most one open renotice per item and recipient - On main, no producer raises that renotice request - #785
 
-## Rollout / Migration Plan
+## Decisions
 
-This lands in the agent communication redesign's first implementation stage, together with the Gateway on the MCP SDK v2 and the resident AgentSession lifecycle. The removal of the reload derivation and denial lands in the same change. No compatibility path and no migration is kept.
-
-## Testing Strategy / Acceptance Criteria
-
-L3 NanoCore black-box checks through the App API and the Gateway with a stub MCP server and a deterministic worker:
-- An approval-required call makes no upstream contact, returns `isError: true` with the pending fields, and leaves the Turn `running`; the worker continues and the Turn completes.
-- A grant after the raising Turn completed executes the captured call exactly once, records `approved-executed`, and admits one delivering Turn with trigger `approval-resolution` carrying the decision, the disposition, and the result.
-- A second identical call while pending returns the same request; changed arguments raise a new one.
-- A grant whose Main submission check refuses because the tool left the supply or Policy or credentials changed records a failed execution call with `execution-error`, `upstreamContacted=false` and no usage; refusal before claim records `denied-not-executed` without contact.
-- A crash between claim and finish yields `outcome-unknown` after restart and no second execution.
-- Deny, withdraw, and Thread archive each end or resolve without execution, and the Approval status is `denied`, `withdrawn`, or `expired`; a denial and a withdrawal reach the agent, and an archive closes out without delivering.
-- A membership or Agent authority revocation before the Main submission check produces a failed execution call, no contact, no usage and native `execution-error`. A revocation after the Goal post does not revoke the admitted claim-and-effect transaction. Archive and withdrawal that win before the native claim prevent the effect; neither order executes an ended request or ends a claimed one.
-- A grant whose Main submission re-evaluation refuses because the tool left the supply keeps the decision `granted` and delivers the claimed call as a `tool-call` Item and structured input with `execution-error` and reason `tool-left-supply`, with no contact and no usage.
-- A claim left unfinished by a crash delivers `outcome-unknown` in both the Item and the structured input.
-- An answer while another Turn is running is recorded at once and delivered by the next Turn; two non-terminal Turns never exist.
-- A grant whose execution is still running when another Turn on the Thread terminates is not frozen into the next Turn; the response command admits the delivering Turn after the disposition is recorded.
-- A user message admitted while outcomes are ready carries them and keeps trigger `user-input` from the message; a retry keeps trigger `retry`.
-- A withdrawal is delivered to the agent as an ending; a withdrawal racing a claim either ends the request or loses to the claim, never both.
-- Archiving an idle Thread ends its pending requests and publishes every unpublished undelivered outcome on one completed Core-local Turn written before the archived status, with a `status` Item per ending; no Turn is admitted after archive, and restoring the Thread delivers none of them again.
-- Archive while a claimed execution runs returns `409 request_executing`, and archive while a Turn is non-terminal and something waits to be closed out returns `409 thread_busy`, each with no write to any request on the Thread; archive of a busy Thread with nothing to close out succeeds; archive succeeds after the execution settles, including by restart as `outcome-unknown`.
-- A requesting Agent that loses authority while its Thread is busy has its outcomes closed out on a Core-local Turn at that Turn's terminal barrier, never on the running Turn.
-- More than 16 outcomes waiting at archive are all published on the one closeout Turn.
-- A crash after the record names a publication Turn and before its Items are complete, for a delivering Turn and for a closeout Turn, is completed on that Turn at restart before any command is admitted, never elsewhere; a resolved outcome waiting behind a busy Turn with no Items loads cleanly.
-- A worker delivery refused before native submission, followed by a user message that delivers the same answer, leaves exactly one `user-input-response` Item, on the first Turn, and the second Turn's input references it.
-- A person's command-intent grant is delivered as a decision on a Core-local Turn with no scheduler capacity. The person's governed command then consumes the grant through its effect owner's submission authority check and native claim-and-effect boundary, and an outcome that became ready during the delivering Turn is admitted at its terminal barrier.
-- A person's grant that is invalidated before the person's execute command keeps the grant, records `denied-not-executed` with one invalidation `status` Item on a Core-local Turn, keeps the decision's delivery state under the invalidation publication itself, and the command fails before any effect; this holds when the decision was already delivered and when its delivery was refused after publication, and archive independently closes out an undelivered decision.
-- A delivered person's grant invalidated while another Turn runs loads cleanly while its invalidation publication waits, archive during that wait returns `409 thread_busy`, and its one invalidation `status` Item is published once on a Core-local Turn at that Turn's terminal barrier, or at boot when a crash precedes the barrier.
-- A crash after the record names an invalidation Turn and before its `status` Item is written is completed on that named Turn at restart before any command is admitted.
-- Canonical load of fixtures with two resolutions, the same outcome's Items on two Turns, a decision Item on another Thread, a `frozen` record naming a Turn of another executor, and an Item that says granted for a `pending` record each makes that request inspect-only `recovery_required`, and the rest of the Thread stays usable; a valid fixture with a refused attempt and a later delivery, and one whose resolving receipt has expired, load cleanly.
-- An answer to a resolved or ended request returns `409 request_not_pending`, a changed answer map `409 idempotency_key_conflict`, and a secret question `400 secret_input_not_supported`, each before any write.
-- A currently usable administrator credential may read, resolve, or withdraw another user's pending request. The recorded actor is the administrator, canonical load accepts that actor, and a different ordinary user is denied.
-- Cancelling a Goal ends every open Plan approval and completion request of that Goal as invalidated, with the reason that the Goal was cancelled shown where the request is shown. A granted but unconsumed grant of that Goal is refused with a conflict when consumption is attempted and does not execute.
-- A new Plan proposal ends every older open Plan proposal of the same Goal as invalidated, with the reason that a newer Plan proposal superseded it shown where the request is shown, and leaves the active Plan version in place.
-- The Coordinator is a requester and is not treated as a person. Its accept-completion call becomes a Pending Request whose exact intent is the captured call. After a person or a currently usable administrator grants it, consumption executes that captured call and records the granting actor as the decider. Propose Plan raises the Plan approval. No eleventh operation is added.
-- The seventeenth pending request on one Thread fails `request_limit_reached`.
-- A delivering Turn refused before native submission releases its outcomes, and no second delivering Turn is admitted by that Turn's own barrier.
-- Reload with a pending request on a terminal Turn keeps it pending and decidable.
-
-For each of the four worker runtimes, the code-level acceptance in the change record exercises `work_input_request` and an approval-required call through the real runtime distribution against synthetic providers, including waking an idle AgentSession and a successor that resumes.
-
-## Risks & Mitigations
-
-- **Risk:** requests accumulate without a deadline. **Mitigation:** the per-Thread bound, Action Center age and blocking disclosure, withdrawal, and invalidating events.
-- **Risk:** a grant executes against changed facts. **Mitigation:** full re-evaluation inside the response command, and the approver sees the exact captured call.
-- **Risk:** a delivering Turn fails repeatedly. **Mitigation:** a pre-native refusal does not trigger another delivering Turn from its own barrier.
-- **Risk:** a grant races an invalidating event. **Mitigation:** one compare-and-set on the request records the grant together with its claim or its non-execution for an approval that is not a command-intent approval. A command-intent grant, including one requested by the Coordinator, waits unclaimed until its effect owner consumes it through the effect-submission authority check and native claim-and-effect boundary; an applicable invalidation that wins first prevents the effect.
-
-## Resolved Decisions
-
-- One record for both request kinds, as the durable record of the two existing Turn-coupled owners rather than a ninth owner.
-- An outcome's Items are published once, and closeout on archive is written before the archived status.
-- An outcome is delivered only when final, only by a Turn whose executor is its requester, and an independently admitted Turn keeps its own trigger.
-- Decisions and answers are durable at response time in the record and written as Items on their publication Turn: the first delivering Turn, or the closeout placement when no requester can receive them.
-- The approval status map: `denied`, `withdrawn`, `expired`, and `superseded` reserved.
-- The bound of 16 pending requests per Thread and 16 outcomes per delivering Turn.
-
-## Deferred / Future Work
-
-- A configurable deadline policy.
-- Agent approvers for non-sensitive requests.
-- Agent-initiated withdrawal through MCP `tasks/cancel`, and native MCP Tasks once a pinned client drives them.
-- Secret answers through a Vault-backed input contract.
-
-## Links
-
-- [Approvals And Input Requests Are Pending Tool Calls Delivered As New Turns](../decisions/20260930-pending_tool_calls.md)
-- [Pending Requests Have No Default Deadline And Expire Only By Events](../decisions/20260930-pending_requests_have_no_deadline.md)
-- [AgentSession Is One Active Execution Binding, Independent Of Turns](../decisions/20260929-agent_session_is_an_execution_binding.md)
-- [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md)
-- [Goal Contract Gap Rulings](../decisions/20261002-goal_contract_gap_rulings.md)
+- [Pending tool calls](../decisions/20260930-pending_tool_calls.md) deliver an outcome on a later Turn.
+- [No default deadline](../decisions/20260930-pending_requests_have_no_deadline.md) keeps a request decidable until an owner ends it.
+- [AgentSession binding](../decisions/20260929-agent_session_is_an_execution_binding.md) keeps session lifetime off the Turn.
+- [Exact effect disclosure](../decisions/20261001-approval_exact_effect_disclosure.md) binds a grant to the captured call.
+- [Delivery count bound](../decisions/20261001-pending_delivery_count_bound.md) caps one delivering Turn.
+- [Earlier-version data](../decisions/20260930-earlier_version_data_not_carried.md) is not migrated.
+- [Requested MCP schema at grant](../decisions/20261012-requested_mcp_tool_schema_at_grant.md) compares the retained input schema.
+- [Pending authority at effect submission](../decisions/20261021-pending_authority_at_effect_submission.md) linearizes command-intent consumption.
+- [Goal redesign rulings](../decisions/20261002-goal_redesign_rulings.md) keep Plan and completion on this record.
+- [Goal contract gap rulings](../decisions/20261002-goal_contract_gap_rulings.md) end open Plan and completion requests.
+- [Sandbox capability rulings](../decisions/20261001-sandbox_full_capability_rulings.md) keep a native permission prompt off this record.
+- [Identifier owner declarations](../decisions/20261015-identifier_owner_declarations.md) name the pending call identity.
+- [Identifier association](../decisions/20261015-identifier_association_and_import_boundaries.md) keeps publication and invalidation Turn ids.

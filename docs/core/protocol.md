@@ -192,7 +192,7 @@ Thread, Turn, Item and CapabilityCall records use one schema family with require
 
 Workspace-scoped operation parameters and transport addressing retain their Workspace selectors. Addressing supplies no owner authority. Workspace-only consumers MUST refuse Server-owned records before disclosure or effects. Cross-owner references preserve lineage only; they grant no Workspace membership.
 
-The rc.10 reset admits this single retained shape. No dual reader, converter or migration interprets the retired Workspace record shape. Storage locations and existing creation, update, termination, retry and recovery rules remain with their accepted owners.
+This single retained owner shape admits no dual reader, converter or migration for the retired Workspace record shape. Storage locations and existing creation, update, termination, retry and recovery rules remain with their accepted owners.
 
 Threads support create, list, get, update, resume, and archive semantics. Workspace deletion removes its Threads under the Workspace lifecycle; there is no standalone Thread-delete command.
 
@@ -242,7 +242,7 @@ Those sets classify the statuses above; they are not a second Turn state machine
 
 The core protocol does not define a `cancelling` turn state.
 
-Interrupt and cancellation commands asynchronously request interruption. A Turn whose authorization is withdrawn before completion MAY terminate as `cancelled`; the withdrawing actor is the holder of that Turn's authorization, which includes the owning workflow when it determines the work is superseded, and the specific reason is recorded in an Item rather than encoded as another terminal status; which path produces which terminal state is decided by the owning accepted specification under the [four-terminal-state decision](../decisions/20260921-four_turn_terminal_states.md). A canonical terminal envelope for `cancelled` carries `stopReason=aborted`; worker abort completion produces `interrupted` with the same stop reason. Clients MAY show a local in-flight UI state while waiting for the next authoritative Turn event, but Core emits only the stable Turn states listed above.
+Interrupt and cancellation commands asynchronously request interruption. A producer owner MAY map caller cancellation, or cancellation before backend effects, to `cancelled`. A Turn whose authorization is withdrawn before completion MAY also terminate as `cancelled`; the withdrawing actor is the holder of that Turn's authorization, which includes the owning workflow when it determines the work is superseded, and the specific reason is recorded in an Item rather than encoded as another terminal status. Which path produces which terminal state is decided by the owning accepted specification under the [four-terminal-state decision](../decisions/20260921-four_turn_terminal_states.md). Worker abort completion after execution maps to `interrupted`. A canonical terminal envelope for `cancelled` or `interrupted` carries `stopReason=aborted`. That event reason is not a field of the durable Turn status. Clients MAY show a local in-flight UI state while waiting for the next authoritative Turn event, but Core emits only the stable Turn states listed above.
 
 New input should use the same core input semantics across web UI, desktop UI, chat channels, and future transports.
 
@@ -260,7 +260,7 @@ The two categories have deliberately different equality rules and MUST NOT be me
 
 ### Turn Interruption
 
-Interruption is append-only. Every finalized Item remains unchanged, the Turn is terminalized per its owning specification as `interrupted` or, when that owner maps withdrawn authorization to `cancelled`, as `cancelled`, and no Item or effect is rolled back, rewritten, or deleted. The Item in flight is finalized from content already accumulated by Core and marked truncated rather than discarded.
+Interruption is append-only. Every finalized Item remains unchanged, the Turn is terminalized per its owning specification as `interrupted` or, when that owner maps caller cancellation, cancellation before backend effects, or withdrawn authorization to `cancelled`, as `cancelled`, and no Item or effect is rolled back, rewritten, or deleted. The Item in flight is finalized from content already accumulated by Core and marked truncated rather than discarded.
 
 For a media channel, truncation records what Core generated, not what the user heard, saw, or otherwise perceived. The durable record MUST NOT assert delivery beyond the channel's own authoritative evidence.
 

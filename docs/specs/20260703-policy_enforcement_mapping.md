@@ -1,695 +1,547 @@
 ---
 status: Accepted
-implementation: Partial
 kind: mechanism
-updated: 2026-10-18
+implementation: Partial
 aspect: policy
 ---
+
 # Policy Enforcement Mapping
 
-## Personal Scope Projection
-
-Personal scope and Thread visibility project through the same Policy Kernel. `20260909-thread_visibility_and_sharing.md` supplies creation-fixed private/workspace classification and private owner; current Workspace membership resolves shared audience. `20260909-personal_memory_and_knowledge_learning.md` supplies explicit User/Workspace/Server page scope and retained source restrictions. Administration requires current target mutation authority and exact human confirmation; User Memory requires exact current user, Server Knowledge requires deployment administration, and neither grants Workspace content access. Tool membership stays entry-path/binding determined; a currently unauthorized caller receives a typed refusal. AI assessments and past Memory never become grant facts.
-
-## Summary
-
-This spec maps the OpenKit policy kernel into NanoCore product enforcement.
-
-The clean target is one policy truth and many enforcement points. `@openkit/policy-kernel` owns standard-aligned NGAC subset authorization semantics. NanoCore maps product objects into NGAC facts, records decisions, creates approval gates when policy requires them, and compiles derived backend policy for OpenShell or future runtimes.
-
-## Owns
-
-- Product fact vocabulary for mapping NanoCore subjects, actions, resources, and context into policy evaluation.
-- The shared versioned Policy statements, binding and delegation projection, Policy review/update path, and retained decision envelope.
-- The extension of the existing operation registry to Core-mediated non-API operations and their stages.
-- `PermissionDecision` as the durable bridge between policy evaluation, product workflow, approvals, audit, and backend policy derivation.
-- Mapping policy decisions to product behavior, approval gates, Action Center rows, launch blocking, degraded readiness, and fail-closed errors.
-- Deriving runtime backend policy from canonical NanoCore decisions without making backend policy canonical.
-- Current implementation projection across `@openkit/policy-kernel`, config policy, AEP policy blocks, gateway policy, structured OpenShell policy, and approval lifecycle records.
-
-## Does Not Own
-
-- The internal policy-kernel graph algorithm.
-- Authentication, identity session lifecycle, or membership storage.
-- Workspace invitation, owner-transfer, and active-membership lifecycle.
-- Approval UI copy or Action Center UI layout.
-- Sandbox implementation details beyond derived policy input.
-- Vault secret storage or credential injection mechanics.
-- Audit event schema outside permission-decision linkage.
-
-## Core References
-
-- `docs/core/policy.md`
-- `docs/core/identity.md`
-- `docs/core/evidence.md`
-- `docs/core/sandbox.md`
-- `docs/core/mediation.md`
-- `docs/core/vault.md`
-- `docs/core/agent-session.md`
-
-## Goals
-
-- Define the subject, action, resource, and context vocabulary used by NanoCore.
-- Define `PermissionDecision` as the durable bridge between policy and product workflow.
-- Map policy outcomes to allow, deny, approval, escalation, degraded launch, or blocked launch.
-- Define how backend enforcement policy is derived from NanoCore decisions.
-- Keep approval, sandbox, capability, vault, and audit boundaries distinct.
-
-## Non-goals
-
-- Do not change the policy kernel theory or package design in this spec.
-- Do not redefine NGAC concepts through NanoCore product vocabulary.
-- Do not make OpenShell policy artifacts canonical.
-- Do not define UI copy for policy decisions.
-- Do not add organizations, tenants, custom roles, groups, or a second RBAC engine; the target projects current active membership into the Policy Kernel, with the full registered Workspace operation set and no per-Light-App ACL.
-- Runtime-native approval prompts are not part of the permission model: worker runtimes run without them inside the Sandbox, and a native request that still arrives is refused.
-
-## Policy Fact Vocabulary
-
-NanoCore product vocabulary is adapter input, not kernel truth. Subjects, actions, resources, and context MUST be translated into the standard-aligned NGAC subset owned by `docs/specs/20260629-openkit_policy_model.md`. Product actions may remain stable API names, but the policy-kernel request must evaluate the required NGAC access rights and restrictions rather than treating product actions as association rights.
-
-[Policy](../core/policy.md#subject) owns principal and actor semantics. Agent principals use their own human-domain-derived grants; a User-principal call by an agent intersects User rights with agent restrictions. Direct human calls record no process when none exists; agent work records its actual Turn. These identities remain distinct in the retained subject below.
-
-Subjects:
-
-- user
-- service identity
-- automation
-- agent
-- agent profile
-- AgentSession
-- worker shim
-- external integration
-
-Actions:
-
-- call app API
-- invoke an Agent Skill operation
-- invoke a worker-supplied tool
-- manage workspace membership
-- transfer workspace ownership
-- start worker session
-- materialize workspace
-- read workspace file
-- propose workspace change
-- apply workspace change
-- call capability
-- call LLM provider
-- call external API
-- use vault reference
-- inject secret
-- read knowledge
-- propose knowledge change
-- import, introduce, or create an artifact through its owning operation
-- read artifact
-- approve request
-- change policy
+This specification owns how NanoCore maps Policy decisions into product enforcement, mediation, and retained decision records.
 
-Resources:
+## Scope
 
-- server
-- user
-- workspace
-- thread
-- turn
-- item
-- artifact
-- knowledge page
-- source
-- context package
-- file path
-- provider instance
-- capability catalog entry
-- MCP tool
-- vault reference
-- agent manifest
-- AEP snapshot
-- sandbox backend
-- runtime pool
+This specification owns product enforcement of the Policy Kernel, including assignments, interception, and decision records.
 
-Context:
+It does not own:
 
-- core mode
-- workspace membership status and required lifecycle identity
-- AgentSession state
-- package snapshot id
-- requested runtime placement
-- backend capability summary
-- path sensitivity
-- knowledge sensitivity
-- provider category
-- vault grant lifetime
-- current approval state
-- budget state
-- request origin
-- time and retention class
+- Kernel graph semantics. [OpenKit Policy Model](20260629-openkit_policy_model.md) owns them.
+- Authentication and membership storage. [Identity](../core/identity.md) owns them.
+- Approval presentation. The pending-request owner retains it.
+- Secret bytes. [Vault](../core/vault.md) owns them.
+- Sandbox enforcement. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns it.
 
-## Unified Policy Statements And Revisions
+Core: [Policy](../core/policy.md), [Mediation](../core/mediation.md).
 
-[Policy](../core/policy.md#policy-statements-and-administration) owns the shared authority and administration rules. Permission, binding, and envelope/delegation statements use one versioned Policy store and snapshot. A revision MUST identify its author, delegation source, scope, lifetime, and activation. One snapshot pins all three statement kinds for an evaluation. [The accepted decision](../decisions/20261018-unified_mediation_and_policy.md) records the reason for this shared base.
+Personal/Thread scope uses same Kernel; fixed audience/current membership; exact User Memory and Server administration; no authority from past Memory or assessments.
 
-A binding MUST retain:
+Kernel owns NGAC semantics; NanoCore adapter/decision/approval/backend projection; authentication, lifecycle, UI and secret mechanisms retain named owners; no second RBAC/org/tenant/per-App ACL; refuse runtime-native approval. Equal member baseline excludes Server, finite maintenance and administrator-only Workspace export under the accepted export decision. Ordinary membership supplies only the member operation set. That set excludes Server operations, finite maintenance, and Workspace export. Administrator eligibility is separate and current.
 
-- The operation/stage selector and any subject, resource, crossing, or effect-attribute conditions.
-- The scope and separate lifetime attribute, including its anchor and optional expiry/use bounds.
-- The mode, participant identity and version, and binding version.
-- The permitted input disclosure scope and typed input/output contract.
-- Explicit ordering, failure behavior, and shadow or active state.
-- The real author, responsible user, and delegation or human-envelope references.
+Baseline adds no generic authored graph, role table or arbitrary operation blocking; finite maintenance/resource restrictions retain their existing owners.
 
-Binding creation, replacement, narrowing, activation, and revocation use `policy.write`. Its invocation cannot derive disclosure authority from participant availability or Tool presence. Validation MUST check the proposed input scope and participant grant before committing the binding. At invocation, Core MUST recheck current disclosure and acting authority with the Kernel only. A participant's investigative calls also use Kernel-only checks with its own grant; neither path permits another binding or recursive approval. The owning human's root decision terminates the authority chain.
+No separate assignment store/evaluator/receipt/scope registry; exact native constraints, Agent selector and last-revoke boundary carry only their necessary authority.
 
-Permission statements include Gateway Tool allow, deny, and approval-required rules; these use the ordinary Kernel check at dispatch. MCP Tool permissions select the exact Workspace, server and Tool only in `scope.resources` through the `mcp-tool` resource, with an ordinary grant; no second Tool-name selector or Tool-rule grant kind exists. Existing finite Worker Git-read assignments retain their exact authority and application boundary below; this design does not widen that exception.
+First resource restriction is shared Thread; other families need owner mapping; private/audience/source and secret/external-effect constraints cannot be shared away by resource grant.
 
-The first active MCP permission subset uses human-authored ordinary `prohibit` and `require_approval` statements with exact Workspace-qualified Tool selectors and a Workspace lifetime anchor, without finite uses. The full existing Policy candidate, human confirmation and Policy revision CAS remain the only authoring path. Restrictive `prohibit` and `require_approval` conditions may name an unobserved Tool before its first exposure. Preparation records a server-computed warning with the exact Workspace, server and Tool name in the confirmed candidate; it grants no permission. Existing validation warning plans carry the same warning text. Application revalidates the statements, not equality between retained warnings and current observations. A future admitted `allow` effect still requires an observed name. No condition pins a schema version. Existing statements for a removed Tool simply stop matching it. Current author authority, statement lifetime and Policy revision are rechecked before release.
+Bare/source subject refs grant no target membership/Agent/admin identity; import absent, no new import authority/approval/recovery store.
 
-The only admitted human-authored ordinary `allow` is the Gateway refresh delegation allowance (#604). It names exactly `vault.delegate-refresh`, one Workspace container resource, human subjects only and a Workspace lifetime anchor without finite uses. Every other human `allow` refuses. The existing candidate path requires its author to hold the right, so in practice the author is a deployment administrator. It extends nothing else and is not a stored Kernel association. At `vault.binding-deliver` the Vault owner passes the current allowances to the Kernel as a delivery fact for `vault.delegate-refresh`. An allowance is current when it is active, its `notAfter` has not passed and its author still holds the right. The Kernel grants a member the right only when an allowance names them. It also adds a mandatory delegated-refresh policy class, so an administrator likewise needs an allowance naming them. The fact applies to the requester and to every actual issuer of an Integration credential. The existing owner, credential and issuer intersection therefore still bounds the right, and a failed delegation evaluation is never replaced by `vault.use`. The digest of the deciding facts is part of the rechecked facts. Goal domains may list the right but never supply it.
+### Finite Worker Git-Read Maintenance Assignment
 
-Selected `allowedTools` is a supply boundary, not a new allow statement requirement. Discovery hides current prohibitions; direct, built-in and captured calls cannot bypass them. I16 evaluates the actual mandatory Kernel last and retains its prohibition result. Human conditions require the existing human Pending response and cannot be satisfied by an agent allow. Captured calls require their current native mediation readback, without any fallback to retired binding lists. Server-origin selectors remain deferred.
+Finite Git assignment only current responsible admin's private administration entry and registered Server Agent, purpose git-read/action administration.configuration.apply; no new agent principal/credential/generic language/Workspace delegation.
 
-## Point And Evaluation Contract
+Goal and gate authority consumers activate only their bounded subset; Plan/domain one human approval; storage lease no active Policy family or inferred schema authority.
 
-The existing interception owner selects bindings by canonical operation id and stage from the unified operation definition. MCP Tool dispatch and Vault binding delivery, replacement, revocation and the existing injection-plan/receipt inspection operations consume that same pipeline. Native owners supply an exact existing Policy resource, reference-only input summary, current authority revision and the actual final Kernel evaluation; material never enters a proposal or participant invocation. MCP-specific Tool conditions remain with the MCP consumer. Vault operations use the existing exact Workspace container and the primary action from their operation definition: `vault.use` for binding effects and the original `vault.admin` for inspection. Worker inspection is bounded by actual AgentSession/Thread, immutable AEP-selected declaration and exact plan/receipt lineage; Coordinator inspection and effects are bounded by the current Goal active-Plan Task audience. Revoked history remains inspectable without material resolution. Their supported subset is deterministic deciding gate (allow/deny, error on failure) and completed observation. Candidate preparation, human apply and loaded admission reject unsupported stage/mode/participant/failure combinations before activation. Awaited participant work requires fresh credential, Thread, Goal/Task, grant, material-generation and placement-lineage checks before the effect. Completion observation cannot veto a known result or imply a retry. Default automatic callers use these same operations, checks, PermissionDecision and Audit owners.
+Pure Kernel subset, separate config merge catalog, AEP snapshot requirement, critical boot minimum allow/restriction self-check and durable linked decisions retain existing owners.
 
-[Mediation](../core/mediation.md#enforcement-points) owns the point dimensions and pipeline. Retain the actual registered operation ID and stage once; derive `<operation>@<stage>` for the point identifier, `PermissionDecision.enforcementPoint` and display. Do not retain a second point string or create a point registry. The retained stage is exactly `propose`, `decide`, `commit`, or `completed`.
+Backend material derives approved decision/AEP/grant/catalog/materialization/containment/placement intent; evidence not canonical Policy, existing owners retain compiled artifact lifecycle.
 
-Extend the existing [Operation Definition](20261002-operation_definition.md) registry to Core-mediated Tool dispatch, model requests, context delivery, and result ingress. A non-API entry does not acquire a public endpoint or another primary admission by registration. It keeps the exact owning effect, target, audience, and required access-right checks. The existing operation-to-access-right mapping below remains the unique primary mapping; a new family still requires its owning registration before publication.
+Product result spellings/approval linkage/native derived material keep existing Core/Protocol owners and never replace Kernel.
 
-The operation's built-in crossing attributes are `admission`, `disclosure`, `dispatch`, `ingress`, `mutation`, `administration`, and `decision`. Policy/delegation/binding/membership/credential-grant changes are administration crossings. Crossing attributes remain separate from mutation posture, static effect class, sensitivity, dynamic risk, and authorization. They MUST NOT supply an access right.
+New authorization family needs owning registry update; pure Kernel stays synchronous allow/deny; runtime-native prompts always refused, no second permission mechanism.
 
-### Proposal, Decision, Commit, And Completion
+Consolidation/interception reuses existing effect/content/Policy/Pending/Knowledge/Skill/runtime owners; no plugin loader/workflow runner/retry ledger/transcript/graph authority; binary Knowledge separate.
 
-At propose, Core MUST construct the canonical subject, operation, resource, payload reference, and context, including authoritative authorization sources. It pins the Policy revision, binding versions, and input versions. The admitted post-transform proposal has a digest. Original and replacement references remain with their safe existing content owners.
+Glue-data use is Meta-Skill recommendation for current MVP, not Kernel validation limit or function cap.
 
-At decide, Core runs the Permissions pipeline over that admitted proposal. Transforms run in explicit order. Advice may run in parallel and becomes attributed context for the later gates and Kernel; it never grants. Gates run in explicit order. The mandatory final Kernel remains pure and synchronous; the orchestrating Core owner handles participant invocation, deadlines, and circuits. No participant result can skip that final evaluation or override the closed result precedence. Before commit, changed input or Policy/authorization/binding revisions invalidate the admitted evaluation and require a fresh pipeline.
+Canonical OKF Claims/Observations/conflicts, app semantic prose labels and existing empty AEP instructions do not imply private-content migration or competing automatic Knowledge authority.
 
-At commit, only the final combined `allow` permits the owner's effect and declared commit obligations. Credential injection is Core-only and occurs after the final allow, bound to the approved target, account, and action. A participant cannot inspect secret values or produce an injection grant. No new cross-domain atomicity, effect receipt, or retry lifecycle is introduced.
+Current naming is canonical Work names projected mechanically to MCP; current hyphenated capability IDs stay owner-defined, no naming aliases.
 
-At completed, observe may record the outcome without veto or mutation. Returning external content enters its own ingress operation before any separate disclosure. A wrapper that calls several Tools retains each nested dispatch check; authorizing the wrapper does not authorize its nested effects.
+Retained meaning/layout change requires explicit existing pre-stable reset owner, no conversion/dual writes/automatic reset; document authorizes no deployment action.
 
-Each operation declares allowed modes and provider kinds. Boot admission and the centralized Workspace resolver accept no participant bindings. Participant invocation and investigative calls accept none. The existing transient resolver behavior below remains unchanged, including no per-request durable decision.
+Keep MCP list disclosure/call effect, retrieval/package budget, boot/Gateway/governed decision, and approval/question/Plan/channel Pending owners distinct; no mandatory confidentiality check removed by consolidation.
 
-### Participant Results And Failure
-
-A gate's valid result uses the existing closed `PermissionDecision` result set. Core maps the final low-level Kernel result through the owning product rules, then combines mandatory product results under the existing precedence below. Only the defined Goal missing-grant case maps `not_granted` to escalation; a prohibition never does. An agent approver's typed output is allow, deny, or escalate-to-human, plus risk, authorization assessment, and rationale. Core maps escalation to `require_escalation`; the agent cannot invent another result or impersonate a human. Shadow output is retained evidence without decisive authority. Activation requires the owning human's separate bounded `policy.write` after inspecting shadow evidence.
-
-Timeout, malformed output, unavailable provider, refusal to perform the job, or an open circuit follows the binding's declared failure behavior:
-
-| Failure behavior | Product result and limit |
-| --- | --- |
-| Escalate to human, the default | `require_escalation` through the existing Pending Request path. |
-| Continue | Neutral `not_applicable`, permitted only for a non-decisive step. It grants nothing. |
-| Error | `error`; block the effect and retain the failure. |
-
-A failed participant MUST NOT be recorded as a substantive deny or an inferred allow. Missing mandatory authorization facts remain `error` under the existing result contract. A required gate without a valid result cannot release an effect. Retries stay within one bounded invocation deadline; availability circuits remain distinct from any Turn-level substantive-denial circuit. Restart loads current Policy and preserves evidence without replaying participant effects or restoring old authority.
-
-### Additive I16 Agent Gate
-
-The native agent subset is only `mcp.call-tool@decide` in gate mode. It does not activate advice, transforms, automatic Policy review, delegated administration or an agent's general Tool authority. Without an agent gate, the existing deterministic and empty paths retain identical decision and Audit bytes and effects.
-
-An `agent-principal` statement lives in the existing Server Policy collection. Its common author, authority, scope, state and lifetime retain their existing meanings. The authenticated human candidate writer stamps the creator on creation and preserves it on edits. Only explicit human confirmation can publish a new declaration or activation. Each active agent identity is unique. Its responsibility reference reaches either its declared human or another current declaration with the same terminal human. Missing, inactive, expired, cyclic or out-of-domain links supply no agent authority. No statement outlives its current author. Finite uses on an identity declaration remain inactive; finite binding uses keep the existing final decision consumption owner.
-
-| Element | Writer and reader or validator | Necessity |
-| --- | --- | --- |
-| `agentId` | Human candidate writer; native binding lookup and unique-identity validator. | A binding must identify exactly one accountable principal. |
-| `creator` | Native candidate preparation stamps the creating human and preserves it; later preparation validates preservation. | Current authorship must not rewrite creation attribution. |
-| `responsibleHumanId` | Human-confirmed declaration; native current-authority evaluation and gate decision writer. | The agent must resolve to a specific currently authorized human. |
-| `responsibility` | Human-confirmed declaration; native finite acyclic traversal and scope/lifetime validator. | An intermediate agent cannot bypass the terminal human or its own domain. |
-| Agent participant discriminator and version | Human-confirmed binding; I16 dispatch and exact declaration-digest validator. | Deterministic injection and an unrelated identity version cannot act as an agent gate. |
-
-The binding's agent participant id names `agentId`; its version pins the exact declaration digest. Preparation can replace a submitted reference to that same submitted declaration with its server-stamped digest in the candidate preview. It cannot repin an unrelated or unchanged binding. Declaration scope limits the agent's own subject, actions and resources; the human's rights are independently mandatory and are never inherited. Input disclosure is admitted by the existing human Policy writer and rechecked by the Kernel-only invocation boundary. This first subset exposes only the safe I16 summary and the result Tool, with no investigative Tools or raw Tool arguments. The bounded internal-agent loop uses the existing Gateway and the actual admitted Turn; it invents no Session, Turn or execution store.
-
-An agent result contains `decision: allow | deny | escalate` and nonempty bounded `risk`, `authorizationAssessment` and `rationale` text. These assessments supply no authority and remain untrusted content. Existing invocation evidence retains the output digest, not assessment bodies. The agent gate decision retains the actual agent principal, actor, process and resolved human; the final decision retains the original caller and logical proposal. The current chain and pinned declaration are checked before disclosure and again before release. Missing mandatory authority produces `error`; participant unavailability or invalid output follows the declared failure, with human escalation as the default. Kernel evaluation remains last and mandatory. An agent allow cannot satisfy a human-only requirement.
-
-An active agent binding must first have the same shadow binding and its completed gate evidence in the existing PermissionDecision owner. The separate human candidate/apply boundary verifies that evidence before activation; it adds no activation receipt or store. Shadow results cannot decide the Tool effect. Existing captured Pending Requests own human escalation and response-time reevaluation.
-
-## Policy Review And Update
-
-The pre-v0.1.0 `policy.write` administration path MUST carry the same governed proposal, decision, and commit boundary as other effects. The proposal retains the proposer, rationale, exact proposed collection with its scope and lifetime, and expected Policy revision. Compute its diff and narrowing/widening classification from the pinned candidate and base; do not retain them as independent facts. Validation MUST check the closed required shape, conflicts, current author/delegation authority, input disclosure, and whether the change narrows or widens authority.
-
-The deciding authority follows [Policy](../core/policy.md#policy-statements-and-administration): an authorized author may narrow directly; a delegated supervising agent may widen within its envelope; the owning human decides outside-envelope changes, envelope/delegation changes, and agent-approver activation. Observe and advise additions count as disclosure widening. A Worker may submit only a suggestion, retained as a proposal through the existing candidate owner. No principal approves a change that widens its own authority.
-
-Agent-principal creation and domain-grant administration MUST retain the creator, responsible human, and responsibility-chain references. Validation and evaluation use the [Policy accountability contract](../core/policy.md#subject), including agent-creator propagation, explicit human assignment, and finite acyclic termination. The current terminal human's domain authority is a mandatory evaluation fact; missing or invalid chain facts suspend the agent's grants until human reassignment. This does not map the responsible human's rights into the agent's grants.
-
-The decision MUST retain the approver or delegated author and validation outcome. The commit MUST identify the activation revision. Proposal saved, validation failed, commit failed, and active revision are distinct outcomes. Saving a proposal does not activate it. Stale expected revisions, conflicting scope, revoked delegation, or missing mandatory facts block activation. After a lost response or restart, inspect the exact recorded outcome and current revision before a new authorized request; an unknown write MUST NOT be repeated automatically.
-
-Impact simulation against recent decisions and open Pending Requests is later work. It is not a prerequisite for this accepted review path. Meta-Skill Gateway-rule proposals use this same path rather than applying model suggestions directly.
-
-### Goal Domain And Container Projection
-
-Plan approval MUST retain an envelope/delegation statement for the Goal domain, naming its Workers, resources, approved rights, responsible human, and administering Coordinator. The Task Worker receives that envelope intersected with its Task-card resources. The Coordinator narrows by exception; inheritance does not expand the approved domain.
-
-Within the envelope, a missing-grant reason `not_granted` maps to `require_escalation` addressed to the Coordinator. The Coordinator may extend the Task or Goal container within current delegation; Core then reruns the full current evaluation. A matching prohibition remains `prohibited` and blocks. A distinct `require_approval` condition remains required. Outside-envelope requests go to the owning human for a Plan revision. A Coordinator's grant is Policy administration, not an agent-approver decision or a replacement for a human-only gate.
-
-The native Goal/Task projection marks only a missing Task association inside the current admitted Goal domain while the current responsible-human Kernel allows. Its transient destination names that domain's Workspace, Goal and Coordinator. The actual Kernel evaluation remains last and its denial stays in the existing PermissionDecision evidence. An unresolved human-only approval or participant failure keeps its existing result and destination instead of being redirected to the Coordinator. Missing or contradictory current facts fail closed. The destination authorizes no dispatch, consumes no finite use and creates no retained field or store; routing and wake-up remain with the Goal owner and require a new full current evaluation after any grant.
-
-[Policy](../core/policy.md#delegated-goal-domain-and-statement-lifetime) owns lifetime semantics. The retained attribute is `lifetime = { anchor, notAfter?, uses? }`; `anchor` references any container, not a closed lifetime enum. Scope and lifetime remain independent: Worker W's Tool X grant may be anchored on Task T or bounded by time or uses. An unknown required anchor or bound fails closed under the existing authority-bearing shape rule.
-
-Anchor closure, `notAfter`, use exhaustion, or loss of the author's authority ends the statement. `uses: 1` means once, consumed atomically by the allowing decision; that one approval creates no Policy change. An anchor on the scope owner with neither optional bound means persistent authority. A Coordinator's chosen lifetime MUST remain within its Goal domain and end with it at the latest. Longer authority needs the domain owner's human-approved promotion. These are authorization predicates, not cleanup jobs.
-
-The native `GoalDomainPolicyService.administer` writer receives the actual Coordinator Turn separately from the affected Task's scheduler lineage and an expected Policy revision. It MUST reread the live Coordinator, canonical Task and current jointly approved Goal domain, including the actual human credentials. It may publish only an ordinary allow for that Task Worker within the Goal's approved actions and resources. The statement retains the Coordinator agent as author and the exact existing delegation reference as authority. A Goal, Task Thread or affected Turn anchor MUST belong to that domain; expiry and use bounds MUST NOT exceed it. This writer cannot change the root delegation, grant the Coordinator rights, activate a participant, or create another grant kind. It uses the existing configuration CAS, reload, PermissionDecision and Audit owners, with no second human apply or grant store. The existing Policy proposal shape carries rationale and validation; a recorded allow does not prove that the file commit or reload succeeded.
-
-The immutable typed Task resources remain the baseline association. A current admitted delegated permission may add an alternative association only in the existing Task Policy class; the approved Goal class and current human Kernel remain mandatory. Every read MUST check the exact root reference, current credentials, Task identity and anchor, expiry and remaining uses. Root withdrawal or replacement ends dependent grants without a cleanup job. An unused matching grant MUST NOT consume a use when the original Task association already permits the effect. Required finite uses feed the existing final PermissionDecision/Audit transaction. Same-effect last-use readback recognizes only its exact final decision and linked Audit, while retaining all current authority checks; it grants no later call. The existing authorization revision includes the selected permission references so a grant change invalidates an earlier assessment.
-
-## V1 Product Operation And Access-Right Registry
-
-The following registry is the unique owner of the closed V1 product-operation to access-right mapping for centralized Workspace authorization and the governed effects already named by current specifications. A concrete public operation maps to exactly one primary product operation below. Operation identifiers and access-right identifiers are intentionally distinct. Active-membership associations are owned separately by `docs/specs/20260715-multi_user_workspace_system.md` and may narrow through current Policy, credentials, gate eligibility, and lifecycle facts. Earlier fixed-role terminology in concrete runtime projections identifies the pre-cutover implementation, not an additional target ceiling.
-
-This specification keeps this registry. That one primary product operation is the primary policy operation named by [Operation Definition](20261002-operation_definition.md). The access right is the right this table assigns to that product operation. Invocation performs one primary admission through that primary policy operation. This specification's existing enforcement decides that admission. This specification does not define a second primary admission for the same call. Deeper effect checks already named here, including `runtime.launch`, `vault.use`, and `network.egress`, stay with their effect owners. Named Workspace Resource Access below activates the first resource-scoped restriction slice for shared Threads. Permission-based blocking for other resource families remains deferred. An owner's or administrator's choice to keep users from an operation through the Policy Kernel uses that named slice where applicable. The approved unified Policy path adds the binding, review, and delegated-domain contracts above. Routing every existing operation through that path follows the rollout below. Existing deny, approval, and launch-blocking outcomes remain mandatory throughout that rollout.
-
-| Product operation | Required access right | Operation boundary |
-| --- | --- | --- |
-| `api.call` | `ar:core-api-call` | Boot and deployment API calls. |
-| `administration.configuration.apply` | `ar:worker-git-read-maintenance-apply` | Additional finite delegated Git-read effect check for a registered Server Agent; ordinary API admission or Workspace membership cannot supply it. |
-| `workspace.read` | `ar:workspace-read` | Ordinary Workspace content and collection reads. |
-| `workspace.write` | `ar:workspace-write` | Ordinary Workspace content mutation. |
-| `thread.read` | `ar:thread-read` | Thread, Turn-status, and event reads. |
-| `turn.run` | `ar:turn-run` | Turn start, steering, interrupt, and retry admission. |
-| `artifact.read` | `ar:artifact-read` | Artifact metadata, content, and review-list reads. |
-| `artifact.write` | `ar:artifact-write` | Artifact import, introduction, and accepted mutation. |
-| `review.apply` | `ar:review-apply` | Human review decisions; exact eligibility remains with the durable review owner. |
-| `approval.respond` | `ar:approval-respond` | Human Approval response; exact eligibility remains with the durable Approval owner. |
-| `knowledge.read` | `ar:knowledge-read` | Knowledge reads and retrieval. |
-| `knowledge.write` | `ar:knowledge-write` | Knowledge authority mutation. |
-| `knowledge.propose` | `ar:knowledge-propose` | Knowledge proposal creation. |
-| `audit.read` | `ar:audit-read` | Audit, usage, evidence, backend-handle, and permission-decision readback. |
-| `workspace.configure` | `ar:workspace-configure` | Repository, data-source, agent-supply, and Workspace policy configuration; Vault is excluded. |
-| `workspace.export` | `ar:workspace-export` | Portable Workspace export. |
-| `workspace.lifecycle` | `ar:workspace-lifecycle` | Archive, delete, and ordinary ownership transfer. |
-| `membership.manage` | `ar:membership-manage` | Invitation creation or revocation and non-owner membership access or removal; ownership transfer is excluded. |
-| `invitation.respond` | `ar:invitation-respond` | List the authenticated user's own invitations and accept or decline one exact bound invitation before membership exists. |
-| `workspace.leave` | `ar:workspace-leave` | Active non-owner self-removal. |
-| `deployment.recover` | `ar:deployment-recover` | Explicit deployment-administrator recovery only; never ordinary content access. |
-| `vault.use` | `ar:vault-use` | Target-issued Vault grant use. |
-| `vault.delegate-refresh` | `ar:vault-delegate-refresh` | Additional deeper effect check when a `backend-provider` binding delivery would hand refresh-family material to a Gateway placement. Ordinary Workspace membership never supplies it. Deployment administrators hold it to author and revalidate the authored allowance. Delivery requires a current allowance naming each evaluated human, administrators included. It is evaluated beside `vault.use`, never instead of it. |
-| `vault.admin` | `ar:vault-admin` | Workspace Vault reference list/rebind and non-secret grant, injection-plan, and injection-receipt listing. It does not authorize a grant issue/revoke surface. |
-| `tool.use` | `ar:tool-use` | Governed tool invocation. |
-| `tool.grant` | `ar:tool-grant` | Tool or capability grant administration. |
-| `runtime.launch` | `ar:runtime-launch` | Governed worker launch. |
-| `network.egress` | `ar:network-egress` | Governed external network access. |
-| `llm.gateway.use` | `ar:llm-gateway-use` | Public LLM Gateway use; requested Workspace scope and credential limits remain mandatory. |
-
-A handler may enforce a durable lifecycle precondition such as exact invitee, responsible user, expected revision, or winning Approval claimant, but it must not define a competing role table. Ownership transfer maps only to `workspace.lifecycle`; the existing Workspace Vault reference list/rebind and `VaultGrant`, `VaultInjectionPlan`, and `VaultInjectionReceipt` metadata lists map only to `vault.admin`; `VaultUse` and other audit, usage, evidence, backend-handle, and permission-decision reads map only to `audit.read`. None of those read permissions turns evidence into injection authority.
-
-Mutation posture is separate from the product operation. It describes whether a public request may change protected product state or cause an external effect and is the authority for `workspace-readonly` token enforcement. It MUST NOT be inferred from the HTTP method. Incidental redacted audit or usage evidence does not turn an otherwise read-only operation into a content mutation, while an operation such as Knowledge retrieval may be marked mutating when its accepted contract updates authoritative indexes or traces.
-
-Governed metadata reads, user-scoped invitation discovery and response, self-leave, and deployment recovery demonstrate why neither HTTP method nor a generic `workspace.read` or `workspace.write` split is sufficient. Workspace-member-visible member and invitation collections map to `membership.manage`; the authenticated invitee's own invitation collection and exact accept or decline map to `invitation.respond`. A new product-operation family or access-right identifier requires an owning-spec update before it is added to runtime metadata. A route-level authorization allow never substitutes for a deeper effect check such as `runtime.launch`, `vault.use`, or `network.egress`. Hosted vendor tool admission uses the existing `tool.use` and `ar:tool-use` mapping, with independent Vault and current-authority checks. This specification adds no GitHub-specific right.
-
-`integrity.workspace.check` uses the existing product operation `audit.read` and the existing access right `ar:audit-read`. It adds no product operation, no access right, and no registry row. The caller must also be a currently usable administrator. A Workspace member that is not an administrator is rejected. Every other caller is rejected before evaluation. [Product Integrity Check](20261012-product_integrity_check.md) owns the operation.
-
-### Primary User, Server And Workspace Admission
-
-Every authenticated product operation consumes its declared primary product operation through the existing Policy Kernel after current identity and scope eligibility are established. Eligibility alone is not the final decision. The adapter projects the current actor, admitted scope and registered operation-to-access-right mapping into immutable NGAC facts. It grants no access in another scope. An unknown operation, a missing mandatory fact, a kernel denial or an evaluation failure blocks admission before the domain handler, using the existing non-enumerating access-denial result. Ordinary admission remains transient and creates no PermissionDecision row, Approval, Action Center row or new workflow.
-
-User admission first requires the current active canonical user and its accepted local, session or currently usable administrator credential. Its Policy target is that User scope; exact invitation, recovery, selected resource and target-owner checks remain with their existing owners. Server admission first requires current deployment-administrator authority; its separate Server Policy association supplies the declared registered right without deriving deployment authority from Workspace membership. The actorless bootstrap-secret operation retains its exclusive authentication and does not manufacture an authenticated User or administrator for kernel admission.
-
-`vault.grant-withdraw` uses the existing `vault.admin` primary operation at the User target. Its exact User-owned reference and linked Workspace grant are effect-owner checks, repeated under the existing native writer before revocation. The User PermissionDecision and its linked Audit remain in the actual primary User's database, including when a currently usable administrator acts on another User's reference. Selected reference ownership never replaces the caller. The explicit destination Workspace mutation fence supplies no membership or Workspace content authority. This fixed User operation does not admit Worker or Coordinator entry; their governed Workspace operations retain their actual execution lineage and existing consent or grant requirements. [Vault Secret Injection](20260703-vault_secret_injection.md#harness-subscription-logins) owns withdrawal and runtime closure.
-
-Server admission uses the declared Server target's optional `family`: `administration`, `mcp` or `knowledge`. Omission selects ordinary administration, including existing Server operations with another owned target strategy; an unknown family denies. Each request projects its current administrator User into `ua:server-administrator` under `pc:server`, and its family object `object:server:<family>` into `oa:server-<family>`. The corresponding association supplies existing registered access rights: administration retains the admitted Server baseline, MCP uses `api.call`, and Knowledge uses `knowledge.read`, `knowledge.write`, `review.apply`, `thread.read` and `turn.run`. The separate finite delegated-maintenance operation is excluded. Existing mutation declarations distinguish read and write effects; the adapter adds no right, role, authored assignment or persisted record. No operation-name prefix or caller input selects a family. Family declarations become effective with their owning operation registration, not with an unregistered prepared handler.
-
-Current local administration, a usable presented administrator bearer and an administrator session's current selected Token require no assignment setup. Their current credential eligibility supplies the transient administrator assignment on each request; revocation removes that eligibility before Kernel evaluation. Unexpected identity or credential storage-read errors remain storage errors and reach their existing error handler; they MUST NOT become a Policy deny. A Kernel deny or evaluation failure remains an access refusal before the handler, mutation or receipt. Acceptance covers allow and deny for all three families, Knowledge read and write, unknown-family refusal, absence of cross-family rights, current credential revocation and the storage-error distinction.
-
-Workspace admission keeps the single active-member association. A currently usable administrator instead receives its own current eligibility association for the addressed active Workspace, including where no membership exists; it still passes the primary Kernel decision and is recorded truthfully as the administrator. Registry-owner identity supplies no additional member privilege. Authorized Workspace collections evaluate current candidates before content discovery. Credential intersection, readonly limits, revocation, expiry, private audiences and exact lifecycle predicates stay mandatory. This admission association cannot supply the separately assigned finite delegated-maintenance effect right.
-
-This baseline does not introduce authored generic Policy graphs, a new role table, configurable operation blocking or the R033 named-resource grant lifecycle. Existing accepted effect checks, including the finite Worker Git-read assignment, remain mandatory and do not replace this primary admission. Acceptance requires a currently eligible User, Server administrator, ordinary Workspace member and nonmember Workspace administrator to be refused when the primary kernel denies or fails, while their normal allowed operations and credential revocation remain effective.
-
-### Recurring Operation Projection
-
-[Recurring Triggers](20260711-scheduler_recurring_event_triggers.md) reuse existing operations: definition/history reads map to `workspace.read`, with `thread.read` for linked Thread/Turn content; create/edit/pause/resume/delete map to `workspace.configure` and are mutations for readonly-token enforcement. Due admission maps to `turn.run` and independently requires current `runtime.launch`; normal dispatch rechecks current authority again. Audit reads retain `audit.read`. The schedule is the concrete AutomationIdentity owner, binding the exact automation actor to an immutable responsible user; it grants no rights itself. Inactive identity/user, revoked membership, denied Policy or missing lineage cannot be replaced by an owner, administrator or system actor. This adds no role or access-right identifier.
-
-### Initial Generative Operation Projection
-
-These concrete operation mappings extend the existing registry; they add no access-right identifiers or Light App ACL. Until that resource family is cut over, each endpoint or catalog descriptor has one fixed primary product operation and mutation posture. When the family is cut over, [Operation Definition](20261002-operation_definition.md) names that primary policy operation and the mutation posture, and the descriptor does not state them again. The initial contracts are owned by [Kernel](20260908-generative_kernel_data_operations.md) and [Generative UI](20260908-generative_ui_interaction.md). The mapping must be in this registry, and it must be implemented in the existing enforcement, before publication. That implementation is not a runtime registration API.
-
-| Concrete operation IDs | Primary operation / required right | Mutation posture and additional owner checks |
-| --- | --- | --- |
-| `kernel.apps.list`, `kernel.apps.get`, `kernel.records.list`, `kernel.records.get` | `workspace.read` / `ar:workspace-read` | Read-only; selected Workspace/app identity and schema preconditions. |
-| `kernel.apps.create`, `kernel.schema.update` | `workspace.configure` / `ar:workspace-configure` | Mutating; app/schema CAS, strict schema admission and atomic attributed audit. |
-| `kernel.apps.retire`, `kernel.records.create`, `kernel.records.update`, `kernel.records.batch` | `workspace.write` / `ar:workspace-write` | Mutating; lifecycle/data/revision constraints and app-local receipt. Retiring an app is not deleting the Workspace. |
-| `generative-ui.publish` | `workspace.write` / `ar:workspace-write` | Mutating; exact writable Turn/producer, source read authority and source-to-Thread audience disclosure. |
-| `generative-ui.get`, `generative-ui.resource`, `generative-ui.refresh` | `thread.read` / `ar:thread-read` | Read-only, including the refresh POST; exact destination Thread audience and owning source read authorization. |
-| `generative-ui.action` | `workspace.write` / `ar:workspace-write` | Mutating; only the admitted static Kernel update binding, current Thread/source read eligibility and the owning Kernel mutation checks. |
-| `kernel.snapshots.list`, `catalog.light-app-list`, `catalog.light-app-read`, `catalog.light-app-export` | `workspace.read` / `ar:workspace-read` | Read-only; current Workspace admission and source visibility. |
-| `kernel.apps.instantiate`, `kernel.schema.activate`, `kernel.snapshots.rollback`, `kernel.format.upgrade` | `workspace.configure` / `ar:workspace-configure` | Mutating; existing definition, revision and snapshot predicates. |
-| `catalog.light-app-import`, `catalog.light-app-history-import`, `catalog.light-app-select`, `catalog.light-app-pin` | `workspace.configure` / `ar:workspace-configure` | Mutating; catalog selection grants no execution authority. |
-
-The refresh and action routes are separate operation descriptors; a client-controlled action name cannot change token mutation posture. The former rejects mutating bindings; the latter rejects refresh bindings. Selected Worker invocation also passes the existing governed `tool.use` route before dispatching the exact owning operation. A shared MCP name cannot collapse these operations into one unclassified grant. The current active-member association supplies these existing rights; authentication, current membership, token intersection, exact Worker lineage, Workspace state, confidentiality and existing effect/gate restrictions still apply. Handlers must not bypass this association or add a membership-tier ceiling. Equal-member eligibility follows the [Active-Member Authorization Target](20260715-multi_user_workspace_system.md#active-member-authorization-target); operation registration does not create another membership owner. The `tool.use` pass in this paragraph is the governed tool-supply check this registry already names. It is not a second primary admission of the public operation.
-
-## Scope-Owned Statement Format (F3)
-
-The Server collection at `server.jsonc.policy.mediation` and each Workspace collection at `workspace.policy.mediation` use the same `PolicyDocumentV1` statement grammar. Configuration location supplies the authority scope; moving a statement between these locations supplies no authority. Delete the retired `workspaceApprovalModes`, Server `workerGitReadMaintenance` array and Workspace `resourceAccess` array before the rc.10 reset. There is no converter, dual reader or inferred grant. The common native writers, loaded readers and Kernel projections implement this format cut together. Ordinary portable Workspace import is absent and does not remint these statements.
-
-Reuse the statement id, author, authority, authoredAt, state, scope and lifetime fields. The native writer stamps actual human authorship at its existing confirmed apply boundary. Scope subjects name the responsible human principal for the existing R033 and finite maintenance projections; this does not activate an agent principal. Native process selectors below distinguish the exact registered Agent acting for that human. The mandatory current credential, membership, responsibility, source and scope checks stay with their existing owners. Current author authority is also mandatory under the common lifetime rule in Core Policy. The native owner rereads that human authority before use; an expired issuer is not replaced by the scoped responsible human or historical approval.
-
-The ordinary permission grant has no extra selector. A human allow applies to that exact human invocation; a human prohibition also follows that human's mapped processes. An `agent-process` permission grant adds only `agentId`, to select the exact trusted Agent process for the scoped human. It supplies neither a new principal nor permission outside the statement's exact Thread resource and registered actions. Both positive and negative Agent allocations retain this exact match. This native Thread subset activates only allow and prohibit; active require_approval permissions are rejected until their native approval consumer exists.
-
-A `managed-boundary` statement marks an exact Workspace-shared Thread as managed without granting a right. It uses the common attribution and lifetime envelope, `state: inactive | active`, its exact Thread container resource, and empty subject/action arrays. Its active native form is anchored to the owning Workspace, with no time or use limit. Native Thread permissions also use that Workspace anchor without a finite-use or time bound in this cut; later lifetime consumers need their own accepted activation join. It remains when the final allow is removed; a separately approved explicit boundary removal is required to restore the ordinary baseline. Permission removal, an empty collection of positive associations or an invalid input must not erase the boundary. Unavailable author or other mandatory boundary facts refuse access; they never turn the Thread into an unmanaged resource. Export can carry a non-grant boundary as a restriction without granting rights to its source author. Ordinary portable Workspace import is absent and does not carry or publish that boundary.
-
-A `worker-git-read-maintenance` permission grant retains only the native network-grant id, canonical host, port, `protocol: rest`, exact repository paths, absolute binaries and validFrom. Its scope has one human principal, action `administration.configuration.apply` and one Server-owned Agent container resource; that resource carries agentId once. Its lifetime anchor is that same registered Server Agent container; required lifetime.notAfter is the sole expiry. Active/inactive statement state replaces enabled. The existing native consumer matches the complete human/Agent/network-grant tuple, refuses duplicates, and requires validFrom <= now < notAfter. This variant remains unavailable in Workspace collections. Ordinary permissions, Worker process selectors and Workspace boundaries cannot authorize Server maintenance.
-
-Necessity: the native grant's endpoint, repository and binary constraints prevent widening the finite Git correction; validFrom and required notAfter preserve its finite interval. The Agent-process selector preserves exact Worker responsibility instead of sharing a human allocation. The non-grant boundary preserves denial after the last allocation is removed. All other fields reuse the common statement envelope and its existing writers; no extra store, evaluator, receipt or scope registry is introduced.
-
-The existing Workspace Pending Request captures the exact replacement statement set for its one Thread, including the boundary. Current human review and distinct confirmed apply validate the set, stamp authorship and update only that Thread's statements through the sole revision-protected configuration writer. Other statements are preserved. Successful reload supplies current effective authority; failure retains the prior loaded revision. Export carries this same statement set. It never converts old grammar or recovers authority from historical decisions. Ordinary portable Workspace import is absent and does not remap Workspace or Thread container references or admit a target principal.
-
-## Named Workspace Resource Access (R033)
-
-### Scope And Authority
-
-The first named-resource slice governs exact Workspace-shared Threads. It narrows the existing Workspace eligibility baseline through the same Policy Kernel; it does not add per-app roles, field ACLs, an evaluator or a second permission engine. Other resource families remain outside this slice until their owner supplies the exact target mapping. Private Threads retain their private-owner and administrator audience predicates; a resource grant cannot share them, authorize a restricted source transfer, or grant deployment administration, secret use or an external effect.
-
-The unique durable authority for assignments and managed boundaries is the common statement collection at `workspace.policy.mediation` in the existing Workspace `config/workspace.jsonc`, under the [Workspace configuration owner](20260628-nanocore_config_identity_contract.md#configuration-scope-and-files). Each resource is an exact Thread container owned by that Workspace. Its permission and managed-boundary statements name the exact responsible human, any native Agent-process selector, registered operations and explicit prohibitions as defined in Scope-Owned Statement Format above. Agent facts preserve the current responsible User and exact trusted Agent identity; an AgentSession or runtime process is not a policy element. Display names, a request, an Approval, Audit, an earlier decision and an AEP are never assignment authority. These facts are Workspace-owned privacy restrictions and travel with the Workspace. They are not deployment membership, credentials or Server administration authority.
-
-The existing Workspace configuration revision-protected write, validation and reload lifecycle applies. The authority-bearing Policy fields use strict validation and the existing required-feature classification; an unsupported reader must not ignore them. Saved bytes alone activate no assignment. A successful validated reload changes future checks; failed reload retains the prior loaded configuration without claiming activation. No separate grant store, immutable grant ledger, policy runner or full NGAC administration API is introduced. The current configuration snapshot remains the readback for saved versus effective state.
-
-### Kernel Projection And Baseline
-
-An unmanaged Workspace-shared Thread retains its ordinary active-member or current administrator eligibility. A managed Thread adds an applicable resource Policy class to that same kernel evaluation. Its positive associations allocate only the named registered rights to the exact admitted target; the broad Workspace association cannot satisfy the additional resource class. Explicit prohibitions retain the kernel's deny precedence. This uses existing NGAC assignments, associations, policy classes and prohibitions rather than a handler-local allowlist.
-
-The managed-resource boundary remains when an assignment is narrowed or revoked. Removing the last positive association therefore denies the managed rights instead of falling through to the broad Workspace association. Restoring the ordinary shared baseline requires a separate explicit Workspace configuration change by a current Workspace administrator or deployment administrator, with current authority and the existing confirmation contract. A grant cannot restore removed membership, an inactive User or Agent, a revoked credential, or missing trusted Worker responsibility. Administrator eligibility remains subject to the same applicable resource Policy; its management authority does not impersonate the target member or Agent.
-
-Primary admission evaluates the concrete Thread and declared operation after current scope eligibility and minimum owner-lineage resolution, before target content or mutation. Thread collections and discovery exclude ineligible candidates before content or protected metadata is projected. Existing owner checks for linked resources, source disclosure, private audiences and effects remain mandatory. A Turn's admitted context snapshot does not grant later operations or publication authority after Policy revocation.
-
-### Request, Review And Change Lifecycle
-
-A current member, a currently usable administrator or a currently admitted Worker may request exact Thread access for a named member or Agent. The request captures the Workspace identity, resource family and id, target, requested registered operations and requesting actor in the existing Pending Request command-intent mechanism. It may carry caller-supplied target selectors without confirming protected target metadata; request creation supplies no access and does not establish that the target is available. Review and application resolve the exact canonical target and current target eligibility through their existing owners. Request readback exposes only the requester's captured terms and information already authorized for its viewer.
-
-Review uses the existing human approval mechanism. Creation, widening, narrowing, revocation and removal of a managed-resource boundary require the current Workspace administrator or a currently usable deployment administrator, plus the existing distinct confirmation. Workspace administration here requires current `workspace.configure` authority through the same Kernel. The active-member association supplies that right under [Multi-User Workspace](20260715-multi_user_workspace_system.md#policy-kernel-projection), subject to current restrictions and confirmation. There is no separate Workspace-administrator membership tier, and lifecycle ownership supplies no additional grant. These changes do not require deployment administration merely because they change a Workspace resource restriction, and they grant no Server or runtime configuration authority. No Agent approver or independent privileged service identity is activated. The approved captured change executes through the existing Workspace configuration command owner after current requester, deciding credential, target, assignment and expected configuration revision are checked again. A human approval satisfies its exact requirement; it is not the assignment itself and does not bypass current Policy.
-
-Granting allocates the reviewed operations to the exact target on that resource. Narrowing removes operations or adds a restriction without changing the resource or widening its target set; widening requires a new reviewed change. Revocation removes that target's association while retaining the managed-resource boundary. These changes use the existing configuration compare-and-set and command outcome; they add no resource-grant replay or receipt subsystem. Pending request withdrawal, rejection, invalidation, captured-call settlement and restart retain their existing owner and no default expiry.
-
-### Workspace Export
-
-The [Workspace portability owner](20260704-workspace_backup_export_import.md) carries current assignments, prohibitions and managed-boundary facts in the exported Workspace configuration for every exported managed Thread. Current source-read and export audience checks remain mandatory. Export must not include a Thread without its applicable boundary or remove a restriction as a side effect of audience filtering. Export refuses saved/effective disagreement and a managed entry without its included canonical shared Thread. It preserves the boundary even when no positive association remains. Source principal references do not establish target membership, Agent responsibility or administrator authority, and a matching bare identifier is not a verified cross-deployment identity binding. Ordinary import does not publish those bindings. No separate import grant store, approval workflow or recovery state is added.
-
-### Failure, Recovery And Acceptance
-
-Unknown or foreign resource identity, unknown operation, missing current assignment facts, conflicting configuration revision, unavailable mandatory policy input, expired or revoked credential, lost responsibility or kernel failure blocks the change or access through the existing product-safe refusal. An application conflict makes no replacement assignment; a new attempt uses current facts and the existing request/confirmation rules. Lost results use current saved/effective configuration and the existing command outcome for inspection; no automatic repair, widening or approval replay is added. Restart loads current effective Workspace Policy through its existing owner and reconstructs no authority from historical requests or decisions.
-
-Acceptance proves one named Workspace-shared Thread can require exact member or Agent associations while another unmanaged Thread retains its member baseline; only the allocated operations allow; current explicit prohibition wins; narrowing and revoking the last grant remove later access; and ordinary membership, credentials, private-source boundaries and current administrator attribution remain intact. It also proves request creation reveals no unavailable target metadata and grants no access, only the current authorized human decision may change assignments, stale configuration and revocation before application refuse, and restart does not reactivate removed or historical authority. Export acceptance carries assignments and managed boundaries with Threads and preserves a last-revoke boundary. It creates no target membership from source assignments. Ordinary import does not publish those bindings. Both current Workspace-administrator and deployment-administrator changes require the existing confirmation and current-authority checks. The current primary-admission increment alone does not satisfy these R033 predicates.
-
-## Finite Worker Git-Read Maintenance Assignment
-
-The Server-owned common Policy collection is the unique assignment authority for the first [delegated Worker maintenance](20260922-delegated_worker_policy_maintenance.md) action. Omission or absence of a current matching permission grants nothing. The `worker-git-read-maintenance` permission uses the exact native fields, human/Agent resource scope, active state and finite lifetime defined in Scope-Owned Statement Format above. It applies only to the responsible current administrator's private administration entry, the existing registered Server Agent and its complete Server effect scope, purpose `git-read` and action `administration.configuration.apply`. It creates no Agent principal, delegation credential, grant store or generic policy language. A Workspace reference cannot authorize that Server change.
-
-Repository bounds are exact canonical absolute URL paths without glob syntax, queries, fragments, encoded path aliases or dot segments. Binary bounds are explicit absolute executable paths. The entire existing target grant's binary set must be within the assignment; method and path authority cannot be added for an unassigned binary. The source host, port and REST protocol must match exactly, and no endpoint, binary, TLS, credential, containment, audience or unrelated configuration field can change. The correction may alter only Git smart-HTTP read rules in that existing grant. Every added permission is an assigned repository's `info/refs*` GET or exact `git-upload-pack` POST path; the fixed final wildcard follows the accepted Git baseline and is not an arbitrary caller-selected path glob. Unrelated rules and network declarations remain unchanged. Push, unrestricted egress and template-derived authority are excluded. The client supplies `service=git-upload-pack`; the existing boundary does not enforce query values, and this assignment adds no query matcher.
-
-The existing revision-protected Server configuration owner creates, changes, disables or removes these entries. The field is hot-swappable on successful validated reload or restart. Saving authored bytes alone activates nothing. A rejected or failed reload retains the previous loaded assignment within its original validity interval; readback must distinguish saved and effective state. The private Tool resolves the current snapshot at each effect check, rather than retaining the snapshot from Tool assembly. The statement must be active and current time must be at or after grant validFrom and before lifetime.notAfter. Missing, expired, disabled, conflicting or unevaluable mandatory facts block dispatch. Duplicate responsible-user/Agent/network-grant tuples are invalid configuration, and evaluators must not union conflicting entries into broader authority.
-
-NanoCore's finite product adapter validates current administrator and credential restrictions, private entry and invocation Thread/Turn, cancellation, exact registered source and revision, current assignment, candidate identity and originating failure lineage. It supplies immutable user, target, assignment, association and access-right facts to the existing NGAC subset evaluator. Only its exact allow authorizes delegated dispatch. It does not add a delegated-administration subsystem to the kernel. The existing `PermissionDecision` and Audit retain the exact loaded configuration observation, validated bounds, source and candidate identities and deciding actor. They remain evidence, not assignment authority. This deeper effect check does not replace the shared public operation's primary admission or human confirmation for other candidate classes.
-
-Recheck the exact current facts immediately before the existing configuration writer dispatches. Cancellation or revocation before dispatch permits no configuration mutation. An effect already dispatched settles truthfully after revocation. Exact command replay returns its existing result without another write; lost or interrupted results use the current receipt and authored/loaded inspection rather than automatic repair or a new request. Candidate creation grants no apply authority. Persistence and reload remain separate under their current owner, and no running AEP or historical failure is rewritten.
-
-Acceptance requires an exact failed-Turn/Agent/package/repository lineage, immutable candidate, explicit assignment allow, one revision-protected write and separate reload observation. Absent, expired, disabled, conflicting, out-of-scope or stale authority, changed candidate, unrelated edits, push paths, credential/TLS edits and Provider/Gateway candidates sent to the delegated Tool must refuse before dispatch. Successful reload removal must revoke future delegation; failed reload must retain the prior loaded facts without claiming activation. Replay and interruption tests must prove no duplicate write. Real Sandbox qualification remains necessary before claiming enforced Git access.
-
-## PermissionDecision
-
-`docs/core/policy.md` owns the `PermissionDecision` definition and closed result categories. This specification projects that concept with these exact fields:
-
-- decision id
-- policy engine version
-- policy snapshot id
-- subject summary: principal kind and identity, optional on-behalf-of principal, actual actor, actual process or explicit absence, responsible human resolved at decision time for an agent, and credential kind
-- action
-- resource summary
-- context summary
-- result
-- reason code
-- enforcement point and stage
-- admitted proposal digest
-- Policy revision and current authorization revision
-- participant invocation references, including mode, participant identity/version, and binding version
-- required approval kind when applicable
-- approval id when applicable
-- audit event id
-- created timestamp
-
-Decisions are immutable. Responsibility reassignment MUST NOT replace the human retained on an earlier agent decision. Gate and Kernel evaluations use this envelope. Observe, advise, and transform invocation evidence uses the existing Audit owner with the same point, revision, participant, and safe input/output references. This adds no record family or second transcript. Required safe evidence must be retained before releasing a participant result. Historical records without a formerly unrecorded edge remain unknown; a fixed snapshot label is not proof of an immutable historical version.
-
-For a new decision with an actual Kernel result, the existing `contextSummary.kernelTrace` retains only the structural `matchedAssociations` and `matchedProhibitions` ID arrays from that result, including empty arrays when nothing matched. The existing `policySnapshotId` supplies the exact evaluated Policy or loaded-configuration content digest; together the digest and each matched ID identify the rule version. Boot self-checks use the canonical digest of their evaluated PolicyState, not a fixed baseline label. Mediated final decisions reuse their existing Policy revision and authorization revision without another snapshot. A gate without a Kernel result, or an unavailable Kernel, omits this trace. Historical absence stays unknown. The existing PermissionDecision read/list/export and linked Audit expose this evidence without changing the decision, credential or Approval gates; no Policy body, new record family or duplicate Audit provenance is added.
-
-Boot policy self-check decisions for Core API allow and baseline Vault-use deny each allocate an independent `pd` UUIDv7 at the existing baseline recording trigger. Retain the exact `(bootId, action)` correlation as `contextSummary.bootId` and `action`, with `contextSummary.boot = true`; it is not a UUIDv5 name. Exact retry after reopen retains the original decision and linked Audit without another allocation or publication. Multiple matches, an incomplete retained pair, a missing linked Audit or changed known decision facts fail closed before writes. A distinct boot allocates fresh decisions. The pair and its Audit rows use the existing Core SQLite transaction boundary; entropy failure publishes neither new decision nor Audit. This adds no cross-domain atomicity, namespace admission, boot retry loop or policy evaluation trigger.
-
-The allow decision emitted inside admitted captured Pending Request execution derives `pd` UUIDv5 from exact JSON name `["pending_execution", requestId]`. `requestId` is that durable Pending Request's exact identity. The fixed literal identifies the execution purpose. Independent decisions remain `pd` UUIDv7. Allocate at the existing admitted execution evaluation/claim trigger and retain the immutable decision through retry and restart ([accepted allocation decision](../decisions/20261016-identifier_derivation_and_import_allocations.md)). For replay or recovery after request-owned effects, missing or contradictory required decision, call or request proof follows the existing refusal or `recovery_required` rule. The derived identifier does not replace the synchronous current-policy evaluation at first claim. A missing decision before first admission neither prohibits first admission nor creates a deny record. Retention and lifecycle remain unchanged. Acceptance requires stable identity, immutable attribution and zero extra upstream contact on replay or failure.
-
-When one governed effect depends on multiple mandatory policy inputs, NanoCore first omits neutral `not_applicable` inputs when at least one policy domain applies, then combines the applicable Core-owned results with the exact precedence `error > deny > require_escalation > require_approval > defer > not_applicable > allow`. Missing mandatory facts and mandatory evaluation failures map to `error`; all-`not_applicable` inputs produce `not_applicable`; and `allow` is valid only when every applicable mandatory input allows. Only the final `allow` authorizes the effect. Every other result blocks it, and all-`not_applicable` blocks because no applicable authority allowed the effect. A producer that evaluates only one policy input records that single result and does not imply that absent mandatory inputs allowed the effect.
-
-Retained imported permission decisions and linked Approval rows are historical evidence only. Ordinary portable Workspace import is absent. `apr_imported_` remains a reserved non-authorizing namespace rejected by target-side Approval creation. Decisions linked to that reserved Approval namespace remain non-authorizing. VaultGrant origin instead uses the canonical grant's required immutable `issuance`, owned by [Vault Secret Injection](20260703-vault_secret_injection.md#grant-shape). Grant consumers require `issuance=target` with that owner's existing use-time checks. They do not infer origin from a grant ID or UUID version, re-run Approval, or promote history after repository or reference rebinding. Retained vault-grant history records issuance `imported-history`; updates and duplicate-ID handling cannot upgrade it. Missing, unknown or contradictory issuance fails closed under the required current-format schema. An effect decision missing its owner's required target-issuance authority is non-authorizing. The stateless check precedes external mutation or secret resolution. It does not rewrite history, synthesize a deny row, infer missing origin or create an import-specific policy state machine. Fresh target-issued authority is the only promotion path.
+Merge replaces competing fact-ledger and earlier participant exclusion only on approved surfaces; unaffected effect/Knowledge/Skill/Pending/runtime contracts retain owners and no automatic provider activation.
 
 ## Enforcement Points
 
-NanoCore should evaluate policy at:
+Existing MCP and Workspace/User Vault operations use actual operation/stage pipeline, exact Policy resource and reference-only inputs; no material in proposals/participants. A common decision has an explicit Workspace or User database home. A source and target owner mismatch refuses before participant disclosure. A Server policy-write decision uses its native Core owner.
 
-- the centralized workspace access resolver before any workspace-addressed handler performs lookup or mutation
-- app API command handlers
-- worker MCP capability handlers
-- worker scheduling
-- AEP resolution
-- workspace materialization
-- agent capability gateway projection
-- LLM gateway
-- vault grant resolution
-- secret injection
-- knowledge retrieval and read
-- workspace review and apply
-- artifact import, introduction, or verified worker-output creation
-- runtime teardown when destructive
+Retain operation and stage once; derive operation@stage for point/enforcementPoint/display; no second point string/registry; use PolicyStageV1Schema.
 
-Backend adapters enforce derived runtime policy, but they do not decide product authorization.
+Only holdable Core crossings enforceable; Worker-internal shell/files/network outside this participant coverage; Sandbox stays mandatory; boot/resolver/participant calls admit no bindings.
 
-The centralized Workspace request resolver uses the low-level kernel only for a transient `allow` or `deny`. Missing registry, membership, token, lineage, policy, or dependency facts and any policy-evaluation error fail closed as the same non-enumerating access denial. This ordinary request check never creates `defer`, a pending workflow, an Action Center row, an Approval, or a per-request durable `PermissionDecision`. Existing enforcement points that intentionally own a governed effect may continue to record their accepted durable decisions and linked redacted audit evidence. Stage 4 adds no access-decision ledger or new audit owner.
+Every authenticated primary operation requires current identity/scope then actual Kernel decision over immutable facts; unknown/missing/denied/error refuses before handler without cross-scope grant.
 
-## Outcome Mapping
+Ordinary primary admission remains transient, no PermissionDecision/Approval/Action Center/pending workflow; governed effects keep their explicit evidence.
 
-Policy outcome to product behavior:
+User admission current active canonical user/credential at User target; Server requires current deployment admin and separate association; bootstrap remains exclusive actorless procedure.
 
-| Decision | Product behavior |
-| --- | --- |
-| `allow` | Execute and audit. |
-| `deny` | Reject, audit, and optionally create a blocked Action Center row. |
-| `require_approval` | Raise a pending approval for the exact effect and do not execute it; the requesting work continues, and the effect runs only after a grant and a current re-evaluation. |
-| `require_escalation` | Create a higher-authority attention row and do not execute. |
-| `defer` | Mark the operation pending because required context is missing. |
-| `not_applicable` | Continue evaluation in another mandatory policy domain; if none applies, retain `not_applicable` and block because no authority allowed the effect. |
-| `error` | Fail closed and audit the policy error. |
+vault.grant-withdraw is fixed User-target vault.admin; repeat exact owned reference/grant checks in native writer; actual caller User decision/Audit home even when admin acts on other's reference; no Worker/Coordinator entry.
 
-Approvals satisfy policy requirements; they do not replace policy.
+Workspace active member and current nonmember admin use distinct associations; truthful admin actor; owner identity no permission tier; candidates checked before discovery and credential/audience/lifecycle fences remain.
 
-## Approval Linkage
+Schedule is exact AutomationIdentity/responsible human, no rights itself; missing/revoked lineage cannot become admin/system fallback.
 
-When policy requires approval, NanoCore creates:
+Minimum owner-lineage + current scope/Thread/operation before content/effect; filter discovery before metadata; original source/audience checks remain and Turn snapshot grants no future authority.
 
-- a permission decision with `require_approval`
-- an approval request
-- an Action Center row
-- an audit event
+Native finite adapter checks admin/credential/private Thread/Turn/cancel/source/revision/assignment/candidate/failure lineage then exact Kernel allow; decision/Audit safe loaded observation only, not authority.
 
-When approval resolves, NanoCore records:
+Evaluate at these concrete Core boundaries: the central Workspace resolver before lookup or mutation; App commands; Worker MCP; scheduling; AEP resolution; workspace materialization; capability projection; LLM Gateway; Vault resolution; injection; Knowledge retrieval and read; Workspace review and apply; Artifact import, introduction, and verified output; and destructive teardown. Backend adapters enforce derived runtime material, not product authority. A present category does not mean participant registration or evidence is complete. Local enforcement at these crossings stays mandatory. Common participant migration is not complete. This list adds no registry and no activation.
 
-- approval decision
-- responsible user
-- policy requirement satisfied or denied
-- follow-up permission decision when execution resumes
+Gateway direct config controls coexist with Kernel primary authority; specialized durable decision/evidence owner, model pipeline not fully routed.
 
-Approval is policy-originated only; runtime-native approval prompts are never imported as requests.
+Core typed filesystem/network intent validated before carriage; NanoHost renders/parses exact SDK policy; malformed/unknown/unsupported refuse before backend effect.
 
-`require_approval` and `require_escalation` use the existing Pending Request and Action Center owners; approval is their resolution path, not a pipeline stage. The request MUST bind to the admitted post-transform proposal digest, Policy revision, and authorization revision. A changed proposal, target, binding, Policy, or authorization revision invalidates its authority. Captured execution reruns the current pipeline with the granted approval as context; the requester does not re-issue the call. An agent approver may satisfy only its explicitly activated existing condition and never a human-only requirement.
+Current actor/responsibility/membership/token/grant/origin/snapshot and conditional assurance/time facts; missing required ordinary facts deny, no local-owner fallback; enums/artifacts not new actor-kind registry.
 
-Once means consuming this proposal approval without a Policy write. Work-unit or persistent authority requires a `policy.write` proposal under the scope and lifetime rules above. An approval control MUST distinguish these outcomes; it cannot silently convert a once-only decision into persistent authority.
+Migration row/lane labels and angle brackets are not persisted points or registered executable IDs; preserve actual existing owner IDs, no second registry.
 
-## Current Implementation Projection
+Ordinary operation admission: preserve existing specialized owner/checks; Intentional transient Kernel-only boundary; an absent decision ledger is not a missing record.
 
-Knowledge ask and ordinary read operations use `knowledge.read`; tell, maintenance and notebook mutations use `knowledge.write`; Workspace proposal drafting uses `knowledge.propose`. Workspace proposal inspection and decisions use `review.apply`, with inspection read-only. Server proposal inspection uses read-only `knowledge.read`, while its decision uses mutating `review.apply`. `memory.*` uses `api.call` at the User target and retains its current-self admission and operation-specific mutation posture. These mappings grant no additional source, audience or publication authority.
+Boot self-check: preserve existing specialized owner/checks; Deliberate pure Kernel self-check and original Core pair/Audit; no participant bindings by design.
 
-The native I16 pilot and human `policy.write` candidate path implement the first shared mediation slice. Added or changed noninactive bindings check current input User or Workspace authority through the existing Kernel-only authorizer at proposal and apply. The same author's supported passive observation reductions and withdrawals classify as narrowing; other unproved changes remain widening. The path still requires explicit human application for every change. Protocol retains version-one statements, subjects, lifetime, decision and invocation envelopes. Goal-domain publication and native Task Policy hooks are implemented; this slice adds bounded Coordinator administration and delegated Task exceptions. Runtime Task admission and live or captured effect joins remain with the Goal owner and require their own verification. General agent grants and automatic narrowing review remain Not Started. Inactive declarations do not activate these authorities. The additive I16 agent gate subsection defines the explicit human-approved subset; it supplies no general agent Tool authority.
+## Decision Records
 
-### Version-One Retained Projection
+### PermissionDecision
 
-`packages/protocol/src/models/policy-v1.ts` defines the shared shapes without storage or evaluation. `server.jsonc.policy.mediation` is the existing authored configuration location. Its `schemaVersion: 1` collection contains the I16 bindings and bounded permission declarations. Exact canonical content digests identify the collection and each statement; unrelated edits do not renew a statement's finite uses.
+Retain principal, on-behalf-of identity, actual actor/process, credential and responsible human separately; no invented process for direct human work or inferred model identity.
 
-A statement retains its actual author, authority reference, authored time, finite subject/action/resource selectors, separate lifetime and explicit state. The native candidate stamps the authenticated human author. Bindings retain operation and stage once. The v1 mode contract mapping fixes the Tool-summary input and observation/advice/gate output; no independent input/output selectors or replacement contract are retained. Active transform and advice are refused until an existing content owner retains their safe output and invocation evidence links it.
+Map gate and Kernel results through existing product contract; Goal missing-grant escalation only in defined case, never a prohibition; shadow output nondecisive.
 
-Agent-principal declarations and Goal-domain delegations have bounded consumers. The agent gate resolves current declarations and responsibility chains through `readPolicyAgentPrincipal`; it supplies no general agent Tool authority. `GoalDomainPolicyService` publishes and reads Goal delegations, and Task admission checks their current bounds. General activation cannot be inferred from the shared schema. Goal Plan and typed delegation use one human approval request. Policy has no storage-lease grant; Storage access remains with its existing Knowledge and runtime consumers.
+Invocation stores output digest rather than assessment bodies; agent gate decision retains actual reviewer/human, final decision retains original caller; check current pinned chain before disclosure and release.
 
-A mediated decision retains operation, stage, logical proposal digest, authorization revision, actual subject, evaluation role and invocation references. The containing PermissionDecision retains the single Policy revision in `policySnapshotId`; its nested mediation object does not repeat it. Derive enforcementPoint from operation/stage and subjectSummary from the retained subject. SQL uses no repeated fact in those projection columns for mediated records; portable records omit the projections. Specialized decisions without mediation keep their existing fields. The subject separates principal, on-behalf-of identity, actor, process, credential kind and resolved responsible human. A gate decision retains its exact binding reference. A final decision retains the actual Kernel effect and reason, or explicit absence only when the product result is `error`. A participant allow never substitutes for a missing Kernel evaluation.
+Bounded human-created native gate declarations retain creator/human/chain, current terminal human and immutable historical attribution.
 
-Invocation evidence retains the binding and participant versions, operation/stage, mode, revisions, proposal, subject, safe input/output digests, actual outcome, times and existing capability-call reference. Gate evidence uses its linked decision Audit; other modes use ordinary Audit. No argument body, unrestricted participant output or credential is retained there. Missing required evidence blocks release. Advice cannot release attributes until a resolvable safe-output reference exists. A completion observation cannot change a known effect outcome or authorize a retry.
+Decision/outcome keeps actual decider/validation, persisted and active revision separately; saved/validation-failed/commit-failed/unknown distinct; no activation from candidate save.
 
-Only a final combined allow consumes finite uses in the same Workspace transaction as its decision and Audit. Shadow evaluations, unavailable evaluations, gates and Kernel denials consume none. Existing catalog approval conditions run through this same pipeline and retain `require_approval` with the permission approval kind. A captured human response reruns current Policy before credentials and validates the original proposal and revisions. Its derived claim decision preserves existing allocation and references the fresh evaluation without consuming the statements twice.
+Existing config CAS/reload/PermissionDecision/Audit retain rationale/validation; allowing evidence does not prove file commit or loaded activation.
 
-The existing human configuration candidate records the proposed collection, rationale, proposer, base revision and validation. Its diff and classification are computed from that candidate and base rather than stored. The candidate classifies only the same author's proven passive observation reductions or withdrawals as narrowing; other unproved changes remain widening. Its explicit human apply records candidate identity, actual decider, approval pins, persisted revision, loaded activation revision and result separately. Generic file updates cannot replace the Policy collection. Failed persistence and uncertain activation require inspection through the existing configuration owner.
+Final owner transaction consumes required uses; exact same-effect readback recognizes only original final decision+Audit, not later authority; selected permission refs enter authorization revision.
 
-The migrated process-local automation definitions retain `workspace.read` for inventory and `workspace.write` for create/update/delete; this is not the recurring schedule contract above. Scheduler listing retains `workspace.read`, while retry/cancel and interrupted checkpoint release retain `turn.run`. Recovery inventory retains `workspace.read`. These classifications derive from the family definition tables; the removed route catalog declarations and automation-specific guard branches are absent. Native invocation supplies one primary Workspace admission and preserves the existing owner effect checks, readonly ceiling and current administrator audience predicate.
+Existing PermissionDecision artifact owns exact immutable summary/result/approval/Audit/time plus mediation pins/refs shape; reference artifact rather than repeat fields or add a record family.
 
-The V1 enforcement bridge exists, but full alignment with the standard-aligned policy-kernel contract remains partial:
+Responsible-human reassignment does not rewrite old decisions; safe invocation evidence before release through current Policy/Audit; absence of old edges stays unknown and fixed label not historical immutable snapshot proof.
 
-- `packages/policy-kernel` implements the first standard-aligned NGAC subset evaluator over policy elements, assignments, process-to-user mappings, operation-to-access-right mappings, associations, prohibitions, and access requests. It returns `allow` or `deny` plus structural traces.
-- `POLICY_CATALOG` in `packages/config-schema/src/policy.ts` governs config-layer override, merge, reload, and secret-handling behavior. It is separate from the product authorization policy engine targeted here.
-- `packages/config-schema/src/agent-environment.ts` defines first-slice AEP policy blocks for filesystem, network, process, inference, secrets, artifacts, and resources, and requires every AEP policy block to carry a policy snapshot id.
-- `apps/nanocore/src/bootstrap/policy.ts` maps the baseline NanoCore process to an NGAC user, loads a baseline boot policy kernel from `@openkit/policy-kernel`, and verifies minimum allow and restriction-deny behavior during NanoCore boot. A failed self-check fails the critical policy subsystem before product work is admitted.
-- `apps/nanocore/src/policy/permission-decisions.ts` records the first durable product-level `PermissionDecision` rows. The current producer records boot policy self-check decisions for Core API allow and baseline vault-use deny in the server-scope `permission_decisions` table, linking low-level policy-kernel effects to product-shaped result, reason code, subject summary, resource summary, context summary, and enforcement point.
-- `apps/nanocore/src/llm/gateway-routes.ts` enforces the runtime config's LLM Gateway enabled flag and provider allowlist directly, without a parallel process-local policy store. The routes record durable `PermissionDecision` rows for enabled/disabled and provider allowlist allow/deny outcomes through the same recorder; migration of that route-local evaluation to `@openkit/policy-kernel` remains future work.
-- The former local deterministic Goal Mode supervise route, which recorded the first workspace-scoped `runtime.launch` allow decision through `startGoalTaskWorkerTurn`, is removed. Its retained decisions stay readable. A Goal task launch is not the continuing contract.
-- `runWorkerTurnLoop` now records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` after creating the worker turn and before starting the worker boundary, so the real bounded worker loop also leaves a product permission-decision row.
-- The governed worker executor stores the same first worker-launch policy snapshot id on the created AgentSession and the resolved AEP policy block, binding the durable session lineage and backend launch snapshot to the `runtime.launch` decision snapshot for that turn.
-- `apps/nanocore/src/runtime/worker-governance-backend.ts` defines the Core-derived typed filesystem and network authorization intent. NanoCore validates that exact intent before carriage, and `apps/nanohost/src/openshell_policy.rs` renders it into native OpenShell policy and strictly parses it into the current SDK type before requesting a sandbox. Malformed, unknown, or unsupported intent and policy fail before an OpenShell effect.
-- `recordProductPermissionDecision` persists the accepted seven-value product decision result set, including `require_approval` and `require_escalation`, fails closed when a `require_approval` decision does not name the required approval kind, and emits linked server- or workspace-scoped `AuditEvent` rows with `permissionDecisionId` filled. The I16 executor combines its mandatory participant and Kernel results under the Core precedence. Other specialized producers retain their existing evaluation paths until migration. Server-owned decisions are exposed through `POST /api/app/operations/permission.server-list`, `client.operations['permission.server-list']`, and the remote MCP and administrator CLI `permission.server-list` operation; workspace-owned decisions are exposed through `POST /api/app/operations/permission.workspace-list`, `client.operations['permission.workspace-list']`, and the remote MCP and administrator CLI `permission.workspace-list` operation.
-- The former `approval-gates.ts` helper, which paused the turn with `humanGate.kind: "approval"`, is removed; the agent communication redesign replaced the pause with a pending request that leaves the turn running. The worker MCP Tool path (`apps/nanocore/src/worker-mcp-routes.ts`) turns `require_approval` and human-directed `require_escalation` decisions into captured Pending Requests (`apps/nanocore/src/runtime/captured-pending-call.ts`) for the Action Center. I16 uses this human-escalation path. Goal-domain escalation instead wakes the Coordinator without creating a human Pending Request; other specialized producers retain their existing result paths.
-- Secret-injection plan creation requires the canonical VaultGrant's immutable `issuance=target` and the Vault owner's use-time predicate. The former grant-ID origin check does not satisfy the required stored-provenance contract; its replacement remains implementation work. Vault-reference rebinding must not reactivate an imported grant.
-- `ApprovalStatus` in `packages/protocol/src/models/approval.ts` and `ApprovalDecision` in `apps/nanocore/src/runtime/types.ts` represent current approval states and decisions.
-- App and runtime code already emits approval requests, approval decisions, and Action Center rows for human attention.
-- Generative Apps MVP operations (`kernel.*`, `generative-ui.*`, and built-in `openkit-generative` tools) use the existing operation-to-right mapping above and the single active-member association. All active Workspace members receive the same membership-derived eligibility, while current Policy, credential intersection, exact gates, confidentiality and lifecycle constraints still govern each effect.
+New actual Kernel result retains only matched association/prohibition IDs, including empty; exact evaluated revision identifies rule version; no full Policy body/duplicate provenance/new family; omit trace when no Kernel. The retained Kernel trace is two matched-identifier arrays in the existing context summary. It is not a graph body or the Decision Trace view.
 
-The V1 policy enforcement bridge is implemented as product workflow infrastructure. The boot policy kernel is a startup trust check plus the first kernel-backed durable decision producer; the LLM gateway, real bounded worker-turn loop, governed worker session and AEP policy snapshot binding, durable approval/escalation result storage, and the captured Pending Request path for approval and escalation results are the first non-boot product enforcement producers. Broader product fact mapping into standard-aligned `@openkit/policy-kernel` facts, every future product action, every future worker-session family, and complete backend enforcement material compilation remain future extensions over the same bridge.
+Boot self-check independent pd UUIDv7, exact bootId/action/boot=true; reopen keeps original pair+Audit; ambiguity/incomplete/missing/changed facts refuse before write; new boot fresh allocation; entropy no partial publish.
 
-The complete Kernel and Generative UI families derive access declarations from the shared definitions and receive one primary admission through native invocation. Generative UI retains its source and action effect checks, with trusted current administrator eligibility passed to audience checks and private Item-source publication refused unless the destination is private with the same private owner.
+Pair and Audits one existing Core SQL unit, no boot lifecycle/evaluation trigger or cross-domain atomicity. The native Core decision and its Audit await a covering FULL acknowledgement. Failure of that acknowledgement is not proof of rollback. Finite uses and the linked Audit commit in one owner transaction. File compare-and-set, reload, and any upstream effect stay separate.
 
-## Backend Policy Derivation
+Captured admitted allow derives pd UUIDv5 from exact ["pending_execution",requestId], immutable through retry; current first claim evaluation remains required; absent first decision no synthetic deny.
 
-NanoCore derives backend policy as typed authorization intent from:
+Neutral not_applicable is omitted if another domain applies. `combineResults` in `apps/nanocore/src/policy/interception.ts` is the precedence algorithm: error, then deny, then require_escalation, then require_approval, then defer, then not_applicable, then allow. Missing mandatory facts are an evaluation error. All-neutral blocks. Only every applicable mandatory allow authorizes. A single input is not an implicit absent-domain allow. This names that algorithm and adds no result enum or evaluator.
 
-- permission decisions
-- AEP snapshot
-- vault grants
-- capability catalog
-- workspace materialization plan
-- sandbox requirements
-- runtime placement
+Imported decisions/Approval history nonauthorizing; apr_imported_ reserved and rejected at target creation; target-issued canonical VaultGrant required before mutation/material; no inference/backfill/rebind promotion or deny-history rewrite.
 
-For OpenShell, derived policy may become structured sandbox policy, credential injections, network rules, and file rules; NanoHost renders the typed intent into native OpenShell policy.
+Product outcome behavior uses existing decision/Pending/attention owners; approval waits exact effect while work can continue; no authority from all-neutral/error/nonallow.
 
-Derived backend policy is evidence and enforcement material. It is not canonical OpenKit policy.
-
-## Policy Snapshot
-
-Each worker session should bind to a policy snapshot id.
-
-The snapshot includes:
-
-- permission, binding, and envelope/delegation statements under their common revision
-- statement scope and lifetime attributes
-- policy kernel version
-- relevant assignments
-- relevant associations
-- relevant access right mappings
-- server policy
-- workspace policy
-- user restrictions when applicable
-- request-time restrictions
-
-If policy changes during a worker session, NanoCore decides whether:
-
-- the change is dynamic and can update future checks
-- the session should be marked stale
-- the session must be interrupted
-- the next bounded step must use a new snapshot
-
-## Minimum Server-Mode Membership Facts
-
-Server mode needs explicit membership facts before workspace policy can be enforced safely.
-
-Minimum facts:
-
-- authenticated actor id
-- actor kind: user, deployment administrator, service identity, automation, agent, worker shim, or integration
-- responsible user id when an agent, automation, worker shim, or integration acts on behalf of a user
-- workspace id
-- current membership status: active or removed
-- active Workspace membership as the full operation-eligibility baseline
-- owner lifecycle identity derived from the canonical Workspace registry rather than a second membership-role copy
-- current token workspace binding and scope when a bearer token is used
-- explicit grants and restrictions relevant to the request
-- request origin: app, bundled CLI, Agent Skill, worker tool, internal scheduler, webhook, or integration
-- policy snapshot id or policy version used for evaluation
-- authentication assurance level when policy depends on it
-- time and retention class when policy depends on it
-
-If any required membership fact is unavailable to the ordinary centralized Workspace resolver, it denies the request. `defer` is available only to an already accepted governed workflow whose owning specification defines how the missing fact becomes available; it is not a request-authorization fallback. Server mode must not silently fall back to local implicit-owner assumptions for Workspace policy.
-
-Invitation state is not active membership and must never satisfy a Workspace access request. A `server-admin` credential does not synthesize Workspace membership or an owner/editor/viewer role. A currently usable administrator credential is eligible for Workspace content operations under the Administrator Eligibility rule in `docs/core/policy.md`, which records the administrator as the actor.
-
-The active-member association is adapter vocabulary for full Workspace operation eligibility. Ownership remains a lifecycle and recovery identity. The centralized resolver converts the authenticated actor, current membership, owner relationship, token intersection, action, resource, and request context into one policy-kernel request. Handlers consume that decision and must not reimplement role tables or rely on route path/body heuristics.
-
-## Resolved Decisions
-
-- Permission decision result names use underscores: `require_approval`, `require_escalation`, and `not_applicable`.
-- Approval is not the permission engine. Approval may satisfy a policy requirement only when linked to a specific permission decision.
-- Backend-native policy, including structured OpenShell sandbox policy, is derived enforcement material and evidence. It is not canonical OpenKit policy.
-- Policy snapshots should be file-backed for inspectability and replay, while immutable `PermissionDecision` rows may be SQLite source-of-truth ledgers for query and transactional enforcement.
-- Launch must be blocked for denied runtime placement, workspace root access, secret injection, vault grant, sandbox containment, or required capability routing. Optional capability degradation may produce degraded readiness instead of blocking launch when policy marks the capability optional.
-- Product diagnostics may include decision id, result, reason code, enforcement point, redacted subject/resource/context summaries, policy snapshot id, and matched policy ids. They must not expose secret values, unrestricted path lists, raw membership graphs, raw provider payloads, or sensitive source contents.
-- Policy changes during an active worker session should update future gateway checks, including the re-evaluation of a captured call before it executes; mark the session stale when setup or resource assumptions changed, so a successor applies them at the next Turn; and interrupt or recycle the session only when a newly denied high-risk external action would otherwise remain possible. A change to in-Sandbox tools is not a reason to interrupt a Turn.
-- Server mode requires explicit actor, responsible user, Workspace membership, exact principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing Workspace policy. Missing required facts deny ordinary requests; only an owning governed workflow may use its explicitly accepted `defer` outcome.
-- Current active membership supplies the full Workspace operation association through the NGAC-aligned kernel; finer constraints use that same owner rather than a second authorization engine.
-- Deployment-administrator authority and Workspace content authority are separate rights in this registry, and this registry does not treat `server-admin` as a content right. Credential eligibility is not decided here; an administrator's eligibility for content operations comes from the Administrator Eligibility rule in `docs/core/policy.md`, not from this registry.
-
-## Deferred / Future Work
-
-- Extend the accepted V1 product-operation registry only when a new owning specification introduces a materially different authorization family.
-- Resource-specific permission administration outside the first shared-Thread R033 slice remains deferred; it must use the same kernel and accepted target owners when activated.
-- Route remaining existing enforcement producers through the approved common pipeline after the pre-v0.1.0 pilot; retain their current checks until each cutover.
-- Add broader product fact mapping from NanoCore objects to `@openkit/policy-kernel` policy state and access requests outside the active-membership Workspace authorization slice.
-- Keep product result mapping in NanoCore; the pure synchronous Kernel continues to return only allow or deny.
-- Defer post-success `react` participation and NGAC-style Policy obligations until after v0.1.0 under issue #375. A future reaction acts under its defining author's current authority; the present modes do not implement it.
-- Bind future worker-session families and future AEP snapshot producers to policy snapshot ids as they ship.
-- Keep every adapter free of runtime-native approval prompts; policy-originated pending approvals are the only approval mechanism.
-- Add policy-change handling for stale, interrupted, or recycled worker sessions.
-- Compile complete backend enforcement material from canonical policy-kernel outcomes once full fact mapping exists.
-
-## Rollout / Migration Plan
-
-Before v0.1.0, define and retain operation/stage point identity, binding state and disclosure scope, envelope/delegation statements, agent-native subject identity, lifetime attributes with anchor/time/use bounds, and revisions with author/delegation/activation. Extend the existing `PermissionDecision` envelope with proposal digest, Policy/authorization revisions, and participant references. Approval binding, the Goal-domain statement created by Plan approval, the `policy.write` review path, and the I16 MCP `tool.use` pilot are in that scope.
-
-The shared retained formats freeze with the reset RC. A non-additive pre-stable shape change rides the single authorized reset after the coordinator announces the pre-reset cut; this design adds no legacy reader or compatibility layer. After the continuity boundary, additive evolution or an accepted one-way migration follows [Contract Evolution](../core/contract-evolution.md). Preserve immutable historical decision facts, allocation rules, and imported non-authority.
-
-Routing all remaining producers, impact simulation, adaptive or cached review, external participant adapters, and the Turn substantive-denial circuit follow later unless separately required earlier. Post-success `react` remains after v0.1.0 under issue #375. Boot and Workspace resolver exclusions remain intentional coverage limits, not missing durable-decision producers.
-
-## Testing Strategy
-
-- Operation/stage identity tests prove that binding selectors and decisions resolve the same registered operation without a second registry.
-- Pipeline tests prove ordered transforms, attributed advice, ordered gates, final synchronous Kernel evaluation, and secret injection only after the combined allow.
-- Binding tests cover write-time disclosure authority, invocation-time revocation, depth-one Kernel-only investigative calls, default human escalation, non-decisive continuation, and failure without fabricated deny or allow.
-- Policy review tests cover direct authorized narrowing, delegated in-envelope widening, human-only envelope/delegation changes and activation, disclosure widening, stale revisions, failed commit, and activation readback.
-- Goal tests distinguish missing grant, prohibition, and required approval; prove Task-card intersection, Coordinator escalation, current re-evaluation, outside-envelope Plan revision, and anchor closure, time/use bounds, atomic once-only consumption, author-authority bounds, and human-approved promotion without cleanup jobs.
-- Approval tests reject changed post-transform proposal digests and Policy/authorization revisions, and distinguish once-only approval from a Policy proposal.
-- Evidence tests preserve immutable allocation and imported-history rules, while retaining participant references through existing Policy/Audit owners.
-- Subject tests distinguish agent-principal grants from User-principal calls by an agent, preserve actual actor/credential kind, and leave process absent for direct human calls.
-- Accountability tests cover creator and responsible-human attribution, agent-creator propagation, explicit human assignment, finite acyclic chains, removed or no-longer-authorized humans, fail-closed grant suspension, human reassignment, and immutable decision-time human attribution.
-- Fact mapping tests for each product object family.
-- Decision tests for allow, deny, approval, and escalation outcomes.
-- Approval linkage tests proving only a target-issued approval satisfies a specific policy requirement and imported authority remains readable but effect-inert after repository or Vault re-binding.
-- Capability gateway policy tests.
-- Vault grant policy tests.
-- OpenShell derived-policy tests that assert NanoCore-authored intent, trust-boundary rejection, and acceptance of the structured fixture by NanoHost's current SDK parse boundary.
-- Fail-closed tests for policy engine errors.
-- Audit linkage tests for every decision.
-- Membership-baseline tests give all active members equivalent eligibility, deny removed members, invitees, unrelated users, and deployment-administrator-only credentials, and preserve token, Policy, Vault, exact-gate, and lifecycle constraints. Current role-matrix tests are pre-cutover evidence and must be replaced coherently with the implementation.
-- Coverage tests proving every workspace-addressed public operation declares the metadata consumed by the centralized resolver.
-
-## Risks & Mitigations
-
-- Risk: Approval stays runtime-driven. Mitigation: require Policy-originated approval and refuse runtime-native approval prompts under the existing boundary.
-- Risk: OpenShell policy becomes product truth. Mitigation: store derived backend policy as evidence linked to NanoCore decisions.
-- Risk: Policy vocabulary becomes too generic. Mitigation: use product nouns from core docs and keep every action resource-scoped.
-- Risk: Decisions are hard to debug. Mitigation: retain redacted decision traces for development and audit.
-
-## Links
-
-- `docs/core/policy.md`
-- `docs/specs/20261002-operation_definition.md`
-- `docs/core/evidence.md`
-- `docs/core/sandbox.md`
-- `docs/core/mediation.md`
-- `docs/core/vault.md`
-- `docs/specs/20260629-openkit_policy_model.md`
-- `docs/specs/20260703-worker_agent_capability.md`
-- `docs/specs/20260703-vault_secret_injection.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
-- `docs/specs/20260715-multi_user_workspace_system.md`
-
-Personal Login inventory, quarantine and release (`vault.login-list`, `vault.login-quarantine`, `vault.login-release`) reuse the same fixed-User `vault.admin` interception, PermissionDecision and Audit owner as consent withdrawal. Ordinary caller-initiated evidence homes in the actual caller's User database, including Administrator Eligibility. List is read-only; quarantine/release are mutations. Exact active Login ownership and selected reference currentness are effect-owner predicates repeated at native publication, not new rights. Worker/Coordinator User admission remains excluded except for the restricted Worker quarantine rule below. The [private Login metadata contract](20260703-vault_secret_injection.md#private-login-metadata-operations) owns redaction, failure correlation, unknown observations and incomplete outcomes.
-
-One built-in Kernel rule admits the actual Worker to `vault.login-quarantine` only for Core-confirmed permanent refresh failure under that contract. The rule requires the exact current reviewed runtime-token use basis and Core-correlated family, grant and generation. It supplies only quarantine authority; it grants no general User entry or other `vault.admin` operation. The ordinary operation-by-stage Policy mediation still applies and can refuse quarantine. Workspace Policy cannot expand the built-in rule or replace its Core facts. Worker release and Coordinator User entry remain excluded.
-
-This restricted operation keeps the actual Worker subject, responsible human and process lineage. Its separate PermissionDecision and Audit use the Login owner's existing User scope, including when another User owns the shared Login. The decision and Audit preserve the grant, generation, correlated Workspace and Turn, and Core failure class. Native publication repeats the same exact current authority after FIFO predecessors. An earlier binding decision cannot substitute for this quarantine decision. The [authorization decision](../decisions/20261110-core_confirmed_login_quarantine.md) records why this restriction differs from owner/admin release.
-
-Reviewed Vault grant issuance uses the existing operation-by-stage interception for both the Workspace/Server administrative branch and explicit User Login sharing. It replaces the earlier specialized issuer decision in place, preserving one final decision and real request/approval/actor lineage. The actual issuing caller’s User home owns personal Login consent; the existing administrative branch retains its Workspace home. Completed observation is non-decisive. This migration neither rewrites historical decisions nor fabricates a human-approval source decision.
+Policy-originated exact decision/approval/attention/Audit links; resolution retains deciding human/satisfied requirement/follow-up current evaluation; never import native runtime approval.
+
+Collection/statement exact content revisions and schemaVersion 1; unrelated edits do not renew finite uses; existing authored configuration owner.
+
+One retained Policy revision in policySnapshotId; mediation operation/stage derive projections, no duplicated SQL/portable point/subject facts; actual Kernel result or error absence; gate exact binding. policyDigest is sha256: plus the lowercase SHA-256 of the UTF-8 canonical complete name. Undefined object members refuse. Boot hashes the evaluated Policy state. Mediation hashes the admitted Policy document. A statement reference hashes that statement. Configuration contentHash is the untagged digest of `snapshotSemanticSummary(snapshot)` in `apps/nanocore/src/config/runtime-config.ts`. It is not `policyDigest`. Historical snapshot labels stay the literals worker_turn_launch_policy, runtime_config_gateway_policy, and policy_snapshot_runtime. [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids) owns the shared digest form.
+
+Existing invocation evidence safe digests/versions/subject/outcome/time/call; no raw args/credentials/unrestricted output; missing evidence blocks; complete advise safe-reference consumer still absent.
+
+Only final allow atomically consumes uses; shadow/gate/denial none; captured fresh evaluation and original claim identity do not double consume; catalog human conditions same pipeline.
+
+Retired supervise decisions readable; real bounded Worker launch/checkpoint records before boundary, AgentSession/AEP share owner snapshot reference; no new Goal launch contract or direct Main writer claim.
+
+Shared recorder seven results, required approval kind, linked scoped Audit/decision projections; captured MCP approval/escalation does not pause Turn; Goal escalation wakes Coordinator rather than human request.
+
+Diagnostics expose only safe decision/result/reason/point/redacted summaries/snapshot/matched IDs; no secrets/raw graph/path/provider/source bodies.
+
+Current shared formats/pilot/writers/validators plus approved continuity boundary; no compatibility converter/dual writes/automatic reset; immutable historical attribution/allocation/non-authority preserved.
+
+Require Policy-originated approval, derived OpenShell evidence linked to decisions, resource-scoped product vocabulary and safe structural traces; no rationale-only rules lost on deletion.
+
+Existing call/Turn/Pending/retrieval/content links remain original authority while safe Policy/Audit envelope links invocation; no parallel transcript/graph store.
+
+Pre-freeze actual Policy/rule/author/delegation/Skill/Artifact/Turn/capture references live on original owners; preserve separate author/human/trigger/approver and unknown historical absence, never reinterpret fixed labels.
+
+Shared retained statement/revision/decision format with real writers/validators and current pilot; broader routing can follow without a new gate/store; no incomplete shape claimed frozen by text.
+
+Current channel-origin addition is trusted provenance only; reset and additive behavior remain separate; no automatic Policy review inferred from landed agent/Goal subset.
+
+Current-tree export carries subject/exact page pins, native Git history; standalone fact DTO/operation/monthly/JSONL authority retired with no alias/converter; WorkObservation/Audit/suppression unchanged.
+
+Protocol schema-only, confirmed Server candidate/CAS authority, original Policy/Audit owners and version-before-content readers; no predecessor decoder.
+
+## Interception
+
+Shared permission/binding/delegation collection revision pins evaluation; actual author/delegation/scope/lifetime/activation retain their existing owners.
+
+Binding contract retains selector, scope/lifetime, participant/version, typed disclosure, ordering/failure/state and accountable authority; name PolicyBindingV1Schema rather than duplicate fields.
+
+Binding create/replace/narrow/activate/revoke uses policy.write and write-time disclosure authority; presence of provider/Tool grants nothing.
+
+Participant invocation/investigation is current Kernel-only with no nested bindings/recursive approval; authority chain terminates in current owning human.
+
+Active human MCP conditions allow only prohibit/require_approval, Workspace anchor, no finite uses; common full candidate/human confirmation/CAS path.
+
+Restrictive condition may precede Tool discovery; warning names exact tuple and travels in confirmed candidate/validation plan; apply revalidates authority/content rather than warning equality.
+
+Future granting allow still needs observed Tool name; removing a Tool stops matches; no schema-version pin; current author/lifetime/revision rechecked.
+
+allowedTools is supply, not another grant; discovery and direct/built-in/captured dispatch preserve current prohibitions; final Kernel mandatory; agent allow cannot satisfy human condition.
+
+Captured calls require current native mediation readback and no retired-binding fallback; Server-origin authored Tool selectors remain unactivated.
+
+Vault subset is deterministic deciding allow/deny gate with error failure and completed observation; preparation/apply/loaded readers refuse unsupported combinations.
+
+Actual proposal pins subject/operation/resource/safe payload/context, Policy/binding/input versions and logical digest; existing content owners retain immutable originals.
+
+Supported gate path keeps explicit order and final pure synchronous Kernel; participant may neither skip it nor override result precedence; Core owns deadlines/circuits. Gate order is deterministic, then a UTF-16 identifier tie-break. A duplicate active order or point position refuses.
+
+Only final combined allow releases owner's effect/commit obligations; Core-only secret injection follows allow and exact approved target/account/action, never participant inspection or injection grant.
+
+No new cross-domain atomicity/effect receipt/retry lifecycle; completed observer cannot veto/mutate known result; nested Tool dispatch retains independent checks.
+
+Native agent output allow/deny/escalate plus bounded risk/authorizationAssessment/rationale; assessment untrusted, cannot impersonate human or invent product result; owner schema holds fields.
+
+Ordinary agent activation requires same shadow binding/completed evidence and separate bounded human policy.write; no new activation store. Preserve narrow restrict-only Server exception separately. The Server security-review gate is restrict-only. A confident no-objection is neutral. A block denies. Uncertainty or failure escalates. The gate cannot grant or satisfy a human-only approval. A narrow Server anchor may skip the ordinary shadow prerequisite. The default app does not supply the qualified callback.
+
+Native ordinary agent subset is MCP deciding gate; no advice/transform/automatic review/general Tool activation; empty/deterministic paths preserve existing effects/evidence.
+
+Native human-confirmed agent declaration records unique identity, preserved creator/responsible human/chain and exact participant digest; no inactive/expired/cyclic/out-of-domain authority or finite-use identity.
+
+Same submitted binding can follow its server-stamped declaration digest; no unrelated repinning; agent domain and current human domain are independently mandatory, not inherited rights. An edit preserves the agent-principal creator. The same submitted binding may repin to its server-stamped declaration digest. An unrelated or unchanged binding is not repinned.
+
+Gate sees only admitted safe summary and one result Tool in actual admitted Turn through existing Gateway/capture/usage; no raw Tool args, investigation, invented session or execution store.
+
+### Policy Review And Update
+
+policy.write uses governed proposal/decision/commit; proposer/rationale/exact proposed set/scope/lifetime/base revision; derive diff/class from immutable candidate/base, not duplicate retained facts.
+
+Validate closed shape, conflicts, current author/delegation, disclosure and widening/narrowing; full changed/removed restriction ceiling remains mandatory.
+
+Worker suggestions are candidates, not grant authority; no self-approval of own widening; preserve exact human switch-removal recovery exception with security owner. The full-diff ceiling includes a deleted or weakened restriction. One exact human route-switch removal is the recovery exception. It is not a general self-grant.
+
+Impact simulation/recent-decision/Pending analysis is not prerequisite; later Meta-Skill suggestions still require same governed owner. The current exclusion is implemented; optional simulation/reuse is separately #412.
+
+### Goal Domain And Container Projection
+
+Joint Plan approval retains exact Goal envelope, Workers/resources/rights/human/Coordinator; Task inherits intersection with immutable typed resources; no inheritance widening.
+
+Only current inside-domain missing Task association with allowing human Kernel can escalate to exact Coordinator/Goal; prohibition/human-only/failure destinations stay intact; no dispatch/use/retained-store authority from routing.
+
+General outside-envelope request reaches owning human via Plan revision; Coordinator grant remains Policy administration rather than satisfying human-only gate; rerun full current evaluation after grant.
+
+Lifetime independent from scope, represented by container anchor plus optional notAfter/uses; unknown required anchor/bound refuses, not a closed duration enum.
+
+Ordinary authority ends on anchor/time/use/author loss; once consumes atomically on final allow; persistent owner anchor has no optional bound; Coordinator grant ends no later than Goal. A finite use is keyed by the exact statement digest. An unrelated document change does not renew it.
+
+Extending Goal authority beyond its domain needs human-approved promotion, not cleanup or inferred persistence.
+
+Captured request binds transformed proposal/Policy/authorization; changed target/binding/revision invalidates; execution reruns current pipeline, requester does not reissue; agent only explicit activated condition not human-only.
+
+Once consumes proposal approval with no Policy write; persistent/work-unit authority needs separate policy.write and controls distinguish them.
+
+Current native human input-authority checks both proposal/apply, same-author observer reduction classification, agent/Goal subsets bounded; generic automatic review/general grants unimplemented.
+
+Fixed mode contracts, not separately authored input/output replacement schema; active/shadow advice/transform refuse until safe owner/evidence exist.
+
+Target-issued injection grant provenance already checked; binding/restart cannot reactivate imported grant. Plan creation and downstream consumers already check target-issued grant provenance.
+
+React/post-success Policy mutation remains excluded before accepted later activation, own author's current authority; commit injection not react.
+
+Solidified reusable procedure Skill-owned; reusable understanding owner-scoped OKF/KM; operational/source/authority records stay existing owners.
+
+Claim is governed OKF page, not separate canonical ledger; retain source/scope/numeric finite [0,1] confidence/freshness/review/conflict; no ordinal conversion or authority from confidence.
+
+Rule/Effect/business Objective use admitted ScopeSchema, governed fields and required applies_to; KM type/applicability filtering preserves source/scope/audience; values descriptive, never fabricated grant. Type and applicability filters use the exact types and appliesTo selectors.
+
+Effect requires basis and explicit last_checked_at; Objective distinct from work Goal; retrieved Rule no permission; safety-critical rules pinned Skill/independent Policy validator, not optional retrieval alone.
+
+Kernel holds structured app entity/state/progress/external-id/match data with no scenario/function restriction; structure/provenance stay; only reusable meaning/procedure use Knowledge/Skills; no mandatory Light App for external truth.
+
+Immutable app/catalog structural versions retain exact Knowledge/Skill refs; meaning movement does not rewrite definitions or relocate data; versioned discovery resolves exact meaning or reports unavailable.
+
+Presentation/task context bounded projection not reusable authority; formerly embedded solidified procedure moves to Skill, descriptive Knowledge refs can remain; no private grounding copy.
+
+Governed ScopeSchema/page publication refuses Procedure even if authored schema permits it; generic external OKF parser remains permissive; no prose classifier or new Skill lifecycle.
+
+Raw Sources/mechanical derivatives evidence; Proposal candidate until publication; reusable observations/conflicts OKF; work/review/Policy/Audit keep actual event/decision authority.
+
+Provider receives admitted bounded typed job and binds result to input/participant/binding versions; factual investigation uses record owner not Worker claim; free text/unknown semantics grant no authority.
+
+Replaceable narrow reviewer supplies assessment, Core enforces; no vendor/price/benchmark/world-model/measurement-campaign contract; injectable typed provider, not general framework.
+
+Store dispositions have one accepted owner each: Claim/reusable Observation/conflict -> governed OKF, Sources evidence, Proposals candidates, Kernel data/structure preserved, procedure Skill, presentations projection, catalog metadata discovery.
+
+Optional provider capability activates only after its separately admitted implementation, not from schema/provider installation.
+
+Notebook/KM ordinary writer/readers; source/scope/freshness/Review independent from confidence/conflict; Observation subject distinct from evidence; same-Notebook exact digest pins version, unpinned refers object; unsupported target families refuse.
+
+MCP pilot exact schema-independent summary/argument digest/package/Policy/current authority and mandatory Tool schema/credential/supply checks; native registry alone no endpoint.
+
+Human-authored native gates/observers exact resource and admitted anchor; shadow nondecisive; finite-use completed observation unavailable; safe-output absence refuses active/shadow advice/transform.
+
+Shared collection/selector/authority/deadline/evidence/current commit/human outcome/current response contracts have actual native writer/readers; schema alone proves no authority.
+
+Plan and delegation share one human approval; Plan ref alone no domain; explicit human candidate apply and actual agent shadow/accountability only bounded subset; generic narrowing/review not activated.
+
+MCP approval requirements: preserve existing specialized owner/checks; Human Tool conditions consumed by same current decide/captured path; additional nonpilot routing remains #373.
+
+MCP tool.use: preserve existing specialized owner/checks; Native pilot common decide/final Kernel/observe/evidence, finite-use/currentness boundaries implemented.
+
+MCP credential injection: preserve existing specialized owner/checks; Existing post-allow Vault plan/receipt/use with target issuance; not a separate participant transform.
+
+Captured execution: preserve existing specialized owner/checks; Actual fresh mediated evaluation and native proof, no fallback/extra upstream effect.
+
+## Mapping Table
+
+Map product subject/action/resource/context vocabulary into NGAC required rights, not product-operation association rights; vocabulary examples do not create new active principal kinds.
+
+MCP permission selector is exact Workspace/server/Tool resource; no parallel Tool-name grant kind; finite maintenance exception stays bounded.
+
+`vault.delegate-refresh` maps to `ar:vault-delegate-refresh` for the deeper effect check when `backend-provider` delivery hands refresh-family material to a Gateway placement. Ordinary Workspace membership never supplies it. Delivery requires the current human-authored allowance for every evaluated human, including administrators, beside `vault.use`.
+
+Vault effects use vault.use, inspection vault.admin; Worker package/session/Thread and Coordinator Goal/Task scope remain actual native bounds; revoked metadata inspectable without material.
+
+Registry native extension preserves effect/target/audience/rights; registration creates neither endpoint nor extra primary admission.
+
+Crossing attributes are descriptor vocabulary separate from mutation, sensitivity, risk and authorization, never access rights.
+
+Immutable Task resource association remains baseline; alternative delegated allow only in Task class, approved Goal and human Kernel remain mandatory.
+
+Unique primary product-operation -> NGAC right mapping exactly PRODUCT_OPERATION_ACCESS_RIGHTS; concrete descriptors select one primary operation; not another admission or role table; operation/right names distinct.
+
+Deeper runtime.launch/vault.use/network.egress checks and exact lifecycle/claim/revision gates remain mandatory; route allow/evidence reads never become injection/effect authority.
+
+Ownership transfer maps workspace.lifecycle; Vault metadata lists vault.admin; VaultUse/audit/evidence/usage/handle/decision reads audit.read; handlers cannot invent competing roles.
+
+Descriptor mutation posture, not HTTP method, enforces readonly credential; incidental redacted evidence is not content mutation; retrieval can be mutating when its owner says so.
+
+Invitee list/decision invitation.respond, member management membership.manage; new family/right needs owner registration; no vendor-specific GitHub right.
+
+Destination Workspace mutation fence grants neither membership nor content; selected reference owner does not replace caller; Vault owns withdrawal/runtime closure.
+
+Server target family administration/mcp/knowledge selected by descriptor, default administration, unknown denies; exact transient graph attributes/rights, no prefix/caller family inference or finite-maintenance right.
+
+Recurring definitions/history workspace.read plus linked thread.read; mutations workspace.configure/readonly posture; due turn.run plus runtime.launch/current dispatch; audit.read separate.
+
+### Initial Generative Operation Projection
+
+Generative concrete operations derive primary/mutation facts from family descriptors, retain exact owner predicates, no Light App ACL or extra right/runtime registration.
+
+Refresh/action distinct descriptors and posture; reject wrong binding class; Worker Tool route independently checks supply/tool.use without second public primary admission; equal-member baseline not bypassed.
+
+Managed Thread adds mandatory resource Policy class; broad Workspace association cannot satisfy it; exact rights and explicit prohibition precedence via same NGAC evaluator.
+
+Knowledge/Memory primary operations and mutation posture derive owning definition artifacts; proposal inspection/decision and User memory scope distinctions grant no extra source/audience/publication authority.
+
+Process-local automation read/create-update-delete, scheduler/retry/cancel/checkpoint recovery map current family artifacts; not recurring schedule contract; same single primary admission/readonly/admin audience.
+
+Existing approval schema and actual derived generative operations retain primary/member/current Policy/audience/source/effect constraints; private source only same-private-owner destination.
+
+Invitation not membership; admin credential no synthetic member/role but separate current eligibility; canonical owner lifecycle not tier; one Kernel request, no handler role/path/body heuristics.
+
+## Workspace Assignment Storage
+
+Native Coordinator writer accepts real Coordinator Turn separate from Task scheduler lineage and expected revision; rereads canonical Task/current approved Goal/human credentials.
+
+Publish only ordinary Task Worker allow inside Goal actions/resources; author is Coordinator and exact root delegation ref; owned anchor/time/use bounds; no root rewrite/self-grant/participant activation/new grant kind.
+
+Server policy.mediation and Workspace workspace.policy.mediation share PolicyDocumentV1 grammar but distinct authority scopes; moving data grants none; no old grammar converter/dual reader/import remint.
+
+Existing statement identity/author/authority/time/state/scope/lifetime; human writer stamps real author; native process projection preserves human responsibility and actual registered Agent, no new principal by selector.
+
+Ordinary human allow exact invocation, prohibition follows mapped processes; agent-process selects exact trusted Agent/human/Thread/right only; native active Thread subset allow/prohibit, no approval consumer.
+
+Managed boundary non-grant, exact Workspace-shared Thread, empty subject/actions, Workspace anchor without time/uses; remains after last grant and only explicit confirmed removal restores baseline. The required feature is openkit.workspace-resource-policy.v1. Inactive or expired author facts do not turn a managed Thread into an unmanaged Thread.
+
+Finite Server maintenance statement exact human/Agent/network tuple and REST host/port/repos/binaries/start/end; active state replaces enabled; no Workspace authority or duplicate union; interval validFrom<=now<notAfter.
+
+Existing Pending captures replacement set for one Thread; current human distinct confirmation stamps author through sole revision-protected config writer; preserve other statements and saved/loaded distinction. A generic runtime file operation cannot change a Policy subtree.
+
+Export same exact statements; no authority from old grammar/history; ordinary import does not remap resource/subject references.
+
+### Named Workspace Resource Access R033
+
+### Scope-Owned Statement Format F3
+
+The only admitted human-authored ordinary `allow` is a refresh-delegation allowance for exactly `vault.delegate-refresh`: human subjects, one Workspace container resource, and a Workspace lifetime anchor without finite uses. Every other human `allow` refuses. The author must hold the right, so a deployment administrator authors and revalidates this allowance. It creates no stored Kernel association and supplies no other authority.
+
+At `vault.binding-deliver`, the Vault owner passes active, unexpired allowances whose authors still hold the right as Kernel delivery facts. Each evaluated human, including an administrator, needs an allowance naming them. The mandatory delegated-refresh policy class applies to the requester and every actual Integration credential issuer, preserving the owner, credential and issuer intersection. Absence denies; failed delegation never falls back to `vault.use`. The deciding-facts digest is rechecked. Goal domains may list this right but never supply it.
+
+Unique durable authority is workspace.policy.mediation in Workspace config/workspace.jsonc; exact Thread/human/Agent operations/prohibitions; AEP/Approval/request/Audit/history/display name are not assignments.
+
+Workspace privacy restrictions travel with resource, not deployment membership/credentials/Server authority; AgentSession/runtime process not policy element.
+
+Strict feature-aware validation and sole config CAS/reload; saved bytes do not activate; failed reload retains prior loaded state; no second grant ledger/runner/full NGAC admin API.
+
+Member/current admin/current Worker may capture exact resource access request without confirming protected target; request grants nothing; canonical target/current eligibility resolved at review/apply, readback audience-safe.
+
+Human-only current workspace.configure or deployment admin plus distinct confirmation for all boundary/grant changes; no admin membership tier/owner extra rights/Agent approver/Server grant.
+
+Narrowing cannot widen resource/target; widening new review; revoke retains managed boundary; existing CAS/outcome/Pending owner and no default expiry/replay subsystem.
+
+Export carries exact assignments/prohibitions/boundaries with each included managed shared Thread; current source/export audiences; saved/effective disagreement/orphan boundary refuses; empty-positive boundary survives.
+
+Exact canonical repo URL paths and absolute binaries; grant's whole binary set bounded; same host/port/REST, no endpoint/TLS/credential/containment/audience/unrelated edit.
+
+Only assigned info/refs* GET and exact git-upload-pack POST; fixed final wildcard not arbitrary glob; no push/unrestricted egress/template grant; query service is client input, no new query matcher.
+
+Human candidate/outcome captures original author/base/exact set, actual decider/approval/persisted/active states; generic file updates no replacement; uncertain persistence/activation inspect existing owner.
+
+## Failure And Recovery
+
+Awaited participant work requires fresh credential/Thread/Goal/grant/generation/placement checks; completed observation cannot veto/retry; automatic callers reuse actual decision/Audit owners.
+
+Changed input/Policy/authorization/binding pins invalidate earlier decision before release; stale expected write revisions/current authority prevent activation.
+
+Timeout/malformed/unavailable/refusal/open-circuit apply declared escalate-to-human default, nondecisive neutral continue, or blocking error; no fabricated substantive deny/inferred allow.
+
+Mandatory authority/input/evaluation failure is error; no valid required gate result means no effect; restart loads current Policy and never replays participant effects or old authority.
+
+Any participant retries fit one invocation deadline; availability circuit separate from later substantive-denial circuit; current executor itself performs one invocation.
+
+Missing mandatory chain/authority gives error; participant outage/invalid output uses failure disposition; agent allow never satisfies human-only requirement; human escalation remains captured Pending owner.
+
+Lost response/restart inspects exact owner outcome/current revision; never automatically repeat unknown write.
+
+Read exact current root/credentials/Task/anchor/expiry/uses each use; root loss ends dependents without cleanup; unused matching grant consumes none if baseline already allows.
+
+Current local/presented admin bearer/selected session Token need no authored assignment; revoke before Kernel; unexpected identity/storage reads stay errors rather than Policy denials.
+
+Current credential/membership/source/author authority mandatory at use; expired issuer not replaced by historical approval/scoped human.
+
+Missing/unavailable author/boundary facts deny, never unmanaged fallback; export boundary is restriction not grant; ordinary import absent.
+
+Last allow revocation keeps boundary; confirmed current Workspace-config/admin change required for baseline; no restored membership/agent/credential/responsibility or administrator impersonation.
+
+Captured execution rereads requester/decider/target/assignment/revision; approval satisfies exact condition and is not assignment or Policy bypass.
+
+Foreign/missing/stale/unknown/expired/revoked authority or Kernel failure refuses safely; conflict writes no replacement; lost result uses saved/loaded/outcome inspection, no repair/widen/replay; restart no historical authority.
+
+Current loaded assignment per effect, active finite interval; save alone inactive; failed reload keeps old loaded bounds; duplicates/conflicts never union; hot reload removal revokes future use.
+
+Recheck immediately before writer dispatch; pre-dispatch cancel/revoke no write; dispatched effect settles truthfully; exact replay no duplicate write, lost outcome inspection, no old AEP/failure rewrite.
+
+Recovery missing/contradictory decision/call/request proof refuses or recovery_required; stable attribution and zero extra upstream contact on replay/failure.
+
+Resolver fail-closed no enumeration/workflow/ledger; keep unexpected native dependency-read errors distinct where owner propagates them, docs/specs/20260703-policy_enforcement_mapping.md:306.
+
+defer only in explicit accepted governed workflow that obtains missing context, never ordinary request fallback.
+
+Denied required runtime placement/root/secret/Vault/containment/capability blocks launch; optional capability may degrade only when marked optional.
+
+Preserve unresolved-conflict Proposal refusal/retrieval exclusion and ordinary archive/forget/restore/stale-base/restart Knowledge/Skill lifecycle; no parallel truth or recovery.
+
+Uncertain external effect remains its owner's outcome and is never automatically replayed; completed observation/evidence failure cannot silently retry known effect.
+
+Binding config deadline and availability circuit, no contact while open, bounded recovery probe only, reset failures after success; process-memory state not durable recovery/old-effect replay.
+
+Current draft/active unresolved Observation blocks target/source Proposal before Review mutation and excludes active retrieval including pinned query/restart; unresolved pages themselves excluded; normal resolve/archive/remove/stale/restore.
+
+Captured post-claim response reruns current proposal/revisions; refusal retains original failed execution call+decision, no upstream contact/usage; execution call identity distinct.
+
+## Acceptance
+
+Accept allow/deny/evaluation failure across Server/User/Workspace cases without handler effects, cross-family rights or implicit member authority; current credential revocation remains effective.
+
+Acceptance exercises exact member/Agent grants vs unmanaged baseline, per-operation/prohibition/last-revoke, private/credential/admin attribution, request nondisclosure/no grant, stale/revoked apply, restart and export boundary preservation.
+
+Finite maintenance acceptance covers exact failed lineage, immutable candidate, assignment allow, one CAS, separate reload, invalid/out-of-scope/changed/push/credential/provider failures, revocation/replay; real Sandbox qualification required.
+
+Acceptance for current point identity, supported gate/order/final Kernel/secret boundary, write and use evidence, current disclosure/revocation, Goal/approval/subject/accountability invariants; general modes/automatic review remain separately unmet.
+
+Preserve affected-family factual mapping, decision and approval imported non-authority, capability and Vault, and fail-closed acceptance with their owners. Acceptance includes a NanoCore-authored structured fixture that NanoHost's current SDK parser accepts, and rejection of an invalid trust boundary. Every produced PermissionDecision has a linked Audit. Every Workspace-addressed public operation has resolver metadata. Ordinary Kernel admission stays the deliberate transient exception: an absent decision ledger is not a missing record. This adds no test filename and no new harness.
+
+Active members share baseline; removed/invitee/unrelated caller denied; keep actual current nonmember administrator eligibility rather than obsolete role-matrix/admin-only-denial expectation.
+
+Real completed consolidation qualification covers ordinary lifecycle, exact pins, Proposal refusal, retrieval, retirement, portability and operational continuity; source-test presence alone not executed proof.
+
+Acceptance: one OKF/KM Claim/conflict authority, numeric confidence/source preserved, no unresolved-conflict activation bypass, operational/human decisions still usable.
+
+Acceptance: Kernel data remains queryable/mutable after meaning refs; exact Knowledge/Skill availability; Source/presentation not independent reusable truth.
+
+Acceptance: exact type/applicability retrieval excludes unauthorized/stale and confers no permission; foundation implemented, optional domain consumer separate.
+
+Acceptance: current revocation/input/pins, shadow-vs-activation/human-only, declared failure/default escalation/neutral/error, no fabricated result or uncertain replay, bounded probe no widening.
+
+Acceptance: current agent-gate final Kernel/post-allow injection, human policy.write scope/lifetime/revision/activation/outcome distinctions and no recursive participant mediation.
+
+Acceptance: joint Plan/domain, Task intersection, actual agent/on-behalf identities and author/anchor/time/use bounds, atomic once; wider unbuilt authority consumers separately limited.
+
+Each migrated specialized row retains its original regression/mandatory checks; absent optional capability never declared implemented.
+
+## Implementation
+
+- `packages/policy-kernel/`
+- `packages/protocol/`
+- `packages/config-schema/`
+- `packages/app-api-schemas/`
+- `apps/nanocore/src/policy/`
+- `apps/nanocore/src/auth/`
+- `apps/nanocore/src/vault/`
+- `apps/nanohost/src/`
+
+## Implementation Gaps
+
+- Model/context/result native families need actual owning registrations and common routing; placeholders do not establish implemented endpoints - not met on main - #373
+- Complete transform-order -> attributable possibly parallel advice -> ordered gates -> final synchronous Kernel over admitted transformed proposal - not met on main - #373
+- General returning external content uses actual ingress/disclosure operation before separate release; Core-held output is validated/bounded/redacted/rejected, never undoing an already completed external effect - not met on main; also #286 and #287 - #373
+- Authorized author may narrow directly without a new human apply - not met on main - #627
+- General delegated supervisor may widen inside envelope; outside-envelope/envelope changes and ordinary agent activation require owning human; observe/advice may widen disclosure - not met on main - #280
+- General agent creation/domain administration supports accountable agent-creator/current-human propagation and explicit human reassignment under finite acyclic current chain; broken chain suspends grants without inheriting human rights or rewriting history - not met on main; also #664 - #152
+- Coordinator can record narrowing by exception - not met on main - #628
+- Accepted integrity.workspace.check uses audit.read and currently usable administrator; refuse ordinary nonadmin member/other callers before effect; integrity owner owns the unimplemented operation, #229 - not met on main - #229
+- Complete native-fact/common-pipeline migration and future producer coverage beyond current MCP/Vault/primary subsets - not met on main - #373
+- Universal immutable worker-policy snapshot of common-revision permission, binding, and delegation statements, scope and lifetime, Kernel version, assignments, associations, access-right mappings, Server and Workspace Policy, applicable User restrictions, and request-time restrictions, with file-backed inspectability and replay - not implemented; no snapshot file, store, format, migration, or replay - #807
+- Full dynamic-change/stale/successor/interrupt policy across worker sessions; in-Sandbox Tool changes alone not interrupt; only newly denied high-risk ongoing external effect can require recycle - not met on main - #807
+- Other resource administration, universal future AEP/session binding and complete backend compilation stay separate unimplemented integration, not invented current stores - not met on main - #807
+- General impact/review reuse, external adapter and substantive-denial-circuit work remains later; retained formats do not activate it. Narrow assessment cache already exists; boot/resolver exclusions are intentional - not met on main - #412
+- Full transform/advice safe-output pipeline and automatic review/delegated general narrowing acceptance cannot be claimed from native pilot tests - not met on main; also #627 and #628 - #373
+- General external agent/model/third-party participants need admitted call/Pending contract and cannot write Core storage; current native seam not proof all adapters exist - not met on main; also #305 - #279
+- Each active/migrated transform must retain and resolve exact safe original and replacement owner-version references, not just hashes/body in Audit; absent safe evidence blocks release and cannot justify secret retention - not met on main - #373
+- Separate Turn circuit counts only substantive denials and has no current implementation/required deadline - not met on main - #807
+- Later rebuildable read-only Decision Trace traversal from anchor upstream/downstream, per-node current access/no inaccessible metadata, explicit missing edges and no text/time/arithmetic/model fabricated joins - not met on main - #278
+- Complete cross-owner missing-edge producer coverage for future traversal cannot be asserted from current known Policy/capture joins; missing original facts remain exact owner gaps - not met on main - #807
+- Before decisive probability/confidence thresholds, calibrate on relevant own traffic and inspect shadow errors; no calibrated traffic evidence established by static code - not met on main - #807
+- Lease declaration/consumer is not in current Policy union; Storage owner uses ordinary grants; no inactive shape/lease or new grant family inferred from plan - not met on main - #807
+- Generic vendor-result advisor/transformer and Turn-output interceptor absent; only build at actual owned ingress/disclosure boundaries - not met on main; also #287 - #286
+- Full fake-mode acceptance must prove observe/advice no veto/mutation, ungranted transform/gate cannot act and exact safe transform versions/final Policy; unavailable modes not claimed tested as executable - not met on main - #373
+- All routed/built-in/projection participant invocation and open-circuit dispositions inspectable via existing durable safe evidence, no secrets/body retention. Universal coverage remains unimplemented - not met on main - #373
+- Item projection: preserve existing specialized owner/checks; Existing item conversion/package records; no generic transform binding/evidence join. - not met on main - #373
+- Assistant audience: preserve existing specialized owner/checks; Actual current audience/retrieval trace; no generic assistant-history-delivery registry point. - not met on main - #373
+- Knowledge eligibility: preserve existing specialized owner/checks; Current source/conflict/type/audience filters; specialized retrieval evidence, not common gate invocation. - not met on main - #373
+- Context preparation: preserve existing specialized owner/checks; Deterministic retrieval/preparation, not an agent or active advise provider. - not met on main - #373
+- Worker package: preserve existing specialized owner/checks; Exact package/trace/digest exists; no active common transform output consumer. - not met on main - #373
+- Task composition: preserve existing specialized owner/checks; Deterministic request/admission and Goal policy exist; generic transform migration not complete. - not met on main - #373
+- AEP redaction: preserve existing specialized owner/checks; Immutable redacted snapshot exists; generic AEP participant transform not registered. - not met on main - #373
+- Gateway enable/provider guard: preserve existing specialized owner/checks; Direct guards and durable decisions; call-bound record failure now blocks dispatch, not universally best-effort. - not met on main - #373
+- Provider credential injection: preserve existing specialized owner/checks; Existing Core/Vault effect boundary; not active model-request participant transform/commit binding. - not met on main - #373
+- Usage accounting: preserve existing specialized owner/checks; Original call/UsageRecord owner exists; no all-model-request common observation claim. - not met on main - #373
+- Precommit/retry availability: preserve existing specialized owner/checks; Native availability/retry semantics, not a substantive Policy deny. - not met on main - #373
+- Capture confidentiality: preserve existing specialized owner/checks; Specialized capture/observation owner; no generic model-result-ingress participant gate. - not met on main - #373
+- MCP discovery filtering: preserve existing specialized owner/checks; Actual list/filter bounds and constraints; no full built-in-list invocation evidence pipeline. - not met on main - #373
+- Built-in/result-size boundary: preserve existing specialized owner/checks; Specialized result admission exists; source path alone not proof common result-ingress gate/evidence. - not met on main - #373
+- Artifact submission: preserve existing specialized owner/checks; Artifact/source/current-command owner exists; no general common work.artifact.submit gate join established. - not met on main - #373
+- Artifact candidate selection: preserve existing specialized owner/checks; Exact candidate selection/decider semantics; future generic participant routing separate. - not met on main - #373
+- Notebook validation/publication: preserve existing specialized owner/checks; Native validation/CAS/Git/Audit owner, not generic notebook participant evidence. - not met on main - #373
+- Knowledge decision: preserve existing specialized owner/checks; Exact review/source/audience/primary mappings; no all-review common binding consumer. - not met on main - #373
+- App writes: preserve existing specialized owner/checks; Native command/receipt/revision/Audit checks; generic write gate not activated by table label. - not met on main - #373
+- MCP binding write: preserve existing specialized owner/checks; Original configuration/catalog mutation owner; no arbitrary participant administration pipeline. - not met on main - #373
+- Configuration write: preserve existing specialized owner/checks; Generic file owners and special human policy.write path distinct; no all-configuration participant activation. - not met on main - #373
+- Secret-shaped rejection: preserve existing specialized owner/checks; Mandatory schema validation remains; not a separately invocable participant or complete invocation evidence. - not met on main - #373
+- Work question and Pending response: preserve existing specialized owner/checks; Original question/Pending/Item/current human response, no generic point registration from placeholder. - not met on main - #373
+- Goal Plan approval: preserve existing specialized owner/checks; Exact joint Plan/domain response and native writer exist; no every-Plan participant gate migration. - not met on main - #373
+- Discord disclosure/response: preserve existing specialized owner/checks; Trusted source/actor and original native response origin; channel sender not common registered participant pipeline. - not met on main - #373
+- Audit producers: preserve existing specialized owner/checks; Existing scoped Audit and common pilot evidence; not every Audit producer is a policy participant observation. - not met on main - #373
+- Scheduler admission: preserve existing specialized owner/checks; Native admission/current capability owner exists; generic participant integration separate. - not met on main - #373
+- Recurring trigger/outcome: preserve existing specialized owner/checks; Original definition/occurrence native owner; not common recurring completed observation. - not met on main - #373
+- Worker launch: preserve existing specialized owner/checks; Actual durable launch/checkpoint decision exists in native owner, generic participant routing not complete. - not met on main - #373
+- Named read scope/audience: preserve existing specialized owner/checks; Current concrete Thread/source checks exist; placeholder source-read is not generic registered common gate. - not met on main - #373
+- Skill candidate decision: preserve existing specialized owner/checks; Exact current candidate/decision/Audit/command owner; common optional preassessment remains #288. - not met on main - #288
+- Source excludes grant issue/revoke from vault.admin. Main assigns grant administration to vault.admin; the source and the code disagree on grant administration; do not invent a metadata-only restriction and do not change authority in this specification - not met on main - #807
+- Workspace-administrator Policy-writing scope - not implemented; the Workspace-shared Thread boundary exception remains a Workspace configuration operation - #675
+
+## Decisions
+
+- [Unified mediation and policy](../decisions/20261018-unified_mediation_and_policy.md)
+- [BWM support and information consolidation](../decisions/20261018-bwm_support_and_information_consolidation.md)
+- [Workspace export is administrator-only](../decisions/20261027-workspace_export_administrator_only.md)

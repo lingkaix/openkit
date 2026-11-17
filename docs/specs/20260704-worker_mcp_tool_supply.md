@@ -1,84 +1,41 @@
 ---
 status: Accepted
-implementation: Partial
+implementation: Implemented
 kind: boundary
-updated: "2026-10-17"
 aspect: mediation
 ---
+
 # Worker MCP Tool Supply
 
-Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
+This specification owns Gateway admission and execution of selected Worker MCP tools, including the three capability routes, schema snapshots, and credential injection.
 
-## Owns
+## Scope
 
-- The `mcp.*` capability route family on worker-local `capability.local`, projected through `/capabilities/mcp/*`: `mcp.list-servers`, `mcp.list-tools`, `mcp.call-tool`.
-- The effective Workspace MCP server catalog projection: named server entries, transports, credential references, tool rules, and current digest validation for Gateway execution.
-- NanoCore ownership of MCP server lifecycle: spawn, connect, supervise, health, teardown.
-- Gateway-side credential injection binding for MCP server calls.
-- Tool schema retention: `McpToolSchemaSnapshot` records for replay and audit interpretability.
-- Policy binding for `tool.use` actions and approval-required tools, including the gateway's capture, re-evaluation, and execution of an approved call.
-- The Turn-boundary tool snapshot a worker sees, and the built-in `openkit-work` server's supply. Until that resource family is cut over, this specification also owns that server's in-process dispatch seam. When the family is cut over, the tools execute through invocation and this specification keeps the supply.
-- MCP error normalization into stable capability error codes.
-- Usage and audit emission for MCP capability calls.
+Owns:
 
-## Does Not Own
+- Selected Worker MCP routes, effective catalog projection, server lifecycle, credential injection at the Gateway, schema snapshots, and `tool.use` dispatch.
 
-- Immutable MCP configuration history, current-version selection, catalog mutations, and binding ownership, which belong to `docs/specs/20260907-mcp_catalog_management.md`; public packaging and grouped installation belong to `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
+Does not own:
 
-- The worker capability plane itself: routing, envelopes, lineage, and `CapabilityCall` semantics. `docs/specs/20260703-worker_agent_capability.md` owns those; this spec owns its selected `mcp.*` route family.
-- The user-facing remote MCP endpoint and administrator CLI. `docs/specs/20261002-remote_mcp_interface.md` and `docs/specs/20260910-agent_operator_skill.md` own those surfaces. The direction matters: external coordinators drive NanoCore through public operations, while this specification owns NanoCore supplying MCP tools to worker agents. External product invocation stays outside the selected Worker MCP transport, package-session admission, supply records and supply-policy ownership; shared operation definitions and native implementations do not merge those boundaries.
-- Vault record semantics and injection plan shapes (`docs/specs/20260703-vault_secret_injection.md`).
-- Third-party non-MCP API proxying and unified network egress, which remain deferred on the roadmap.
-- MCP server sandboxing/isolation, which is deferred.
-- MCP servers and tools configured inside the worker's Sandbox, which are local execution under [Sandbox](../core/sandbox.md); the rationale is recorded in [Full Permission Inside The Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md). Their external traffic follows the route distinction owned by [Sandbox](../core/sandbox.md); an independently admitted public endpoint is not Gateway-managed server supply.
-- The pending request record, its lifecycle, and its delivery, owned by [Pending Requests](20260930-pending_requests.md).
-- The canonical `AgentCapability` and `CapabilityCall` terms (`docs/core/mediation.md`).
-- RelayStream, nested HTTP/2, Sandbox Integration, route credentials, or NanoHost lifecycle, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+- Catalog versions and bindings. [MCP Catalog Management](20260907-mcp_catalog_management.md) owns them.
+- The capability plane and its carriage. [Worker Agent Capability](20260703-worker_agent_capability.md) and [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) own them.
+- Vault grant lifecycle. [Vault Secret Injection](20260703-vault_secret_injection.md) owns it.
+- Pending-request lifecycle. [Pending Requests](20260930-pending_requests.md) owns it.
+- In-Sandbox MCP, public egress, and a general non-MCP proxy. [Sandbox](../core/sandbox.md) owns local execution. Metered egress remains [#284](https://github.com/lingkaix/openkit/issues/284).
 
-## Core References
+Core:
 
-- `docs/core/mediation.md`
-- `docs/core/policy.md`
-- `docs/core/vault.md`
-- `docs/core/evidence.md`
-
-## Summary
-
-This specification owns Gateway-mediated MCP integration, not every use of the MCP protocol: catalog and built-in servers, integrations using Gateway-held credentials, and operations requiring Gateway-mediated approval or audit remain on this plane, while separately admitted credential-free public non-LLM endpoints may use the Sandbox network path. This spec defines the accepted MCP plane for that traffic: a worker reaches catalog and built-in MCP servers only through NanoCore, whose gateway serves them at worker-local loopback endpoints that the runtime loads as MCP servers; the runtime presents the session capability loopback credential, and Sandbox Integration carries the request through `/capabilities/mcp/*` under the capability route token of the Turn bound when it arrives, as [Worker Agent Capability](20260703-worker_agent_capability.md) defines; NanoCore owns the servers, credentials, policy checks, audit trail, and tool schema history. MCP servers the worker configures inside its own Sandbox are outside this plane.
-
-In the accepted target, Gateway-managed MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: upstream server endpoints and launch configs never appear inline in AgentManifest.mcp. Every `mcp.call-tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted; tool schemas are snapshotted per server version so calls stay interpretable after servers change; credentials are injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
-
-## Goals / Non-goals
-
-### Goals
-
-- Give workers governed MCP tool access with the same audit, policy, and credential guarantees as every other capability route.
-- Keep MCP server topology out of agent manifests via a named catalog.
-- Make every MCP tool call attributable, replayable, and interpretable after the fact.
-- Fail typed and fast on server failures instead of hanging worker turns.
-- Keep MCP credentials invisible to workers under all failure modes.
-
-### Non-goals
-
-- Do not build a general third-party API proxy or network egress plane; those stay roadmap-deferred.
-- Do not sandbox MCP server processes in this slice; server trust is deployment configuration.
-- Do not expose MCP server internals, endpoints, or native errors to workers or ordinary product summaries. Deployment-admin raw configuration inspection remains a restricted management operation under the MCP catalog owner.
-- Do not stream partial tool results in v1; calls are request/response with bounded payloads.
-- Do not expose User Memory to Workers. Workspace Knowledge ask/tell uses the built-in `openkit-work` server, not a separate capability family.
-
-## Background
-
-`docs/specs/20260703-worker_agent_capability.md` establishes `capability.local` as the worker-local capability API. `docs/specs/20260802-nanohost_runtime_and_transport.md` owns its `/capabilities/*` carriage and keeps its credential and semantics distinct from `/inference/*` and `/worker-control/*`. This spec owns the selected-MCP contract; third-party auth proxying and network egress remain independently deferred. The Current Implementation Projection separates implemented MCP behavior from pending acceptance and release closure.
-
-The workspace data source catalog (`docs/specs/20260704-workspace_data_source_catalog.md`) already set the pattern this spec mirrors: declare a named resource once at workspace scope, reference it by name everywhere, never inline endpoints in manifests.
+- [Mediation](../core/mediation.md), [Policy](../core/policy.md), [Vault](../core/vault.md), and [Evidence](../core/evidence.md).
 
 ## Decision
+
+Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
 
 - All worker access to selected catalog and built-in MCP servers flows through worker-local capability.local and NanoCore's capability Gateway. Native configuration cannot directly connect to or reclassify that managed selection, use Gateway-held credentials, or bypass its policy. Independently configured in-Sandbox MCP remains local execution; a public remote MCP endpoint may use direct egress only through the admission-classified public grant owned by Agent Manifest And AEP Resolution.
 - Gateway-managed external systems use the vendor's MCP server with authentication and account/repository binding held at the Gateway. The admission-classified credential-free non-LLM public exception does not create a Gateway server, credential binding, tool schema snapshot, CapabilityCall or Gateway usage record, and carries no promise of per-request authentication or payload inspection. Existing separately authorized credentialed non-LLM REST grants are outside this MCP exception and remain unchanged.
 
 The decision and its reason are recorded in [a decision record](../decisions/20260930-public_endpoints_by_admitted_grant.md).
-- The gateway uses the official MCP SDK v2 packages and supports the current MCP standard, including the 2026-07-28 stateless era, on both its worker-facing and upstream faces ([decision](../decisions/20260929-gateway_adopts_current_mcp_standard.md)).
+- The gateway uses the official MCP SDK v2 packages and supports the current MCP standard, including the 2026-07-28 stateless era, on both its worker-facing and upstream faces ([decision](../decisions/20260929-gateway_adopts_current_mcp_standard.md)). There is no v1 path and no dependency on the removal-only user-facing MCP package. The current Gateway packages are pinned at 2.4.0. The current native DeepSeek client and core are pinned at 2.2.0. These pins are current defaults, not protocol-version constants.
 - The gateway serves a new MCP standard beside the older revision as soon as it is released or a published official SDK release supports it, and each Worker adapter turns it on as soon as its pinned harness supports it through a documented option ([decision](../decisions/20261101-mcp_standard_adoption_policy.md)).
 - The tool surface a worker sees is fixed at Turn admission and changes only at a Turn boundary ([decision](../decisions/20260929-tool_surface_changes_at_turn_boundaries.md)).
 - The [accepted exposure amendment](#accepted-exposure-amendment) qualifies the preceding visible-surface rule once implemented and qualified for a route: admitted supply still changes only at a Turn boundary, while the model may load already-admitted definitions within a Turn and retains its accumulated exposure across Turns. This is the progressive-discovery exception contemplated by [the Turn-boundary decision's revisit condition](../decisions/20260929-tool_surface_changes_at_turn_boundaries.md#revisit-when). The current refresh/replacement baseline remains with [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md#static-supply-projection) and [AgentSession Continuity](20260704-agent_session_continuity.md#setup-generations-and-revocation); the amendment changes additive supply exposure, not their other compatibility, hygiene or replacement requirements.
@@ -86,7 +43,7 @@ The decision and its reason are recorded in [a decision record](../decisions/202
 - Gateway-managed MCP servers are declared in a workspace-scoped catalog (with read-only projection of server-scoped shared entries) and referenced by name from agent manifests.
 - NanoCore owns catalog MCP server lifecycle: it spawns stdio servers and connects to HTTP servers; workers never hold handles to those servers.
 - Credentials resolve from vault references at the gateway with `gateway-only` visibility.
-- Every `mcp.call-tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted. Tool schemas are snapshotted per server version.
+- Every `mcp.call-tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted. Tool schemas are snapshotted per server version. This version starts from a new data root and reads no earlier-version gate or Approval, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md).
 - `tool.use` is the policy-kernel action for `mcp.call-tool`; the default posture is deny-unless-enabled at the catalog level plus current Kernel allow at call level.
 
 ## Contract / Expected Behavior
@@ -147,11 +104,11 @@ Rules:
 - A session sees only servers that its resolved AEP enables; `mcp.list-servers` MUST NOT reveal disabled or out-of-scope entries.
 - One complete upstream native MCP protocol response is bounded to 1 MiB on both stdio and HTTP transports before semantic parsing; this is an internal envelope allowance, not the worker-native carriage in-flight bound. The parsed tools list or tool result is bounded to 512 KiB by capability-plane policy. An oversized semantic result fails typed with `mcp-result-too-large` and a hint to route bulk output through artifacts or the data plane; the gateway MUST NOT truncate silently.
 - Calls carry the full capability lineage (workspace, thread, turn, AgentSession, package snapshot); the gateway stamps the catalog entry id and schema snapshot id onto the call record.
-- Timeouts are enforced at the gateway (default 60s per call, catalog-entry configurable); a timed-out call fails typed and MUST NOT leave the worker waiting on a hung server.
+- A call returns one response. The gateway does not admit a partial tool result ([#393](https://github.com/lingkaix/openkit/issues/393)). The current default timeout is 60 seconds. `packages/config-schema/src/mcp-catalog.ts` and `packages/config-schema/src/resource-catalog.ts` admit only a positive integer number of milliseconds, at most 2,147,483,647. A timed-out call fails typed and MUST NOT leave the worker waiting on a hung server.
 
 ### Server lifecycle
 
-The built-in `openkit-work` server is supplied to every worker AgentSession without manifest selection, like `openkit-generative`. It carries `work_input_request`, `work_peer_list`, `work_peer_read`, `work_source_read`, `work_source_search`, `work_source_view` and `work_artifact_submit`, whose semantics [Worker Agent Capability](20260703-worker_agent_capability.md) owns. It also supplies `knowledge_ask` and `knowledge_tell` under [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md). It uses the same projection, has a reserved id that no catalog entry can take, is dispatched in process, and starts no subprocess. The target starts no MCP subprocess, contacts no configured external MCP server, accepts no replacement catalog entry and grants no App API bearer access. Until that resource family is cut over, the in-process dispatch named here remains the contract.
+The built-in `openkit-work` server is supplied to every worker AgentSession without manifest selection, like `openkit-generative`. It carries `work_input_request`, `work_peer_list`, `work_peer_read`, `work_source_read`, `work_source_search`, `work_source_view` and `work_artifact_submit`, whose semantics [Worker Agent Capability](20260703-worker_agent_capability.md) owns. It also supplies `knowledge_ask` and `knowledge_tell` under [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md). It also supplies `automation.event-admit`. Tool presence grants no poll or event admission. Only a currently authorized live scheduled poll can use that operation. [Worker Agent Capability](20260703-worker_agent_capability.md) owns it. It uses the same projection, has a reserved id that no catalog entry can take, is dispatched in process, and starts no subprocess. The target starts no MCP subprocess, contacts no configured external MCP server, accepts no replacement catalog entry and grants no App API bearer access. Until that resource family is cut over, the in-process dispatch named here remains the contract.
 
 The synchronous file-submission Tool carries only path and bounded metadata on this capability route; its file bytes use the existing independent NanoHost file-data reservation. The native call may await that effect while inference, heartbeat, and cancellation continue. Its durable success, request replay, and product-safe refusal semantics belong to [Worker Agent Capability](20260703-worker_agent_capability.md#built-in-work-target). This adds no runtime-specific Artifact branch, external MCP process, App API bearer, seventh Harness operation, or new capability family. Discovery must expose the same Tool and schema across Codex, Pi, OpenCode, and DeepSeek. A timed-out response never proves that publication did not commit; exact command replay and authorized Artifact read decide that fact.
 
@@ -169,7 +126,7 @@ The existing CapabilityCall retains the exact delivered answer bytes as delivery
 
 `knowledge_tell` submits supplied information and admitted Sources to the notebook scope's Knowledge Manager maintenance Thread. Knowledge Manager integrates and organizes through the existing fixed-base publisher. Current scope maintenance delegation permits ordinary publication; otherwise the exact candidate requires proposal approval. The result preserves the maintenance owner's `published`, `review_required`, `no_change` or typed-failure distinction. A Tool call, fact or model confidence cannot grant publication authority. A tell cannot claim terminal Worker output without the existing completed-Turn and delivery evidence.
 
-Workers receive the scope's bounded OKF root `index.md`, kept current by Knowledge Manager, so they can ask for details. The overview follows current source and audience restrictions. Workers receive no direct notebook editing Tool, host filesystem path, Git handle or App API bearer.
+Workers receive the scope's bounded OKF root `index.md`, kept current by Knowledge Manager, so they can ask for details. Each admitted scope root is at most 4,096 UTF-8 bytes. [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md) owns that overview. This navigation does not prove that the worker used an answer or received every cited page. The overview follows current source and audience restrictions. Workers receive no direct notebook editing Tool, host filesystem path, Git handle or App API bearer.
 
 ### Built-in operation derivation
 
@@ -178,12 +135,12 @@ Until a built-in resource family is cut over, in-process dispatch through the au
 When the family is cut over, the accepted target applies. Built-in worker MCP Tools are derived from the definitions and execute through invocation. [Operation Definition](20261002-operation_definition.md) owns that mechanism. This specification does not restate it. Worker supply assembly keeps capability admission and its immutable selections, including the Turn-boundary snapshot and the reserved supply of these built-in targets. Actor, execution lineage, entry scope, the private Turn, and command identities an owner derives come from the invocation context. Model-facing schemas omit those bound fields. A conflicting argument is rejected before any effect. Catalog servers and external MCP servers are not these built-in tools. Their snapshot, policy, credential, and upstream call rules remain the rules in this specification. The hand-maintained built-in descriptor is deleted in the family's cutover.
 
 - NanoCore owns the lifecycle. States: `inactive`, `starting`, `ready`, `degraded`, `failed`. Transitions are recorded as operational diagnostics; health checks run while any live session has the entry enabled.
-- `stdio` servers are spawned and supervised by NanoCore on demand (first call or session start, an implementation choice) and reaped when idle past a bound. Spawned server processes run in NanoCore's host context in this slice; sandboxing them is deferred, and server trust is therefore deployment configuration. Import is inactive and has no spawn or discovery effect. Activation of a new or changed stdio command or package executable requires deployment-admin authority, separately from ordinary Workspace catalog management.
+- `stdio` servers are spawned and supervised by NanoCore on first call, not at session start, and reaped when idle past a bound. Spawned server processes run in NanoCore's host context. This specification does not isolate those processes. Server trust is deployment configuration. Process isolation remains [#321](https://github.com/lingkaix/openkit/issues/321). Import is inactive and has no spawn or discovery effect. Activation of a new or changed stdio command or package executable requires deployment-admin authority, separately from ordinary Workspace catalog management.
 - `http` servers are connected from NanoCore with pooled clients. The actual fetch boundary rejects every redirect before following it, including same-origin redirects; no fixed header, Vault authentication, or request body reaches a redirect target. Endpoint changes require an explicit authorized configuration revision, without inferred credential forwarding or alternate transport.
 - Ordinary Worker HTTP session termination (`DELETE /mcp`) is bounded best-effort cleanup. A failed termination emits a bounded, secret-free diagnostic, still closes the local SDK transport, and MUST NOT fail its caller, Gateway close, or any completed Item or Turn outcome. Failure to close the local transport retains the existing cleanup ownership. Isolated administrator discovery previews retain their stricter proven-temporary-teardown requirement under the MCP catalog owner.
 - A `failed` or unreachable server yields typed `mcp-server-unavailable` errors on calls, never hangs; repeated failures mark the entry `degraded` in `mcp.list-servers` output so workers can adapt.
 - A pooled connection may reuse its bounded catalog only when the server advertises Tool-list change notifications. A notification invalidates the catalog; its maximum age is ten seconds, and a shorter upstream lifetime, including zero, wins. Servers without notifications are listed on each invocation. Reconnect, catalog or credential identity changes, and protocol or transport failure discard the cached observation. A cached list grants no authority and does not prove a new credential delivery; each invocation repeats current admission, and a delivery receipt requires an acknowledged exchange before result disclosure. Idle credential-bearing connections perform no health or discovery requests. These rules do not permit Tool replay.
-- One catalog entry may be reused across successive and co-resident AgentSessions. This specification does not authorize a harness of agents that control each other or fleet behavior; the read-only peer tools create no control edge. Per-AgentSession server instances remain a deferred lifecycle option for stateful or isolation-sensitive servers.
+- One catalog entry may be reused across successive and co-resident AgentSessions. This specification does not authorize a harness of agents that control each other or fleet behavior; the read-only peer tools create no control edge. The gateway pools a connection by server, catalog, and credential identity. That pool is not a per-AgentSession confidentiality guarantee. Per-AgentSession instances remain [#321](https://github.com/lingkaix/openkit/issues/321). The current idle close for an HTTP client is 60 seconds. That value is a current default. It is not a grace period for a credential-bearing stdio process. Those processes close under the existing immediate-cleanup predicates. Exact grant identities partition pooled credential material.
 
 ### Credential injection
 
@@ -196,12 +153,12 @@ Raw presentation injects the exact resolved Vault string through the existing co
 
 ### Tool schema retention
 
-- At Turn admission NanoCore fixes, for each selected server, the `McpToolSchemaSnapshot` the worker sees during that Turn; the snapshot is captured on first use of a server and on drift detected at a Turn boundary under `tracking` policy. A snapshot holds the catalog entry id, server-reported identity/version when available, the full tool list with JSON schemas, a content digest, and captured-at time. Upstream `tools/list` pagination is followed to the end within a bounded page count, and the complete list stays under the 512 KiB semantic bound.
+- At Turn admission NanoCore fixes, for each selected server, the `McpToolSchemaSnapshot` the worker sees during that Turn; the snapshot is captured on first use of a server and on drift detected at a Turn boundary under `tracking` policy. The first stamped snapshot binds that Turn's later `tools/list` and call validation. A snapshot holds the catalog entry id, server-reported identity/version when available, the full tool list with JSON schemas, a content digest, and captured-at time. A retained snapshot row has an independent v1 marker. The reader verifies SHA-256 of the exact retained `tools_json` before schema decoding. Historical tool meaning stays frozen at that reader. A later live decoder does not reinterpret that `inputSchema`. This digest is a named exception to the shared canonical form in [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md). Identical retained schema content reuses its content-addressed snapshot within the existing Workspace/catalog/source owner. The current retention target for eligible unreferenced live snapshots is 8. Call-referenced snapshots stay. Approved-content snapshots have ordering priority. The target is a current default, not an absolute history ceiling. Upstream `tools/list` pagination is followed to the end within a bounded page count, and the complete list stays under the 512 KiB semantic bound.
 - A runtime that refreshes its tool list at Turn start sees a changed snapshot at the next Turn after the definition hold is approved. For a runtime whose adapter declares that it cannot refresh, a changed snapshot is a setup change that the continuity owner applies by replacing the binding at that boundary, and the successor resumes the native conversation.
 - Every `CapabilityCall` for `mcp.call-tool` records the schema snapshot id it was validated against, so calls remain interpretable for replay and audit after servers change.
 - Schema drift handling follows the entry's pin policy: `pinned` entries fail calls typed with `mcp-schema-drift` until an operator re-pins; `tracking` entries record a diagnostic and capture a new snapshot, which the worker sees from the next Turn only after the definition hold is approved. Within a Turn, calls are validated against the Turn's snapshot, and a call whose tool left the upstream or no longer matches it fails typed rather than silently changing the surface.
 - Tool arguments are validated against the snapshot schema at the gateway before the server is called; validation failures are typed `mcp-invalid-arguments` and never reach the server.
-- Binding replacement remains the contract above for supply changes a live binding cannot apply. The current implementation detects changes in admitted AEP supply, but an observed `tracking` schema change alone is not wired to that replacement check. Once the [accepted exposure amendment](#accepted-exposure-amendment) is implemented for a route, an additive supply change is appended to the same AgentSession and native conversation after any required definition-hold approval instead of replacing the binding; removed tools and changed schemas follow that amendment.
+- Binding replacement remains the contract above for supply changes a live binding cannot apply. A `tracking` schema change does not by itself replace the fixed fallback session. Admitted AEP supply changes still use the continuity owner's replacement check. Native deferred-definition loading is not activated. Under the [accepted exposure amendment](#accepted-exposure-amendment), an additive supply change is appended to the same AgentSession and native conversation after any required definition-hold approval. Removed tools and changed schemas follow that amendment.
 
 ### Tool-Definition Hold
 
@@ -216,7 +173,7 @@ The first active Tool-condition subset is human-authored ordinary `prohibit` and
 - `tool.use` is the policy-kernel action for `mcp.call-tool`. Policy associations MAY scope by catalog entry name and tool name; the decision context includes the standard capability lineage.
 - Selected supply is required: a catalog entry not enabled for the Workspace/Agent yields no access. Selected `allowedTools` is supply, not a separate per-Tool permission grant. Each effect still requires the current final Kernel `allow` for `tool.use` under the existing authority and credential restrictions.
 - Tools with a current human-authored `require_approval` Policy condition raise a pending approval under [Pending Requests](20260930-pending_requests.md). After current authorization and argument validation against the Turn's snapshot, the gateway captures the immutable binding: server id, catalog revision, schema snapshot, tool, the full canonical arguments, and the originating authorization context. It makes no upstream contact, records the raising `CapabilityCall` as `denied` with no contact, and returns at once a tool result with `isError: true` whose structured and text content carry `status: "pending-approval"`, the request id, and a next step telling the agent that the outcome arrives on a later Turn and that it must not call again to claim it. The Turn continues. A repeated call with the same qualified binding while the request is pending returns the same request.
-- After a grant, the gateway claims the request once and re-evaluates current Workspace membership and Agent authority, the Thread's current supply for that server and tool, current credentials and Vault grants, current `tool.use` policy, and the current schema against the captured binding in the Main submission check of the approval response command under [Pending Requests](20260930-pending_requests.md). On success it executes the captured call with the ordinary timeout, bounds, and credential rules. The execution `CapabilityCall` id is derived from the request id; its fresh `allow` PermissionDecision links the grant and the call. Its disposition is `approved-executed`, `execution-error`, or `outcome-unknown`. A Main submission refusal after claim is `execution-error` with no upstream contact and no usage; a refusal before claim is `denied-not-executed`. A claimed call that did not finish before a restart is `outcome-unknown` and is never executed again. The agent never re-issues the call, and no approval expires by time.
+- A retained captured call whose tool left supply ends after claim as `execution-error` with reason `tool-left-supply` and no Gateway contact under [Pending Requests](20260930-pending_requests.md). After a grant, the gateway claims the request once and re-evaluates current Workspace membership and Agent authority, the Thread's current supply for that server and tool, current credentials and Vault grants, current `tool.use` policy, and the current schema against the captured binding in the Main submission check of the approval response command under [Pending Requests](20260930-pending_requests.md). On success it executes the captured call with the ordinary timeout, bounds, and credential rules. The execution `CapabilityCall` id is derived from the request id; its fresh `allow` PermissionDecision links the grant and the call. Its disposition is `approved-executed`, `execution-error`, or `outcome-unknown`. A Main submission refusal after claim is `execution-error` with no upstream contact and no usage; a refusal before claim is `denied-not-executed`. A claimed call that did not finish before a restart is `outcome-unknown` and is never executed again. The agent never re-issues the call, and no approval expires by time.
 - At grant-time re-evaluation, a `tracking` entry compares the requested tool name and complete retained `inputSchema` in the captured and current snapshots. A missing tool or changed input schema refuses execution. Compare the complete schema by canonical JSON equality, including nested descriptions and annotations. Changes to another tool or to top-level tool metadata outside `inputSchema` do not refuse the captured call. A `pinned` entry retains whole-snapshot refusal. Catalog revision, eligibility, authority, Policy, credentials, Vault grants, and at-most-once claim checks remain unchanged. This comparison uses retained snapshots and adds no durable field ([accepted #117 decision](../decisions/20261012-requested_mcp_tool_schema_at_grant.md)).
 - Denials are typed (`mcp-denied`) and audited; the gateway MUST NOT reveal whether the denial came from catalog, policy, or approval in the worker-visible error beyond the typed code.
 
@@ -229,123 +186,57 @@ The first active Tool-condition subset is human-authored ordinary `prohibit` and
 ### Usage and audit
 
 - Failure Audit summaries retain the observed upstream HTTP status and the exact serialized byte size of a complete semantic result refused by the result bound, when known; upstream HTTP 429 also emits an application warning during discovery before a Tool Call exists. These diagnostics contain no upstream body or tool content.
-- Every `mcp.call-tool` request produces one `CapabilityCall` record; exactly one `UsageRecord` is produced unless upstream is proved not contacted (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md` and `docs/specs/20260704-capability_usage_gateway_foundation.md`, fully attributed through the standard order in `docs/core/mediation.md`.
+- Every `mcp.call-tool` request produces one `CapabilityCall` record; exactly one `UsageRecord` is produced unless upstream is proved not contacted (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md#capability-usage`, fully attributed through the standard order in `docs/core/mediation.md`.
 - `mcp.list-servers` and `mcp.list-tools` are capability calls for audit purposes but do not emit usage rows.
 - Server lifecycle transitions, schema snapshot captures, and credential-bearing spawns emit audit events.
 - Usage rows and audit rows MUST NOT contain tool arguments or results; new `tool-call` Items retain secret-redacted arguments and the serialized result in their canonical body with bounded timeline previews and full reads by lineage, result digests bind the exact retained result bytes, and older null bodies remain readable.
 
 ## Accepted Design
 
-The gateway has an MCP subsystem beside the inference dispatcher: the existing workspace-scoped catalog, a bounded stdio and HTTP client supervisor, a schema snapshot store, and the three operation handlers that compose validation → policy → dispatch, or capture and a pending result when approval is required → normalization → usage/audit emission. The approval response command later runs claim → current re-evaluation → dispatch or no-contact refusal → disposition for a captured call. Its MCP implementation uses the official SDK v2 packages `@modelcontextprotocol/server`, `@modelcontextprotocol/client`, and `@modelcontextprotocol/core` as an internal worker-capability dependency, with protocol negotiation inside the SDK and no v1 path, and does not depend on the removal-only user-facing MCP package or inherit an end-user transport contract. A deterministic stub MCP server supplies focused L1–L3 checks.
+The gateway has an MCP subsystem beside the inference dispatcher: the existing workspace-scoped catalog, a bounded stdio and HTTP client supervisor, a schema snapshot store, and the three operation handlers that compose validation → policy → dispatch, or capture and a pending result when approval is required → normalization → usage/audit emission. The approval response command later runs claim → current re-evaluation → dispatch or no-contact refusal → disposition for a captured call. Its MCP implementation uses the official SDK v2 packages `@modelcontextprotocol/server`, `@modelcontextprotocol/client`, and `@modelcontextprotocol/core` as an internal worker-capability dependency, with protocol negotiation inside the SDK and no v1 path, and does not depend on the removal-only user-facing MCP package or inherit an end-user transport contract. Built-in `openkit-generative` descriptors and dispatch keys derive from the shared Kernel, Generative UI, and supported Vault request definitions. The Vault request and request-state reads bind the actual Worker execution and verify the exact package and current canonical credential selection under [Vault Secret Injection](20260703-vault_secret_injection.md#supported-grant-request-and-review). They expose no issue operation, raw material, arbitrary secret-name lookup, or App API bearer. Their complete MCP results use the existing capability response ceiling. Worker publication binds Workspace, Thread, Turn, and request identity from trusted invocation lineage. Presentation publication still returns its fallback text and embedded JSON resource. Native invocation owns primary operation admission. The gateway retains Tool supply, package, capability, and effect checks. Built-in operation failures follow the shared error rule in [Operation Definition](20261002-operation_definition.md#invocation). Worker capability and transport failures retain their owning projections.
 
 ### Accepted exposure amendment
 
-Accepted on 2026-11-01 under the engineer's direction to replace per-Turn tool trimming with agent-driven progressive exposure ([#414](https://github.com/lingkaix/openkit/issues/414)). Worker routes use the fixed fallback; native deferred-definition activation remains subject to the qualification rule below. It amends what the model sees, not what the Worker may do: each Turn still resolves the current admitted supply and retains its schema evidence, and every call is still validated and authorized as this specification requires.
+This amendment replaces per-Turn tool trimming with agent-driven progressive exposure. Worker routes use the fixed fallback. Native deferred-definition loading waits for a qualification probe at the route's pinned versions. It amends what the model sees, not what the Worker may do: each Turn still resolves the current admitted supply and retains its schema evidence, and every call is still validated and authorized as this specification requires.
 
 - Small direct core. `openkit-work`, the harness's ordinary file, shell and discovery tools, and internal agents' small role-admitted entry tools stay direct. Other selected servers, including `openkit-generative` and vendor catalogs, are advertised by short, authorization-filtered server or domain descriptions with "when to use" cues, and their definitions are loaded when the agent needs them. The core's membership is a starting policy to measure, not a fixed optimum.
 - Activation. A route loads deferred definitions through its harness's native progressive exposure (native tool search or deferred tools, or native CodeMode where native loading would rewrite the prefix) only after that route passes a qualification probe at its pinned versions. A route without a qualified native path mounts a fixed Worker-only fallback from session start: `mcp.list-servers`, `mcp.list-tools` and `mcp.call-tool`, backed by the existing operation handlers. Generic execution through the fallback keeps Gateway validation against the snapshot schema. Returning a schema in prose does not register a tool.
 - Prefix preservation. Within an un-compacted native conversation, the initial tool definitions and their order, the system prefix, and historical discovery outputs and loading events stay byte for byte. The model surface is never unloaded or rebuilt at a Turn. Loading an admitted deferred definition is exposure, not a supply change, and may happen within a Turn; each loading event stays in the native history and in the Turn's evidence, so the tools visible at each model request remain attributable. Newly admitted supply takes effect after any required definition-hold approval at the next Turn boundary, as [the Turn-boundary decision](../decisions/20260929-tool_surface_changes_at_turn_boundaries.md) requires, and is appended to the same AgentSession and native conversation.
 - Authority stays current. Discovery grants no permission. Each call keeps its exact schema snapshot reference and is checked against current policy, credentials and authorization. Removing a tool hides it from discovery and denies current execution; its earlier definition stays in history. A changed schema for an already loaded tool fails typed instead of silently redefining the same callable name. `pinned` drift refusals are unchanged.
 - One catalog, three audience projections. Descriptors derive from existing Operation Definitions and selected schema snapshots. Worker MCP, Remote MCP and internal Tools keep distinct admission and dispatch. Remote MCP keeps its four Tools `openkit.search`, `openkit.describe`, `openkit.guide` and `openkit.call` and gains no vendor `mcp.call-tool` authority. No Groups-shaped catalog, stored group graph, search proxy or activation store is introduced.
-- Upstream connection and listing latency is a separate repair ([#453](https://github.com/lingkaix/openkit/issues/453)) and does not change this amendment.
+- Notification-aware catalog reuse is the current cache rule in Server lifecycle. A server without notifications still refreshes. That rule does not change this amendment.
 
 ## Internal Caller Reuse Boundary
 
-`20260909-internal_agent_resource_integration.md` owns the internal Assistant consumer of this MCP substrate: owned internal-capability adapter binding, internal user/Thread/Turn lineage, per-run private stdio/HTTP session partitions, bounded cleanup, product-visible Tool Items and the non-Worker approval exit, which follows the same pending approval and captured-call execution. This specification's AEP, AgentSession, Sandbox capability token/listener, and Worker pool clauses apply only to Worker callers. Internal calls share the SDK/supervisor, schemas, current Policy/Vault and normalized evidence facilities, never Worker credentials or an invented Worker identity. The Worker shared-session compromise does not authorize sharing its connections with private Assistant runs. The internal branch remains Not Started and changes no claim about the delivered Worker branch.
-
-## Current Implementation Projection
-
-Worker Knowledge ask/tell use `openkit-work`, CapabilityCall evidence and the Knowledge Manager runtime. The maintained overview supply is not implemented. This specification adds no new worker transport.
-
-The selected `openkit-repository` builtin and `repository_push` binding are removed. A retained captured call whose tool left supply ends after claim as `execution-error` with reason `tool-left-supply` and no Gateway contact under Pending Requests. Generic captured vendor MCP execution and configured approval remain implemented.
-
-The executable plane implements the three selected-MCP routes. NanoCore exposes authenticated `/capabilities/mcp/*` handlers, validates selected catalog and schema lineage, applies policy, runs the bounded upstream call, and records capability, usage, and audit outcomes. Sandbox Integration carries the separate capability token over its existing nested session and fixed native listener. The Codex, Pi, OpenCode, and DeepSeek adapters mount the fixed Worker fallback and small Work core on their native MCP path. Vendor and Generative definitions are read through the fallback; the complete original AEP selection remains the execution boundary. Initial native definitions are fixed across Turns, including when deferred server selections change. No worker-visible upstream credential exists. NanoCore uses the MCP SDK v2 packages named in Accepted Design, at `@modelcontextprotocol/client`, `@modelcontextprotocol/core`, and `@modelcontextprotocol/server` `2.4.0`; the native DeepSeek client/core closure stays at `2.2.0`. Upstream `tools/list` pagination is followed within a bounded page count. An approval-required call returns pending without an upstream effect, and a later grant executes the captured call. The first stamped schema snapshot that a Turn uses for a server binds that Turn's later `tools/list` and call validation (`apps/nanocore/src/runtime/mcp-tool-schema-snapshots.ts`); ordinary calls still validate the current bounded catalog observation and record its schema snapshot. The SDK owns per-connection cache storage and notification eviction. HTTP clients expire after sixty idle seconds; credential-bearing stdio processes retain immediate cleanup. Exact grant identities partition pooled credential material. Source-level adapter projection is not a live vendor call and is not product enablement of a runtime whose image owner still disables it.
-
-NanoCore loads the Workspace catalog from `catalog/catalog.json` through the runtime-config surface, selects it by the actual dequeued Turn's Workspace at scheduler dispatch, and projects only selected server ids, catalog digests, tool rules, approval marks, and schema policy into AEP supply. The built-in `openkit-generative` supply is appended unconditionally, so the plane is enabled for every worker package. Focused route, policy, schema, usage, transport, and adapter checks cover the implementation. The built NanoCore L5 smoke starts a disposable public Task, real stdio MCP child, native NanoHost carriage, and official SDK client and proves durable call, schema, policy, usage, audit, Item, backend, lease, process-reaping, listener-close, and temporary-root cleanup outcomes. Release closure separately consumes the admitted real-Codex Web L6 story and its retained multi-run evidence.
-
-Immutable MCP configuration history, current-version and binding resolution, ordinary package environment, working-directory and header fields, and redirect rejection at the actual HTTP fetch boundary are implemented. Raw/bearer presentation, SDK token-only bearer delivery, case-insensitive Vault header replacement, and live raw/formatted/query-serialized redaction are implemented. Management and schema ownership stay with `docs/specs/20260907-mcp_catalog_management.md`. Raw restricted package inspection and original-package export remain deferred there. This projection does not claim package-root materialization. Existing Gateway execution remains implemented and is not demoted to Draft.
-
-Built-in `openkit-generative` descriptors and dispatch keys derive from the shared Kernel, Generative UI and supported Vault request definitions. The Vault request and request-state reads bind the actual Worker execution and verify the exact package and current canonical credential selection under [Vault Secret Injection](20260703-vault_secret_injection.md#supported-grant-request-and-review). They expose no issue operation, raw material, arbitrary secret-name lookup or App API bearer. Their complete MCP results use the existing capability response ceiling. Worker publication binds Workspace, Thread, Turn and request identity from trusted invocation lineage; presentation publication still returns its fallback text and embedded JSON resource. Native invocation owns primary operation admission while the gateway retains Tool supply, package, capability and effect checks. Built-in operation failures follow the shared error rule in [Operation Definition](20261002-operation_definition.md#invocation); worker capability and transport failures retain their owning projections.
-
-The [accepted exposure amendment](#accepted-exposure-amendment) uses the fixed Worker fallback for Codex, Pi, OpenCode and DeepSeek. No native deferred-definition loading path is activated. Core's Session key already excludes deferred MCP selections while each AEP retains exact supply; the Harness now keeps native mounts fixed as those selections change. Source tests cover both SDK protocol eras, bounded discovery, schema and supply refusal, unchanged native definitions and history, and original-request cancellation. Runtime image delivery and any native deferred-loading route still require their own pinned qualification; these tests make no real-model or deployed-image claim.
-
-## Alternatives Considered
-
-- Direct worker connections to catalog or Gateway-managed external MCP servers with Gateway credentials injected into the Sandbox. Rejected: it bypasses their policy and audit, puts Gateway credentials within Sandbox reach, and makes every backend responsible for their MCP transport. Independently configured local MCP and admission-classified public endpoints are outside this rejected managed-integration alternative.
-- Holding the native tool call open while a person decides. Rejected: it ties a Turn to human latency and cannot bind an exact effect.
-- Embedding MCP protocol or server lifecycle in the worker runtime. Rejected: the worker client stays a thin local caller while NanoCore owns MCP transport, policy, credentials, lifecycle, and records.
-- Per-turn ephemeral server spawn as the default lifecycle. Rejected as default: spawn cost per turn is wasteful for stateless servers; retained as a deferred per-session lifecycle option for stateful or isolation-sensitive servers.
-- Waiting for every unified-proxy family. Rejected: MCP may be implemented from this accepted contract once the capability-plane foundation is rebuilt; third-party auth proxying and network egress remain independently deferred.
-
-## Consequences
-
-- Workers receive selected tool supply only through the implemented governed Gateway path; broader capability families remain absent.
-- NanoCore takes on MCP server supervision (process management, health, reaping) — a real operational surface.
-- MCP server processes run trusted in this slice; deployments must treat catalog write access accordingly until server sandboxing lands.
-- Tool schema snapshots add storage but make audit and replay honest against moving servers.
-
-## Rollout / Migration Plan
-
-No compatibility path exists. The implementation followed the order: fail-closed capability projection and thin client; catalog, manifest reference, and AEP selection; stdio lifecycle plus listing against schema snapshots; governed tool calls with usage and audit; HTTP transport and gateway-only Vault credentials. The redesign then cuts the gateway to SDK v2 in one change with no v1 path, fixes the tool snapshot per Turn, replaces the human-gate closeout with pending approvals and captured-call execution, and adds `openkit-work`. This version starts from a new data root and reads no earlier-version gate or Approval, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md); that decision does not relax data continuity for later releases. The roadmap remains pending until final package, deterministic story, and independent release gates pass.
-
-## Testing Strategy / Acceptance Criteria
-
-Mapped to `docs/specs/20260529-test_strategy.md`, using a deterministic stub MCP server harness:
-
-- Grant-time regressions change another allowed tool's retained `inputSchema` and an excluded tool's retained `inputSchema`. Each tracking case executes the original captured call once; pinned entries refuse the whole-snapshot drift before contact. Top-level tool description changes outside `inputSchema` do not refuse tracking calls. Changing any requested-tool schema content, including nested descriptions and annotations, or removing the requested tool refuses before upstream contact. The checks retain catalog, eligibility, authorization, Policy, credential, and claim refusals.
-- L0: schema-drift checks for catalog entry, schema snapshot, and route payload shapes; public schemas expose no User Memory selector or MCP-native error strings.
-- Catalog extension checks prove inactive import performs no contact, ordinary Workspace authority cannot activate changed host-executed stdio, non-secret package fields preserve Vault precedence, changed effective versions reject stale AEPs, and HTTP redirects contact neither same-origin nor cross-origin targets and leak no canary credentials.
-- Focused conformance proves retained raw bindings and digests remain unchanged; recognized presentation survives catalog round trips; unsupported presentation fails closed; bearer bytes are correct through the real SDK; raw custom-header, env, and existing query delivery remain exact; mixed-case collisions yield only the Vault value; raw/formatted/query-encoded canaries cannot escape; and missing credentials, stale bindings, revocation, rotation, authentication rejection, redirects, and approval-pending calls preserve their existing no-contact, no-replay, or honest-effect predicates.
-- L1: unit tests for argument validation against snapshots, pin-policy drift behavior, error normalization mapping, redaction filters, idle reaping and teardown-on-revocation triggers.
-- L2: contract tests on the capability plane: full lineage on every call record; schema snapshot id stamped; usage rows validate against `UsageRecordSchema` with `category: "tool"` and `unit: "tool_calls"`; denial paths yield only typed codes; canary credential values planted in server environment never appear in any worker-visible payload.
-- L3: NanoCore black-box tests: end-to-end call through a spawned stub server; server crash mid-call fails typed without hanging the turn; grant revocation tears down the spawned server and the next call fails typed; an approval-required call makes no upstream contact, records the denied raising `CapabilityCall`, returns `isError: true` with the pending fields, and leaves the Turn running; a grant after that Turn ended executes the captured call exactly once with the captured arguments, and a repeated identical call while pending returns the same request while changed arguments raise a new one; refusal after claim due to changed policy, credentials, or supply records `execution-error` with no contact; a crash between claim and finish yields `outcome-unknown` and no second execution; `tools/list` pages from a multi-page upstream are all followed; a tracking drift inside a Turn is seen only at the next Turn; both a stateless-era and a session-era client work against the worker-facing server; oversized result fails typed; `pinned` entry fails on drifted stub schema until re-pinned.
-- Built-in Knowledge checks discover identical ask/tell schemas across admitted harnesses, reject non-Task or scope-override calls before reads, and preserve audience isolation. Ask retains exact delivered answer bytes in the CapabilityCall and attributes model usage to Knowledge Manager. No confidence mark or second-model review is required. Tell cannot publish without current delegation or required proposal approval. Neither result substitutes selection evidence for S39 pushed-context delivery or fabricates completed Worker provenance.
-- A concurrent native-discovery regression supplies the two built-ins and one deterministic catalog server, overlaps their initialization requests at the real capability admission boundary, and verifies that every request is admitted without retry and every healthy selected server's expected tools are returned by discovery. A separate overflow case fills the current capability ceiling and verifies immediate HTTP 429 before semantic dispatch, preserved worker-control admission, and renewed admission after exchange completion or termination. A transport-only fixture proves admission and carriage, not the runtime's captured tool catalog.
-- L5: smoke: packaged build spawns the stub server and completes one governed tool call.
-- L6: story acceptance: public `task.start` drives a real checkpoint, execution attempt, AEP, session-continuity backend, worker-control lineage, and catalog-declared MCP tool; the marked call returns a pending result with no upstream contact while the Turn continues, the AgentSession stays bound, the grant executes the captured call through the gateway, and a later Turn on the same Thread delivers the outcome; audit shows the full call chain with no credential or raw payload leakage.
-
-Acceptance: no path exposes credentials or endpoints to workers; every call is attributable and schema-interpretable; failures are always typed and bounded in time.
-
-## Risks & Mitigations
-
-- Risk: trusted MCP server processes become a privilege-escalation vector. Mitigation: import is inactive, Workspace catalog writes do not grant host execution, and new or changed stdio activation requires deployment-admin authority; server sandboxing remains explicit deferred work.
-- Risk: schema snapshots bloat storage for churning servers. Mitigation: snapshots are content-addressed by digest; identical schemas dedupe; `tracking` entries cap retained snapshots.
-- Risk: shared server state leaks across sessions. Mitigation: the contract states no per-session isolation guarantee; stateful entries are documented, and the per-session lifecycle option is reserved.
-- Risk: this plane drifts into a general API proxy by accretion. Mitigation: routes are MCP-protocol-only by contract; third-party auth proxying stays roadmap-gated.
-
-## Resolved Decisions
-
-Previously open questions are resolved by accepted defaults: `stdio` MCP servers spawn on first call rather than session start; upstream `tools/list` pagination is followed within a bounded page count, and the worker-facing list remains bounded by the 512 KiB semantic limit, so very large tool sets must still be split, filtered, or rejected with typed diagnostics.
-
-## Deferred / Future Work
-
-- MCP server process sandboxing and resource limits.
-- Per-session server instances for stateful or isolation-sensitive servers.
-- Streaming tool results.
-- Remote MCP marketplace/registry integration and server trust metadata.
-- Rate limits per server/tool once the capability catalog and budget model exist.
-
-## Links
-
-- `docs/specs/20260907-mcp_catalog_management.md`
-- `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`
-
-- `docs/specs/20260703-worker_agent_capability.md`
-- `docs/specs/20261002-operation_definition.md`
-- `docs/specs/20260704-workspace_data_source_catalog.md`
-- `docs/specs/20261002-remote_mcp_interface.md`
-- `docs/specs/20260703-vault_secret_injection.md`
-- `docs/specs/20260704-vault_backend_implementation.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
-- `docs/specs/20260531-human_attention_intervention_model.md`
-- `docs/specs/20260703-agent_manifest_aep_resolution.md`
-- `docs/specs/20260529-test_strategy.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
-- `docs/core/mediation.md`
-- `docs/core/policy.md`
-- `docs/core/vault.md`
-- `docs/roadmap.md`
-
-### Administrator Discovery Is A Separate Consumer
+`20260909-internal_agent_resource_integration.md` owns the internal Assistant consumer of this MCP substrate: owned internal-capability adapter binding, internal user/Thread/Turn lineage, per-run private stdio/HTTP session partitions, bounded cleanup, product-visible Tool Items and the non-Worker approval exit, which follows the same pending approval and captured-call execution. This specification's AEP, AgentSession, Sandbox capability token/listener, and Worker pool clauses apply only to Worker callers. Internal calls share the SDK/supervisor, schemas, current Policy/Vault and normalized evidence facilities, never Worker credentials or an invented Worker identity. The Worker shared-session compromise does not authorize sharing its connections with private Assistant runs. The internal caller is specified by [Internal Agent Resource Integration](20260909-internal_agent_resource_integration.md). This boundary changes no claim about the delivered Worker branch.
 
 The [explicit bounded preview](20260907-mcp_catalog_management.md#explicit-bounded-discovery-preview) reuses the SDK Gateway connection and teardown seam with an exact canonical declaration and a trusted temporary context. Its narrow connection input does not claim an enabled Worker binding or AEP admission. Ordinary Worker selection, current binding/material checks and `tools/call` authority remain unchanged. Preview instances never share a Worker session or consuming-Workspace process data, and cannot execute a tool.
+
+## Acceptance
+
+A real Codex story must start through public `task.start` and reach the exact checkpoint, attempt, AEP, native session, worker-control lineage, and catalog Tool. The marked call is pending with zero upstream contact while its Turn continues and the AgentSession stays bound. The grant executes the captured call once. A later Turn on the same Thread delivers the outcome with full attributed, secret-free evidence.
+
+## Implementation
+
+- `apps/nanocore/src/runtime/`
+- `apps/nanocore/src/catalog/`
+- `apps/nanocore/src/administration/`
+- `packages/worker-shim/src/`
+- `packages/config-schema/src/`
+
+## Implementation Gaps
+
+None.
+
+## Decisions
+
+- [Public endpoints by admitted grant](../decisions/20260930-public_endpoints_by_admitted_grant.md)
+- [Gateway adopts the current MCP standard](../decisions/20260929-gateway_adopts_current_mcp_standard.md)
+- [MCP standard adoption policy](../decisions/20261101-mcp_standard_adoption_policy.md)
+- [Tool surface changes at Turn boundaries](../decisions/20260929-tool_surface_changes_at_turn_boundaries.md)
+- [Pending tool calls](../decisions/20260930-pending_tool_calls.md)
+- [Capability stream ceiling default](../decisions/20261003-capability_stream_ceiling_default.md)
+- [MCP credential presentation](../decisions/20261003-mcp_credential_presentation.md)
+- [Requested MCP tool schema at grant](../decisions/20261012-requested_mcp_tool_schema_at_grant.md)
+- [Earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)
+- [Full permission inside the Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md)

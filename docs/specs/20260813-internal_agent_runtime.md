@@ -5,65 +5,29 @@ kind: topology
 date: 2026-08-13
 aspect: architecture
 ---
+
 # Internal Agent Runtime
 
-Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
+This specification owns the bounded runtime used by every NanoCore-internal model-using role. Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names). This document owns admission and execution, not a second naming rule.
 
-## Owns
+## Scope
 
-This specification owns the role-agnostic bounded runtime used by every NanoCore-internal model-using role: its assembled input, transient loop algorithm, emergency fuses, typed exits, Tool execution boundary, transport-only streaming projection, prompt assembly contract, restart posture, and internal-role execution profile.
+Owns the assembled input, the transient loop, the emergency fuses, the typed exits, the Tool execution boundary, the streaming projection, prompt assembly, restart, and the internal-role execution profile.
 
-## Does Not Own
+Does not own:
+- Canonical Tool identity and publication. [Mediation](../core/mediation.md) owns them.
+- Internal role definitions. [Architecture](../core/architecture.md) owns them.
+- Durable workflow progression. [Work Model](../core/work-model.md) owns it.
+- Context strategies and source-bound summary Items. [Context Management](20260902-agent_runtime_context_compaction.md) owns them.
+- Worker execution, Harnesses, and Sandboxes. Their existing owners retain them.
 
-- `docs/core/mediation.md` owns canonical Tool identity, capability projection, exact Tool admission, per-call authorization, and final publication admission.
-- `docs/core/architecture.md` owns the definitions and stable responsibilities of Core Assistant, Workflow Coordinator, Knowledge Manager, and other internal Core roles.
-- `docs/core/work-model.md` owns durable workflow progression, bounded worker steps, gates, decisions, evidence, retry, and closeout.
-- The loop does not own or know product records, role selection, durable state, scheduling, recovery, provider configuration, capability catalogs, authorization policy, budgets, credentials, output audiences, or external-effect settlement.
-- This specification does not redefine Worker Agent execution, Worker runtime continuity, Harnesses, Sandboxes, or worker capability supply.
-- This specification owns no Sandbox pin. Ordinary Sandbox selection stays with runtime scheduling.
-- [Context Management](20260902-agent_runtime_context_compaction.md#internal-durable-rolling-context) owns both context strategies and their common source-bound summary Items. Trusted callers assemble the admitted messages; this bounded loop owns no second durable transcript or Gateway compactor.
-
-## Core References
-
-- `docs/core/architecture.md`
-- `docs/core/mediation.md`
-- `docs/core/work-model.md`
-- `docs/core/doctrine.md`
-- `docs/core/policy.md`
-
-## Summary
-
-The [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md) separates Core-owned loops from Worker execution and external loops, independently of tool-execution placement.
-
-NanoCore uses one small bounded loop for internal roles instead of separate role runtimes. Core Assistant, Workflow Coordinator, Knowledge Manager and every later admitted model-using internal role assemble different role inputs over this same loop; each role uses its owned context policy and never receives a separate direct Provider runtime. Core Assistant and Goal/Workflow Coordinator default to rolling context. Knowledge Manager uses compaction within bounded fresh-context runs. A future Evaluator may use compaction only after its role is admitted.
-
-The caller assembles all role and product meaning before invocation, and the loop only performs model calls, consumes admitted context, validates and executes supplied Tools, appends bounded feedback, observes cancellation and emergency fuses, and returns one typed runtime outcome.
-
-The loop is expressible without importing or understanding Thread, Turn, Goal, Workspace, Worker, AgentSession, or any other product concept. Internal roles remain Core-local assemblies over this mechanism, and every durable or consequential result remains controlled by its existing owner. OpenKit owns this implementation and continues using pi-ai behind the Gateway; it does not adopt Pi Agent Core as its runtime, session or harness owner. MCP, progressive Skills and native Kernel/UI use are caller assembly under `docs/specs/20260909-internal_agent_resource_integration.md`, not additional loop primitives.
+Core: [Architecture](../core/architecture.md), [Mediation](../core/mediation.md), [Work Model](../core/work-model.md), [Policy](../core/policy.md).
 
 ## Runtime Input And Ownership Boundary
 
-The runtime consumes one immutable input for a bounded run:
+OpenKit continues using pi-ai behind the Gateway. It does not adopt Pi Agent Core as its runtime, session, or harness owner. Upstream Pi source informs the content union and ordered execution. Its harness, session exports, generic hooks, default parallel Tools, argument normalization, and raw error feedback are not this contract. The loop does not import or branch on Thread, Turn, Goal, Workspace, Worker, AgentSession, or any other product concept. MCP, progressive Skills, and native Kernel or UI use are caller assembly under [Internal Agent Resource Integration](20260909-internal_agent_resource_integration.md), not additional loop primitives.
 
-```ts
-interface InternalAgentLoopInput {
-  systemPrompt: string;
-  messages: readonly AgentMessage[];
-  tools: readonly AgentTool[];
-  model: {
-    logicalModelId: string;
-    capabilities: readonly string[];
-    modelFamilyId: string | null;
-  };
-  limits: {
-    maxModelTurns: number;
-    maxToolCalls: number;
-    deadlineMs: number;
-  };
-  signal: AbortSignal;
-  onTextIncrement?: (text: string) => void;
-}
-```
+The runtime consumes one immutable `InternalAgentLoopInput` for a bounded run. `InternalAgentLoopInput` in `apps/nanocore/src/internal-agents/internal-agent-loop.ts` is the admitted private input.
 
 `systemPrompt`, `messages`, `tools`, `model`, `limits`, and `signal` MUST be fully assembled by trusted callers before the loop begins. `messages` is the ordered list of assembled `AgentMessage` values supplied by that caller; `AgentMessage` is defined with the Tool contract below and is not a separately owned product entity. `model` is the caller-visible logical-model contract already selected by the trusted caller, and `messages` comes from the existing context owner: rolling context, or bounded-run compaction for the Knowledge Manager. Both use existing source-bound summary Items under their context owner. This runtime does not own the Gateway catalog, Provider configuration, concrete Provider model, account slot, private route, threshold, compaction prompt, or compaction algorithm. The optional text-increment observer is a transport projection defined below and is not loop state or product input.
 
@@ -87,7 +51,7 @@ Output-token limits belong to the model request. Monetary and usage budgets belo
 
 Fuses are deliberately large emergency stops for ghost loops, runaway Tool use, and provider failure. They are not normal capacity targets, completion conditions, or evidence that any product operation succeeded.
 
-Initial conversational objectives are configuration values in the internal-role execution profile: first visible text within 2 seconds at p95 for a run with no Tool call, settled output within 10 seconds at p95 with no Tool call and within 30 seconds at p95 with at most two Tool calls. A Goal has no budget, and this profile does not derive an objective from one. The deadline fuse MUST be at least four times the applicable profile-owned settled-answer objective.
+The accepted conversational objectives are first visible text within 2 seconds at p95 for a run with no Tool call, settled output within 10 seconds at p95 with no Tool call and within 30 seconds at p95 with at most two Tool calls. A Goal has no budget, and this profile does not derive an objective from one. The deadline fuse MUST be at least four times the applicable profile-owned settled-answer objective.
 
 Objectives and fuse values are created or changed through the accepted execution-profile configuration rollout, never by branching runtime code or revising this design. A missed objective reports degraded performance, while a reached fuse terminates with `limit_reached`; restart selects the current accepted profile and does not inherit an exhausted counter.
 
@@ -95,19 +59,7 @@ Acceptance requires each fuse to terminate independently with its exact limit di
 
 ## Typed Exits
 
-The runtime returns exactly one of four outcomes:
-
-```ts
-type InternalAgentLoopExit =
-  | { kind: "quiescent"; messages: readonly AgentMessage[] }
-  | {
-      kind: "limit_reached";
-      messages: readonly AgentMessage[];
-      limit: "model_turns" | "tool_calls" | "deadline";
-    }
-  | { kind: "aborted"; messages: readonly AgentMessage[] }
-  | { kind: "failed"; messages: readonly AgentMessage[]; code: string };
-```
+The runtime returns exactly one of four outcomes. `InternalAgentLoopExit` in `apps/nanocore/src/internal-agents/internal-agent-loop.ts` is the admitted private exit. It has exactly `quiescent`, `limit_reached`, `aborted`, and `failed`. `limit_reached` names `model_turns`, `tool_calls`, or `deadline`.
 
 `quiescent` means no runnable Tool call remains after the latest model response. `limit_reached` names the fuse that ended the run. `aborted` means the caller's signal ended it. `failed` carries a stable sanitized code for provider or implementation failure.
 
@@ -149,57 +101,8 @@ Personal Assistant, management and Knowledge maintenance reuse this same bounded
 
 ## Minimal Tool Contract
 
-The runtime Tool contract is deliberately small:
+The runtime Tool contract is deliberately small. `AgentTool`, `ToolExecutionContext`, `AgentToolResult`, `AgentToolCall`, `AgentMessage`, and `InternalAgentProviderTool` in `apps/nanocore/src/internal-agents/internal-agent-loop.ts` are the admitted private Tool artifacts. Provider projection uses only name, description, and input schema.
 
-```ts
-type JsonSchema = Record<string, unknown>;
-
-interface AgentTool<TInput = unknown> {
-  name: string; // Canonical semantic ID; the provider seam derives its model spelling.
-  description: string;
-  inputSchema: JsonSchema;
-  execute(input: TInput, context: ToolExecutionContext): Promise<AgentToolResult>;
-}
-
-interface ToolExecutionContext {
-  callId: string;
-  toolOccurrence: number;
-  signal: AbortSignal;
-}
-
-type AgentContent =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
-
-interface AgentToolResult {
-  content: readonly AgentContent[];
-  details?: unknown;
-  isError?: boolean;
-}
-
-interface AgentToolCall {
-  callId: string;
-  name: string; // Canonical semantic ID; the provider seam derives its model spelling.
-  arguments: unknown;
-}
-
-type AgentMessage =
-  | { role: "user"; content: readonly AgentContent[] }
-  | {
-      role: "assistant";
-      content: readonly (
-        | { type: "text"; text: string }
-        | ({ type: "toolCall" } & AgentToolCall)
-      )[];
-      truncated: boolean;
-    }
-  | {
-      role: "tool";
-      callId: string;
-      content: readonly AgentContent[];
-      isError: boolean;
-    };
-```
 
 `AgentMessage` preserves ordered content and admits only meaningful role combinations. Assistant text and Tool calls retain their original interleaving; user and Tool messages preserve admitted text/image order. A Tool message answers exactly one prior `AgentToolCall.callId`, including a safe error response for a rejected call. The Gateway converts this private union to/from pi-ai at its existing provider boundary; provider-native thinking, signatures, model/provider identity, timestamps, usage and raw response metadata are not copied into the union. Required native provider state remains Gateway-private and cannot become reconstruction authority. An unsupported image capability returns a safe explicit unavailable result, never silently discards the image or labels it read.
 
@@ -223,7 +126,7 @@ Code mode is a Tool invocation in which model-written code orchestrates admitted
 
 Shell and file Tools MUST expose the same admitted scratch view for every exposed path. Canonical files remain in OpenKit storage under their existing owners; targets are ephemeral and scratch edits remain candidates until Core accepts them.
 
-Core-loop execution targets MUST contain no credentials, including scoped tokens; transport credentials stay outside the target. Secret injection MUST occur only after authorization at the Core Gateway/egress boundary under [Unified Mediation And Policy](20261018-nanocore_interception_and_information_consolidation.md#unified-mediation-and-policy). Egress MUST be denied by default per target, including host bindings; only admitted Gateway/egress calls may leave it.
+Core-loop execution targets MUST contain no credentials, including scoped tokens; transport credentials stay outside the target. Secret injection MUST occur only after authorization at the Core Gateway/egress boundary under [Unified Mediation And Policy](20260703-policy_enforcement_mapping.md#interception). Egress MUST be denied by default per target, including host bindings; only admitted Gateway/egress calls may leave it.
 
 ## Model-Visible Results And Errors
 
@@ -276,6 +179,8 @@ Prompt creation and update belong to trusted role assembly and configuration. A 
 
 Acceptance requires stable role behavior to reconstruct without hidden provider memory, selected resource bodies to remain absent until an admitted Tool reads them, with only bounded Skill and applicable notebook scope indexes and Tool schemas admitted at assembly, and prompt injection to fail to replace the role or executable policy.
 
+`apps/nanocore/src/internal-agents/builtin-prompts.ts` owns the fixed prompt catalog, including the ordinary roles and the Policy-gate and context-compaction helpers. Every entry uses the same code-point cap. The bounded planning proposal Tool is not the Goal contract.
+
 ## Persistence And Restart
 
 No durable toolset snapshot, provider transcript, loop state record, or duplicate Agent harness is created. Both context strategies use the existing `context-summary` Item under the Thread/Item and context owners; this is not a new Item kind or checkpoint store. Existing owners MAY record canonical Tool IDs and implementation or schema versions or digests when explanation requires them.
@@ -289,6 +194,8 @@ Conversation reconstruction, interpreter replay and persistent target state are 
 Acceptance requires restart reconstruction without a durable loop or toolset record and no duplicate accepted effect when a prior Tool call already settled.
 
 ## Internal Role Execution Profile
+
+`InternalRoleExecutionProfileSchema` in `packages/config-schema/src/internal-role.ts` is the profile.
 
 Every internal-role profile MAY select optional `reasoningEffort` using the existing [Protocol effort enum](20261021-protocol_identifiers_and_enums.md#canonical-enums), with the same naming as Worker AEP `llm.reasoningEffort`; an admitted run pins that profile value for its ordinary and context-summary Gateway requests, while omission sends no effort field and preserves the Provider default. The shared Gateway applies its existing [reasoning-effort fitting contract](20260526-llm_gateway_responses_api.md#reasoning-effort-metadata-and-dispatch), including member-specific fitting and non-delivery when no reasoning control exists; internal roles add no second policy or fitter. Profile edits and removal affect newly admitted runs only through the existing configuration lifecycle; this field adds no Turn record, retry, transport, or Worker behavior. Acceptance requires actual serialized effort for a configured profile, unchanged omission, unsupported-level fitting equal to Worker inference, and no effect on non-internal requests.
 
@@ -346,14 +253,16 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 - One execution remains pinned to its resolved profile and logical-model contract, uses logical-model fallback only before its first dispatch, permits only Gateway-private pre-commit route replacement within that contract under its routing setting and failure rules, and changes defaults only after evaluation through bounded rollout and configuration rollback.
 - Every role uses the existing model resolver. One run consumes its owner's admitted context: bounded-run compaction for Knowledge Manager, rolling context by default for Assistant and Goal/Workflow Coordinator. Both reuse existing source-bound summary Items and retain pinned strategy/model metadata for evaluation. Neither path creates a second canonical transcript.
 
-## Related Docs
+## Implementation
 
-- `docs/specs/20260529-test_strategy.md`
-- `docs/specs/20260902-agent_runtime_context_compaction.md`
-- `docs/specs/20260909-internal_agent_resource_integration.md`
+- `apps/nanocore/src/internal-agents/`
+- `packages/config-schema/src/`
+- `packages/protocol/src/`
 
-## Implementation Reference
+## Implementation Gaps
 
-`apps/nanocore/src/internal-agents/builtin-prompts.ts` owns the current fixed assemblies for the Knowledge Manager (`knowledge-manager`), the Personal Assistant (`quick-chat`), Administration (`administration`) and the Goal Coordinator (`goal-orchestrator`). Their production callers assemble these texts before model dispatch; the catalog test enforces the fixed-text bound, and caller tests inspect the actual provider input. The bounded planning proposal Tool is not the Goal contract.
+- The profile stores conversational objectives, requires the deadline to be at least four times the settled-answer objective, and reports a missed objective as degraded performance - the profile schema has limits only and no objective comparison - #526
 
-Pi source at `6160683a4a8012f0d1cd30c145df18b4ca6f5176`, especially [message types](https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/ai/src/types.ts#L422) and [agent-loop ordering](https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/src/agent-loop.ts#L215), informs the small content union and ordered execution. Its harness/session exports, generic hooks, default parallel Tools, argument normalization and raw error feedback are not part of this contract. Existing role-profile helpers, pi-ai transport and rolling-context summary Items are implementation foundations. Unified compaction summary storage, pinned strategy metadata and bounded scheduled Knowledge Manager admission remain implementation work; upstream source proves none of them.
+## Decisions
+
+- [Compute and harness neutrality](../decisions/20261020-compute_and_harness_neutrality.md)

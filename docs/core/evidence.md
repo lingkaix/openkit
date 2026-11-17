@@ -65,6 +65,9 @@ Core MUST write or enqueue an audit event for:
 - knowledge entry creation, archival, supersession, or injection
 - artifact publication
 - destructive storage operations
+- security events
+
+Security events are audit events. This document does not list their names or fields.
 
 Adapters, bridges, gateways, and agents may attach audit metadata, but Core owns the durable audit projection.
 
@@ -274,7 +277,7 @@ Runtime-private task graphs, retries, and telemetry remain private unless an own
 
 `communication.md` and `mediation.md` own network and external-call semantics; this document owns only measured consumption and audit projections derived from those effects.
 
-`policy.md` owns authority and `PermissionDecision`, while budget enforcement remains a policy projection over measured usage rather than a Metering decision.
+`policy.md` owns authority and `PermissionDecision`. Budget enforcement is a Policy projection over measured usage and is not a Metering decision. `mediation.md` owns the `Budget` term and its enforcement boundary.
 
 ## Related Docs
 

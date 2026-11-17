@@ -14,7 +14,7 @@ The engineer chose these two options verbatim on 2026-10-08, as preserved in the
 
 The English translation of ruling 1 is: “Admit complete historical call/result pairs as non-callable context, using the consultant's specification text to amend both owning documents.” The English translation of ruling 2 is: “Wait: publish after the fix lands and the clean rounds are rerun.” The quotations remain the source wording.
 
-The route ruling is limited to complete historical local function or custom-tool call/result pairs on same-protocol native Responses. [Pi AI Unified LLM Backend, Codex Turn-State Continuity](../specs/20260708-pi_ai_unified_llm_backend.md#codex-turn-state-continuity) owns pairing, exclusions, current callable authority and new-output validation. [LLM Gateway Responses API, POST /v1/responses](../specs/20260526-llm_gateway_responses_api.md#post-v1responses) owns admission and preservation on the public route; its [Bridge Compatibility](../specs/20260526-llm_gateway_responses_api.md#bridge-compatibility) keeps undeclared-history refusal on cross-protocol mappings. Compaction prompts and runtime provenance hints supply no admission authority. The existing native envelope remains attempt-local; no durable record or migration is introduced.
+The route ruling is limited to complete historical local function or custom-tool call/result pairs on same-protocol native Responses. [Pi AI Unified LLM Backend, Codex Turn-State Continuity](../specs/20260708-pi_ai_unified_llm_backend.md#compatibility) owns pairing, exclusions, current callable authority and new-output validation. [LLM Gateway Responses API, POST /v1/responses](../specs/20260526-llm_gateway_responses_api.md#post-v1responses) owns admission and preservation on the public route; its [Bridge Compatibility](../specs/20260526-llm_gateway_responses_api.md#bridge-compatibility) keeps undeclared-history refusal on cross-protocol mappings. Compaction prompts and runtime provenance hints supply no admission authority. The existing native envelope remains attempt-local; no durable record or migration is introduced.
 
 The backend amendment replaces exactly: “A missing declaration, invalid search result, conflicting definition, or unmatched call/result fails the request before provider access; malformed provider output fails that response without executing a tool or repairing history.” The Gateway Bridge Compatibility amendment replaces exactly: “Mapping collisions, conflicting default-namespace aliases and undeclared or unmatched history fail before provider access; undeclared Provider output fails instead of inventing a callable identity.” The Gateway route amendment adds a paragraph immediately after the first paragraph of POST /v1/responses; it replaces no sentence. Surrounding projection, lifecycle, search-activation and acceptance requirements remain binding.
 
@@ -42,7 +42,7 @@ Direct rejection evidence from the `openai-codex` service for the preserved nati
 
 ## Affected Owners
 
-- [Pi AI Unified LLM Backend](../specs/20260708-pi_ai_unified_llm_backend.md#codex-turn-state-continuity)
+- [Pi AI Unified LLM Backend](../specs/20260708-pi_ai_unified_llm_backend.md#compatibility)
 - [LLM Gateway Responses API](../specs/20260526-llm_gateway_responses_api.md#post-v1responses)
 - [Agent Runtime Context Management And Compaction](../specs/20260902-agent_runtime_context_compaction.md)
 - [Codex Worker Adapter](../specs/20260716-codex_worker_adapter.md)

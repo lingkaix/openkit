@@ -24,6 +24,6 @@ Revisit only if a concrete consumer needs a different authorized entry that the 
 ## Affected Owners
 
 - [Chat Mode And Core Assistant](../specs/20260704-chat_mode_assistant.md).
-- [Personal Workspace](../specs/20260709-quick_chat_workspace.md).
+- [Personal Workspace](../specs/20260715-multi_user_workspace_system.md#personal-workspace).
 - [Internal Agent Resource Integration](../specs/20260909-internal_agent_resource_integration.md).
 - [Agent Operator Skill](../specs/20260910-agent_operator_skill.md).

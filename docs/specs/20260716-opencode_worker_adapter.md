@@ -1,265 +1,115 @@
 ---
 status: Accepted
-implementation: Partial
 kind: boundary
-updated: "2026-10-09"
+implementation: Partial
 aspect: agent-session
 ---
+
 # OpenCode Worker Adapter
 
-## Retained Native Data
+This specification owns the OpenCode 2.2.5 delta. Shared adapter rules live in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md).
 
-[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns complete opaque data/home volumes and supersedes this adapter's deletion of native data at ordinary Turn or AgentSession close. The adapter locates its data directory in its admitted stable Thread-private home and leaves all contents intact, without a list of known filenames. Generated launch and control material remains in separate ephemeral roots. Opening or closing a native binding must not recursively erase the retained data directory. Closing still invalidates the exact binding and proves writer absence. Retained native histories, memory, configuration, and unknown files do not select a conversation, grant OpenKit credentials, or grant external model, tool, provider, or network authority; admitted native configuration follows Native Local Configuration below.
+## Scope
 
-OpenCode V2 server operations, event translation, and feature restrictions remain owned here. Whole-volume retention alone does not discover a session or grant credentials or external authority. Exact resume uses the retained reference under [AgentSession](../core/agent-session.md). A resume that is not the exact session fails explicitly and never falls back to a fresh conversation, an empty conversation, or a transcript replay. This version starts from a new data root and does not read earlier-version native state ([earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)).
+Owns the OpenCode V2 server mapping, its private handle, and its host plugin.
 
-## Summary
+Does not own:
 
-The OpenCode Worker Adapter uses one supervised OpenCode V2 native server per binding and `@opencode/client` as the network client. It translates that server's correlated terminal result into the shared OpenKit Harness result.
+- The shared adapter base. [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md) owns it.
+- Private Harness operations. [Worker Control Protocol](20260703-worker_control_protocol.md) owns them.
+- The image. [Worker Execution Environment Images](20260721-worker_execution_environment_images.md) owns it.
+- Public live steer. [Task Mode](20260704-task_mode_worker_delegation.md) owns it.
+- Native volume placement. [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns it.
 
-The server is not an OpenKit control plane, and its HTTP routes are not NanoCore routes. It must not imitate an OpenKit gateway. Plugins run in the server process, not in the Integration and Harness process. The adapter does not embed `@opencode/sdk` in the caller and does not add an OpenKit IPC wrapper to do so. It does not use OpenCode ACP mode. It does not keep `opencode run` ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)). Each runtime is qualified on its own.
+Core: [AgentSession](../core/agent-session.md), [Sandbox](../core/sandbox.md).
 
-## Owns
+## Runtime
 
-- OpenCode V2 server configuration, native session identity, and event translation for one resident binding
-- Final assistant text extraction from the correlated server result
-- OpenCode-specific version, event compatibility, and failure tests
-- OpenCode-specific failure mapping and conformance evidence for manifest-declared capabilities
+The pin uses the OpenCode V2 CLI and `@opencode/client` at 2.2.5, one supervised Sandbox server, and no `opencode run`, ACP, embedded SDK, or extra IPC interface ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)). The image deploys the glibc Linux arm64 and x64 CLI and client on the shim resolution path, the generic shim entrypoint, and a non-root user. The Effect graph stays out of `worker-common`.
 
-## Does Not Own
+## Launch And Session Mapping
 
-- OpenCode server lifecycle inside NanoCore
-- Child-process supervision beyond the server process this adapter asks the shared Harness to supervise
-- AEP resolution, provider selection, credential grants, network policy, or backend lifecycle
-- Canonical transcripts, product state, scheduling, review, apply, Action Center, public API behavior, or Goal Mode
-- A translation of every OpenCode native event into the canonical worker protocol
-- The OpenCode endpoint-family choice for correlated function-tool evidence. This redesign does not settle it. The other owners remain [Worker Runtime Sub-Agent Provenance And Inference Identity](20260711-worker_runtime_subagent_provenance.md), [Audit, Usage, And Evidence Records](20260703-audit_usage_evidence_records.md), and [LLM Gateway Responses API](20260526-llm_gateway_responses_api.md)
+Sharing, updates, model fetch, the default plugin, and the LSP download are disabled. The image keeps the overriding system-config source absent, or proves equivalent protection. A runtime plugin rewrite stays outside support.
 
-## Core References
+The final whole protected provider and MCP entries, and the mandatory host plugin, win without editing authored files. A collision warning follows [Adapter Base Contract](20260629-worker_runtime_communication_model.md#adapter-base-contract). The plugin lends the bearer only to the exact adapter-created loopback target.
 
-- `docs/core/runtime-model.md`
-- `docs/core/agent-session.md`
-- `docs/core/agent-supply.md`
-- `docs/core/sandbox.md`
-- `docs/core/communication.md`
+Open creates or resumes the exact session. The handle stays pending until a read-only `session_v2` row proves it. Each ready inspection rechecks the live exact identity, time, and closed outcomes around the RPC.
 
-## Upstream Contract
+The retained reference is the exact `v1:`-prefixed session id. A successor resumes the same conversation, with a new MCP schema and the prior context, and makes no idle capability contact.
 
-The deployment pin is the OpenCode V2 release this adapter's implementation slice selects by probe and records in the `worker-runtimes` version manifest. This specification does not guess that pin. The examined tag `2.0.19` at commit `1fd016ef32286de9489b7b24f1029f52c49a27b3` is evidence, not the deployment pin. Official OpenCode `v1.18.1`, commit `99f638d8293f6985726ba509da602296c4963497`, installed as `opencode-ai@1.18.1`, is the removed image pin. The examined tag alone did not establish the published server package name, its size, or whether it runs on the Node `24.18.0` bookworm image without Bun; the selected server package is now recorded in `containers/worker-runtimes/versions.json`. `@opencode/client` is not placed on the worker shim in a way that copies its dependency graph into `worker-common`.
+### Reasoning Effort Delivery
 
-The production client is `@opencode/client` against one supervised native server. `opencode run --format json` is not the contract. The server lives in the Sandbox, beside the adapter, not inside NanoCore.
+`session.switchModel` selects and verifies the declared model against the seven exact `reasoningEffort` variants before the prompt. An unchanged model with omitted effort keeps the current variant. A model change with omitted effort supplies `none`.
 
-The runtime starts with full permission inside the Sandbox ([Sandbox full-capability rulings](../decisions/20261001-sandbox_full_capability_rulings.md)). A residual native permission ask receives the shortest-lived native allow by default and does not interrupt the Turn. Existing programmatic decision points retain their refusal capability for future user-configurable policy; no such policy configuration is introduced here. User-authored explicit deny rules remain effective. Forms are answered only when the pin exposes an unambiguous allow-equivalent decision; forms requiring authored answers are cancelled without inventing answers, and unproved native drain retains the existing stop/fence obligation.
+The first Turn supplies the working directory, Skill targets, MCP ids, and the exact available-model catalog. `location.reload` and `location.move` initialize services before catalog proof. A changed set refuses before a native request.
 
-The V2 native server is required. It must not be exposed as NanoCore routes, and it must not imitate an OpenKit gateway.
+Only an absent native home is initialized, through validated sibling staging. Unreadable, escaping, or leftover staging refuses. An existing home is reused with no source merge. Native home and project resources stay effective.
 
-## AEP Inputs Consumed
+`experimental.mcp.add` and `experimental.mcp.connect` use protocol `2026-07-28` for the exact managed ids. The adapter waits for location-specific plugin generation and the native move drain before the prompt.
 
-The shared Harness supplies the adapter with:
+Native provider and model serialization is fixed and slash-free, and the base URL is loopback. Ephemeral host-plugin carriers apply the exact current inference and capability bearer. They never use a native stored fallback or a secret in configuration text.
 
-- adapter id `opencode`
-- turn input
-- worker working directory
-- the admitted Thread-private retained home and separate ephemeral control slots
-- the provider, model, endpoint, and credential bindings from the Turn's unique preferred LLM route and the binding's exact admitted logical-model route set
-- the exact server ids from resolved AEP MCP supply, including automatically supplied built-in servers
-- the two session-local loopback credentials, and no worker-control credential
+Native `tool_output.max_lines`, `tool_output.max_bytes`, and `media.image` resizing keep native spill and truncation. There is no V1 key compatibility.
 
-The Harness passes the Turn's unique preferred route and the binding's exact admitted logical-model route set. The adapter configures the whole set, selects this Turn's preferred route, and never invents a model or provider fallback. The adapter does not resolve providers, credentials, models, permissions, or workspace policy on its own.
+Cancel acknowledgement is a boolean, correlated with the terminal outcome. A completed or failed race survives cancellation. One stop owner bounds the wait. The joining remainder follows [Errors And Failure](20260629-worker_runtime_communication_model.md#errors-and-failure).
 
-Server configuration combines OpenCode's native configuration from the admitted home and workspace with the adapter's protected overlay under Native Local Configuration. The final native HTTP request uses the current admitted Gateway relay bearer; a stored native provider credential must not replace it. Unrelated retained native credentials remain intact. Sharing, automatic updates, model-catalog fetches, default plugin installation and LSP downloads stay disabled, because they publish or download outside the Sandbox without an admitted grant. The V1 environment-variable spellings are not the contract; the requirement is that outcome. Native data under the retained home is persistent and is the resume store for sessions this version created.
+### Live Steer Mapping And Qualification
 
-Because the pinned V1 client loaded managed configuration after inline configuration and offered no disabling flag, `/etc/opencode` must not be able to override the adapter's explicit configuration. The V2 equivalent preserves that outcome. Until a probe shows a private configuration that cannot be overridden from that path, the image proves `/etc/opencode` is absent.
+This pin has no expected-execution guard. Idle `delivery:steer` can start new work. The adapter exposes no steer hook and refuses without native effects.
 
-## Native Local Configuration
+## Event Mapping
 
-OpenCode's native configuration, instructions, Skills, plugins and local MCP configuration load from the admitted home and workspace with native precedence. Image defaults reach the home by native layering where the pin supports it, otherwise by initializing a fresh home, under [Persistent Worker Volumes](20260910-persistent_worker_volumes.md#native-defaults-and-private-home-placement). A private launch home must not make them unreachable. The adapter overlays only the bindings it owns: the model and Gateway route, the exact OpenKit-managed MCP projection, the capability credentials, the exact session, the required host plugin and control bindings. A native entry colliding with a protected binding is replaced as a whole by the final OpenKit layer without editing the user's files. The adapter reports a bounded credential-free warning through its existing diagnostics channel ([Sandbox full-capability rulings](../decisions/20261001-sandbox_full_capability_rulings.md)). Plugin code that changes a protected binding while it runs is outside supported supply, with no comprehensive prevention or closed-outcome guarantee ([OpenCode Plugin Support Boundary](../decisions/20261001-opencode_plugin_support_boundary.md)).
+### Native Output Mapping
 
-## Session Operations
+The adapter correlates the admitted user anchor with exactly one ordered idle boundary and the native session outcome. Stop and length are closed alternatives. A later unrelated user, a partial result, or a native error cannot establish success ([Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md)).
 
-`session.open` starts the server with explicit configuration and establishes or resumes the exact native session before work. Unknown effectful work must not resume before startup admission. In the pinned `2.2.5` `serve --stdio` mode, the CLI supplies no managed-service lifecycle, so native startup does not install the restart-recovery sweep. Qualification preserves a real pending MCP effect across a killed process and exact successor startup, then verifies its retained pending Tool and both endpoint sets before admitting another Turn. This pin and launch-mode fact must be requalified before either changes; an idle timeout alone is not recovery proof. `turn.start` reuses that session. Abort stops the Turn's work and leaves the session present. `turn.interrupt` reports the actual abort and does not close the session. `session.close` stops the binding's work, preserves native data, and does not delete the session as its method of release. A successor resumes the exact session. `session.inspect` reads the exact surviving host and native conversation, launches no work, and fails closed on an unknown or mismatched identity. `harness.drain` is the Harness admission fence. While admitted work and cleanup settle, this adapter refuses new `session.open` and `turn.start`. The Harness owns that fence. This adapter does not invent a native drain RPC.
+Unknown additive events are ignored. Native message, provider, and session objects stay local. Malformed authority or terminal evidence fails. There is no latest-assistant shortcut.
 
-The seven operations are owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations). This section maps each of them onto the open, inspection, prompt, live-steer mapping or refusal below, interrupt, close, and admission-fence behavior above.
+Pages are read descending to the exact admitted user anchor and then reversed. The ceiling is 20 pages. The cursor core is strict. Ids are unique across the complete fetched pages, including older rows on the anchor page.
 
-`session.open` carries `resume: { locator, digest } | null`. The raw reference stays in retained Sandbox storage outside the ephemeral control slots. Core stores the locator and the digest. Initial hosting is one server per binding until capability isolation for a shared server is proved. Closing a shared-host binding, once sharing exists, does not kill the server. A host restart invalidates every binding on that server. A transport loss and a NanoCore restart may each adopt the exact surviving binding, including its lineage, sequence, and execution attempt, under the existing [continuity](20260704-agent_session_continuity.md#exact-reconnect-contract), [scheduler attempt](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup), and [NanoHost Adapter Liveness](20260629-worker_runtime_communication_model.md#nanohost-adapter-liveness) proof contracts, with no duplicate effect. A binding that cannot be proved exactly is closed or fenced, and a successor resumes the native conversation. A NanoCore restart does not by itself end the binding. The server's own exit still ends the bindings that process hosted.
+A prompt that may have been accepted stays an accepted failed settlement after a proved stop. It is not a clean refusal. A settled old Turn cannot cancel new work. An unproved stop keeps the fences.
 
-The live event stream is not a replayable transcript. A prompt response or an idle event is not proof that tool descendants stopped writing. Event subscription may be used inside the adapter and must not become a NanoCore API.
+Structural sink preparation and finalization follow [Adapter Base Contract](20260629-worker_runtime_communication_model.md#adapter-base-contract). An incomplete report stays cleanup-bounded.
 
-No environment variable, AEP extension, test option, or image diagnostic may replace the adapter-produced client operations. Tests inject a runner or a static test adapter without creating a production command override. NanoCore never constructs an OpenCode command. There is no shell-built command.
+Current-result UTF-8 text, reasoning, Tool payload, and envelope bytes are counted independently before concatenation. Selected assistant text is capped separately at 16 MiB. Prior history and pre-prompt history do not consume this result budget.
 
-## Reasoning Effort Delivery
+## Deviations From The Base Contract
 
-For every Turn with recorded effort in its immutable AEP on a route carrying `reasoningEffortLevels`, the adapter uses V2 `session.switchModel` to select the admitted logical model and its declared effort variant on the exact retained session before the prompt is admitted. On reasoning routes, native model metadata declares one variant for each of the seven [canonical OpenKit effort levels](20261021-protocol_identifiers_and_enums.md#canonical-enums), carrying that level's exact Gateway wire value. Automatic native variants are not assumed to cover the admitted set. Selection must be applied and verified before prompting. On reasoning routes, explicit `none` selects its declared variant, never omission, null, or a base/default variant. On a Turn without recorded effort the adapter does not reselect an unchanged admitted model, so the conversation's current variant stays in effect; a change of admitted model follows native selection and restores or reapplies no variant.
+`serve --stdio` on this pin installs no automatic restart-recovery sweep. Any pin or mode change is requalified against pending MCP effects and retained Tool and endpoint evidence.
 
-Shared delivery, omission and retention, Turn authority, effective-level diagnostics, failure and lifecycle semantics, and acceptance are owned by [AEP delivery and retention](20260616-agent_environment_package.md#reasoning-effort-projection-and-delivery); on routes without `reasoningEffortLevels`, its exception requires no native effort and a bounded diagnostic without failing the Turn or changing the conversation's current selection.
+An auxiliary native title inference may carry its own selected effort under AEP per-request precedence. One model request per Turn is not assumed.
 
-Native title work may use its own selected variant under [AEP per-request effort precedence](20260616-agent_environment_package.md#reasoning-effort-projection-and-delivery).
+Before the next prompt, the adapter revalidates the published immediately preceding Turn's anchor-to-head terminal evidence. It does not certify all older history, and a fresh binding has no baseline to certify.
 
-On reasoning routes, OpenCode-specific acceptance proves that V2 `session.switchModel` selects the declared effort variant, that selection is applied and verified before prompting, and that all seven canonical values, including explicit `none`, preserve their exact Gateway wire values.
+Idle close is a normal stdio EOF, finalizers, a zero exit, child close, and both output EOFs, without error. A forced exit or an active close cannot supply flush proof. A pre-prompt refusal uses the same graceful path.
 
-## Native Output Mapping
+No narrower download-disable is available. `lsp: false` is the disablement, and the file watcher remains available. Parser limits and generated native tool limits are distinct.
 
-| Correlated native terminal evidence | Required normalized outcome |
-| --- | --- |
-| Successful idle outcome with assistant finish `stop` | Normal completion, subject to the existing correlation and collection predicates; absent text yields no assistant candidate. |
-| Successful idle outcome with assistant finish `length` | Proved output/context limit carried as `length`, never completed success even with partial text. |
-| Native interrupted outcome after an OpenKit interrupt or cancellation request for this Turn | Requested interruption, preserving `aborted`. |
-| Native interrupted, cancelled, or aborted outcome without that OpenKit request | Failed outcome carrying `error` and a bounded product-safe diagnostic that the Worker runtime stopped on its own; no user actor is inferred. |
-| Native error or non-zero exit; malformed, missing, or contradictory terminal evidence | Existing failure or uncertainty and fencing rules; partial text cannot establish success. |
-| Unsupported or ambiguous native limit | Existing failure or uncertainty result; no guessed `length` or `budget_exhausted`. |
+## Unsupported Operations
 
-These outcomes use the private [adapter normalization boundary](20260629-worker_runtime_communication_model.md#adapter-normalized-stop-outcomes) and the existing [Core stop mapping](20260531-worker_turn_reliability_envelope.md#worker-turn-envelope). Terminal classification grants no cleanup, retry, or replacement authority. The rationale is recorded in [Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md).
+Every unsupported or direct-provider route is rejected before work. The adapter does not invent a fallback.
 
-The adapter requires one correlated server terminal result for the admitted prompt. Native result content is limited to 16 MiB. Exceeding the bound fails collection closed. Unknown events are ignored and cannot complete a lifecycle predicate. Malformed records that prevent a trustworthy final result fail closed. A correlated success with no assistant text returns no assistant candidate. A native error outcome fails even when partial text exists.
-
-Native OpenCode event names, tool-call records, provider payloads, and session objects remain inside the adapter. They are not added to `packages/worker-protocol` and do not enter NanoCore. The pinned V1 sequence `step_start`, `text`, `step_finish`, and `error` is not the product schema.
-
-The adapter returns a normalized final assistant message and adapter-local diagnostics. The shared Harness writes schema-conformant candidate records, NanoCore alone validates and commits canonical product state, and the Harness retains at most a 16 KiB prefix from each of stdout and stderr for failure diagnostics before redaction. Live native token streaming into product Items is not supported.
-
-## Control Mapping
-
-- `turn.steer` projects [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) through the private [Worker Control Protocol](20260703-worker_control_protocol.md#live-steer-operation-boundary) operation and only the qualified native delivery mapping below.
-- `turn.interrupt` aborts the Turn's work, reports the actual outcome, leaves the session present, and does not close the session.
-- Native approval and question APIs are not product round trips.
-- The server existing inside the Sandbox is not HTTP exposure to NanoCore.
-- Exact native session resume is supported. Resume failure is explicit.
-
-## Live-Steer Mapping And Qualification
-
-The selected OpenCode V2 pin `2.2.5` exposes native steering delivery through `session.prompt` and its inbox. The adapter uses only that native steering mode on the exact resident native session, guarded by the addressed active OpenKit work. It does not use an ordinary prompt that can become a fresh run after an idle race. Durable inbox admission alone is insufficient unless qualification proves that it accepts the input for processing during this Turn and cannot deliver it on later work. It correlates native acceptance with the exact public input Item/digest and records privately the precise initial and steering user-message identities admitted into this OpenKit Turn. Terminal result correlation must admit those legitimate additional user messages and reject unrelated ones; selecting the latest assistant message is never a substitute for exact lineage.
-
-Before advertising support, native qualification must prove same-Turn inbox delivery, completion racing admission, refusal on a stale or idle session, interrupt and end-of-work inbox disposition, lost-response non-redelivery, and restart/automatic-recovery inspection that prevents old inbox entries from executing on a successor Turn. Retained native history and the response must prove exact input identities and the terminal result's association with the same admitted work. If the pin cannot provide the exact active-work boundary or no-spill proof, support stays disabled with an explicit unsupported refusal; no custom inbox, replay, prompt-after-abort, or latest-message correlation is added. The full public lifecycle, failures, receipt, and acceptance remain with [Task live steer](20260704-task_mode_worker_delegation.md#live-steer); this section owns only OpenCode's native mapping and qualification.
-
-## Skills And MCP
-
-OpenKit-managed MCP is server configuration on the dedicated server, for the exact selected supply, not a cwd-scoped ACP registry. Dedicated initial servers avoid sharing a live configuration scope across sessions. The adapter must not discover, install, connect directly to, authorize, or broaden OpenKit-managed MCP supply. Independently configured local Skills and MCP follow Native Local Configuration; the managed selection is projected separately and does not disable them. [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns the Gateway plane for external systems. In-Sandbox MCP is unrestricted.
-
-For managed remote MCP, the adapter sets the pinned runtime's documented `protocol` option to `2026-07-28`.
-
-The adapter does not re-list tools at Turn start. A changed supply requires a successor AgentSession that resumes the native conversation. Narrowing and revocation apply at the next call as `capability_denied`.
-
-## Provider And Credentials
-
-The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements. The resolved AEP owns the preferred logical model, exact allowed route set, credential bindings, and effective launch policy. The Harness passes the Turn's unique preferred route and the binding's exact admitted logical-model route set. The adapter configures the whole set, selects this Turn's preferred route, and never invents a model or provider fallback.
-
-For the trusted relay, the native provider id is the fixed slash-free adapter-owned id `openkit-worker-inference`. The model id is the exact admitted model id, serialized rather than interpolated. The base URL is `http://127.0.0.1:17892/inference/v1`. The AEP provider instance id remains NanoCore evidence and is not the native provider id. Configuration contains no credential value. The inference bearer is the session loopback credential, not `OPENKIT_WORKER_INFERENCE_TOKEN`. The host plugin supplies the session loopback bearer to native requests; Integration binds it to the current Turn's authority.
-
-Direct-provider routes are unsupported. Direct and otherwise unsupported routes fail closed before the session admits work, rather than receiving a fallback.
-
-Mint, attribution, the Turn-barrier drain, and destruction of the two session loopback credentials belong to [Worker Agent Capability](20260703-worker_agent_capability.md). The adapter consumes the two supplied loopback bearers and never passes upstream or worker-control tokens to the native runtime. Native credential configuration stays isolated from configuration text, diagnostics, and evidence. An unsupported route fails closed. The host plugin reads the two bearers from private ephemeral control files and applies the matching bearer to inference requests or exact managed MCP transports. Idle refusal, sibling refusal, and Turn-barrier behavior are consumed from that contract.
-
-Declared runtime-env credentials are session-static. A changed declaration or value yields a successor AgentSession at the next Turn. A revocation interrupts and closes the binding at once.
-
-## Manifest And Image Contract
-
-The repository-owned OpenCode AgentManifest selects adapter id `opencode`, the deployment image `worker-runtimes`, native executable paths used by network policy, provider and credential requirements, and only capabilities proved by this specification. [Worker Execution Environment Images](20260721-worker_execution_environment_images.md) owns the image. This version starts from a new data root and does not read earlier-version data ([earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)).
-
-The OpenCode install slice of that image installs the selected OpenCode V2 server, sets the generic shim as the image entrypoint, and runs as a non-root worker user. The image also contains Codex, Pi, and DeepSeek. Smoke verifies the selected native version, `/etc/opencode` absent or the proved equivalent, the shim, protected-binding isolation, and non-root identity. It does not verify JSON run mode. Image contents confer no adapter authority.
-
-OpenCode-specific install commands, binary paths, configuration isolation, and version pins live only in the OpenCode AgentManifest, this adapter, this specification, and its tests, and in the OpenCode install slice of the one image.
-
-## Failure Semantics
-
-The [native terminal mapping](#native-output-mapping) preserves proved limits and distinguishes requested interruption from a runtime self-stop; none of these classifications proves cleanup or permits automatic continuation.
-
-- Malformed or over-limit native output fails collection closed.
-- A correlated success with no assistant text returns no assistant candidate.
-- A non-zero or native error outcome fails even when partial text exists.
-- Interruption wins over any partial final assistant content and does not by itself close the session.
-- Abort mid-tool leaves the session present. Close that cannot drain is not how release is defined. Release preserves native data.
-- Worker-control failure stops that binding's work through the shared Harness.
-- Missing or incompatible native state for a session this version expects fails resume explicitly, with no fresh-session fallback.
-- The Harness preserves the retained home. Exact resume authority lives outside the ephemeral control slots.
-
-## Capability Declaration
-
-The authored manifest is the sole launch-time capability declaration. Adapter conformance and image smoke prove that the manifest advertises only the following supported behavior. Adapter conformance does not return a second capability declaration.
-
-- Resident V2 session continuity and exact resume: supported
-- Workspace edits inside declared writable roots: supported
-- Normalized final assistant candidate content: supported
-- Abort that reports the actual outcome: supported
-- Live steer: unqualified; not advertised or enabled until [native qualification](#live-steer-mapping-and-qualification) passes
-- MCP on the dedicated server for selected supply: supported
-- Live native token streaming into product Items: not supported
-- Native approval or question round trips: not supported
-- NanoCore exposure of the server port: not supported
-
-## Tests
-
-Required adapter tests cover:
-
-- Native stop mappings above, including requested interruption versus runtime self-stop, bounded actor-neutral diagnostics, proved limits without false success, ambiguous/unsupported evidence, and unchanged failure and cleanup fencing
-
-- Native live-steer qualification above, including exact initial/steering user-message correlation with unrelated-input rejection, inbox/terminal/interrupt races, lost-response non-redelivery, and no restart or successor spill
-- Credential-value absence, the fixed slash-free provider id, exact model id serialization, and direct-route rejection before the session admits work
-- Unknown-event tolerance, the 16 MiB and 16 KiB bounds, and redacted diagnostics
-- Admitted home and project configuration, local Skills and plugins affect actual execution without their files being overwritten. Protected-id collisions leave authored bytes intact, emit a warning, and use the admitted managed route and bearer. A later plugin hook that rewrites a provider request is outside that guarantee. Sharing, updates, model fetches, default plugin installation and LSP download stay disabled; a fresh home receives image defaults; and retained home bytes are preserved at close
-- A server started with explicit configuration, the required plugin loaded alongside native plugins, a native declaration that disables the host plugin shadowed by the final OpenKit layer, a session aborted mid-tool, and the session still present afterward. A later hook that runs after the loaded plugin is outside the displacement check
-- Dedicated-server MCP grants do not leak across sessions. The live event stream is not treated as a transcript
-- A supply change between two Turns either shows the new supply on the second Turn or follows the probed setup-change successor. The check reads the model-visible schema
-- Full launch permission, residual asks allowed once through both native response paths, user-authored explicit deny rules preserved, and observable model-directed workspace shell and file-write effects
-- `/etc/opencode` cannot override explicit configuration
-- No production command override
-- Inspection of the exact surviving host and native conversation, rejection of an unknown or mismatched identity with no work launched, and `harness.drain` refusing new `session.open` and `turn.start` while admitted work and cleanup settle
-
-The shared qualification cases in [Codex Worker Adapter](20260716-codex_worker_adapter.md#tests) apply to this runtime on the V2 server and `@opencode/client`. `opencode run` and ACP mode are not alternate passing interfaces.
-
-Required image smoke covers the selected OpenCode version, the generic shim entrypoint, non-root user, and absence of `/etc/opencode` or the proved equivalent.
-
-## Bounded Context And Output Domains
-
-Native result and diagnostic guards are parser/capture limits, not the [Turn raw-output meter](20260531-worker_turn_reliability_envelope.md#worker-raw-output-accounting). Exclude Tool results and native envelopes from that meter.
-
-Use supported V2 `tool_output.max_lines` and `max_bytes` controls and `media.image` resizing; do not copy V1 configuration keys. Qualify general/MCP and producer-owned truncation paths, image omissions, spill retrieval, and cleanup. OpenKit reads obey [Context Package](20260703-worker_context_package.md#bounded-model-projection) before native handling. Native compaction remains separate.
-
-## Implementation Evidence And Limit
-
-Live steer remains unsupported at `2.2.5`. The real native probe in `packages/worker-shim/src/adapters/opencode-native.test.ts` submits `delivery: steer` to an idle session and observes a new model request containing that input. `SessionPromptInput` has no expected-execution guard. A local active-work check cannot close the remote idle race, so the adapter exposes no steer hook and NanoCore refuses before input admission. A future pin must pass the complete qualification above before support can be enabled.
-
-The [2026-10-31 runtime upgrade decision](../decisions/20261031-worker_runtimes_upgrade_to_latest.md) selects CLI/client npm latest `2.2.5`. Its canonical client methods are `experimental.session.wait` and `experimental.mcp.add/connect`; the adapter does not retain the deprecated aliases. Native system configuration now includes `/etc/opencode` after inline configuration, so the existing image-path-absence obligation remains required. Native effort and complete-file qualification are recorded with that decision; earlier observations do not prove the new pin.
-
-The [2026-10-05 runtime upgrade decision](../decisions/20261005-worker_runtimes_upgrade_to_latest.md) selected CLI/client `2.0.22`. Optional session parent and form-cancellation fields, partial capability overlays, native transport timeouts, and bounded MCP shutdown changes preserved the consumed HTTP and promise-client boundary. The removed OpenCode `1.18.1` run adapter is historical evidence only. Earlier package inspection recorded the darwin-arm64 `bin/opencode.exe` as a 180293072-byte Bun standalone and the prior `2.0.20` binary as 179948336 bytes. Those are prior-pin observations, not binary identities for `2.2.5`. Tests resolve the installed package and use synthetic loopback services.
-
-Generated configuration, the final managed Skill source, the explicit host plugin, and bearer carriers live under the ephemeral private control root. Native configuration stays in retained `stateRoot/config`, home `.agents` and `.claude` discovery uses retained `stateRoot/home`, and native XDG data stays under the retained state root. The pin's own loader reads home configuration, Workspace ancestry, native instructions, Skills, plugins and local MCP with native precedence. A genuinely absent configuration home is initialized once from the shim image user's `HOME/.config/opencode`, outside the retained root; absence is valid, while unreadable entries, escaping links, an escaping destination and leftover staging fail before launch. Existing homes are reused without reading or merging image defaults. The adapter supplies the exact admitted available model catalog and retains the model/Gateway route through its final protected overlay. It supplies selected Skills through a separate final native source and selected MCP through native session-local operations. Native parsed configuration supplies credential-free collision warnings; the final managed layer replaces protected provider and MCP entries before prompt work. The tested `-openkit-loopback` declaration does not displace the host plugin: the final inline host declaration restores it, and the actual request retains the managed bearer. No static plugin-displacement path was established on this pin; this is not runtime hook inspection. The host plugin lends the capability bearer only to an adapter-created id whose draft URL exactly matches the admitted loopback URL. Independently configured native MCP drafts receive no OpenKit credential. Runtime plugin code that changes protected bindings is outside supported supply under the linked plugin support boundary; no runtime redirect regression pins that behavior. `/etc/opencode` absence remains an image smoke obligation; a binary literal search is supporting evidence only.
-
-`OPENCODE_LISTS_TOOLS_AT_TURN_START` is false. The first Turn's working directory, selected Skill targets and MCP ids are applied once. Native MCP operations address that directory, await the supported plugin Tool transform's location-specific generation, and drain the native move operation before prompt admission. Later supply changes are refused before native requests. A successor resumes the exact `v1:` reference; its model-visible request contains the new MCP tool and prior context, and idle resume inspection makes no capability request.
-
-New handles stay pending until a read-only `session_v2` select proves the exact row in retained `xdg/opencode/opencode.db`. Every ready inspection additionally validates live native identity, time, and closed outcome values before and after the RPC. SIGKILL/new-process regressions prove exact native resume and prior context. Unknown additive members are tolerated; unknown authority-bearing values fail closed.
-
-Collection reads descending from the current head to the admitted user message, then reverses that interval into native order. It validates each pagination cursor as a non-null, non-array object, preserves absent/null `next` and unknown additive members, and refuses unknown `next` cores. Native message ids must be unique across all fetched pages, including the complete page containing the anchor. Collection stops at the anchor even when another cursor exists; the twenty-page ceiling bounds finding this Turn's anchor. Settlement validates the admitted user id, no unrelated later user row, ordered assistant evidence, exactly one idle terminal boundary, and agreement with the session outcome. Missing, duplicate, conflicting, or malformed proof stops the dedicated runtime; failure is resolved only after confirmed stop, otherwise settlement rejects. Before the next prompt, the private boundary revalidates terminal evidence from the immediately preceding Turn published by this binding, from its admitted user message through the current head. It does not certify unchanged earlier native history. New, changed or missing terminal evidence and a missing anchor fence the binding. A new or resumed binding has no publication baseline and retains its exact-session and recovery checks. The boundary is neither a canonical transcript nor a durable history owner. A prompt whose admission may already have occurred is surfaced as an accepted failed settlement after proved stop instead of being erased by a clean refusal.
-
-Interruption validates the native boolean acknowledgement and derives status from correlated native terminals. Completed and failed outcomes survive cancellation races. A settled Turn cannot cancel a newer Turn, and an in-flight session cancellation holds Turn ownership until drained. Joining an existing stop or interrupt bounds only that caller’s wait by its remaining time and reports unproved cleanup on expiry, while the existing physical stop remains the sole signal owner. Structural sink preparation is bounded before prompt admission. A proved interruption releases settlement even when structural finalization stalls, preserving accepted observations and using the existing incomplete-collection failure and coverage path; abandonment suppresses subsequent completion and content collector calls, while an already-entered sink call remains an in-flight effect that Core may still accept. The existing incomplete-collection reporting attempt remains bounded by cleanup time. Interruption consumes the shared monotonic stop deadline: RPC and terminal proof use remaining ordinary-work time, while dedicated-process signal escalation consumes the reserved cleanup tail. The default signal windows come from the shared lifecycle table, and a caller-supplied shorter deadline caps both waits without restarting the budget; unproved stop rejects within that bound. Normal inference has no adapter-imposed eight-second completion timeout. Named RPC waits use the shared request default, capped by the remaining monotonic open or Turn-preparation work budget when applicable, with shorter test-only proof bounds; all deadline timers are cleared. Listen and MCP readiness no longer restart separate fixed deadlines. Open and first-Turn preparation each have their own bounded nativeOpenMs allowance: MCP supply exists only at startTurn, and unspent open time is not carried across resident idle. Native inference has no preparation completion timeout.
-
-The pin's supported `serve --stdio` EOF path returns normally through scoped finalizers, including SQLite close. Idle close requests EOF and succeeds only after that normal zero-code exit, observed stdout and stderr EOF, child close, and no output-stream error; forced signals, prior unexpected death, active close, and missing drain proof retain one shared rejected close promise. Pre-prompt setup failure uses that same graceful close path before returning a clean typed dependency refusal, retaining its successful close promise for later binding release. A real native empty-catalog regression through the Harness proves no prompt, clean absence, successful later close, released Thread and capacity, and an exact successor reference; unproved stop retains the active fence, and forced exit cannot supply missing flush proof or release the binding. Cleanup failure stays exceptional, while a possibly accepted prompt stays an accepted failed settlement. Real graceful close followed by exact successor resume preserves prior context. Pipe close alone is not a persistence-flush acknowledgement. Each native evidence fact remains absent until its own observation or proof attempt; an evaluated but unproved fact is false. Exit and stream completion are separate: each UTF-8 decoder flushes on its own stream end, including incomplete-sequence replacement, and diagnostics retain their bounded post-close wait.
-
-Result collection bounds UTF-8 content bytes across all current-result parts and pages, including reasoning and Tool content, before concatenation, independently bounds current-result envelope values, and checks the selected assistant text at 16 MiB. Each poll checks that result independently; prior Turns and pre-prompt boundary reads do not consume its budget. Multibyte provider output, aggregate text/reasoning, and exact-limit controls are covered. Native-derived diagnostics are redacted and bounded to 16 KiB. Unexpected native permission asks receive allow-once by default through the supported evaluate hook or session-scoped reply path. The pin exposes typed-answer forms rather than an allow-equivalent decision, so those forms remain cancelled. Unproved refusal drain still stops the host. The pin has no narrower download-disable setting for LSP, so language-server support remains disabled while the file watcher remains available.
-
-Builder-run results and guard mutations are implementation evidence, not independent acceptance. The adapter consumes the exact admitted route set. Startup creates an exact durable conversation without choosing a model; the first admitted Turn writes the exact admitted available model catalog into ephemeral configuration and invokes the pin's supported `location.reload` in the same host. The native move initializes location services before the native available catalog is proved. A changed model or recorded effort selection uses supported `session.switchModel`, move/selection drain, and `session.get` verification before prompting; an unchanged model without recorded effort is not reselected. Native configuration preserves exact model ids, context/output limits, input modalities, and reasoning output. Unsupported non-preferred members, preferred non-members, duplicate native ids, and changed sets are refused before native requests. Real add/remove successor runs both preserve the exact handle and prior context, including removal of the predecessor's selected model. No placeholder model or HTTP request-body rewrite remains.
-
-Image smoke and exact-product Sandbox qualification remain with their existing owners. The image must install glibc Linux arm64/x64 CLI builds and the client on the shim Node resolution path, keep `/etc/opencode` absent, and prove non-root execution. The client remains a devDependency because its Effect graph must not enter worker-common. Real-provider behavior, NanoCore restart adoption, Integration idle/sibling refusal, compaction recovery, and complete descendant-writer containment are not established by these adapter tests. Whole-volume bytes remain untouched; local readiness and graceful-close evidence do not replace those broader proofs.
-
-Native Local Configuration and fresh-home initialization are implemented and qualified with the pinned runtime and synthetic loopback providers in `opencode-native.test.ts`. Authored home and Workspace resources remain effective beside non-empty and empty managed projections, and exact successor resume reuses the retained configuration without reseeding. These host checks do not establish image smoke or exact-product Sandbox qualification.
-
-The Reasoning Effort Delivery contract above is implemented and covered by pinned-runtime synthetic inference regressions. The adapter declares all seven canonical variants with exact `settings.reasoningEffort` values and selects and verifies the recorded variant before prompting on the retained native session. An unchanged model with omitted effort keeps its current native variant; a changed model receives no variant override on omission. OpenCode 2.0.20 was observed to emit auxiliary inference requests carrying the same effort as the main request; the pin does not promise one inference request per Turn.
+A residual permission ask is allowed once through the supported hook and reply. A typed-answer form is cancelled. An unproved refusal drain stops the host. Authored denies stay.
 
 ## Acceptance
 
-This adapter is clean only when deleting it removes all OpenCode command and event knowledge without changing NanoCore, the shared Harness contract, or canonical worker schemas. The deployment image is shared and is not deleted with the adapter.
+General, MCP, and producer truncation, image omission, spill retrieval, and cleanup are qualified under this pin, separately from the product raw-output meter.
 
-## Upstream Evidence
+A future steer mapping proves native same-Turn inbox acceptance, the exact initial and steering user lineage, idle-race closure, and no restart or successor spill. It adds no custom queue and no prompt after abort.
 
-The links below document the removed `1.18.1` pin. They are not the V2 deployment pin.
+## Implementation
 
-- `https://github.com/anomalyco/opencode/commit/99f638d8293f6985726ba509da602296c4963497`
-- `https://github.com/anomalyco/opencode/blob/99f638d8293f6985726ba509da602296c4963497/packages/web/src/content/docs/index.mdx`
-- `https://github.com/anomalyco/opencode/blob/99f638d8293f6985726ba509da602296c4963497/packages/opencode/src/cli/cmd/run.ts`
-- `https://github.com/anomalyco/opencode/blob/99f638d8293f6985726ba509da602296c4963497/packages/web/src/content/docs/server.mdx`
+- `packages/worker-shim/`
+- `containers/worker-runtimes/`
 
-## Related Documents
+## Implementation Gaps
 
-- `docs/specs/20260629-worker_runtime_communication_model.md`
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260703-worker_control_protocol.md`
-- `docs/specs/20260721-worker_execution_environment_images.md`
-- `docs/specs/20260716-codex_worker_adapter.md`
+- A future steer mapping proves native same-Turn inbox acceptance, the exact initial and steering user lineage, idle-race closure, and no restart or successor spill - On main, 2.2.5 has no qualified steer hook - #771
+
+## Decisions
+
+- [Four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)
+- [Earlier-version data](../decisions/20260930-earlier_version_data_not_carried.md)
+- [Sandbox full-capability rulings](../decisions/20261001-sandbox_full_capability_rulings.md)
+- [Truthful native stop classification](../decisions/20261009-truthful_native_stop_classification.md)
+- [Worker runtimes upgrade](../decisions/20261031-worker_runtimes_upgrade_to_latest.md)

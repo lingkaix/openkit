@@ -8,7 +8,7 @@ This directory retains omitted upstream notices and OpenKit's elected license te
 
 P08 checked the locked graph on 2026-10-15 with Rust/Cargo 1.97.1. `containers/app/Dockerfile` builds the target-native executable for each Linux platform. `x86_64-unknown-linux-gnu` corresponds to `linux/amd64`; `aarch64-unknown-linux-gnu` corresponds to `linux/arm64`. These are dependency-graph observations, not native image qualification.
 
-| Current input | SHA-256 |
+| P08 input (2026-10-15) | SHA-256 |
 | --- | --- |
 | Root `Cargo.lock` | `88be6b21f6430d1aa5bf3b730822905e37ed7514a2378a49b454265797a0947a` |
 | Root `Cargo.toml` | `37df6268b46a4fe8934dcd4acdcc9a3fc4c9701acb9bad13e41dcfdd9d18692c` |

@@ -1,178 +1,172 @@
 ---
 status: Accepted
-implementation: Not Started
 kind: process
+implementation: Not Started
 aspect: process
 ---
 # Verification Calibration Program
 
-## Owns
+This specification owns repository verification calibration and task-external execution residue measurement.
 
-This specification owns the repository's verification calibration program: the three fault-injection layers that measure detection power at the three engineering trust boundaries, the shared fault taxonomy, the calibration record schema, audit-side ownership and separation rules, Goodhart guards, the zero-merge seed invariant, and the falsification thresholds for the delegation premise. It also owns the removal-evidence outcomes that apply whenever a mechanism is removed, and the documentation probes: document ablation, the rebuild probe, and the discovery probe.
+## Scope
 
-## Does Not Own
+### Owns
 
-- The single-instrument discriminating-power record that admits one harness as an oracle; `docs/verification-instruments.md` Harness Admission owns it. Focused negative proof during work is not a calibration cycle. This specification owns sparse, task-external measurement across instruments over time.
-- The L0-L6 test taxonomy and gate policy; `docs/specs/20260529-test_strategy.md` owns them.
-- L6 story acceptance semantics, roles, and evidence packages; `docs/specs/20260529-l6_story_acceptance.md` owns them.
-- Adaptive coordination and the composition of implementation, testing, consultation, review, and audit functions; `docs/change-execution.md` owns that coordination. This specification calibrates those functions but does not authorize or replace everyday execution rules.
-- The audit-record document type; `docs/documentation-model.md` owns it.
-- The product's runtime self-improvement and evaluation loop; `docs/specs/20260710-self_improvement_evaluation_loop.md` owns it. This program calibrates repository engineering, not product runtime behavior, and product audit records under `docs/core/evidence.md` are a different domain.
-- Mutation tooling internals, CI job definitions, and reviewer prompt content; implementation slices own them under their own change plans.
+- Repository verification calibration across three fault-injection layers (code mutation, seeded review and adjudication defects, and specification-derivation mutation), the shared fault taxonomy, the calibration record schema, and audit reporting in `docs/audits/`.
+- Task-external execution residue measurement from evidence left by completed work: the audit-side trigger, comparable observations, record form, and separation from the measured work.
+- Current repository engineering calibration scope, where strict surfaces derive from `docs/core/doctrine.md` and the root `AGENTS.md` Safety Kernel.
 
-## Core References
+### Does Not Own
+
+- The single-instrument discriminating-power record that admits one harness as an oracle; `docs/verification-instruments.md` Harness Admission owns it, and focused negative proof during work is not a calibration cycle.
+- The L0-L6 test taxonomy and gate policy in `docs/specs/20260529-test_strategy.md`, and L6 story acceptance semantics, roles, and evidence packages in `docs/specs/20260529-l6_story_acceptance.md`.
+- Active execution, coordination, gates, role composition, and stop decisions in `docs/change-execution.md` (which calibration neither authorizes nor replaces), or change-record and temporary-pilot evidence forms in `docs/documentation-model.md` and `docs/change-execution.md`.
+- Product runtime behavior, the runtime self-improvement and evaluation loop in `docs/specs/20260909-personal_memory_and_knowledge_learning.md#reflection-and-improvement`, or product audit records in `docs/core/evidence.md`.
+- Mutation tooling internals, CI job definitions, and reviewer prompt content owned by implementation slices under separate change plans; within this specification, fault-injection calibration with its Goodhart guards and execution residue measurement remain distinct measurement methods.
+
+### Core
 
 - `docs/core/doctrine.md`
 
-## Intent
+## Roles
 
-- `docs/engineering-doctrine.md`
+- The audit side exclusively owns calibration metrics, measurement, record production, and trend reporting.
+- Builders MUST NOT adjudicate their own calibration outcomes.
+- Calibration judges and reviewers run in clean contexts, and reviewer or judge model families SHOULD differ from the builder's on strict surfaces.
+- In layer 2, an [Auditor](../roles/auditor.md) acts as the seed author while planted variants traverse standard adversarial review blind.
+- Adjudication calibration depends on the L6 role separation and retained evidence in `docs/specs/20260529-l6_story_acceptance.md` as prerequisites rather than newly owned calibration mechanisms.
+- In execution residue measurement, the reader is an auditor or another fresh context independent of the context that produced the measured artifacts.
 
-## Governance
+## Steps And Gates
 
-- `docs/documentation-model.md`
+- Do not build a unified calibration platform, scheduler, or evidence store; the layers share only the fault taxonomy, record schema, and audit reporting.
+- Calibration creates no ordinary-development gate, and no per-change mutation obligation is inferred from this program.
+- No single cycle's numbers form a verdict; trends decide sustained violations while each threshold retains its stated observation window.
+- Global scores and calibration metrics are diagnostic only and MUST NOT appear as builder targets, prompt content, or gates.
 
-## Summary
+### Layer 1: Code Mutation
 
-Under full delegation every verifier — test suite, reviewer, judge, auditor — is agent-produced, so verifier failures correlate with implementation failures and unmeasured verifiers degrade silently. This program answers one question empirically: if a known fault were planted at this trust boundary, which layer would detect it, how fast, and with what probability? Detection-power trends are the repository's health metric and the delegation experiment's falsifiability evidence.
+- Layer 1 measures L1 and L2 test detection power by planting syntactic code mutations and counting survivors.
+- Cycles are sparse and audit-selected across changed code or strict-surface modules with no fixed execution cadence; a material change does not automatically trigger a mutation run.
+- Required safety regressions and deliberate harness failure under `docs/verification-instruments.md` remain applicable independently of calibration.
 
-The program has three layers matching three trust boundaries: code mutation calibrates the test suites, seeded defects calibrate review and adjudication functions, and specification mutation calibrates the documentation-to-projection derivation chain. Mechanics stay distributed under existing owners; the layers share one fault taxonomy, one calibration record schema, and one reporting plane in `docs/audits/`.
+### Layer 2: Seeded Defects
 
-## Current Scope
+- Layer 2 measures review and adjudication catch rates on taxonomy-indexed defects planted in variants of real changes.
+- Seeded defects, not self-report, measure review-layer calibration.
+- Seeds exist only on designated sandbox branches, and zero seeded changes may reach an integration branch under any outcome.
+- Every seed MUST be registered before planting.
+- Optional intent-fidelity samples plant an omission or distortion between a retained source instruction and its recorded decision; the detector receives the genuine source and candidate record without the seed answer and infers no unavailable user intent.
+- Adjudication calibration re-adjudicates retained L6 evidence packages with a second clean judge to measure agreement and uses tampered-evidence probes to measure judge discrimination.
 
-The program covers this repository's engineering system at its current shape: one TypeScript monorepo, vitest and node:test suites, the existing L0 validators, agent-executed changes under the root `AGENTS.md` rules, and a small team. Strict surfaces are those named by `docs/core/doctrine.md` and the root Safety Kernel: Authorization, Confidentiality, Credential Handling, Data Loss, Destructive Action, External Effect and Publication, Sandbox Containment, and Concurrent Write Ownership.
+### Layer 3: Specification Mutation
 
-## Goals
+- Layer 3 is derivation-sensitivity analysis from normative documents to enforced projections; running checks against a mutated authoring document alone is not detection proof.
+- Dynamic step: sample claimed projection pointers, invert the pointed-to projection, and confirm failure using layer-1 mechanics.
+- Ablation step: for each sampled normative statement, ask whether removing it changes any derivation of implementation, tests, failure, recovery, ownership, or responsibility.
+- Needed and enforced statements stay; needed but unenforced statements are projection gaps.
+- Enforced but unneeded statements are over-constraints; unneeded and unenforced statements are deletion candidates.
+- Rebuild reasoning is a weak oracle, so ablation informs an audit and never deletes a statement alone; every deletion still preserves criteria under root `AGENTS.md` DOC-015.
+- L6 is opt-in, expensive, and bounded: story artifacts serve as traceability edges and story runs serve only as sparse confirmation rather than a general specification-mutation vehicle.
 
-- Measure, per trust boundary, the probability and latency of detecting a known planted fault.
-- Convert unverified specification surface into named, enforced projections.
-- Keep every calibration metric owned by the audit side and out of builder optimization loops.
-- Produce dated, comparable trend records that let a human approve work on evidence.
+### Removal Evidence
 
-## Non-goals
-
-- Do not build a unified calibration platform, scheduler, or evidence store.
-- Do not gate ordinary development on global mutation scores or catch rates.
-- Do not calibrate product runtime behavior; the product evaluation loop owns that.
-- Do not treat any single cycle's numbers as a verdict; trends decide.
-
-## Layer 1: Code Mutation
-
-Code mutation calibrates the L1/L2 test suites by planting syntactic faults and counting survivors.
-
-An audit-selected cycle samples changed code or strict-surface modules; a material change does not automatically trigger a mutation run. Record each sampled survivor as a detected gap, an evidence-backed equivalent, or unresolved, without forcing completion of unrelated production work. Required safety regressions and deliberate harness failure under `docs/verification-instruments.md` remain applicable independently of calibration.
-
-Cycles are sparse and audit-selected; this program sets no fixed execution cadence. Sampled runs report per-module detection trends to the audit side. Global scores are diagnostic only and MUST NOT appear as builder targets, prompts, or gates.
-
-## Layer 2: Seeded Defects
-
-Seeded defects calibrate the adaptive review and adjudication path by measuring its catch rate against known planted defects.
-
-An [Auditor](../roles/auditor.md) acting as the seed author derives variants of real changes with planted defects indexed by the shared fault taxonomy, and the variants pass through the standard adversarial review blind. The output is a catch-rate matrix by defect class and reviewer configuration; a blind class drives reviewer prompt, context-discipline, or model-family changes.
-
-The zero-merge invariant is strict: seeds exist only on designated sandbox branches, every seed is registered before planting, teardown is verified, and no seeded change may reach an integration branch under any outcome.
-
-Samples may also plant an omission or distortion between a retained source instruction and its recorded decision to test intent-fidelity detection. The detector receives the genuine source and candidate record without the seed answer. This does not infer unavailable user intent.
-
-The same layer calibrates adjudication: re-adjudicating retained L6 evidence packages with a second clean judge yields an agreement rate, and tampered-evidence probes measure judge discrimination. This depends on the L6 role separation and evidence retention already specified in `docs/specs/20260529-l6_story_acceptance.md`.
-
-## Layer 3: Specification Mutation
-
-Specification mutation calibrates the derivation chain from normative documents to enforced projections. Documents are authoring-time sources, not runtime inputs, so running checks against a mutated document proves nothing; the method is derivation-sensitivity analysis.
-
-Static step: for a sampled document, enumerate its normative statements and, for a mutated sample of them, demand a concrete pointer to the projection that would have to change — an L0 rule, an L1/L2 test, a story assertion, or an audit rule. A statement with no pointer is unverified surface.
-
-Dynamic step: for a sample of claimed pointers, invert the pointed-to projection and confirm it fails, reusing layer 1 mechanics as the proof.
-
-The output is a load-bearing map per document — enforced, story-covered, audit-only, or unverified per statement — published as an audit record, and it drives where the next L2 tests and L0 rules are added.
-
-Ablation step: for the same sample, ask of each normative statement whether removing it would change any derivation of implementation, tests, failure, recovery, ownership, or responsibility. Together with the static step this sorts statements into four groups: needed and enforced statements stay; needed but unenforced statements are gaps that call for a projection; enforced but unneeded statements are over-constraints, such as a check that pins a clause identifier rather than its criterion; unneeded and unenforced statements are deletion candidates. Whether a statement is needed is judged by rebuild reasoning, which is a weak oracle, so the ablation step informs an audit and never deletes a statement by itself; a deletion still keeps every criterion under DOC-015. Existing mechanical edges are story `contracts` metadata and story deterministic assertions. A citation convention linking L2 contract tests to their owning specification remains a non-authorizing deferred question below.
-
-## Removal Evidence
-
-Ablation asks which required behavior is lost when a mechanism is removed; mutation asks whether the checks would detect a deliberate break. Green checks after a removal prove nothing unless the checks have been shown, by mutation or by a named failing case, to see the responsibility the mechanism carries. Every removal candidate ends in one of four outcomes:
-
+- Removing a mechanism requires mutation or named failing-case sensitivity to the responsibility the mechanism carries; green checks alone prove nothing.
 - Redundant within its declared scope: remove it.
 - Still required by a contract: keep it.
-- Not concluded: the experiment or its oracle did not cover the responsibility, so no removal follows.
+- Uncovered or inconclusive experiment or oracle: no removal follows.
 - Behavior change found: leave the refactor scope and return the question to the owner.
+- Analyze mutually backing mechanisms together.
+- An unused export or pure forwarding wrapper may rest on lighter evidence: consumer closure, real-caller checks, and focused checks.
+- Security, durable recovery, and external-effect removal paths require direct evidence under their own failure conditions.
+- Experiments MUST NOT remove production safety protections or fire an external effect twice through differential comparison.
+- Import-graph unused-export tools may narrow an audit sample, but they neither prove complete consumer closure nor act as a gate or substitute.
 
-Mechanisms that back each other up are analyzed together, because each can look removable while the other remains. An unused export or a pure forwarding wrapper may rest on lighter evidence: its consumer closure, a check of real callers, and focused checks. Security, durable recovery, and external-effect paths need direct evidence under their own failure conditions. No experiment removes a safety protection in production, and no differential comparison fires an external effect twice. An import-graph unused-export tool may narrow an audit sample. It does not establish complete consumer closure and is neither a gate nor a substitute for that proof.
+### Documentation And Discovery Probes
 
-## Documentation And Discovery Probes
+- A rebuild probe gives a fresh-context agent the bounded subsystem documents and [admitted contract artifacts](../documentation-model.md#admitted-rebuild-corpus) without implementation source, allowing implementation in another language.
+- The rebuild probe checks the resulting implementation with the subsystem's existing black-box conformance tests.
+- A discovery probe gives an independent agent an ordinary task for already implemented behavior with normal repository navigation and no target hint.
+- Prior exposure of the discovery agent to the answer invalidates any improvement proof.
 
-A rebuild probe tests the governing documentation criterion recorded in [Documents Pass When A System Can Be Rebuilt From Them](../decisions/20260923-documentation_rebuild_test.md), as amended by [Reserved Audit Question Rulings](../decisions/20261031-reserved_audit_question_rulings.md). It gives a fresh-context agent the documents of one small, well-bounded subsystem plus that subsystem's [admitted contract artifacts](../documentation-model.md#admitted-rebuild-corpus), with no implementation source, asks it to implement the subsystem, possibly in another language, and checks the result with the subsystem's existing black-box conformance tests. Every question the agent must ask and every guess it must make is a specification gap, and every normative sentence it cannot use without source code is a coupling to implementation. The probe is sampled, not run on every change, and each run retains one dated audit record.
+### Falsification Thresholds
 
-A discovery probe tests whether agents find and correctly reuse existing capabilities. An independent agent receives an ordinary task description for behavior the repository already implements, with normal repository navigation and no hint of the target; the auditor records beforehand the owner, the legitimate entry point, and the behavior evidence. The probe observes whether the agent finds the existing implementation, understands its bounds, and reuses it, and records the model, tool, and context used so that runs remain comparable. A probe whose agent has already seen the answer proves no improvement.
+- The first two full cycles calibrate and review the provisional thresholds against baseline data; any revision is a change to this specification.
+- Strict-surface mutation detection sustained below 80% across two consecutive cycles is a falsification trigger.
+- Authority-boundary or acceptance-predicate seeded-defect catch rate below two thirds in any cycle is a falsification trigger.
+- A declining load-bearing ratio across two consecutive quarterly maps on sampled Core and strict-surface specifications while specification count grows is a falsification trigger.
+- Independent-judge agreement on re-adjudicated evidence packages below 90% is a falsification trigger.
+- Any sustained violation triggers a recorded delegation-boundary scoping discussion without simultaneous threshold relaxation.
 
-## Shared Fault Taxonomy
+### Initial Pilots
 
-Defect classes are indexed to the five decision classes for material concepts in the root `AGENTS.md`: wrong definition or exclusion, authority or projection-boundary violation, lifecycle violation, wrong conflict or failure semantics, and missing or wrong acceptance predicate — plus local syntactic fault classes for layer 1. Every planted fault and every catch-rate cell names its class so results are comparable across layers.
+- The initial layer-1 pilot samples one small strict-surface package, measures cost, and retains sampled-survivor dispositions before extending to strict NanoCore modules.
+- The initial layer-3 static pilot is hand-run by an audit agent on one high-stakes specification and publishes the first load-bearing map.
+- The initial layer-2 pilot follows L6 role separation in runner practice, planting three to five seeds in one cycle and recording the first judge-agreement rate.
+- Two manual cycles precede any evidence-first decision on whether shared tooling is justified.
+- Every pilot uses its own change plan; this specification alone authorizes no implementation.
 
-## Calibration Records
+## Evidence
 
-Each cycle retains one dated audit record with per-intervention entries naming: what was injected, where, when, the expected detector, the actual detectors with detection latency, the disposition, and links to the affected change records and documents. The record follows `docs/audits/` rules and compares available trends with prior cycles; raw per-attempt output stays under `temp/`. Ordinary task findings and focused negative checks do not each require an audit record.
+- `docs/documentation-model.md` owns the audit-record document type, and calibration records obey `docs/audits/` rules.
+- In layer 1, each sampled survivor is recorded as a detected gap, an evidence-backed equivalent, or unresolved, without forcing completion of unrelated production work.
+- Sampled layer-1 runs report per-module detection trends to the audit side.
+- Layer 2 reports a catch-rate matrix by defect class and reviewer configuration; blind classes drive reviewer prompt, context-discipline, or model-family corrections.
+- Layer 2 records verify seed teardown and prove integration absence.
+- In layer 3's static step, enumerate sampled normative statements and require each mutated sample to name a concrete L0 rule, L1/L2 test, story assertion, or audit projection pointer; absence of a pointer marks unverified surface.
+- Layer 3 publishes a per-document load-bearing map using `enforced`, `story-covered`, `audit-only`, or `unverified` statement states as an audit record to direct later L2 and L0 work.
+- Existing story `contracts` metadata supplies a mechanical derivation edge.
+- Story deterministic assertions are named as a derivation target through story outcome predicates rather than a per-story executable runner.
+- In a rebuild probe, every question or guess by the agent is recorded as a specification gap, and every normative statement unusable without source code is recorded as implementation coupling.
+- The rebuild probe is sampled rather than run on every change and retains one dated audit record per run.
+- Before a discovery probe, the auditor records the expected owner, legitimate entrypoint, and behavior proof.
+- A discovery probe observes whether the agent finds the implementation, understands its bounds, and reuses it, retaining the model, tool, and context used for comparable runs.
+- The shared fault taxonomy indexes the five decision classes for material concepts in root `AGENTS.md` plus layer-1 local syntactic fault classes; every planted fault and catch-rate cell names its class.
+- Each calibration cycle retains one dated audit record linking this specification; ordinary task findings and focused negative checks do not each require an audit record.
+- Each intervention entry records injection identity, location, and time, expected detector, actual detectors with latency, disposition, and links to affected change records and documents.
+- Calibration records compare available trends with prior cycles while keeping raw per-attempt output in `temp/`.
+- A second clean-context judge reproduces calibration verdicts using the recorded evidence alone.
+- For execution residue readings, an independent second reader reproduces the mechanical observations without using the producer's completion report as the sole source.
 
-## Ownership And Separation
+## Execution Residue
 
-The audit side owns all measurement, record production, and trend reporting. Production and verification stay separated: builders never adjudicate their own calibration outcomes, calibration judges and reviewers run in clean contexts, and reviewer or judge model families SHOULD differ from the builder's on strict surfaces. Calibration of the review layer itself is measured by seeded defects, not by self-report.
+- Engineers decide any framework correction through a separate approved governance change; residue measurement creates no authority for a response.
+- No active execution event vocabulary, state file, workflow engine, dashboard, scheduler, live breaker, or role invocation is required solely for residue measurement.
+- Residue readings never return rates, advice, scores, gates, pauses, or redirection to active primary, build, test, review, or consultation work.
+- Do not revive the rejected active event-production controller or live stagnation breaker; active direction recovery stays with `docs/change-execution.md`.
+- Legacy committed state files and findings reports remain admissible under their producing framework; additional historical counts are labeled legacy and impose no new execution requirements.
+- New pilot corpora may use Git history, actual artifacts, append-only intent, rewritable checkpoints, raw transcripts, tool output, timing, and human decisions in uncommitted working space.
+- Every reading names the exact evidence used, never invents omitted history or events from narrative summaries, and reports missing data as unavailable rather than zero.
+- Separate direct counts and timings from evaluator judgment; label each interpretation as judgment and state the method for each measure.
+- Define no targets or thresholds before repeated completed-work observations exist; the first reading establishes a baseline, and one task proves no universal pattern.
+- For each completed task, report only the observation-panel measures supported by its named evidence:
+  1. Time to first direct contact with the relevant runtime, artifact, or external system.
+  2. Time to the first usable artifact and to final acceptance.
+  3. Human interruptions, classified as factual requests or engineer-only decisions.
+  4. Wrong-premise rework: time or attempts abandoned after evidence defeated the premise or proxy.
+  5. Recovery latency after compaction, pause, failed direction, or environment loss.
+  6. Coordination cost in role invocations, handoffs, repeated reports, or waits where retained evidence supports a count.
+  7. Escaped defects discovered after artifact acceptance.
+  8. Strict incidents under the root `AGENTS.md` Safety Kernel concern set.
+  9. Final acceptance and unresolved residual risk.
+- The engineer triggers a reading after a meaningful completed-work corpus or pilot set.
+- The reader inspects direct Git state, artifacts, execution output, checkpoint and intent history, raw retained evidence, and human decisions.
+- Compare only like-for-like evidence across readings; any proposed governance addition cites repeated failures and identifies the smallest intercepting mechanism.
+- Each run produces one dated audit record under `docs/audits/` linking this specification and naming the corpus, observations, unavailable fields, and comparison limits.
+- The residue audit record carries no execution authority, recommendation, automatic threshold, or live signal.
+- Raw evidence obeys credential, confidentiality, retention, and publication owners; retain only necessary redacted reproducible observations in the audit record.
+- Every published number MUST be reproducible from the named evidence.
 
-## Falsification Thresholds
+## Implementation
 
-The following provisional thresholds operationalize the falsifiability commitment in `docs/engineering-doctrine.md`; the first two full cycles calibrate them and their revision is a change to this specification.
+- Boundary and ownership checks: `tests/verification-instruments-contract.test.mjs`.
+- Story contract-reference validation: `scripts/validate-story-schema.mjs`, `scripts/lib/story-metadata.mjs`.
 
-- Strict-surface mutation detection sustained below 80 percent across two consecutive cycles.
-- Authority-boundary or acceptance-predicate seeded-defect catch rate below two thirds in any cycle.
-- Load-bearing ratio of sampled core and strict-surface specifications declining across two consecutive quarterly maps while specification count grows.
-- Independent-judge agreement on re-adjudicated evidence packages below 90 percent.
+## Implementation Gaps
 
-Any sustained violation triggers a recorded scoping-down discussion of the delegation boundary, not a threshold adjustment in the same breath.
+- Three-layer verification calibration, documentation and discovery probes, and task-external execution residue measurement - Not Started; no formal calibration cycle, probe runner, or nine-measure residue reading program is implemented - #372, #312
 
-## Rollout
+## Decisions
 
-1. Layer 1 pilot on one small strict-surface package, measuring cost and retaining sampled-survivor dispositions; then extend to strict NanoCore modules.
-2. Layer 3 static pilot on one high-stakes specification, hand-run by an audit agent, publishing the first load-bearing map.
-3. Layer 2 pilot after L6 role separation lands in runner practice: three to five seeds in one cycle plus the first judge agreement rate.
-4. After two manual cycles, decide per the evidence-first rule whether any shared tooling is justified.
-
-Each pilot runs under its own change plan; this specification authorizes no implementation by itself.
-
-## Acceptance Predicates
-
-- No calibration metric appears as a builder target, prompt content, or gate, and no per-change mutation obligation is inferred from this program.
-- Every planted seed is registered, torn down, and provably absent from integration branches.
-- Every calibration output is a dated audit record linking this specification.
-- A second clean-context judge reproduces calibration verdicts from the recorded evidence alone.
-- Thresholds are reviewed against baseline data after two cycles, as a change to this specification.
-
-## Alternatives Considered
-
-### One Unified Calibration Platform
-
-Rejected: a single scheduler and store would be a new platform with correlated failure across all three layers, against the root anti-platform rules; the layers share taxonomy, record schema, and reporting instead.
-
-### Builder-Owned Metrics
-
-Rejected: any measured proxy handed to its producer as a target stops measuring; audit-side ownership is the Goodhart guard.
-
-### Running Checks Against Mutated Documents
-
-Rejected: L0-L5 checks and L6 assertions are authoring-time projections that do not read documents at run time, so verdicts cannot flip; derivation-sensitivity analysis replaces it.
-
-### L6 As The Specification-Mutation Vehicle
-
-Rejected as a general mechanism: L6 is opt-in, expensive, and bounded by its own specification. Story artifacts serve as traceability edges, and story runs serve only as sparse confirmation.
-
-## Deferred, Non-authorizing Questions
-
-- Whether calibration runs deserve scheduled automation after two manual cycles.
-- Whether reviewer and judge model rotation should follow a standing policy.
-- Whether the load-bearing map should extend beyond core and strict-surface specifications.
-- Whether a citation convention should link L2 contract tests to their owning specification as an additional mechanical derivation edge for layer 3.
-
-## Related Docs
-
-- `docs/specs/20260529-test_strategy.md`
-- `docs/specs/20260529-l6_story_acceptance.md`
-- `docs/specs/20260710-self_improvement_evaluation_loop.md`
-- `docs/audits/README.md`
+- [Documents Pass When A System Can Be Rebuilt From Them](../decisions/20260923-documentation_rebuild_test.md)
+- [Reserved Audit Question Rulings](../decisions/20261031-reserved_audit_question_rulings.md)

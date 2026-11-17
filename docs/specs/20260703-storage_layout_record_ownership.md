@@ -2,705 +2,123 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
-updated: "2026-10-02"
 aspect: storage
 ---
 # Storage Layout And Record Ownership
 
-## Summary
+This specification is the single owner of the physical `DATA_ROOT` directory hierarchy across Server, User, and owner-independent Workspace scopes, the physical family split between scope-owned SQLite databases and file-backed storage, record-homing and local SQL transaction boundaries, per-scope migration and failure containment rules, and the boundary between live storage and portable layouts.
 
-The accepted physical foundation uses one off-Main DatabaseOwner writer per database, bounded snapshot readers released before checkpoint/close, and no WAL/SHM at rest. Shared L0 byte primitives and scope-local immutable blobs follow [Core Storage](../core/storage.md#sqlite-layers); no cross-scope deduplication is permitted. The mixed-writer/cold-family allowance is superseded and production direct access must shrink to zero. Implementation projection: `apps/nanocore/src/storage/control-store-worker.ts` (`openDatabase`), `apps/nanocore/src/storage/control-store-product-records.ts` (`closeWorkspaceProductReadHandles`) and `scripts/validate-storage-access.mjs` (`scanStorageAccess`) implement parts of this boundary; full writer retirement, bounded reader pooling and common blob adoption remain storage-foundation work.
+## Scope
 
-This spec owns storage placement by scope and the existing retained record graph. [Storage](../core/storage.md) now requires one transaction per mutable control transition over already durable immutable content.
+Owns:
+- The physical `DATA_ROOT` ownership hierarchy for `config/`, `server/`, `users/<userId>/`, and `workspaces/<workspaceId>/`, and the rule that local and server modes share one storage layout.
+- Physical family placement and source-of-truth boundaries across `server/db/core.sqlite`, `users/<userId>/db/user.sqlite`, `workspaces/<workspaceId>/db/workspace.sqlite`, per-App `workspaces/<workspaceId>/light-apps/<appId>/data.sqlite`, file-backed canonical artifacts/configurations/snapshots/mounts, and disposable derived indexes and caches.
+- Local SQLite transaction boundaries for product records, Light Apps, Materials, version-keyed Artifact Reviews, evaluation candidate sets, Workspace Notebook heads, and Core-homed recurring schedules/occurrences/expired ranges and external-trigger joins.
+- Release-scoped SQLite migration ledger validation, per-scope integrity failure containment, explicit one-way physical layout migration, and lineage requirements for promoting runtime outputs into canonical product history.
 
-The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_store.md) supersedes this document's file-first control authority, server-global Workspace execution tables, and split-file/database publication mechanisms. [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md#commit-rule-and-scope-layout) is the Draft replacement mechanism. The detailed file layouts and cross-store repair rules below describe the pre-cutover realization for those concerns, not an alternative target. Product meanings, exact lineage, audience, retention, content verification and independent business-store rules remain binding unless explicitly replaced.
+Does not own:
+- Scope-local control-store worker batching, execution-journal state machines, reservation commit gaps, and deadline propagation ([Durable Execution And Control Store](20261019-durable_execution_and_control_store.md)); superseded file-first live product/observation layouts create no fallback authority.
+- Core semantic definitions for Workspace, Thread, Turn, Item, Artifact, Knowledge, Vault, Audit, Usage, or AgentSession ([Storage](../core/storage.md), [Protocol](../core/protocol.md), [Knowledge](../core/knowledge.md), [Evidence](../core/evidence.md), [Vault](../core/vault.md), [AgentSession](../core/agent-session.md)), or runtime-native session objects.
+- Retained format version markers and reader boundaries ([Retained Format Register](20261017-retained_format_register.md)), record envelope and required-feature mechanics ([Schema Evolution And Record Envelope](20260703-schema_evolution_record_envelope.md)), or observation header and capture-coverage semantics ([Work Data Retention Format](20260921-work_data_retention_format.md)).
+- Shared `contentRef` grammar, Knowledge mount schemas, and Knowledge packages ([File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md)), portable Workspace export V3 and operational backup/restore/MOVE bundles ([Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md)), or Material, binding, and Artifact Review product semantics ([Work Resource Interaction Model](20260713-work_resource_interaction_model.md)).
+- Workspace synchronization protocol semantics ([Workspace Synchronization](20260703-workspace_synchronization.md)), Vault secret backend encryption ([Vault Backend Implementation](20260704-vault_backend_implementation.md)), or Web UI read models beyond naming their storage sources.
 
-Server records remain server-owned, user records user-owned, and Workspace records Workspace-owned. The replacement consolidates mutable control heads and request receipts in each scope database; it does not add a journal beside file authority. The [Workspace authority inventory](20261019-durable_execution_and_control_store.md#workspace-authorities-outside-the-control-database) classifies Notebook heads, app databases, authored configuration, catalogs and opaque MCP process data, including their snapshot boundaries.
+Core: [Storage](../core/storage.md), [Identity](../core/identity.md), [Policy](../core/policy.md), [Architecture](../core/architecture.md), [Protocol](../core/protocol.md), [Knowledge](../core/knowledge.md), [Evidence](../core/evidence.md), [Vault](../core/vault.md), [AgentSession](../core/agent-session.md), [Contract Evolution](../core/contract-evolution.md), [Fault Tolerance](../core/fault-tolerance.md).
 
-The important call is to stop organizing persistence by feature module. Storage should be organized by ownership, recovery boundary, backup boundary, and export boundary.
+## Storage Scopes And Roots
 
-## Shared Storage And Knowledge Mounts
+`DATA_ROOT` uses sibling ownership trees and one SQLite database per ownership scope (`apps/nanocore/src/storage/fs-layout.ts`). Local and server deployments use the same `DATA_ROOT` hierarchy; Core mode changes authentication and configuration posture, never physical record ownership or directory structure. Each canonical database retains its own independent writer and reader lifetime rather than flattening into a single Core mega-database.
 
-[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns content references and Knowledge mount declarations. The default local mount is physical `raw/`; additional mounts occupy declared `raw/<mount>/` subdirectories, with names reserved against physical-folder collisions. This target replaces text-only captured-material bindings and copying solely for reference retention when the Source owner activates the new format.
+- **Authored server configuration (`DATA_ROOT/config/`)**: operator-authored `server.jsonc`, `gateway.jsonc`, `internal-role-profiles.jsonc`, `providers/`, and `agents/` under [Config And Identity Contract](20260628-nanocore_config_identity_contract.md).
+- **Server runtime scope (`DATA_ROOT/server/`)**: `db/core.sqlite`, `layout.json` (`schemaVersion: 1`, `layoutVersion: 2`), `catalog/`, `files/` (sanitized OAuth slot metadata and isolated provider account homes), `vault/`, `knowledge/` and `sources/`, `threads/`, `evidence/` (`evidence/backend/`), `exports/` (Workspace export trees and `workspace-closures/`), `migrations/`, `indexes/retrieval/`, and `logs/`.
+- **User scope (`DATA_ROOT/users/<userId>/`)**: `db/user.sqlite`, `config/user.jsonc`, `memory/` and `sources/`, `indexes/retrieval/`, `files/`, `data/`, and `logs/`. A User subtree holds only private User state and never nests canonical Workspace directories.
+- **Workspace scope (`DATA_ROOT/workspaces/<workspaceId>/`)**: `db/workspace.sqlite`, `config/workspace.jsonc`, `config/data-sources.jsonc`, `catalog/` (`catalog.json`, `skill-snapshots/<skillId>/<digestHex>/`, `plugin-snapshots/<pluginId>/<digestHex>/`, `mcp-data/<packageDataKey>/`), `threads/`, `artifacts/`, `knowledge/` and `sources/`, `light-apps/<appId>/` (`data.sqlite`, `definitions/<sha256>.json`, `snapshots/`), `runtime/` (`agent-sessions/<agentSessionId>/aep-snapshots/`), `reviews/workspace/`, `evidence/` (`bundles/`, `backend/`), `indexes/` (`retrieval/`, `knowledge-links.json`, `knowledge-validation.json`, `knowledge-source-refs.json`), `files/`, `data/`, and `logs/` (`nanocore/`, `worker/`).
 
-Admitted SourceSummary pointers at Notebook `sources/<source-id>.md` replace the external `sources/registry/` authority for Knowledge, Context, evidence and Artifacts. The old sibling registry/material paths below describe only the pre-transition implementation; raw bytes stay outside Git and derivative/index metadata is rebuildable. Notebook Git authority, other product records, restricted evidence and retained working volumes keep their existing owners. Storage owns location only; Derivation owns processing and retrieval owns indexes/embeddings.
+A Workspace's owner is a Core identity relationship, never its physical path; ownership transfer or membership changes do not move, copy, symlink, or alias `workspaces/<workspaceId>/`. Externally mounted data remains external and is never implicitly copied into canonical Workspace storage. User Memory (`users/<userId>/memory/`), Server Knowledge (`server/knowledge/`), and Workspace Knowledge (`workspaces/<workspaceId>/knowledge/`) use the same scoped Notebook subtree (`notebook.git/`, optional rebuildable `pages/`, `schema/scope-schema.yaml`, `proposals/`, `reviews/`, and `raw/`). Retrieval Kernel indexes (`indexes/retrieval/<scope-sha>/CURRENT` and immutable generations with `sidecars/`, owned by [Retrieval Kernel](20261014-retrieval_kernel.md)) live under each scope root, except that private-origin Thread retrieval indexes live under `workspaces/<workspaceId>/threads/<threadId>/indexes/retrieval/` after current audience admission and never enter the shared Workspace index root. `createStorageLayoutReport` (`storage.layout-report`) provides a read-only deployment-administrator diagnostic of database presence, applied migration ledgers, `indexes/` status, and quarantined files without repairing or migrating state.
 
-## Owns
+## Physical Families
 
-- Target physical `DATA_ROOT` ownership layout for server, user, and owner-independent workspace scopes.
-- Source-of-truth decisions for file-backed records, SQLite source-of-truth ledgers, and derived SQLite records.
-- Storage ownership for worker runtime outputs, OpenShell evidence, staged reviews, apply results, audit, usage, capability calls, permission decisions, vault metadata, and recovery checkpoints.
-- The Workspace SQLite transaction boundary for Workspace Material identity, immutable inline revisions, Thread bindings, their command receipts, version-keyed Artifact Review history, and evaluation candidate sets.
-- Migration posture from the current single-database implementation to ownership-scoped storage, and release-scoped SQLite schema evolution.
-- Record lineage requirements for importing runtime-produced evidence into canonical product history.
-- Storage structure extension rules for future record families and derived directories.
+Each live physical `DatabaseOwner` has one off-Main writer, bounded snapshot readers released before checkpoint or close, and no ordinary at-rest canonical WAL/SHM residue (`apps/nanocore/src/storage/control-store-worker.ts`). Same-scope immutable blobs use `@openkit/storage` primitives with no cross-scope deduplication leaks.
 
-## Does Not Own
-
-- Core semantic definitions for workspace, thread, turn, item, artifact, knowledge, vault, audit, usage, or AgentSession.
-- Table DDL, migration scripts, ORM details, or read-model query design.
-- Workspace synchronization protocol semantics.
-- Vault secret backend implementation or secret material storage.
-- Web UI read models beyond naming their storage source.
-- Material, binding, worker-delivery, or Artifact Review product semantics, which remain owned by `docs/specs/20260713-work_resource_interaction_model.md`.
-
-## Core References
-
-- `docs/core/storage.md`
-- `docs/core/identity.md`
-- `docs/core/policy.md`
-- `docs/core/architecture.md`
-- `docs/core/protocol.md`
-- `docs/core/knowledge.md`
-- `docs/core/evidence.md`
-- `docs/core/vault.md`
-- `docs/core/agent-session.md`
-- `docs/core/contract-evolution.md`
-
-## Related Docs
-
-- [Retained Format Register](20261017-retained_format_register.md) — current retained-family inventory, marker evidence, readers and fixture gaps; persistence rules remain with Core Storage.
-
-- `docs/specs/20260703-schema_evolution_record_envelope.md`
-- `docs/specs/20260921-work_data_retention_format.md` — owns the semantics and content model of retained work data whose physical placement this spec owns.
-
-## Goals
-
-- Define the target `DATA_ROOT` tree for server, user, and workspace scopes.
-- Decide which record families are file-backed source of truth and which may use SQLite as source of truth.
-- Bring OpenShell, worker-shim, audit, log, transcript, and evidence outputs back into NanoCore-owned storage.
-- Keep records inspectable, portable, backup-friendly, and easy to rebuild into query indexes.
-- Preserve lineage from workspace, thread, turn, AgentSession, package snapshot, backend session, capability call, policy decision, and evidence bundle.
-
-## Non-goals
-
-- Do not preserve the current single-`core.sqlite` implementation as the target model.
-- Do not define table DDL in this spec.
-- Do not make OpenShell-native files product records.
-- Do not store secret values in normal storage.
-- Do not design Web UI read models beyond naming the records they should project.
-
-## Background
-
-`docs/core/storage.md` already establishes that OpenKit is file-system first and that SQLite is a companion store. `docs/product-vision.md` states that SQLite files should be split by ownership scope: `core.sqlite`, `user.sqlite`, and `workspace.sqlite`.
-
-The missing decision is the concrete target layout and record ownership rule, especially for runtime records produced by governed worker containers and OpenShell backends.
-
-## Generative App Storage Contract
-
-The initial [Kernel contract](20260908-generative_kernel_data_operations.md) uses `DATA_ROOT/workspaces/<workspaceId>/light-apps/<appId>/data.sqlite` and immutable `definitions/<sha256>.json` beneath the same app directory. This is a Workspace-owned physical partition, not a new owner scope. Only Core resolves these paths from validated identifiers. Agents receive schema content through governed interfaces, never authoritative filesystem handles. Open existing stores without create-on-read behavior; reject symlinks, wrong Workspace/app identity, missing authority and unsupported layouts while preserving original bytes.
-
-| App database graph | Authoritative content |
+| Physical owner | Authoritative tables and file families |
 | --- | --- |
-| `app_meta` (singleton) | App/Workspace IDs, app revision, current schema revision, active/retired state, creation/update timestamps, creator and request lineage. Title/purpose project the current definition rather than becoming a second independently mutable value. |
-| `schema_revisions` | Immutable positive revision, parent revision (null for 1), exact admitted schema JSON, its file digest, admission time, actor and request lineage. Collection/field/index metadata belongs to this document; separate catalog or metadata indexes are derived. |
-| `c_<collection UUID without hyphens>` | Native records with fixed metadata and `f_<field UUID without hyphens>` data columns. Initial types, constraints and foreign keys are owned by the Kernel spec. |
-| Existing completed-receipt table | Existing closed metadata schema, routed to this database for Kernel commands. No response bodies or second receipt lifecycle. |
-| Existing `AuditEvent` table projection | Attributed Kernel commits in the same transaction, under the existing Audit owner and Workspace scope. No second audit model. |
-
-Use foreign keys, WAL and `synchronous=FULL`; lock waiting is at most 1,000 ms. Definition admission persists and fsyncs immutable file bytes plus their directories before atomically committing schema/data metadata, DDL, AuditEvent and receipt in the app database. File and database writes are not one transaction. A crash before commit leaves the previous schema active; an unreferenced file is inert. Initial create uses the Kernel's request-derived app identity and exclusive-directory rule. A valid committed app with a missing catalog index remains discoverable; an index with missing/corrupt authority never activates an empty replacement.
-
-The Workspace Light App catalog index is rebuildable by inventorying app directories and valid app metadata; it owns no app revision, membership, installation, or lifecycle. Rebuild must preserve an unavailable indication for a previously discovered app whose authority is now missing. Every physical native table/column must match admitted schema inventory; unexpected business tables/columns or inconsistent metadata require inspection, not silent omission or automatic repair. Current schema bytes and digest are verified on open; historical definition bytes are verified when read and during complete backup/export. Missing required historical bytes make complete export/backup fail rather than fabricating history from the current definition.
-
-[Generative UI](20260908-generative_ui_interaction.md) adds `generative_presentations` in `workspace.sqlite` as its immutable retained-declaration graph; its exact fields are owned by that spec. A unique `(workspaceId,requestId)` constraint prevents duplicate local admission. Local rows use a non-null request ID and a null `originRequestId`. Portable export carries those retained fields and does not rewrite them. Ordinary import does not publish a target presentation. The existing file-backed Item log owns `generative-ui-reference` Items. Presentation admission and its AuditEvent commit locally; Item publication and the later Workspace completed receipt remain separate effects with the explicit inspect/recovery contract. No saved-view table, material row, automatic Artifact, pinned HTML-resource store, or publication runner is introduced in the native slice.
-
-Kernel data and its receipts/audit never depend on `ATTACH` or a transaction in `workspace.sqlite`. Existing Workspace audit reads may aggregate app-local audit rows, and existing catalog reads may aggregate app metadata; those are projections only. Missing/corrupt app authority marks that app unavailable and preserves its original bytes. Healthy apps remain usable; critical Core or User corruption retains the existing boot-failure behavior, and shared Workspace corruption quarantines that Workspace. App/schema creation and every app write acquire the existing Workspace mutation admission so backup/export, deletion and lifecycle fences cover these stores as well.
-
-The required portable graph, captured-definition pairing, and app/audit inventory are fixed by [Workspace Backup, Export, And Import](20260704-workspace_backup_export_import.md).
-
-## Recurring Work Storage
-
-[Recurring Triggers](20260711-scheduler_recurring_event_triggers.md) owns `RecurringSchedule`, `RecurringOccurrence`, and lossless `ExpiredOccurrenceRange` records. They are Workspace-owned product history physically homed in `server/db/core.sqlite`, beside existing scheduler admission rows, so the exact occurrence acceptance and queue insertion commit in one transaction. This is a named transactional exception to scope homing, not a second scheduler. The same database owns definition/cursor changes, occurrence/range materialization, and attributed recurring `AuditEvent` rows; audit reads aggregate them under the existing Workspace owner without dual-writing.
-
-The trigger specification owns fields and transitions. Storage enforces unique `(scheduleId, scheduledAt)` individual occurrence identity, non-overlapping accounted range coverage, and atomic cursor advancement with the corresponding history. Indexes support active due definitions, pending occurrence deadlines, and Workspace/schedule history pagination. Full deployment backup includes the Core database. Workspace export explicitly selects these Workspace-owned rows even though they are outside `workspace.sqlite`; Agent execution attempts, live queue authority, and backend-private residency remain non-portable; bounded trigger admission attempts remain portable history. Workspace export selects these rows as inert history in the three `records/recurring-*.jsonl` families and `workspace.recurring-triggers.v1`, with deployment-local roots and working-directory paths removed. Export does not activate a source cursor.
-
-Every definition mutation, scan materialization and admission participates in the existing Workspace mutation fence, so backup/export/deletion observes a consistent cut. Definition tombstones and occurrence/range history use the existing `workspace-audit` retention class; no automatic pruning or new maintenance runner is part of this slice. Existing legal hold and sealed deletion closure include this graph and its audit before Workspace deletion removes its Core-homed rows. Missing/corrupt required history fails export or recovery visibly rather than creating replacement empty history.
-
-## Decision
-
-Use sibling ownership trees and one database per ownership scope. A Workspace is a first-class server resource; its owner is an identity relationship, not its physical parent.
-
-Local and server deployments use the same `DATA_ROOT` hierarchy. Core mode changes authentication and configuration posture, not physical record ownership or storage shape; local mode is not a separate storage tree.
-
-The target tree is:
-
-```text
-DATA_ROOT/
-  config/
-    server.jsonc
-    gateway.jsonc
-    internal-role-profiles.jsonc
-    providers/
-    agents/
-  server/
-    db/core.sqlite
-    catalog/
-    files/
-      oauth/
-      provider-accounts/
-    logs/
-    evidence/
-    exports/
-    migrations/
-  users/
-    <userId>/
-      db/user.sqlite
-      config/user.jsonc
-      files/
-      logs/
-  workspaces/
-    <workspaceId>/
-      workspace-record.json # optional readable projection; not authority
-      db/workspace.sqlite
-      config/workspace.jsonc
-      config/data-sources.jsonc
-      catalog/
-      threads/
-      artifacts/
-      knowledge/
-      sources/
-      runtime/
-      reviews/
-      evidence/
-      logs/
-      indexes/
-```
-
-`DATA_ROOT/config` remains the operator-authored Server config surface. The strict authored files and their scopes are owned by `docs/specs/20260628-nanocore_config_identity_contract.md`; other mutable Server-owned runtime state belongs under `DATA_ROOT/server`.
-
-`DATA_ROOT/users/<userId>` contains only user-owned state. `DATA_ROOT/workspaces/<workspaceId>` is the one canonical home for a Workspace regardless of creator, current owner, or member set. Workspace listings are derived from the Core registry, membership state, and policy decisions; sharing does not create copies, reference files, `share/` directories, symlinks, or hard links.
-
-`knowledge/` and `sources/` are deliberately sibling record families even though the Knowledge Store conceptually governs both: physical layout follows record family, lifecycle, and backup boundary rather than module nesting, and the `sources/` evidence layer is referenced by context packages, evidence bundles, audit traces, and artifacts as well as by knowledge pages. `sources/` and `artifacts/` are symmetric: durable governed inputs and durable governed outputs.
-
-## Source Of Truth Rules
-
-General Server Threads, Turns, Items and events use the existing canonical record families under `server/threads/<threadId>/`. Their immutable Server owner has no Workspace anchor. Workspace listing, portability and deletion do not traverse this root. Current Server administration authority governs history and effects; placement grants no permission. Only Knowledge Manager work uses this general owner in the current increment.
-
-The [Control Store owner](20261019-durable_execution_and_control_store.md) owns mutable Workspace, Thread, Turn, Item and AgentSession records in scoped SQLite. Any readable record files, including `workspace-record.json`, are projections only. Readers, index rebuild and boot use the control-store authority; a projection cannot restore or replace missing authority.
-
-File-backed source-of-truth records:
-
-- editable Workspace `name`, shared `defaultAgentId`, and other accepted Workspace composition in `config/workspace.jsonc`
-- turn input attachments under `turns/<turnId>/inputs/`, which are work-history records whose lifecycle follows thread retention; they become Knowledge Sources only through the explicit registration contract in `docs/specs/20260703-knowledge_store_implementation.md`
-- artifacts and artifact metadata
-- knowledge pages, sources, derived representations, proposals, and Knowledge reviews
-- context package manifests, traces, and their exact worker-visible package files
-- agent environment package snapshots
-- scope-owned Skill, MCP, and Plugin catalog metadata and immutable installed Skill/Plugin snapshot bytes
-- normalized runtime transcript files
-- redacted evidence bundle manifests
-- generated files that must be inspectable or replayable
-
-SQLite source-of-truth records:
-
-- mutable Workspace, Thread, Turn, Item and AgentSession records under the Control Store owner; readable record files and item logs are projections only
-- auth session records delegated to the auth implementation
-- User-owned conversation read receipts in `users/<userId>/db/user.sqlite`, keyed by Workspace and Thread, under the [Web projection receipt contract](20260628-web_product_surface_projection.md#user-owned-read-receipts); portable Workspace copies exclude this User state
-- idempotency ledger rows
-- audit events
-- usage records
-- capability calls
-- permission decisions
-- vault reference metadata and grants, excluding secret material; a portable imported VaultGrant row remains historical evidence in S51's reserved namespace and is never target authority
-- scheduler admissions and execution attempts, backend-private residency, worker-control ledgers, and the small recovery fields and cleanup fences on their existing owning rows
-- migration metadata
-- operational recovery checkpoints that require transactions
-- the S49 Workspace synchronization owner graph in `workspace.sqlite`: input snapshots, materialization records, backend handles, output manifests, change sets, staged Workspace Reviews, apply plans and results, reconciliation records, and quarantine records; exported files are non-authoritative portable projections or manifests
-- `WorkspaceMaterial`, immutable `WorkspaceMaterialRevision`, and `ThreadMaterialBinding` rows plus their command receipts in `workspace.sqlite`
-- version-keyed `ArtifactReview` rows in `workspace.sqlite`
-
-Audit-family rows home in the database of their `ownerScope` per the Storage Scope Homing decision in `docs/specs/20260703-audit_usage_evidence_records.md`: workspace-lineage rows in `workspace.sqlite`, server control-plane rows in `core.sqlite`, user-identity rows in `user.sqlite`. Workspace deletion produces a sealed server-owned audit closure export under `server/exports/` before removal.
-
-The canonical writers `FsStore.updateTurn`, `createItem`, `emitTurnEvent`, and `updateItem` are the storage-entry guards after a Turn is terminal. `docs/core/protocol.md` owns the two admitted conceptual categories, completion of an already-decided publication and a named field-limited refresh of a display projection: identity and content, never elapsed time; same identity alone does not make content overwritable; each path declares its own equality rule; events as well as Items. This spec owns the per-path admission table those guards must implement. The present writers in `apps/nanocore/src/lib/store.ts` enforce that branch: a Turn or Item write to a sealed terminal Turn without an admitted category fails with `terminalTurnWriteRejected`, and `emitTurnEvent` publishes only the exact acknowledged native event.
-
-| Path | Identical already-decided publication | Missing publication of that decided outcome | Conflicting publication | Events |
-| --- | --- | --- | --- | --- |
-| `terminalizeGovernedWorkerTurn` emitting its own terminal event and presence-keyed idempotent repair (`terminalizeGovernedWorkerTurn` in `apps/nanocore/src/runtime/worker-turn-failure.ts`) | Admit; same outcome, no rewrite of decided bytes | Complete that already-decided terminal event and repair | Do not retarget the terminal | Covers the helper's own terminal events |
-| MCP boot backfill of missing Items (`reconcileWorkerMcpItems` and `publishWorkerMcpItem` in `apps/nanocore/src/worker-mcp-routes.ts`) | Admit only if full decided values match, including `createdAt` | Fill the missing Item of the already-decided publication | Same-id different `createdAt` or body is rejected. The row domain is the calls that publish a tool-call Item, which carry `capability_id` exactly `mcp.call-tool`; a generative call row carries `mcp.call-tool.<name>` and stores its parent in `item_id`, publishes no Item, and is not reconstructed. `parentItemId` is reconstructed from the AEP snapshot the row's `package_snapshot_id` names and compared like every other decided value. A row that names no snapshot has nothing to be faithful to and is filled without a parent. A row whose named snapshot cannot be read is left unfilled for a later boot, because an Item without the parent the publication carried is a different record and this row admits filling the decided publication, not an approximation. A snapshot that exists and does not validate fails | Item/Artifact created and completed events that accompany the fill are the same repair, not a second exception |
-| Approval and Pending projection repair (`apps/nanocore/src/runtime/pending-requests.ts`, `loadApprovalProjections`; `apps/nanocore/src/pending-request-operations.ts`) | Admit when decision Item, completion event, actor, request, timestamps, and Turn bytes match the durable winner | Write the missing projection of that winner | `recovery_required`; no silent skip | Completion events as well as the decision Item |
-| Task-to-Goal explanation Item | Admit if the decided Item is byte-identical | Create the already-decided explanation Item | Reject body replacement of an existing Item | Events for that Item follow the Item rule |
-
-Those four paths are completion of an already-decided publication. Two equality behaviours MUST NOT be merged into one predicate and MUST NOT sit on that grid: exact repair of an already-decided publication requires deep equality (`importWorkerTranscript` in `apps/nanocore/src/runtime/worker-transcript.ts`); a named field-limited display refresh is a live display mutation, not completion of an already-decided publication. `persistConversationWorkerResultItem` (`apps/nanocore/src/mode-entry-routes.ts`) creates the Item when missing; when the Item exists and `level`, `title`, and `summary` already match, it returns the Item unchanged; when they differ, it refreshes only those three fields. Both writes use `FsStore.refreshDisplayProjectionItem`. Lineage or type mismatch throws. Configuration apply is not a post-terminal repair of an old publication; it is a new authorized command whose marker Item belongs on the Turn that executes the apply. Admission of any guard that would reject its present behaviour waits on `docs/specs/20260930-pending_requests.md` and is not granted here.
-
-### Turn Event Replay Retention
-
-The current Turn-event transport replay window retains exactly the latest 100 events per Turn in the active store. Live append drops the oldest retained event when the window exceeds 100, and Workspace reload reads the canonical event log but restores only its final 100 events into the replay store. If the first retained sequence is `F`, a non-initial reconnect cursor `since=N` expires only when `N < F - 1`; `since=F-1` is valid and replays `F` onward. The initial `since=0` request asks for the current retained window and is not expired by that reconnect comparison. An expired cursor fails with `core.stream.cursor_expired`; storage must not imply that the complete file-backed event log is still transport-replayable. Protocol owns the abstract cursor, expiry, and terminal-proof semantics, while Communication owns their HTTP/SSE projection.
-
-SQLite-derived records:
-
-- dashboard read models
-- search tables
-- vector or embedding metadata
-- pagination indexes
-- readiness summaries
-- health summaries
-- cached diagnostics
-
-Derived records must be rebuildable from file-backed records or authoritative SQLite ledgers.
-
-Descriptive canonical history reads ignore unknown object annotations while validating known values and lineage; same-record writes preserve safe owned annotations, append-only history and immutable digest-referenced bytes, while public and effect-facing projections contain only validated known fields.
-
-## Retrieval Projection Storage
-
-The [Retrieval Kernel](20261014-retrieval_kernel.md) replaces the mixed `indexes/search.json` and lexical Knowledge JSON projection. Non-lexical page, link, source-reference and validation projections retain their owners. SQLite retains its unrelated derived uses.
-
-Each canonical ownership root holds `indexes/retrieval/`: `users/<userId>/indexes/retrieval/`, `server/indexes/retrieval/`, or `workspaces/<workspaceId>/indexes/retrieval/`. A private-origin Thread instead holds `workspaces/<workspaceId>/threads/<threadId>/indexes/retrieval/`; it never enters the Workspace-shared root. Beneath that boundary the kernel stores each opaque scope at `SHA256(scope)/CURRENT` and immutable generation directories. Sidecar cache entries are the generation's `sidecars/` members, separate from authored files, with immutable references and reader-pinned cleanup under the retrieval owner. The adapter chooses the source-owned root after current audience admission; the path grants no access.
-
-Ordinary Workspace export excludes every derived retrieval index and sidecar cache, including private Thread generations. A local directory index is not product data and must not enter product export. Backup retains its separate scope and authority. Disposal or rebuild affects derived bytes only and never migrates an old lexical projection or changes canonical content.
-
-## Retained Sandbox Association Storage
-
-The existing Server SQLite `WorkerStorageBinding` is the unique durable retained-environment resource; [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns its full lifecycle. Extend it with a bounded editable display name, creation attribution, exact selected template id/revision when applicable, verified immutable image/default evidence reference and only non-derivable source-to-shared-destination admission evidence supplied by existing source owners. Existing Workspace/deployment scope, layout/target identities, revisions, generations, contributor history, attachment state, purge marker and receipts remain authoritative and usable. Creator and contributor ids are provenance, never a creator-only audience or an ordinary reuse veto. No second Sandbox table, access list, sharing registry, copied AEP, live health record or dual write is introduced. Template authored configuration stays in the Server file owned by [Configuration Identity](20260628-nanocore_config_identity_contract.md#sandbox-template-configuration).
-
-When associations are carried forward, apply an additive extension or one-way migration through the release-scoped migration owner below. Preserve their refs, bytes, receipts and historical AEPs, and use neutral names without private-source derivation. Before `v0.1.0`, an explicit deployment reset may replace carry-forward under [Contract Evolution](../core/contract-evolution.md#retained-data-continuity) and [Release Management](20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts). It does not authorize ordinary purge, startup deletion, or inferred attachment authority. Enrich image pins only from exact verified retained provenance; otherwise retain the fence and require explicit revision-bound compatible image adoption. Migration must not infer shared admission of old private bytes from Workspace membership, an empty contributor list or a renamed resource. Existing private continuation and restricted metadata remain usable under their current authority; this disposition uses the existing association rather than a private Sandbox product tier or permanent legacy reader. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records the data-continuity boundary.
-
-## Release-Scoped SQLite Migrations
-
-Each Core, User, Workspace, and Light App database owns its applied-migration ledger independently. Packaged, ordered SQL migrations define changes to that scope; they do not migrate another scope, canonical file formats, external Vaults, or Worker storage. The implementation uses Drizzle migration execution and its native ledger rather than a second setup-only ledger. Diagnostics and the public storage layout report project actually recorded migrations as scope-qualified migration names; they do not create migration authority or infer an applied migration from a later timestamp alone.
-
-Before migration or ordinary database use, Core, User, Workspace, and Light App admission MUST inspect every recorded native migration identity against that binary's supported journal for the exact ownership scope. Unknown or future identities MUST produce a typed refusal that identifies the affected scope before migration or product effects. Admission MUST NOT infer support from a filtered list of known entries or from only the latest timestamp. Supported sparse histories remain valid; scope-specific history invariants still apply. This admission is read-only and does not repair history or prove schema equivalence. Applied SQL hashes are informational: support follows the entry identity in the exact scope journal, not the current SQL file hash. An authorized pre-reset SQL correction MUST NOT invalidate or rewrite an already applied ledger hash. Refused opens follow the [Core Storage](../core/storage.md#sqlite-layers) bound for empty new WAL and derived SHM residue; base data, definitions, snapshots and existing committed WAL remain unchanged. Refusal grants no automatic cleanup or attempted conversion.
-
-Before the first stable release, `v0.1.0`, Core and Workspace each MUST use one current `0000_baseline` journal entry. Later pre-release changes edit that baseline directly, without another migration entry or format bump. Intermediate pre-release upgrade tests and fixtures are retired under [Pre-Release SQL Baselines](../decisions/20261114-pre_release_sql_baselines.md). This consolidation leaves User and App journals unchanged. From `v0.1.0`, a released baseline and applied migrations are immutable, and schema changes use the release-scoped owner ([decision](../decisions/20260918-release_schema_migrations.md)). An existing test database from another unpublished baseline needs explicit operator recreation or cutover; ordinary startup neither adopts an old setup ledger nor resets data. An authorized pre-stable reset follows the disclosure and protected-account rules in [Release Management](20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts). It does not rewrite published artifact bytes or authorize cleanup of retained runtime or evidence databases.
-
-After integrity validation, startup executes pending Core migrations and scans existing User and Workspace databases through the same scoped migration path before product admission. Newly created scoped databases execute their complete journal. Light App databases execute their own migrations through their existing open lifecycle and retain their separately owned failure boundary. Only one process may own the writable Data Root. Pending SQL and ledger publication are transactional within each database; there is no cross-database transaction or automatic rollback of previously committed scopes. Failure leaves the failing database's pending migration batch unapplied, prevents admission dependent on that database, and requires correction or explicit stopped-process recovery before retry. Missing migration files or journals are failures, not an empty migration set. Restart skips already applied migrations and retries unapplied work; it does not silently repair a contradictory database history.
-
-Before `v0.1.0`, acceptance observes fresh current initialization, repeat startup without duplication, scope isolation, transaction rollback and missing-file refusal. Intermediate pre-release carry-forward is not an acceptance target. From the first stable release, later migrations must additionally preserve retained rows and apply exactly once. A code-image rollback does not reverse committed database migrations. App update and recovery admission remain owned by the App update delivery specification; a fresh-database check alone never establishes that existing data can return to a previous image.
-
-Data Root restore MUST run the same supported-journal admission over every inventoried canonical Core, User, Workspace, and Light App database, including retained App recovery databases, before replacing the current root. An unsupported candidate MUST leave the current root unchanged. Verification MUST NOT migrate backup or candidate bytes. Opaque user content that happens to be a SQLite file is not a canonical scope database. Supported older data follows its normal owning upgrade path after restore; restore does not add another migration or snapshot owner.
-
-## Authoritative SQLite Integrity Failure
-
-The Core and User SQLite stores are process-critical. If an existing database in one of these scopes fails `PRAGMA quick_check` or cannot be opened for the integrity check, NanoCore MUST fail process boot during the critical storage phase and MUST leave the original database file at its canonical path with its bytes unchanged.
-
-Boot MUST NOT move the file to quarantine, delete it, repair it in place, create a fresh replacement, run migrations against a replacement, admit product work, initialize product identity, issue a server bootstrap credential, or bind the product listener. Recovery is an explicit stopped-process operator action such as restoring a verified backup or copying the original for offline inspection; boot does not invent recovery authority. A shared Workspace database that fails the same check quarantines only its Workspace as recovery-required under the [failure-scope ruling](../decisions/20261019-durable_execution_and_control_store.md) and [Fault Tolerance](../core/fault-tolerance.md#principles); the server and healthy Workspaces still boot, and the original bytes stay unchanged at the canonical path; boot does not move, delete, repair, replace or migrate that database.
-
-A Light App SQLite database is an independently contained authority scope. If its open, integrity, app identity, or admitted-definition checks fail, preserve the original bytes and mark that app unavailable; deny its data reads, mutations, schema activation, and dependent effects. Other apps and unrelated Workspace services may start only when their own critical stores are valid. A corrupt app is never treated as empty or rebuilt from discovery/UI projections. App restore is explicit under the existing storage recovery authority. Acceptance requires a corrupt-app fixture to deny that app while an unrelated app remains usable; corruption of Core or User storage retains the process-boot failure rule above, and corruption of shared Workspace storage quarantines that Workspace. This app-specific handling is a target extension, not an implemented recovery claim.
-
-This fail-closed rule does not apply to derived SQLite indexes and read models. A corrupt derived store MUST be deleted and rebuilt from its file-backed source of truth or authoritative ledgers, and the owning subsystem remains explicitly degraded until rebuild completes.
-
-## Material And Artifact Review Transaction Boundary
-
-The Phase 1 Material graph is an explicit exception to the ordinary file-backed workspace-history default. Its three authoritative families and the command ledger that acknowledges their mutations live in the same `workspace.sqlite`; no Material authority exists under `files/`, `sources/`, `knowledge/`, `artifacts/`, or a private Material directory.
-
-Derived Material, revision, Artifact Review, and follow-up Turn identifiers retain their owning inputs and retry rules. Their output encoding uses the fixed kind namespaces and prefixed canonical UUIDv5 text in [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids), as recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md). Transaction keys, version-keyed Review uniqueness, and immutable parent linkage remain unchanged.
-
-The following name-byte table is a projection of [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#artifact-and-item-lineage). That owner defines its actor and identifier values and retains allocation and retry authority. Each name is exactly the UTF-8 RFC 8785 JSON Canonicalization Scheme output for the listed JSON array; no storage-specific field is added.
-
-| Derived output | Prefix | JSON name value, in fixed array order |
-| --- | --- | --- |
-| Material creation | `mat` | `["material.create", actor, workspaceId, requestId]` |
-| Material revision, including accepted Review apply | `mrev` | `["material.save", actor, workspaceId, materialId, requestId]` |
-| Version-keyed Artifact Review | `arev` | `[workspaceId, artifactId, artifactVersion]` |
-| Review refinement or redo Turn | `tu` | `[workspaceId, artifactId, artifactVersion, decisionRequestId]` |
-
-The exact logical keys and storage payloads are:
-
-| Record | Key and required storage contract |
-| --- | --- |
-| `WorkspaceMaterial` | Primary key `(workspaceId, materialId)`; stores `title`, `kind`, nullable `currentRevisionId`, `sensitivity`, `lastMutationRequestId`, `createdAt`, and `updatedAt`. |
-| `WorkspaceMaterialRevision` | Primary key `(workspaceId, materialId, revisionId)`; immutable; stores nullable `parentRevisionId`, `mediaType`, `contentDigest`, exact canonical UTF-8 `content`, `authorId`, `createdByRequestId`, and `createdAt`. The revision id is unique within its Material and its parent, when present, belongs to that same Material. |
-| `ThreadMaterialBinding` | Primary key `(workspaceId, threadId, materialId)`; stores `bindingState`, nullable `latestQueuedRevisionId`, `inclusionState`, `lastMutationRequestId`, `createdAt`, and `updatedAt`. The queued revision, when present, belongs to the bound Material. The owning transaction permits at most one `bindingState=bound` row per `(workspaceId, threadId)`. |
-| `ArtifactReview` | Primary key `(workspaceId, artifactId, artifactVersion)` with a unique deterministic `reviewId`; stores the exact reviewed `contentDigest`, nullable `sourceThreadId`, `sourceTurnId`, and `sourceAgentId`, nullable immutable `materialProposal` as exactly `{ materialId, baseRevisionId, baseContentDigest }`, nullable first-writer `decision`, `decisionActorId`, `decisionRequestId`, `feedback`, `decidedAt`, nullable deterministic `followUpTurnId`, nullable `appliedMaterialRevisionId`, nullable exact Material-base `rangeFeedback`, candidate choices as `select` entries of the `judgements` array with the actor, request, optional reason and accepted time defined by the Work Resource owner, and `createdAt`. Later Artifact versions insert new rows and never update or replace prior-version history. |
-
-`WorkspaceMaterialRevision.content` is the canonical content. `mediaType` is derived from Material kind and `contentDigest` verifies the exact stored bytes. Revisions form one complete linear parent chain from the unique null-parent root to `WorkspaceMaterial.currentRevisionId`; a null current pointer means no revisions, no revision has multiple children, and timestamps do not order the chain. A `contentRef`, filesystem path, blob locator, delta-only revision, or Material content file is not an alternative authority and is not authorized for Phase 1.
-
-Material creation commits the new `WorkspaceMaterial` and its completed command receipt in one Workspace transaction. Material save commits the immutable revision, compare-and-set current pointer, coalesced queue update for every bound binding, request lineage, and completed receipt in one Workspace transaction. Bind, unbind, exclude, and restore transitions likewise commit the binding mutation and receipt together. A failed precondition rolls back every named row and publishes no success receipt. Exact replay reads the completed receipt and returns the same result; it does not add a pending mutation, receipt-reconstruction path, settlement row, or second Material owner.
-
-`ArtifactReview` stores one unresolved-or-decided owner for one exact Artifact version rather than one mutable record keyed only by Artifact id. Creation eligibility, explicit proposal intent, unique same-Turn S39 tuple verification, Workspace Sync exclusion, first-writer decision, refinement or redo Turn reservation, cross-file receipt-gap handling, and recovery remain exactly those defined by S16; this storage decision adds no Review lifecycle, queue, workflow, or alias to staged Workspace Review. An `accepted` decision with null `materialProposal`, or any `rejected` or `deferred` decision, commits its Review row and completed receipt together in `workspace.sqlite`. An `accepted` non-null Material proposal uses one Workspace transaction for the Review compare-and-set, exact expected-base check, fully bound immutable Material revision, current pointer with the decision request as mutation proof, affected binding queues with the same request proof and preserved inclusion state, `appliedMaterialRevisionId`, and completed receipt; a different current revision rolls back every named row as `conflict`, while any contradictory immutable tuple or digest rolls back as `recovery_required`. A `needs_refinement` or `redo` claim commits its reserved follow-up identity before cross-store Turn and admission effects and publishes the receipt only after their exact terminal proof; a complete follow-up tuple without that receipt fails closed and is not reconstructed.
-
-Exact D04 range feedback and D05 candidate choices remain fields of the same version-keyed Artifact Review row. The Review decision transaction stores its validated optional range with the existing decision and receipt; candidate choice appends its attributable fact and existing command receipt in one Workspace transaction without deciding the Review. The current Workspace `0000_baseline` carries these fields under [Pre-Release SQL Baselines](../decisions/20261114-pre_release_sql_baselines.md); no conversion or alternate owner is added. These fields grant no runtime, source access or delivery authority.
-
-[Evaluation Foundation](20261017-evaluation_foundation.md) judgements append to the existing version-keyed `artifact_reviews` or exact `workspace_material_revisions` row. They do not change the Review's decision authority or the revision's immutable content and lineage. The `evaluation_candidate_sets` Workspace SQLite family is the sole durable owner of immutable candidate membership and ordered selection judgements; lists and current selection are projections. Its `payload_json` retains the closed core and descriptive extensions defined by the Foundation owner.
-
-These writes and their command receipts use the existing Workspace transaction. Workspace export carries the target-owned judgements and candidate sets through the existing portable graph and preserves descriptive extensions. Range units, correction outcomes and selection effects remain with the Foundation and Work Resource Interaction owners; this layout adds no second lifecycle or workflow.
-
-S51 exports these four authoritative row families as strict line-oriented records. Deployment-local command receipts do not travel. A database file or Material content directory is never the portable representation.
-
-## Goal Steering Transaction Boundary
-
-`PendingUserTurnRecord` and `SteeringTerminalOutcome` leave with the one-way Goal removal defined by [Goal](20261002-goal.md). They are not storage authority for Material, Artifact Review, or an ordinary worker Turn. The one-way cutover removes those tables. Import does not resume a deleted Goal. A missing deleted Goal is known absence. Exported Thread, Turn, and Item history remains portable under its existing owners.
-
-## Structure Evolution Rules
-
-The target storage tree is the baseline for future additive evolution.
-
-OpenKit does not need permanent compatibility with pre-baseline internal storage layouts.
-
-Future storage changes should add sibling directories, record families, indexes, or metadata fields without changing the meaning of existing canonical records.
-
-Older readers may ignore unknown sibling directories when those directories contain derived indexes, cached read models, diagnostics, generated runtime-native files, or backend-private evidence payloads.
-
-Older readers must not treat unknown canonical record families as processed.
-
-Unknown canonical record families selected by a manifest, context package, AEP snapshot, evidence bundle, or required feature must fail closed until the reader understands them.
-
-Authority-bearing storage semantics must follow `docs/specs/20260703-schema_evolution_record_envelope.md`.
-
-Fields or directories that change workspace ownership, workspace export, workspace deletion, vault handling, permission handling, audit retention, evidence promotion, mount access, or write scope must be gated by `requiredFeatures` or an equivalent required capability.
-
-Canonical file-backed records should use the common record envelope from the schema evolution spec unless this spec or another owning spec defines a narrower line-oriented format.
-
-Line-oriented families under this spec apply the split-envelope minimum from the schema evolution spec as follows: `items.jsonl` lines are protocol item event records whose per-line version and type discriminators come from the protocol item schemas, with thread and turn lineage carried by the owning `thread.json` and `turn.json` records acting as the file-level manifest; observation ledgers and other workspace JSONL ledgers carry a per-line `v`, `type`, `id`, and `ts` header, with `ownerScope`, lineage defaults, and `requiredFeatures` in a directory-level manifest file. Rotation and compaction preserve manifest linkage.
-
-The retrieval publisher alone writes immutable selection traces at `threads/<threadId>/retrieval-traces/<traceId>.json` for a Thread query without a Turn, or `threads/<threadId>/turns/<turnId>/retrieval-traces/<traceId>.json` for a Turn query. The file name without `.json`, body `traceId` and reference `objectId` are the same existing `krt_` id. Same-directory temporary-file publication and rename must preserve an existing target as a conflict. These files belong to the querying Thread/Turn; neither manifest has a trace array, and no Workspace Knowledge trace ledger or second writer is retained. Threadless direct User App queries publish none. Knowledge Store owns the body and current-access projection rules; S51 owns export.
-
-## Current Implementation Projection
-
-The Workspace baseline has no `workspace_repository_resources` or `git_push_records` tables. Pre-retirement Workspace archives remain verifiable without restoring retired host tables; authored Workspace configuration remains loadable.
-
-The owner-independent V2 Workspace root and most scoped record-family ownership are implemented. This specification remains partial because some named record-family homing, export-schema, retention, and conformance work remains incomplete; the active implementation no longer diverges on physical Workspace ownership:
-
-- `apps/nanocore/src/storage/fs-layout.ts` creates the server and user ownership roots plus one top-level `workspaces/` root; a User subtree contains only user-owned `files/`, `data/`, `db/`, `logs/`, and `config/` state.
-- `ensureWorkspaceLayout` creates workspace-owned `files/`, `data/`, `db/`, `logs/`, `logs/nanocore/`, `logs/worker/`, `config/`, `artifacts/`, `knowledge/`, `sources/`, `threads/`, `runtime/`, `runtime/agent-sessions/`, `reviews/`, `reviews/workspace/`, `evidence/`, `evidence/bundles/`, `evidence/backend/`, `indexes/`, `catalog/`, `catalog/skill-snapshots/`, `catalog/plugin-snapshots/`, `catalog/mcp-data/`, and `light-apps/`.
-- `openCoreDb` remains an explicit writer for `server/db/core.sqlite`; the ordinary Core writer constructors now use the default 5 ms busy wait. After [#616](https://github.com/lingkaix/openkit/issues/616), `getCoreDb` instead returns the existing read-only, query-only view. Boot/setup writers and the separate offline integrity reader remain explicit; this is not retirement of every physical Main writer.
-- `openCoreDbWithIntegrityCheck` is the boot-only opener for `server/db/core.sqlite`: it runs SQLite `PRAGMA quick_check` and throws before opening for write or migration when the existing authoritative file fails integrity validation.
-- `verifyAndMigrateExistingScopedDatabases` scans existing `users/<userId>/db/user.sqlite` and `workspaces/<workspaceId>/db/workspace.sqlite` files at boot, verifies each existing authoritative file before opening it for write, and applies scoped migrations only after validation succeeds.
-- `server/layout.json` records the accepted data-root layout version, and `ensureLayout` fails closed when it finds an unsupported marker.
-- V2 normal boot has no owner-nested compatibility reader: `ensureLayout` fails closed on a predecessor marker, root-level `core.sqlite`, owner-nested Workspace trees, and legacy workspace `memory/` directories. The dedicated stopped-process migration CLI is the only implemented V1-to-V2 cutover path; it verifies an external full-data-root backup, publishes one staged top-level Workspace root, removes predecessor trees, records evidence, and leaves subsequent boot to validate V2 normally.
-- `ensureLayout` verifies canonical SQLite database filename ownership and fails closed when `core.sqlite`, `user.sqlite`, or `workspace.sqlite` appears outside its owning scope.
-- `ensureLayout` scans JSON records that carry the common canonical record envelope, accepts only currently implemented canonical record families (`data-root-backup`, `source`, `thread`, `workspace-deletion-closure`, and `workspace-export`), and fails closed when an envelope names an unknown family or non-empty `requiredFeatures` that the reader does not support.
-- `openUserDb` opens `users/<userId>/db/user.sqlite`, and `applyScopedMigrations` applies the user migration journal to its own database.
-- `openWorkspaceDb` opens `workspaces/<workspaceId>/db/workspace.sqlite`, and `applyScopedMigrations` applies the Workspace migration journal to its own database.
-- `createStorageLayoutReport` produces a read-only baseline report for the current data root, including server/user/workspace database presence, applied migration ledgers, workspace `indexes/` status, and quarantined storage file inventory.
-- `POST /api/app/operations/storage.layout-report` with an empty JSON object exposes the same report through the definition-derived public App API with `@openkit/app-api-schemas` validation, `@openkit/core-client` exposes `client.operations['storage.layout-report']({})` for first-party consumers, and remote MCP and the administrator CLI separately project the shared `storage.layout-report` operation for AI-native operator inspection. Because the report covers deployment-wide storage topology and quarantine inventory, this is a deployment-wide administration route governed by `docs/specs/20260704-remote_auth_credential_bootstrap.md`, not a workspace diagnostic.
-- A verified full-data-root backup preserves same-deployment Core identity, membership, invitation, session, token, and Workspace authority for restore. Portable Workspace export deliberately excludes those deployment-local authorities. Source users and access relationships do not travel as target authority.
-- `rebuildWorkspaceDerivedIndexes` rebuilds `indexes/knowledge-links.json`, `indexes/knowledge-validation.json`, and `indexes/knowledge-source-refs.json` from canonical Workspace records. It removes stale derived files, including the old lexical projections, while preserving the separately owned `indexes/retrieval/` directory. Its returned `indexPath` names `indexes/knowledge-validation.json`.
-- `rebuildExistingWorkspaceDerivedIndexes` runs the derived-index rebuild at boot only for admitted Workspace directories with a canonical control-store Workspace record and skips unpublished directories. Missing or unreadable admitted authority is quarantined under the Control Store owner. The removed `workspace.json` name is rejected by layout validation and is never treated as an authoritative or compatibility input.
-- The server-scope database currently holds Better Auth or auth implementation rows, server settings, users, scheduler coordination, worker-control ledgers, and durable backend-session lifecycle rows. Restart closeout reuses those owners and adds no settlement table.
-- Worker-turn checkpoints, workspace synchronization owners, workspace filesystem staging roots, and workspace-scoped permission decisions now live in workspace-owned `workspace.sqlite` files with workspace-scoped migration ledgers. The predecessor Goal tables, `PendingUserTurnRecord`, and `SteeringTerminalOutcome` are removed under [Goal](20261002-goal.md); they are not portable families. Current Goal records, cards, immutable Plan versions, Goal Task links, and their Task terminal facts are portable work data under [Workspace Backup, Export, and Import](20260704-workspace_backup_export_import.md) and the [current Goal portability decision](../decisions/20261003-current_goal_records_are_portable.md). Unresolved Task references remain evidence, not authority.
-- `TURN_STREAM_EVENT_WINDOW_SIZE` in `apps/nanocore/src/storage/workspace-file-records.ts` is 100. `FsStore` applies that same limit on live append and reload, `turn-event-routes.ts` returns `core.stream.cursor_expired` for an older cursor, and focused reload and route tests prove the retained-window behavior.
-- Worker checkpoint rows carry workspace/thread/turn lineage, context package digest, stage, stop reason, and redacted diagnostics.
-- `WorkspaceMaterial`, immutable `WorkspaceMaterialRevision`, singular `ThreadMaterialBinding`, and version-keyed `ArtifactReview` are implemented in `workspace.sqlite`; their public routes, Action Center projection, and portable export use those existing owners rather than a second workflow or filesystem authority.
-- The obsolete Artifact-id-keyed JSON owner and `reviews/artifacts/` layout have been deleted without a compatibility reader, migration, or dual write. Only the accepted version-keyed `artifact_reviews` Workspace SQLite family may own generic Artifact Review decisions.
-- Light App authority lives under `workspaces/<workspaceId>/light-apps/<appId>/data.sqlite` with immutable `definitions/<sha256>.json`. `generative_presentations` in `workspace.sqlite` retains native A2UI declarations. Portable export of those generative families goes through `apps/nanocore/src/storage/generative-portability.ts`. Cold App reads now join native admission and the original scope's writable final close. [The foundation projection](20261019-durable_execution_and_control_store.md#write-and-space-budget) records the landed read-lifetime and exclusion cuts and the still-open physical-writer census. Standalone Light App definition interchange stays under its owner.
-
-`users/<userId>/db/user.sqlite` has a concrete open path and migration ledger. The current Workspace database path is `workspaces/<workspaceId>/db/workspace.sqlite`; owner transfer and membership changes therefore do not move, alias, or duplicate the Workspace tree.
-
-The workspace physical `memory/` directory has been replaced by `knowledge/`. OpenKit-owned protocol, App API, NanoCore, core-client, remote MCP, administrator CLI, and Web surfaces now use `knowledge`; remaining `memory` mentions in active implementation are ordinary in-memory wording, resource-limit options, or fail-closed unsupported layout guards.
-
-Native Item and revision authority uses the control writer, with inline or immutable body descriptors. Portable JSONL is not live Item authority. Mutable product records, including AgentSessions, use their owning control database. Notebook content and SourceSummary pointers use the SQL-selected Notebook publication; managed originals retain their Storage content descriptors. Artifact originals and other immutable bytes retain their existing owners. Exported or materialized files are projections, not another live authority.
-
-The canonical Workspace record belongs to the scoped control store; any readable `workspace-record.json` is a projection. The record carries no editable `name` or execution defaults. `name` and `defaultAgentId` live only in `config/workspace.jsonc`; `defaultModelId` and `defaultSkillIds` are absent. Direct readers, index rebuild, backup, export, protocol, API, Core Client, fixtures, and Web consume the split owners without a compatibility path.
-
-## Workspace Record And Configuration Split
-
-The scoped control store owns the system-authored Workspace record. A readable `workspace-record.json` has no authority. The canonical record carries stable Workspace identity, owner relationship reference, lifecycle status, revision, creation time, and update time only. It carries no editable display name, Agent default, model default, Skill default, Agent binding, policy, Secret binding, Workspace root, or runtime preference.
-
-`config/workspace.jsonc` is the Workspace-shared editable configuration owner. Workspace creation writes the initial accepted `name` and any selected `defaultAgentId` there while creating the system record; later renames update only the revision-aware JSONC owner. Missing or invalid required `name` fails Workspace creation or configuration load, and no reader falls back to a historical record field.
-
-The optional `assistant.resources` selection owned by `20260909-internal_agent_resource_integration.md` also lives in this file and uses the same revision-aware configuration API. Its first slice retains only existing Skill IDs; catalog version/pin remains with the Skill owner. Any later MCP capability binding is admitted with its concrete adapter consumer and refers to the existing MCP catalog, which retains enablement, policy and Vault authority. No per-user Tool selection, additional resource file, internal-run record, persisted prompt or Tool-array record is added. Existing Workspace configuration backup and export carry these references without automatic activation.
-
-The protocol `WorkspaceRecordSchema` remains a product projection rather than the serialized `workspace-record.json` shape. The clean protocol cutover deletes `WorkspaceDefaultsSchema` and the `defaults` member, retains `name` only as a required value joined from the accepted `workspace.jsonc` snapshot, and derives counts from their existing owners. It exposes neither `defaultAgentId` nor the removed model and Skill defaults; Agent and model choices come from their configuration and target-catalog owners. Workspace creation acknowledges publication only after its canonical system record and valid configuration satisfy the existing creation boundary. A revision-protected invalid edit is rejected while the last-known-good snapshot remains readable, and missing or invalid configuration at boot fails Workspace configuration load before any partial `WorkspaceRecordSchema` projection is served.
-
-Boot, direct access, derived-index rebuild, backup, and export use the canonical control-store record and accepted configuration. Presence of the removed `workspace.json` name is an explicit unsupported-layout error even when `workspace-record.json` is absent; it is never a compatibility input and never evidence that the directory is merely half-built. A genuinely interrupted Workspace creation follows its existing creation cleanup or incomplete-record failure semantics and must not be inferred from the removed filename.
-
-## Workspace Storage Layout
-
-Each workspace owns:
-
-```text
-catalog/
-  catalog.json
-  skill-snapshots/<skillId>/<digestHex>/
-  plugin-snapshots/<pluginId>/<digestHex>/
-  mcp-data/<packageDataKey>/
-threads/
-  <threadId>/
-    thread.json
-    retrieval-traces/<traceId>.json  # query with a Thread and no Turn
-    turns/
-      <turnId>/
-        turn.json
-        items.jsonl
-        retrieval-traces/<traceId>.json  # query with this Turn
-        context-package.json
-        context-package/  # exact worker-visible package files indexed by context-package.json
-        inputs/
-        runtime/
-artifacts/
-  <artifactId>/
-    artifact.json
-    versions/
-      <version>/
-        version-record.json
-        payload
-    files/  # disposable projection of selected inline content
-knowledge/
-  pages/
-  proposals/
-  reviews/
-  observations/
-sources/
-  registry/
-  derived/
-runtime/
-  agent-sessions/
-    <agentSessionId>/
-      session.json
-      aep-snapshots/
-      shim/
-      transcripts/
-      workspace-changes/
-reviews/
-  workspace/
-evidence/
-  bundles/
-  backend/
-logs/
-  nanocore/
-  worker/
-indexes/
-```
-
-A Thread, Turn, Artifact, or AgentSession directory is canonical only when its required files are visible together.
-
-The Turn record in `control_turns` carries the admission-time resolved capture pair `{scope, value}` as immutable historical content; this adds no new file. `docs/core/protocol.md` owns when that pair is fixed. `docs/specs/20260921-work_data_retention_format.md` owns the meaning and values of the setting and the missing, conflict, and restart rules.
-
-The workspace may keep raw source material or references depending on source type and policy. External systems remain systems of record for their own domain data.
+| Core and Workspace product SQL (`core.sqlite`, `workspace.sqlite`: `apps/nanocore/src/storage/schema/work-product.ts`) | `control_workspaces`, `control_threads` (nullable Workspace reference for Server Threads), `control_agent_sessions` (current-session index constraints), and `control_turns` (indexed Thread/session identity and admission/read order), each carrying `schema_version`, `revision`, and `record_json`. Server Threads, Turns, Items, and events have an immutable Server owner with no Workspace anchor and are excluded from Workspace listing, export, and deletion. Any `workspace-record.json`, `thread.json`, `turn.json`, `items.jsonl`, or `session.json` file is a non-authoritative projection or export artifact. |
+| Item and stream-event history (`control_product_entries`) | Ordered by `(turn_id, sequence)` with entry kind (`item` or `event`), `content_json`, `identity_json`, `read_metadata_json`, unique current Item identity, and append-only revision index. A new Item or event body `<= 65,536` exact UTF-8 bytes is stored inline in SQL; larger bodies use an immutable file descriptor in `<scope>/evidence/backend/sha256/<digest>`. Writers verify original bytes, byte length, SHA-256 digest, format, and lineage before FULL commit without parse/re-encode proof or converting historical file references; unknown required representations fail closed (`control-store-product-records.ts` current defaults: metadata `64 KiB`, batch entries `32`, page rows `128`, payload `1 MiB`, inline cutoff `65,536` bytes, immutable body `32 MiB`, preparation budget `64 MiB`). |
+| Work observations (`control_work_observations`) | Ordered retained observation rows, chunks, and evidence references in Core and Workspace SQLite (`apps/nanocore/src/storage/work-observations.ts`). Live reads query SQL; `observations.jsonl` is produced only in portable exports. |
+| Workspace Materials, Reviews, and Candidates (`workspace.sqlite`) | `workspace_materials`, `workspace_material_revisions`, and `thread_material_bindings` (`schema/workspace-materials.ts`); `artifact_reviews` (`schema/artifact-reviews.ts`); `evaluation_candidate_sets`. No Material content authority exists in the filesystem. |
+| Workspace Knowledge heads and Generative UI (`workspace.sqlite`) | `knowledge_notebook_heads` and `knowledge_notebook_proposals` (`schema/knowledge.ts`); `generative_presentations` (`[Generative UI](20260908-generative_ui_interaction.md)`). |
+| Execution journals and control ledgers (`core.sqlite`, `workspace.sqlite`) | `control_executions` and `control_execution_steps` (`schema/execution-journal.ts`); Core users, Better Auth tables, server settings, `idempotency_requests`, `audit_events`, `usage_records`, `capability_calls`, `permission_decisions`, `vault_references`/`vault_grants`/`vault_use`, scheduler admissions/attempts, `worker_storage_bindings`, `worker_backend_sessions`, `worker_control_records`/`worker_control_sequence_fingerprints`, `worker_image_settlements`, `nanohost_runtime_targets`, `nanohost_integration_identities`/`nanohost_transport_tokens`, notifications, and Discord bindings; Workspace `worker_turn_checkpoints`, synchronization/review/apply/quarantine tables (`S49`), `pending_requests`, Goal/card/Plan/task-link tables, and `workspace_capture_records`. |
+| Recurring triggers in Core (`core.sqlite`) | `RecurringSchedule`, `RecurringOccurrence`, `ExpiredOccurrenceRange`, and recurring `AuditEvent` rows are Workspace-owned records physically homed in `core.sqlite` beside scheduler admission rows so occurrence acceptance, cursor advancement, and queue insertion commit in one Core transaction ([Scheduler Recurring Event Triggers](20260711-scheduler_recurring_event_triggers.md)). |
+| User SQL (`users/<userId>/db/user.sqlite`) | Per-user `idempotency_requests`, Thread read receipts (`0001_thread_read_receipts`), User `audit_events` including `notebookAdmission` (`0002_notebook_admission`), personal `permission_decisions` (`0006_permission_decisions`), and `__drizzle_migrations`. |
+| Light App SQL (`workspaces/<workspaceId>/light-apps/<appId>/data.sqlite`) | Independent per-App SQLite store with `app_meta` singleton, native `__drizzle_migrations`, `c_<collectionUuid>` tables with `f_<fieldUuid>` columns (derived from UUIDs without hyphens under [Generative Kernel Data And Operations](20260908-generative_kernel_data_operations.md)), and app-local command receipts and `AuditEvent` rows, using foreign keys, WAL, `synchronous=FULL`, and a `1,000 ms` lock-wait bound (`current default`). Immutable admitted definitions live at `definitions/<sha256>.json` and pre-migration recovery copies at `snapshots/<snapshotId>.{sqlite,json}`. |
+| Canonical file-backed families | Authored `config/*.jsonc` and `schema/scope-schema.yaml`; Notebook `notebook.git/` objects/refs and `raw/` originals (with default local mount `raw/` and reserved `raw/<mount>/` subdirectories under [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md)); `catalog/catalog.json` and snapshot trees; Artifact descriptors/payloads and Turn input payloads; immutable `retrieval-traces/<traceId>.json`; `context-package.json` and `context-package/`; `aep-snapshots/<id>.json`; `T/feedback.json`; runtime provenance and EvidenceBundle files; and Server exports/closures/migration reports. The retired Workspace `memory/` directory is unsupported. |
+| Derived and disposable state | Dashboard/search/pagination/readiness/health SQLite views, `indexes/knowledge-{links,validation,source-refs}.json` (rebuilt from canonical records while removing legacy `indexes/search.json` and preserving `indexes/retrieval/`), Retrieval Kernel generations and `sidecars/`, `artifacts/<id>/files/`, ZIP folder caches (`derived/zip-v1/`), and PDF/vision sidecar caches. Derived state is rebuildable from canonical authority and never promoted to source of truth. |
 
 ### Installed Agent Resource Storage
 
-`server/catalog/` and each `workspaces/<workspaceId>/catalog/` use the same catalog layout above, except mutable MCP data belongs only to the effective Workspace binding. One `catalog.json` per scope is the file-backed authority for Skill, MCP, and Plugin metadata, immutable version references, candidates, selections, and bindings. Component modules own their records within that one publication boundary; SQLite catalog indexes remain rebuildable projections. Server supply is read-only to Workspace consumers, and no user-global catalog or cross-scope payload alias is created.
+`server/catalog/catalog.json` and `workspaces/<workspaceId>/catalog/catalog.json` are the per-scope file-backed authorities for Skill, MCP, and Plugin metadata, immutable version references, candidates, selections, and bindings ([Skill Catalog Versioning And Pinning](20260711-skill_catalog_versioning_pinning.md), [MCP Catalog Management](20260907-mcp_catalog_management.md), [Agent Plugin Packaging And Worker Supply](20260907-agent_plugin_packaging_and_worker_supply.md)). Server supply is read-only to Workspaces, and no user-global catalog or cross-scope payload alias exists. `skill-snapshots/<skillId>/<digestHex>/` and `plugin-snapshots/<pluginId>/<digestHex>/` store complete digest-verified trees without cross-entry deduplication; original Plugin roots keep their restricted configuration-read boundary. `mcp-data/<packageDataKey>/` is mutable binding-owned process data in Workspace scope only: it survives configuration rollback and independent adoption while any live binding references the key, is never deleted by plugin uninstall or snapshot purge while referenced, and is excluded from package export. Reusable Light App template definitions live inline under `lightApps` in `catalog.json` with digest, parent, producer, and creation time, never mutating live App business data.
 
-`skill-snapshots/` contains complete independently versioned Skill trees; `plugin-snapshots/` contains original package trees, each uniquely owned by its PluginVersion. A package-dependent MCP version references that original root without duplicating it. Snapshot paths are scoped to their catalog entry and use the verified digest's lowercase hexadecimal portion as a Core-derived leaf. Entry ids are validated single path segments, never caller-selected paths; identical bytes in different entries do not create shared payload ownership or a deduplication service. Metadata retains the named digest format, exact source revision or uploaded-source lineage, and retained-content availability. Original package roots retain their restricted configuration-read boundary even when ordinary catalog metadata is visible.
+### Artifact File Payloads And Derived Media
 
-`mcp-data/<packageDataKey>/` is mutable binding-owned process data, separate from immutable snapshots. It survives configuration rollback and independent adoption under the MCP catalog owner; plugin uninstall, runtime cleanup, and snapshot purge cannot delete it while any live binding retains the key. It is neither a versioned package payload nor a source of catalog authority, and is not included in package export. Its explicit deletion and any deployment backup follow current data authority.
+Each immutable Artifact version under `artifacts/<artifactId>/versions/<version>/` contains `version-record.json` (`schemaVersion: 1`, binding the exact Artifact snapshot once plus parent, producing actor, Thread/Turn, mutation request, and accepted time) and sibling `payload` (exact original bytes, including inline text) under [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#file-admission-publication-and-download). `artifact.json` owns current version selection and lifecycle, while `files/content.{md,txt,json}` is a disposable projection. Turn file inputs live at `threads/<threadId>/turns/<turnId>/inputs/<ordinal>/payload` (zero-based ordinal bound to name, media type, size, and SHA-256 digest in the Turn's `fileInputs` inventory, becoming Knowledge Sources only through explicit Source registration). Disposable ZIP folder derivatives at `artifacts/<artifactId>/versions/<version>/derived/zip-v1/{inventory.json,tree/}` bind the original digest, Artifact version, and `openkit.zip.v1` processor; adapter-side PDF text-layer and vision derivatives bind original digest, processor version/config, representation digest, locators, and coverage without mutating originals. One configurable server file reserve protects headroom across concurrent staging, extraction, derivatives, publication overlap, and restart staging occupancy, refusing new work under disk pressure rather than evicting retained originals.
 
-Publish and verify bounded snapshot bytes before one compare-and-set catalog revision exposes the complete metadata graph. Partial required audit or receipt publication uses existing `recovery_required` semantics; storage inspection never reconstructs authority from directories or promotes an orphan. Missing or corrupt referenced content fails explicitly. The catalog owners define resource limits, retention dependencies, removal, and explicit purge; this layout adds no cache, garbage collector, repository service, or repair engine. Authorized launch and rollback use retained local snapshots without upstream reacquisition, while access revocation still applies immediately.
+## Record Ownership
 
-Catalog storage and versioned resource delivery are accepted targets and are not implemented by the current static Skill metadata and mutable MCP configuration. Their lifecycle owners are `docs/specs/20260711-skill_catalog_versioning_pinning.md`, `docs/specs/20260907-mcp_catalog_management.md`, and `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
+An owning SQLite transaction is the local mutable control transition authority; referenced immutable file bytes and their parent directories MUST be synchronized and verified before the SQL reference commits. Descriptive canonical history readers ignore unknown optional object annotations while validating known fields and lineage, preserving owned annotations on same-record writes and emitting strictly validated known fields on public and effect-facing projections.
 
-### Light App Definition Versions And Migration Copies
+- **Workspace system record versus editable configuration**: `control_workspaces` owns only stable Workspace identity, owner reference, lifecycle status, revision, and timestamps (`workspace-record.json` is a non-authoritative projection). `config/workspace.jsonc` owns editable `name`, `defaultAgentId`, `assistant.resources` (admitting existing Skill IDs and future adapter-backed MCP catalog references without persisted prompts or Tool arrays), `knowledgeMaintenance` (also in `users/<userId>/config/user.jsonc` and `config/server.jsonc`), and `workspace.policy.mediation` through the revision-aware configuration service (`apps/nanocore/src/config/runtime-config-files.ts`). Knowledge-maintenance publication rechecks the current revision-aware setting through its scope's configuration owner. The setting never lives in editable Notebook pages or imported content; User command/Audit evidence remains User-owned. Private project Threads remain in their Workspace with creation-fixed `visibility` and `privateOwnerUserId` ([Thread Visibility And Sharing](20260909-thread_visibility_and_sharing.md)); membership changes do not move Threads or export User Memory. Turn capture `{scope, value}` is immutable SQL content on `control_turns`.
+- **Workspace Notebook and Sources**: `knowledge_notebook_heads` in `workspace.sqlite` selects the active published Notebook Git commit and scope schema (`notebook-workspace-selection.ts`), while `notebook.git` retains content and revision history and `sources/<source-id>.md` `SourceSummary` pointers replace the retired `sources/registry/` files (keeping raw bytes in `raw/` outside Git). Workspace `sources/` copies material when user uploads, replayable task inputs, captured web/ticket snapshots, derived-representation lineage, or audit/retention policy require local evidence, and stores non-secret reference metadata (`sourceId`, `sourceKind`, `ownerScope`, external/redacted locator, `capturedAt`, access policy, freshness, and digest/version) when an external system is authoritative or copying is unsafe or policy-forbidden. Installed catalog snapshots under `catalog/` are bounded product resources, not Workspace repositories under `sources/`.
+- **Light Apps and Generative Presentations**: `app_meta` retains Workspace/App IDs, app and schema revisions (`kernel_format_version` and `schema_digest`, plus optional template provenance `definition_source_json`), active/retired state, and creator/request/timestamp lineage; positive schema revisions retain parent (`null` at revision `1`), exact admitted schema JSON and SHA-256 file digest (`definitions/<sha256>.json`, verified on open and during historical read/export), and actor/request/time; completed App receipts and local `AuditEvent` rows commit in `data.sqlite` in the same transaction as the business or schema mutation. `generative_presentations` in `workspace.sqlite` enforces unique `(workspaceId, requestId)` with non-null local `requestId` and null `originRequestId`.
+- **Materials, Artifact Reviews, and Candidate Sets**:
+  - Derived `mat`, `mrev`, `arev`, and Review follow-up `tu` identifiers use the fixed UUIDv5 namespaces and RFC 8785 JCS array inputs owned by [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#artifact-and-item-lineage) and [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids); storage adds no alternate encoding.
+  - `workspace_materials` keys `(workspace_id, material_id)` (`title`, `kind`, nullable `current_revision_id`, `sensitivity`, `last_mutation_request_id`, timestamps). `workspace_material_revisions` keys `(workspace_id, material_id, revision_id)` with immutable inline canonical UTF-8 `content`, `content_digest`, `media_type`, nullable same-Material `parent_revision_id` forming one linear single-root/single-child chain (never ordered by timestamps or stored as files/`contentRef`/deltas), `author_id`, `created_by_request_id`, `judgements_json`, and `created_at`. `thread_material_bindings` keys `(workspace_id, thread_id, material_id)` (`binding_state`, nullable `latest_queued_revision_id`, `inclusion_state`, `last_mutation_request_id`, timestamps) with at most one `binding_state = 'bound'` row per `(workspace_id, thread_id)`. Material create, save, bind, unbind, exclude, and restore commit all deciding rows, CAS/queue updates, and completed command receipt in one `workspace.sqlite` transaction.
+  - `artifact_reviews` keys `(workspace_id, artifact_id, artifact_version)` with unique deterministic `review_id`, reviewed `content_digest`, nullable `source_thread_id`/`source_turn_id`/`source_agent_id`, immutable flattened `proposal_material_id`/`proposal_base_revision_id`/`proposal_base_content_digest`, first-writer `decision`/`decision_actor_id`/`decision_request_id`/`feedback`/`decided_at`, nullable `follow_up_turn_id` and `applied_material_revision_id`, `range_feedback_json`, `judgements_json`, and `created_at` (never overwriting prior Artifact versions or using the deleted Artifact-ID-only file layout). `accepted` with null proposal, `rejected`, and `deferred` commit Review and receipt together; `accepted` with a Material proposal atomically commits Review CAS, expected-base check, immutable Material revision, current pointer, bound queues, `applied_material_revision_id`, and receipt in one `workspace.sqlite` transaction. Evaluation judgements append to the existing version-keyed Artifact Review or exact Material revision without changing Review decision authority or revision content/lineage; immutable candidate-set membership and ordered selection remain with `evaluation_candidate_sets` (`payload_json` under [Evaluation Foundation](20261017-evaluation_foundation.md)), and portable round-trip preserves owned descriptive extensions. Retired Goal steering tables (`PendingUserTurnRecord`, `SteeringTerminalOutcome`) and host repository tables (`workspace_repository_resources`, `git_push_records`) are absent.
+- **Recurring triggers, external event joins, and retrieval traces**: Core-homed recurring schedules enforce unique `(schedule_id, scheduled_at)` occurrences, non-overlapping expired ranges, and atomic cursor advancement. Recurring definition, scan, and admission mutations participate in the Workspace mutation fence; the Core-homed graph and its recurring Audit use `workspace-audit` retention, legal holds, and the sealed deletion closure with no automatic pruning, and missing or corrupt required history visibly refuses export or recovery. External-trigger admissions commit in Core (`idempotency_requests` with `scheduler.external-trigger.admit` and unique `(schedule_id, external_event_key)` join to source Turn and queue entry under [Scheduler Recurring Event Triggers](20260711-scheduler_recurring_event_triggers.md#external-events-through-scheduled-pull)); an accepted external-trigger join remains inspectable when its source Turn is absent, replay never readmits it, and inert portable remapping preserves that provenance. Query retrieval traces are written exclusively by the retrieval publisher at `threads/<threadId>/retrieval-traces/<traceId>.json` or `threads/<threadId>/turns/<turnId>/retrieval-traces/<traceId>.json` (where filename, `traceId`, and `objectId` share one `krt_` ID, preserving existing targets on conflict and omitting traces on Threadless direct User queries).
+- **Turn event replay window and runtime ingestion**: active Turn-event transport replay (`TURN_STREAM_EVENT_WINDOW_SIZE = 100` in `workspace-file-records.ts`) retains the latest `100` events per Turn from SQL; for first retained sequence `F`, reconnect cursor `since=N` expires with `core.stream.cursor_expired` only when `N < F - 1` (`since=F-1` replays from `F`, and initial `since=0` returns the current window). Worker checkpoints retain redacted lineage, context digest, stage, and stop diagnostics without proving physical completion. OpenShell and worker-shim outputs separate restricted raw evidence, normalized manifests, and verified canonical product records (requiring Workspace/Thread/Turn/AgentSession/package/backend/Call/policy/request/sequence/digest lineage and never exposing native IDs or sub-agent streams as public Thread/Turn/AgentSession identities). Audit rows home by responsibility scope ([Audit, Usage, And Evidence Records](20260703-audit_usage_evidence_records.md)), and Workspace deletion seals the server-owned deletion closure before removing live state.
 
-Reusable Light App definitions extend the existing Workspace Resource Catalog document with lightApps entries, immutable versions and pins; they do not create another catalog file or version store. Inline definitionJson carries the strict bounded declarative schema, and each version retains its digest, parent, producer and creation time. The owning lifecycle is [Generative Kernel Data Operations](20260908-generative_kernel_data_operations.md). Definition selection is separate from the live app data owner and never changes that data implicitly.
+### Retained Sandbox Association Storage
 
-Each app continues to own one light-apps/<appId>/data.sqlite. Its kernel_format_version and schema_digest are the kernel-format and active-definition markers. Optional definition_source_json records the template entry/digest as provenance, not a second active-schema pointer. Existing immutable definitions/<sha256>.json files bind the actual admitted app schema. The existing native app journal owns ordinary format migrations; no legacy reader or conversion migration is introduced.
+`WorkerStorageBinding` in `server/db/core.sqlite` (`apps/nanocore/src/runtime/worker-storage-binding-records.ts`, owned by [Persistent Worker Volumes](20260910-persistent_worker_volumes.md)) is the sole durable retained-environment resource, storing Workspace/deployment scope, layout/target identities, revisions, generations, contributor history, attachment state, purge marker, receipts, bounded editable display name, creation attribution, selected template ID/revision, verified immutable image/default-target proof, and non-derivable source-to-shared-destination admission facts. Creator and contributor IDs are provenance only and grant no exclusive audience or reuse veto; template authored configuration remains file-owned ([Config And Identity Contract](20260628-nanocore_config_identity_contract.md#sandbox-template-configuration)), with no second Sandbox table, ACL, or dual writer.
 
-Automatic pre-migration SQLite snapshots and their minimal inspection metadata live beneath that same app root. They are immutable recovery copies, not another business-data authority or a migration ledger. Copy publication precedes definition or format DDL. Snapshot rollback validates the selected app/Workspace and current revision, restores the consistent data copy by atomic placement and retains the existing local command receipt and Audit; it runs no inverse DDL. Backup includes these local recovery files. Missing or corrupt copies fail only the requested operation. The Kernel owner defines the old-format unavailable/explicit-upgrade behavior and the native journal's separate commit boundary.
+## Failure Containment
 
-## Artifact File Payloads And Derived Media
+- **Per-scope SQLite integrity and isolation**: `server/db/core.sqlite` is process-critical; if `PRAGMA quick_check` or open fails at boot (`openCoreDbWithIntegrityCheck`), NanoCore MUST fail boot during the critical storage phase while leaving the original file unchanged at its canonical path (never moving, deleting, repairing in place, replacing, migrating, initializing identity, issuing a bootstrap credential, or binding listeners). Startup must also distinguish proven fresh local-User initialization from missing authority on an initialized deployment, failing closed on uncertainty ([Identity](../core/identity.md#implicit-local-human)). A corrupt or unreadable `users/<userId>/db/user.sqlite` fails and isolates only operations for that User while the server and other Users and Workspaces continue; a corrupt `workspaces/<workspaceId>/db/workspace.sqlite` quarantines only that Workspace as `recovery_required` while healthy Workspaces serve; a corrupt or mismatched `light-apps/<appId>/data.sqlite` (or symlink, wrong identity, unexpected native table/column, or missing definition) marks only that App unavailable (preserving its unavailable indication during catalog rebuild) while preserving original bytes and keeping other Apps usable. Corrupt derived SQLite or JSON indexes (`indexes/`) are deleted and rebuilt nondestructively from canonical authority (preserving live `indexes/retrieval/` generations and pins) while degrading only dependent views. Normal owned SQLite connections use a `5 ms` busy timeout (`current default`), `getCoreDb` is read-only/query-only (`#616`), and the `5,000 ms` timeout applies only to the offline read-only integrity checker (`storage/db.ts`).
+- **Workspace configuration and creation boundaries**: Workspace creation acknowledges success only after both the canonical SQL record and valid `config/workspace.jsonc` (`name` required) are durable; a revision-protected invalid config edit is rejected while preserving the last good snapshot, missing/invalid config at boot withholds partial `WorkspaceRecordSchema` projections, and the removed `workspace.json` filename always fails layout validation (`ensureLayout`) as an unsupported layout.
+- **Terminal Turn write guard and immutable staging**: sealed terminal Turns reject ordinary `updateTurn`, `createItem`, `emitTurnEvent`, and `updateItem` calls with `terminalTurnWriteRejected`, admitting only exact completion of an already-decided publication across three active repair paths — (1) `terminalizeGovernedWorkerTurn` terminal event/repair, (2) MCP boot backfill (`reconcileWorkerMcpItems`/`publishWorkerMcpItem`) for `mcp.call-tool` rows with matching full decided values including `createdAt` and verified parent AEP snapshot (`package_snapshot_id`; missing named parent AEP proof may retry on a later boot while invalid proof fails), and (3) Approval/Pending winner projection repair (`loadApprovalProjections`, returning `recovery_required` on conflict) — plus deep-equality `importWorkerTranscript` repair and field-limited `refreshDisplayProjectionItem` (`level`, `title`, `summary` on `persistConversationWorkerResultItem`). Configuration apply is a new command on its executing Turn, never a post-terminal repair. Review `needs_refinement` or `redo` reserves its follow-up Turn before cross-store effects and requires exact terminal proof. Catalog snapshots, Light App definitions, pre-migration App SQLite snapshots, Artifact versions (`version-record.json`, stamped and validated with `schemaVersion: 1` via `writeRetainedV1`/`readRetainedV1` in `packages/protocol/src/common/retained-format.ts` and `apps/nanocore/src/storage/artifacts/artifact-version-records.ts`, rejecting predecessor `formatVersion: 1` markers), and Turn file inputs are staged, verified, and `fsync`ed before reference or CAS exposure: required catalog Audit or receipt gaps require `recovery_required`, missing retained content refuses local rollback, orphan staging is inert and never promoted, missing or corrupt admitted Turn input is unavailable, an uncertain command never recaptures client draft bytes as replacement authority, upstream revocation does not erase retained local history, and rejected/quarantined Worker output defaults to restricted redacted evidence for an owner-bounded retention window rather than silent rejection-time deletion (retaining layout helpers, portable ledger identities, and non-credential provider references).
 
-The existing Artifact record owns every immutable version within `artifacts/<artifactId>/versions/<version>/`. Each version directory contains a `version-record.json` descriptor with `schemaVersion: 1` and a sibling `payload` with the exact original bytes, including inline text. The descriptor stores the exact Artifact snapshot once and only its actual parent, producing actor, publication Thread/Turn, mutation request and accepted time beside it. Version identity, Workspace, title, summary and content digest are read from that snapshot; API summaries are derived. The descriptor binds the version, parent lineage and original digest under [Work Resource Interaction](20260713-work_resource_interaction_model.md#file-admission-publication-and-download), which owns Artifact version and upload semantics. This is version-owned storage, not a new object registry or cross-scope deduplication service.
+### Release-Scoped SQLite Migrations
 
-`artifact.json` owns the current version selection and Artifact lifecycle. Its inline body is read from the selected immutable version; `files/content.{md,txt,json}` is only a disposable projection and cannot establish or repair version authority. Initial Artifact publication stages the real version 1 descriptor and original within the first Artifact directory rename. Later publication adds one immutable version directory before exposing that version through the existing Artifact owner. Missing or contradictory referenced history fails explicitly; readers do not synthesize history or read a legacy layout. Changing the selected version or its representation cannot discard any retained original.
+Each Core, User, Workspace, and Light App database independently owns its Drizzle `__drizzle_migrations` ledger (`apps/nanocore/src/storage/migrate.ts`). Before migration or ordinary use (and read-only across every inventoried canonical and App recovery database before Data Root restore replaces the current root), admission MUST verify every recorded migration identity against that binary's supported journal for the exact scope; unknown or future identities, missing migration files/journals, or canonical database filenames (`core.sqlite`, `user.sqlite`, `workspace.sqlite`) outside their owning scope fail closed before mutation, leaving base bytes, definitions, snapshots, and committed WAL unchanged (permitting only the bounded zero-byte new WAL/derived SHM refusal exception in [Storage](../core/storage.md#sqlite-layers)). Applied SQL hashes are informational and not rewritten by pre-reset corrections. Before `v0.1.0`, Core and Workspace each use one `0000_baseline` journal entry edited in place while User (`7` entries) and App (`5` entries) retain their journals; from `v0.1.0`, released baselines and applied migrations are immutable and apply transactionally once per scope without cross-database rollback or reverse DDL on image rollback. Pre-stable carry-forward of Sandbox associations or V1 layouts uses explicit one-way migration (via the stopped-process layout migration CLI, which verifies all sources, writes an external cold backup outside `DATA_ROOT`, stages and verifies the target `workspaces/` tree, renames and commits the Core transaction, removes predecessor owner-nested trees, writes `server/layout.json` and a redacted `server/migrations/<migrationId>.json` report, and retains the backup until verified cleanup) or an explicitly authorized deployment reset, never a boot-time converter or legacy compatibility reader.
 
-Conversation file inputs remain owned by the receiving Turn at `threads/<threadId>/turns/<turnId>/inputs/<ordinal>/payload`. The zero-based ordinal follows the admitted ordered input inventory, whose metadata binds name, media type, size, and original digest. This is Turn-owned data, not a separate upload record. Publish verified inputs through existing Turn acceptance before model access; failed or uncertain acceptance follows the existing command recovery owner. Client drafts never enter this tree.
+## Portable Layout
 
-Stage streams privately in the same ownership domain. Measure actual size/digest, verify and fsync payload bytes, and atomically place the immutable file before exposing its version reference. The existing Artifact/Item/Review and receipt owner still governs acknowledgement and fail-closed partial publication. Orphan staging never proves acceptance. A referenced missing/corrupt payload returns unavailable or `recovery_required`, never reconstructed text or another version. Retry does not recapture an uncertain effect.
+[Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md) owns the analytical Workspace export V3 tree (`.openkit-workspace.tar.zst`), per-Workspace operational backup/restore/MOVE bundles, and whole-data-root backups; [Schema Evolution And Record Envelope](20260703-schema_evolution_record_envelope.md) owns the five boot-verified `.json` record-envelope families (`data-root-backup`, `source`, `thread`, `workspace-deletion-closure`, `workspace-export`), split JSONL headers, and post-baseline major-version/required-feature quarantine rules. Portable Workspace export serializes authoritative SQLite rows as JSON/JSONL records (including the four Material/Review families, Generative families, Turn `observations.jsonl`, and the three inert Core recurring JSONL families with `workspace.recurring-triggers.v1` and local paths stripped) while excluding SQLite database files, derived indexes/caches, User read receipts and User Memory, deployment-local command receipts, live scheduler/queue/attempt/binding state, and Server-private authority.
 
-ZIP folder derivatives use `artifacts/<artifactId>/versions/<version>/derived/zip-v1/` within the original Artifact scope. This disposable cache contains `inventory.json` and a separate `tree/`. The inventory binds the original digest, Artifact version and `openkit.zip.v1` processor, with exact relative member paths, sizes and digests. The original `payload` remains unchanged. Request-private staging under the existing staging owner precedes atomic publication of the complete cache directory. Missing or corrupt caches can be rebuilt from the verified original; they never prove Artifact acceptance or repair original loss. Current source audience governs every cache read and publication. Portable export retains the original and omits this disposable tree. [ZIP Folder Snapshot](20260713-work_resource_interaction_model.md#zip-folder-snapshot) owns its lifecycle and observable criteria.
+## Implementation
 
-The adapter-side sidecar cache retains PDF text-layer and explicit vision derivatives in its existing scoped cache location. Its identity binds original digest, processor version/configuration, representation digest, locators, and coverage. Derived files remain separate from originals and user-authored descriptions. Rebuild cannot mutate or replace originals. Deletion, retention, holds, backup, and export use the original owner's audience and reference rules. Current-access revocation precedes cache cleanup.
+- `apps/nanocore/src/storage/`
+- `apps/nanocore/src/config/`
+- `apps/nanocore/src/catalog/`
+- `apps/nanocore/src/knowledge/`
+- `apps/nanocore/src/runtime/`
+- `apps/nanocore/drizzle/`
+- `scripts/validate-storage-access.mjs`
 
-One configurable server reserve protects headroom in addition to the worst-case current writes and existing in-flight reservations. Those reservations cover concurrent staging, extraction, derivatives, and publication overlap. Restart accounts for occupied staging before new admission. Disk pressure refuses new work rather than evicting retained originals. Record measured defaults before release. Exact byte continuity and scope isolation must survive derivative/index rebuilds and portable export.
+## Implementation Gaps
 
-## Source Copy Versus Reference Policy
+- Off-Main `DatabaseOwner` writer retirement, bounded reader pooling, and physical handle/sidecar census - Remaining unmoved Main SQLite writers, global bounded reader pooling, and the exhaustive physical-writer, Light App cold-read, and handle-retirement census are incomplete - #616, #715
+- Unified scope-local immutable byte adoption and configured file-reserve coverage - Common scope-local blob adoption across remaining file families and unified configured file-reserve enforcement across all staging, extraction, derivative, and recovery paths are incomplete - #275, #731
+- Quarantined Worker output producer and bounded retention expiry - `workspace_quarantine_records` schema and decoders exist, but no production writer or `restricted-evidence` retention-window expiry is implemented - #766
+- Release-scoped migration and storage-layout conformance qualification - Post-`v0.1.0` upgrade-corpus qualification and full end-to-end storage layout, replay, and isolation conformance qualification remain open - #619, #766
 
-Workspace `sources/` should preserve enough evidence for replay, citation, and review without turning OpenKit into every external system's storage backend.
+## Decisions
 
-Copy source material into workspace-owned `sources/` when:
-
-- the user uploads the file into OpenKit as workspace material
-- the material is a task input that must remain replayable after external access changes
-- the source is a web capture, meeting artifact, message export, ticket export, or integration snapshot where the captured state is evidence
-- derived representations need stable lineage to a captured source version
-- policy requires local retention for audit, review, or reproducibility
-
-Store a reference plus metadata instead of copying raw material when:
-
-- an external system is the authoritative system of record
-- the material is too large, regulated, licensed, or frequently changing to duplicate safely
-- the source is a repository file already owned by workspace materialization or source control
-- the source is a credentialed API record whose raw payload should not be retained
-- policy allows citation by stable external id, URI, version, digest, or query locator
-
-Reference-only sources should still store non-secret metadata: source id, source kind, owner scope, external locator or redacted locator, captured timestamp, access policy, freshness metadata, digest or version when available, and derived representation links when any are retained.
-
-Installed catalog snapshots are ordinary bounded product resources under `catalog/`, not imported Workspace repositories under `sources/`. Original-source links preserve provenance without requiring a source lookup for each use; editable source repositories and Git history remain external under Storage Core.
-
-## OpenShell And Worker Output Ingestion
-
-OpenShell and worker-shim output has three layers:
-
-- backend-native raw evidence
-- normalized OpenKit evidence
-- canonical product records
-
-Backend-native raw evidence is retained only as evidence material. It may include OpenShell OCSF exports, sandbox lifecycle payloads, gateway diagnostics, upload or download manifests, stdout/stderr logs, policy apply records, and teardown logs.
-
-Normalized OpenKit evidence is a redacted manifest that links raw evidence to OpenKit ids and digests.
-
-Canonical product records are created only when NanoCore imports and verifies the output. Examples include items, artifacts, workspace changes, audit events, usage records, permission decisions, and apply results.
-
-OpenShell ids, gateway ids, provider handles, supervisor logs, process ids, and native file-transfer handles must not become the public product identity.
-
-Runtime-internal sub-agent streams and their native origin indexes follow the restricted evidence and product-safe normalization contract in `docs/specs/20260711-worker_runtime_subagent_provenance.md`; they do not create additional OpenKit thread, turn, or AgentSession storage trees.
-
-### Turn Observation Placement
-
-The work-data observation family lives in `threads/<threadId>/turns/<turnId>/observations.jsonl` beside the existing Item stream. The admitted header is `v`, `type`, `id`, `ts`, `seq`, `obs`, `ret`, `parent`, `corr`, `outcome`, `cert`, `turnId`, `refs`, and `ext`, with required `payload`; requiredness and meanings follow the work-data owner. Directory-level `turn.json` carries `requiredFeatures: [openkit.work-observations.v1]` when this family is present, alongside existing lineage and immutable capture binding. Its append order is local to that file; the two families do not share order. `20260921-work_data_retention_format.md` owns the header and byte admission. One storage append owner validates persisted Workspace/Thread/Turn lineage and immutable capture binding, assigns contiguous sequence, and publishes references only after existing EvidenceBundle body and metadata durability. Restricted body staging and final bytes remain within that existing evidence owner, never a new Turn blob lifecycle or server transcript copy.
-
-Observation recovery discards every unterminated tail after the last LF, including parseable JSON, and rejects corrupt interior records or conflicting identities. Body and owner metadata durability precede observation file and required directory fsync. Receipt replay must verify the publication boundary after interruption; SQLite receipts and file publication remain separate stores. Lawful body expiry is not undone by replay. Observation rows follow existing Thread/Workspace history retention; referenced bytes follow evidence retention, hold, access revocation and disposal. Portable export must include the family, preserve unresolved references truthfully, and reject unsupported required features.
-
-## Server Storage Layout
-
-`server/db/core.sqlite` owns:
-
-- known user registry and workspace registry summaries
-- Better Auth or auth implementation tables where applicable
-- server idempotency rows
-- server-level audit and usage rows when no workspace scope exists
-- server migrations
-- server scheduler and background task rows
-- provider readiness indexes
-
-`server/files` owns:
-
-- sanitized OAuth account slot metadata
-- isolated provider account homes where an external tool owns its own credential storage
-
-`server/exports` owns server-managed Workspace export trees and Workspace deletion closures.
-
-`server/evidence` owns backend evidence that is not workspace-owned, such as server startup diagnostics or gateway lifecycle evidence.
-
-## Scoped Knowledge And Private Thread Placement
-
-This storage owner assigns User Memory to `users/<userId>/memory/` and Server Knowledge to `server/knowledge/`; existing Workspace Knowledge remains `workspaces/<workspaceId>/knowledge/`. All use the same notebook subtree (`notebook.git`, optional materialized `pages`, `schema`, `proposals`, `reviews`, and existing maintenance families) owned by the Knowledge implementation. Scope schema files are `schema/scope-schema.yaml`; the former Workspace-only schema location is migrated by that owner. Sources remain sibling families at `users/<userId>/sources/`, `server/sources/`, and `workspaces/<workspaceId>/sources/`. Derived scoped indexes remain non-authoritative. No new database, source engine or per-user Workspace tree is created.
-
-`20260909-personal_memory_and_knowledge_learning.md` owns scoped learning; `20260909-knowledge_notebook_editing.md` owns fixed-base editing and Git publication/history under profile v4. `notebook.git` retains the sole published content tree and revision history; `pages/` is only a rebuildable materialization/export, never a second writer. Original Sources remain immutable evidence, not copies made solely to retain page revisions. Root/scope verification and the existing deployment writer exclusion prevent cross-scope or unsupported concurrent access. All notebook writers share the same short publication fence.
-
-The authored `knowledgeMaintenance` setting uses existing configuration owners: User `users/<userId>/config/user.jsonc`, Workspace `workspaces/<workspaceId>/config/workspace.jsonc`, Server `config/server.jsonc`. The notebook owner defines its strict fields/defaults and authority. Existing revision-aware configuration commands validate and retain its revision; publication rechecks that current value. It never lives inside editable notebook pages or imported content. User-scope command/Audit evidence follows existing User command routing, not a new notebook database.
-
-Private project Threads and their Item/Artifact material remain in their existing Workspace paths. Their canonical Thread record adds creation-fixed `visibility` and `privateOwnerUserId` under `20260909-thread_visibility_and_sharing.md`; physical containment does not confer access. Every index, export, and read projection resolves that owner before publishing private-derived metadata or bytes to an ordinary caller. A currently usable administrator credential is eligible for those bytes under the administrator eligibility rule in [Core Policy](../core/policy.md). User Memory is excluded from Workspace migration/clone; a private Thread remains attached to the original Workspace rather than moving when its user changes membership.
-
-## User Storage Layout
-
-`user.sqlite` owns:
-
-- per-user idempotency receipts
-- User-owned AuditEvent records, including content-free notebook publication admission facts
-- its migration ledger
-
-User files remain under `users/<userId>/files`. Workspace ownership and visibility do not create any Workspace storage below the user tree; all canonical Workspace data lives under `workspaces/<workspaceId>` and is resolved through Core identity and policy state.
-
-## Identifier Authority Projection
-
-The canonical local User is stored once in the existing Core users authority and resolved through [Core Identity's initialization and restart rule](../core/identity.md#implicit-local-human). Its `usr` ID is not a fixed path selector. No local-ID registry or initialization marker is added. Storage startup must distinguish proven fresh initialization from missing authority on an initialized deployment. Uncertainty fails the critical phase without replacing the User ([accepted D4 realization](../decisions/20261015-identifier_owner_declarations.md)).
-
-Live Material, revision, Review, introduction and reference names remain exactly those of [Work Resource Interaction Model](20260713-work_resource_interaction_model.md), including complete ActorRef inputs where required. [Workspace Backup, Export And Import](20260704-workspace_backup_export_import.md) owns portable export inventory and inert-history boundaries. Storage adds no alternate ordinal or name encoding. Existing transaction, uniqueness, parent-graph, integrity, cleanup and recovery requirements remain binding; no cross-store atomicity is implied. Acceptance requires exact owner-declared names and identity reuse alongside unchanged durability and fail-closed behavior.
-
-## Record Identity
-
-Every runtime-produced record must carry enough lineage to be verified after import:
-
-- workspace id
-- thread id when applicable
-- turn id when applicable
-- agent id when applicable
-- AgentSession id when applicable
-- package snapshot id when applicable
-- backend session summary when applicable
-- capability call id when applicable
-- policy decision id when applicable
-- request id when applicable
-- monotonic worker sequence when applicable
-- content digest for files or large payloads
-
-Records without sufficient lineage may be stored as quarantined evidence but must not be promoted into canonical product history.
-
-## Migration Posture
-
-This migration moves pre-baseline storage, so the clean target should win over legacy preservation.
-
-The current migration does not need old-version compatibility.
-
-Before `v0.1.0`, the operator may choose an explicit deployment reset under [Release Management](20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts). If predecessor data is carried forward, migration from the current partial implementation must be explicit and one-way. One thin dedicated stopped-process operator CLI owns invocation; it calls the migration directly and is not a boot phase, restore mode, reusable runner, or test harness:
-
-1. Preflight every registered Workspace against its current `users/<ownerUserId>/workspaces/<workspaceId>` source and fail on missing, duplicate, linked, or ambiguous roots.
-2. Before changing `DATA_ROOT`, create and verify one complete predecessor `DATA_ROOT` cold backup outside `DATA_ROOT`, including the Core database, layout marker, every owner-nested Workspace tree, and their exact inventory and digests.
-3. Create the migration-owned target staging tree and move any remaining server-owned runtime files under `server/`.
-4. Copy every verified Workspace into one same-filesystem staging root shaped as the complete future `workspaces/` tree, then verify its complete inventory and authoritative databases.
-5. Publish the complete staged `workspaces/` root through one same-filesystem rename, apply the Core transaction, verify every target and constraint, and remove the owner-nested Workspace trees from `DATA_ROOT` while retaining the verified external backup.
-6. Repoint all Workspace openers and recovery scans to the owner-independent root and write the new layout marker only after no owner-nested Workspace tree remains inside `DATA_ROOT`. While the CLI still owns the stopped process, call the same integrity and derived-index rebuild functions used by normal boot directly; do not run the boot phase runner or create a verification-boot mode.
-7. Keep a migration report that records relative source and target identities, predecessor-to-successor digests, stage, and outcome without exposing credentials or user content. The report is evidence only and never a retry, resume, or recovery authority.
-8. Retain the external cold backup until the published layout passes its required verification and reviewed cleanup explicitly removes it; do not add a dual reader, alias, or filesystem link.
-
-After this baseline is established, future storage additions follow the shape rules in `docs/specs/20260703-schema_evolution_record_envelope.md`. Cross-release retention follows the `v0.1.0` boundary in [Contract Evolution](../core/contract-evolution.md#retained-data-continuity); an explicit pre-stable reset may replace migration.
-
-Post-baseline import is an explicit contract with three verifiable rules:
-
-1. A newer system MUST accept any post-baseline record whose `schemaVersion` major matches a supported family version and whose `requiredFeatures` are all supported, regardless of how old the writer was.
-2. When a major-version migration rewrites records, it MUST be explicit and one-way, MUST produce a migration report, and MUST preserve digest continuity by mapping each predecessor `contentDigest` to its successor digest per the schema evolution spec.
-3. Records from unknown canonical families and records with unsupported required features MUST be quarantined, not dropped: they are preserved untouched and excluded from processing until a reader that understands them arrives.
-
-## Resolved Decisions
-
-- The target layout uses one database per ownership scope under a `db/` directory: `server/db/core.sqlite`, `users/<userId>/db/user.sqlite`, and `workspaces/<workspaceId>/db/workspace.sqlite`.
-- The canonical Workspace system record belongs to the scoped control store and any readable `workspace-record.json` is a projection only; editable `name`, shared `defaultAgentId`, and other accepted Workspace composition live only in `config/workspace.jsonc`, and the removed `workspace.json` name fails loudly without a compatibility reader.
-- Workspace ownership is a Core identity relationship and never determines the canonical Workspace path.
-- The root-level `core.sqlite` path is not a supported location; layout verification rejects it.
-- The retired workspace `memory/` directory is not restored. User-owned `users/<userId>/memory/` is the intentional scoped Memory root, not an alias or compatibility path for Workspace Knowledge.
-- Workspace domain rows are workspace-scoped even if the gateway, scheduler, or runtime lives in the server process. Deployment-wide scheduler rows remain server-scoped when they conditionally own exact admission, execution attempts, or backend-private residency and cleanup fences; direct restart closeout follows product-safe lineage into the existing workspace owners and never copies workspace-domain payload into a server settlement row. Rows with no workspace context are server-scoped.
-- Quarantined worker output should be retained by default as restricted redacted evidence for a bounded retention window, not silently deleted at rejection time.
-- Derived indexes and read models must be rebuildable from file-backed records or authoritative SQLite ledgers.
-- An authoritative Core or User SQLite integrity failure is a critical boot failure; a Workspace SQLite integrity failure quarantines only that Workspace. The original file remains unchanged at its canonical path, and boot creates no empty replacement or automatic recovery record.
-- Phase 1 Material identity, canonical inline revision content, Thread binding, and their command receipts are one `workspace.sqlite` transaction graph. No Material filesystem authority, `contentRef`, pending mutation, receipt reconstruction, or settlement state is permitted.
-- Artifact Review history is keyed by exact Artifact version in `workspace.sqlite`; a later version never overwrites an earlier decision, and the row does not alias staged Workspace Review or create a second Review workflow.
-- A temporary migration report is allowed; permanent legacy readers for old layout paths are not part of the target.
-- A read-only storage baseline report exists for the current internal migration; it reports current database ledgers and quarantined storage files, but it does not repair legacy state or preserve compatibility readers.
-- The first derived index rebuild path exists for Knowledge link, validation and source-reference indexes and treats `indexes/` as disposable derived state. Boot invokes it for existing workspaces with canonical projections, but the index file itself is not a source of truth.
-- The server-owned `server/vault/` directory exists as the opaque home for the encrypted-file vault backend; secret material handling remains owned by the vault backend spec.
-- Workspace runtime, review, evidence, and log subdirectories are materialized by the layout helper, so later worker-session, review, evidence-import, and log writers do not invent private directory roots.
-- Workspace `sources/` should copy material when replay, audit, review, or user upload semantics require local evidence. It should store references when an external system remains the source of truth or copying would be unsafe, excessive, or policy-forbidden.
-- Future storage additions are additive by default. Unknown optional fields and derived directories may be ignored, but unsupported required features and unknown authority-bearing canonical record families must fail closed.
-- The current pre-baseline migration does not require compatibility with old internal storage layouts; changes after the baseline keep retained data usable under Retained Data Continuity in `docs/core/contract-evolution.md`.
-
-## Deferred / Future Work
-
-- Move future user- and workspace-owned row families out of the server-scope database as those families are implemented.
-- Add exportable schemas for SQLite source-of-truth ledgers.
-- Add retention and access-control policy for quarantined evidence.
-- Add conformance tests for unknown optional fields, unsupported required features, and unknown canonical record families.
-
-## Testing Strategy
-
-- Storage fixture tests should create a full target tree and validate path ownership.
-- Startup storage tests should prove NanoCore boots on the ownership-scoped target tree.
-- Multi-user storage tests should prove owner transfer and membership changes do not move or alias the Workspace root.
-- Replay tests should rebuild workspace read models from files and ledgers.
-- Import tests should reject worker records with missing lineage or mismatched digests.
-- Backup tests should prove a workspace can be copied with its `workspace.sqlite`, files, and evidence manifests.
-- Recovery tests should rebuild derived indexes after deleting `indexes/`.
-- Catalog storage tests must prove one scope-local metadata publication, immutable digest-verified snapshots, launch and rollback without upstream access, rejection of corrupt authority, restricted original-package reads, and retention of referenced snapshots and independently adopted MCP data through uninstall.
-- Integrity tests should prove table-wise that corrupt Core and User authority fails boot validation, corrupt Workspace authority quarantines only that Workspace, and each case preserves the original bytes at the canonical path, and creates neither a migrated replacement nor a quarantine copy.
-- Schema evolution tests should prove unknown optional storage metadata is tolerated and unsupported required features fail closed.
-- Material transaction tests should prove create, save, bind, unbind, exclude, and restore commit their authoritative rows and completed command receipt together; conflict and injected failure should leave neither a partial mutation nor a receipt.
-- Material storage tests should prove revision content is inline, immutable, digest-verified, parent-scoped, and unresolvable through any `contentRef` or Material file path.
-- Artifact Review tests should prove `(workspaceId, artifactId, artifactVersion)` uniqueness, deterministic `reviewId`, immutable prior-version history, exact digest and source lineage, and rejection of Artifact-id-only overwrite or staged-review aliasing.
-
-## Risks & Mitigations
-
-- Risk: The tree becomes too verbose for local development. Mitigation: provide templates and helpers, not a flatter model.
-- Risk: SQLite source-of-truth ledgers become hidden product state. Mitigation: require exportable schemas and link every row to product ids.
-- Risk: Raw backend logs leak secrets. Mitigation: store raw evidence under restricted evidence paths and expose only redacted manifests.
-- Risk: Workspace export misses server-owned provider account context. Mitigation: workspace export records provider references and account slot ids, not credential material.
-
-## Links
-
-- `docs/core/storage.md`
-- `docs/core/evidence.md`
-- `docs/core/mediation.md`
-- `docs/core/knowledge.md`
-- `docs/core/vault.md`
-- `docs/specs/20260703-schema_evolution_record_envelope.md`
-- `docs/specs/20260715-multi_user_workspace_system.md`
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260703-workspace_synchronization.md`
-- `docs/specs/20260704-workspace_backup_export_import.md`
-- `docs/specs/20260629-worker_runtime_communication_model.md`
-- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
-- `docs/specs/20260713-work_resource_interaction_model.md`
-
-## External Trigger Admission Homing
-
-ExternalTriggerAdmission is part of the existing scheduler Core transactional exception. Core retains only scheduleId, eventKey, sourceTurnId and queueEntryId, with unique (scheduleId, eventKey), in the same transaction as ordinary queue acceptance. Canonical Turn files retain the work history. The join does not authorize file reconstruction, replacement admission or Worker replay. A missing or contradictory accepted Turn requires inspection; ordinary queue cancellation remains available. Workspace deletion captures the join in the existing recurring closure before purging it with its schedule. Portable history nests the join under the existing schedule record, remaps schedule and source Turn references, and preserves queueEntryId as inert provenance without installing execution authority.
+- [Release Schema Migrations](../decisions/20260918-release_schema_migrations.md)
+- [Current Goal Records Are Portable](../decisions/20261003-current_goal_records_are_portable.md)
+- [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md)
+- [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md)
+- [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md)
+- [Identifier Owner Declarations](../decisions/20261015-identifier_owner_declarations.md)
+- [Durable Execution And Control Store](../decisions/20261019-durable_execution_and_control_store.md)
+- [Pre-Release SQL Baselines](../decisions/20261114-pre_release_sql_baselines.md)
+- [Refused Ledger Sidecar Residue](../decisions/20261110-refused_ledger_sidecar_residue.md)

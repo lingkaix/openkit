@@ -38,6 +38,6 @@ Revisit when the engineer changes Timeline cardinality, admits members to a pers
 - [Chat Mode And Core Assistant](../specs/20260704-chat_mode_assistant.md)
 - [Context Management](../specs/20260902-agent_runtime_context_compaction.md)
 - [Internal Agent Runtime](../specs/20260813-internal_agent_runtime.md)
-- [Personal Workspace](../specs/20260709-quick_chat_workspace.md)
+- [Personal Workspace](../specs/20260715-multi_user_workspace_system.md#personal-workspace)
 - [Work Model](../core/work-model.md)
 - [Thread Visibility](../specs/20260909-thread_visibility_and_sharing.md)

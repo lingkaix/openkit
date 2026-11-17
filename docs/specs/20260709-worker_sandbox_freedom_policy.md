@@ -6,11 +6,9 @@ aspect: sandbox
 ---
 # Worker Sandbox Freedom Policy
 
-## Summary
+## Scope
 
-OpenKit worker agents run in a sandbox so they can use a rich development environment while Core keeps filesystem, network, credential, audit, and review boundaries under control.
-
-The target rule is: process execution is broadly available inside the sandbox, filesystem and network access are constrained, credentials are explicit user-supplied injections, and future capability presets are convenience templates over these lower-level controls rather than the only way to grant access.
+OpenKit does not adopt the upstream OpenShell policy file as the product contract.
 
 ## Owns
 
@@ -20,27 +18,13 @@ The target rule is: process execution is broadly available inside the sandbox, f
 
 ## Does Not Own
 
-- The full Capability Catalog implementation.
-- Organization role management, workspace admin workflows, or enterprise policy delegation.
-- Complete network gateway metering, HTTP method filtering, and payload inspection.
-- Provider-specific API semantics beyond credential and endpoint attachment.
-- Replacement of the governed MCP, knowledge, artifact, diagnostic, and inference capability planes.
+- The full Capability Catalog, organization approval, and workspace admin workflows belong to their capability and policy owners.
+- Gateway metering, HTTP method filtering, and payload inspection are not this policy.
+- Provider API semantics beyond credential and endpoint attachment belong to the provider owner.
+- Governed MCP, knowledge, artifact, diagnostic, and inference planes keep their existing owners.
+- The upstream OpenShell policy file is a materialization baseline, not this product contract.
 
-## Core References
-
-- `docs/core/sandbox.md`
-- `docs/core/mediation.md`
-- `docs/core/agent-supply.md`
-- `docs/core/policy.md`
-- `docs/core/vault.md`
-- OpenShell Community base sandbox policy: `https://github.com/NVIDIA/OpenShell-Community/blob/main/sandboxes/base/policy.yaml`
-
-## Related Docs
-
-- `docs/specs/20260703-worker_agent_capability.md`
-- `docs/specs/20260704-worker_mcp_tool_supply.md`
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260721-worker_execution_environment_images.md`
+[Sandbox](../core/sandbox.md), [Mediation](../core/mediation.md), [Agent Supply](../core/agent-supply.md), [Policy](../core/policy.md), and [Vault](../core/vault.md) are the Core links.
 
 ## Principles
 
@@ -52,28 +36,6 @@ The target rule is: process execution is broadly available inside the sandbox, f
 - User-provided secrets may be injected into worker sessions, but secret values must not be persisted into AEP snapshots, prompts, item payloads, context packages, audit rows, normal workspace files, or sandbox snapshots.
 - Capability presets should make common grants easy and reviewable, but they should not be the only long-term mechanism for expressing sandbox access.
 - Backend-native policy files are materialization outputs and evidence; NanoCore-owned records remain the product source of truth.
-
-## Decision
-
-OpenKit should move worker sandbox execution toward a permissive process model and constrained data/egress model.
-
-For process execution, the worker should be able to use the normal tools installed inside the selected sandbox image, including shell, language runtimes, package tools, Git tools, GitHub CLI, search tools, build tools, and test runners, unless a specific class is blocked by backend policy or image composition.
-
-For filesystem access, the worker may read the image-provided runtime directories that are safe to expose, may write to sandbox workspace and temporary directories, and may access user-declared workspace roots according to explicit read-only or read-write grants.
-
-For network access, the worker may only connect to endpoints declared in the immutable AEP, including its exact worker-control and selected inference routes. Exact selected MCP supply may add only the fixed loopback Integration capability route; it adds no upstream MCP endpoint or direct egress.
-
-For credentials, users may provide arbitrary secrets for a worker session through explicit injection declarations, but the injection must carry a target path or environment key, visibility class, intended consumer, scope, lifetime, and redaction policy.
-
-## OpenShell Baseline
-
-OpenShell Community base `policy.yaml` is the closest baseline for the first implementation shape.
-
-The upstream base policy uses filesystem sections for read-only and read-write paths, configures the process user and group as `sandbox`, and expresses network access through named `network_policies` that map allowed binaries to allowed endpoints.
-
-That baseline supports the OpenKit direction because it does not require a narrow global process allowlist for every executable; instead it constrains filesystem reach and network egress while allowing named endpoint policies for tools such as Git, GitHub CLI, package managers, and agent runtimes.
-
-OpenKit should not copy the upstream policy verbatim as a product contract, but it should use the same practical shape: a useful base image, broad local tool use, default-deny network, explicit endpoint grants, and constrained filesystem access.
 
 ## Process Model
 
@@ -99,11 +61,15 @@ A filesystem allowlist entry should declare id, target path or workspace root re
 
 Host paths must not be exposed directly in product records.
 
+The writable temporary root is `/tmp/openkit-bootstrap`. The image sets `TMPDIR`, `TMP`, and `TEMP` to that path. The fixed OpenShell policy does not grant the whole `/tmp` tree.
+
 Writable grants to Core-managed config, server data roots, vault storage, or backend control directories remain blocked unless a future trusted maintenance-agent mode explicitly owns that risk.
 
 ## Network Model
 
 Network policy is default-deny.
+
+Exact selected MCP supply may add only the fixed loopback Integration capability route; it adds no upstream MCP endpoint or direct egress.
 
 The effective allowlist is exactly the normalized network rules recorded in the immutable AEP, including any Core-projected worker-control or inference endpoint. The governed backend may reject an AEP rule it cannot enforce, but it MUST NOT merge undeclared endpoints from backend defaults, process environment, deployment configuration, selected image, runtime adapter, or provider configuration.
 
@@ -114,6 +80,8 @@ A network allowlist entry must declare id, host, port, protocol, purpose label, 
 Wildcard hosts, unrestricted ports, and private network ranges should be rejected in the first user-facing implementation unless an operator-only escape hatch explicitly enables them.
 
 The first implementation supports HTTPS REST access presets and bounded `GET` or `POST` path rules because stock OpenShell already enforces that shape. Exact rules may use OpenShell path globs but hosts remain exact, rule paths must be absolute and free of line breaks, and another HTTP method remains unsupported until a present workload and backend proof justify it.
+
+The authored grant schema admits `http` and `https` access-mode declarations. The OpenShell backend accepts only `rest` and refuses an unsupported protocol before launch. The backend adds no built-in Codex or DeepWiki endpoint, backend network option, or deployment environment variable.
 
 Encoded-slash authority is owned by the `allowEncodedSlash` grant contract in [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#manifest-shape). NanoHost projects admitted `true` as native OpenShell `allow_encoded_slash: true` on that endpoint with `protocol: rest`, `access: read-only`, and `enforcement: enforce`. Omission or `false` retains native strict behavior. Every other endpoint key remains subject to closed validation. The backend must reject unsupported or conflicting intent before launch rather than dropping the field, widening another endpoint, relaxing TLS inspection, or substituting a broader access mode.
 
@@ -139,15 +107,7 @@ The final authorized product observation must bind source candidate, selected au
 
 ## Secret Injection Model
 
-Users may inject arbitrary secrets into a worker session because real developer workflows often require service tokens, package registry credentials, deploy keys, API keys, or test credentials that OpenKit cannot pre-model.
-
-Secret injection must be explicit and scoped.
-
-Each secret injection should declare a stable secret id, delivery kind, target environment key or file path, consumer summary, lifetime, redaction behavior, and whether the value is session-only or saved as a reusable vault reference.
-
-The initial implementation may support simple environment variable and runtime file injection before it supports provider profiles or capability presets for every secret class.
-
-Secret values must only pass through backend-private materialization paths and must not appear in durable package snapshots.
+[Worker Credential Access Declarations](20260703-vault_secret_injection.md#runtime-file-visibility) owns declaration fields, visibility, lifetime, and channel lifecycle. A declaration also names its intended consumer, its redaction behavior, and whether the value is session-only or a reusable vault reference. Secret values pass only through backend-private materialization and must not appear in a durable package snapshot. Ungoverned or raw provider input still refuses before execution. A governed static binding follows that owner. If the backend cannot enforce a declared injection, launch fails before worker execution.
 
 ## Capability Presets
 
@@ -193,20 +153,24 @@ The AEP retains the recognized admission marker as policy evidence; OpenShell YA
 - Capability presets MUST expand to explicit sandbox, provider, gateway, approval, and instruction effects rather than bypassing them.
 - Backend-native OpenShell policy files MUST remain derived materialization output, not canonical product state.
 
-## Current Implementation Projection
+## Acceptance
 
-The writable temporary root is `/tmp/openkit-bootstrap`; the image sets `TMPDIR`, `TMP`, and `TEMP` to that path. The fixed OpenShell policy does not grant the whole `/tmp` tree. The authored grant schema admits `http` and `https` access-mode declarations, but the current OpenShell backend accepts only `rest` and refuses unsupported protocols before launch. This follows the backend-rejection boundary in Network Model.
+Acceptance materializes one AEP through the governance backend and compares the normalized network rules exactly. A backend-shaped extra endpoint is ignored rather than merged. A non-transient ungoverned provider credential fails before provider upsert or sandbox creation. Encoded-slash acceptance stays in [Built-In Development Baseline](#built-in-development-baseline).
 
-The current OpenShell backend compiles base network policy only from the immutable AEP. It has no built-in Codex or DeepWiki endpoints, backend network option, or deployment environment variable that can append a rule. The AEP admits bounded authored `GET` or `POST` REST rules and the built-in development grants while preserving the same no-hidden-authority invariant. It also rejects non-transient backend provider credentials before provider or sandbox effects because the current AEP does not carry the exact Providers v2 endpoint and binary policy; the internally generated trusted-inference profile remains limited to the AEP's exact inference authority.
+## Implementation
 
-The backend follows the official unmodified stock-backend boundary owned by [OpenKit Policy Model](20260629-openkit_policy_model.md#relationship-to-openshell-runtime-policy). The selected MCP `capability.local` slice uses only the existing fixed loopback Integration path and separately authenticated Gateway mediation; it authorizes no direct undeclared egress, upstream endpoint, or worker-visible credential.
+- `apps/nanohost/src/`
+- `apps/nanocore/src/runtime/`
+- `packages/config-schema/src/`
 
-Acceptance materializes one AEP through the governance backend and compares the normalized network rules exactly; regressions prove that a backend-shaped extra endpoint is ignored rather than merged and that a non-transient provider credential fails before provider upsert or sandbox creation.
+## Implementation Gaps
 
-## Deferred Work
+- Reusable capability presets, inherited approval policy, and admin governance remain beyond direct grants - The full catalog is not implemented - #330
+- Organization role policy for who can approve reusable network, filesystem, and secret grants - That approval surface is not implemented - #334
+- Selected backend and native egress qualification - That qualification is not established - #684
 
-- Full Capability Catalog with reusable presets, admin policy, workspace inheritance, and approval defaults.
-- Additional HTTP methods, query-aware rule semantics beyond OpenShell path matching, and richer user-facing exact-rule editing.
-- Organization role policy for who can approve reusable network, filesystem, and secret grants.
-- Dynamic network or filesystem policy updates for already-running worker sessions.
-- Rich secret classes such as provider profiles, refreshable credentials, and scoped credential brokers for every external service.
+## Decisions
+
+- [Encoded slash](../decisions/20261008-encoded_slash_authority_and_release_hold.md) records encoded-slash authority.
+- [Public endpoints](../decisions/20260930-public_endpoints_by_admitted_grant.md) records public-class eligibility.
+- [Hosting through Gateway MCP](../decisions/20261002-hosting_through_gateway_mcp.md) records that platform-managed hosting stays gateway-only.

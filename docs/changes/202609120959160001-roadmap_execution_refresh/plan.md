@@ -14,7 +14,7 @@ Preserve the existing two operating paths, Web-directed work and Desktop Agent p
 
 ## Owners And Write Boundary
 
-The primary exclusively writes `docs/roadmap.md`, a scheduling clarification in `docs/specs/20260711-evaluation_harness_design.md`, this record and a historical pointer in `temp/pathway/20260903-execution-pathway-blockers.md`. Regenerate `docs/INDEX.md` only if its projection changes. `docs/documentation-model.md`, `docs/change-execution.md`, root `AGENTS.md`, `CONTRIBUTING.md`, current Core and accepted feature specifications retain their authority. No runtime, evaluation architecture, approval bypass, new controller or Product Vision amendment is introduced.
+The primary exclusively writes `docs/roadmap.md`, a scheduling clarification in evaluation harness design (issue #311), this record and a historical pointer in `temp/pathway/20260903-execution-pathway-blockers.md`. Regenerate `docs/INDEX.md` only if its projection changes. `docs/documentation-model.md`, `docs/change-execution.md`, root `AGENTS.md`, `CONTRIBUTING.md`, current Core and accepted feature specifications retain their authority. No runtime, evaluation architecture, approval bypass, new controller or Product Vision amendment is introduced.
 
 ## Working Checkpoint
 

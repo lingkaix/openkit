@@ -32,5 +32,5 @@ Return for separate acceptance before changing the ledger key, adding durable ro
 ## Affected Owners
 
 - [Core Audit](../core/evidence.md)
-- [Capability Usage Gateway Foundation](../specs/20260704-capability_usage_gateway_foundation.md)
+- [Capability Usage Gateway Foundation](../specs/20260703-audit_usage_evidence_records.md#capability-usage)
 - [Chat Mode Assistant](../specs/20260704-chat_mode_assistant.md)

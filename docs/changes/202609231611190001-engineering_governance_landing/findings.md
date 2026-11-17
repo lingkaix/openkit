@@ -74,7 +74,7 @@ These items hand candidate inputs to owners outside this plan; they are non-auth
 
 ## [closed] GOVLAND-FND-007 — Roadmap batch cadence premise has likely expired
 
-- **Observation:** docs/decisions/20260912-large_batches_before_first_release.md rests on the engineer's statement on 2026-09-12 that fewer than one week remained before the first release. On 2026-09-24 that week has passed, and docs/roadmap.md and docs/specs/20260711-evaluation_harness_design.md still apply the cadence.
+- **Observation:** docs/decisions/20260912-large_batches_before_first_release.md rests on the engineer's statement on 2026-09-12 that fewer than one week remained before the first release. On 2026-09-24 that week has passed, and docs/roadmap.md and evaluation harness design (issue #311) still apply the cadence.
 - **Impact:** If the premise no longer holds, the roadmap keeps deferring integrated evaluation for a reason that is gone.
 - **Evidence:** The record's Reason and Revisit When sections; the dates.
 - **Owner:** The engineer, for docs/roadmap.md.

@@ -50,4 +50,4 @@ Revisit when any of these happens:
 ## Affected Owners
 
 - [Durable Execution And Control Store](../specs/20261019-durable_execution_and_control_store.md).
-- [Runtime Scheduling Scale](../specs/20260703-runtime_scheduling_scale.md).
+- [Runtime Scheduling Scale](../specs/20260703-durable_scheduler_design.md#scale-limits).

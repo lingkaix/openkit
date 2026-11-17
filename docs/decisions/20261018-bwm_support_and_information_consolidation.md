@@ -7,7 +7,7 @@ decider: Engineer
 
 ## Decision
 
-The engineer approved the BWM support direction on 2026-10-18, including its later refinement to one NanoCore interception mechanism. The [implementation specification](../specs/20261018-nanocore_interception_and_information_consolidation.md) records the contract and migration phases. Implementation of that unified design is **Not Started**; existing specialized mechanisms do not establish completion.
+The engineer approved the BWM support direction on 2026-10-18, including its later refinement to one NanoCore interception mechanism. The [implementation specification](../specs/20260703-policy_enforcement_mapping.md) records the contract and migration phases. Implementation of that unified design is **Not Started**; existing specialized mechanisms do not establish completion.
 
 Solidified reusable procedures belong in Skills; other reusable understanding belongs in the owner-scoped OKF Knowledge Base under the Knowledge Manager. Claim becomes an OKF page, without a separate claims ledger. Confidence keeps its numeric 0..1 meaning. Rule, Effect and business Objective pages use Scope Schema types and applicability metadata; a business Objective page is not a work-model Goal.
 

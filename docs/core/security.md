@@ -153,7 +153,7 @@ Assets, in order of harm:
 
 Out of scope for OpenKit as a product:
 - the security of the host, its kernel, network and root account;
-- the hosts that build and release OpenKit;
+- runtime protection of the hosts that build and release OpenKit. The release gate and the other development and release security obligations remain;
 - a malicious administrator acting within their own authority. OpenKit records what they do, but cannot prevent it;
 - a model Provider's retention or misuse of what it was sent.
 

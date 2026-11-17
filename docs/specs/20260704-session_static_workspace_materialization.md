@@ -2,10 +2,28 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: 2026-09-30
 aspect: agent-session
 ---
+
 # AgentSession Static Workspace Materialization
+
+This specification owns the session-static workspace layout, the Turn materialization slots, and the Session compatibility key.
+
+## Scope
+
+Owns:
+
+- The session-static layout, slot hygiene, source admission for the current Git path, and the Session compatibility key.
+
+Does not own:
+
+- Storage layout. [Storage Layout And Record Ownership](20260703-storage_layout_record_ownership.md) owns it.
+- Review, apply, and recovery records. [Workspace Synchronization](20260703-workspace_synchronization.md) owns them.
+- The AEP envelope. [Agent Environment Package](20260616-agent_environment_package.md) owns it.
+- Vault, Git hosting, and object-store APIs. Their owners keep them.
+- Runtime Epoch lifecycle and route credentials. [NanoHost Runtime](20260802-nanohost_runtime_and_transport.md) owns them.
+
+Core: [AgentSession](../core/agent-session.md), [Sandbox](../core/sandbox.md), [Agent Supply](../core/agent-supply.md).
 
 ## Git Fetch Refusal Observation
 
@@ -18,79 +36,6 @@ The terminal remote fetch attempt reports bounded private subprocess facts throu
 Current materialization must not recursively remove a populated retained target, run `git clean`, replace arbitrary user configuration or delete ignored files as a freshness step. New source imports use no-overwrite staging and exact lineage; a source change conflicting with retained work is surfaced before launch. Generated AEP, context, instructions, transcripts used for protocol carriage, credentials and control slots remain separate and refreshed under their existing owners. Runtime-owned files within a persistent volume are not transport spools merely because their names contain log, session or transcript.
 
 Existing current-runtime/session records continue to own active bindings. Stable Thread-addressed data subdirectories may live within one admitted sharing group's opaque volume without changing the whole-volume retention or purge unit. Independent Threads retain separate mutable working and native-state locations; a new AgentSession id must not accidentally select an empty unrelated data root.
-
-## Owns
-
-- The contract that separates AgentSession-static sandbox layout from per-turn dynamic workspace materialization.
-- The `SessionWorkspaceLayout`, `WorkspaceSlot`, `TurnWorkspaceMaterialization`, and `SessionCompatibilityKey` concepts used by AEP resolution and workspace synchronization.
-- Reuse rules for long-lived local-container, remote-container, OpenShell, Docker, VM, Kubernetes, and managed-sandbox worker sessions when filesystem mounts, credential visibility, working directories, and process environments may be static after Sandbox start.
-- The OpenShell-inspired implementation posture for fixed directory skeletons plus dynamic file population through upload, checkout, rsync, object-store sync, provider file APIs, gateway reads, and output collection.
-- The default mapping from authored workspace input kinds such as file, directory, local file, Git repository, S3, R2, GCS, Azure Blob, Box, S3 file manifests, generated files, artifacts, and outputs into stable workspace slots.
-- Per-AgentSession namespaces in a shared Sandbox, Turn-slot hygiene, and the bounded non-canonical shared working area.
-
-## Does Not Own
-
-- Canonical storage ownership and record layout, which belongs to `docs/specs/20260703-storage_layout_record_ownership.md`.
-- General workspace synchronization lifecycle records, staged review, apply, and recovery, which belong to `docs/specs/20260703-workspace_synchronization.md`.
-- The resolved AEP envelope and cross-boundary invariants belong to `docs/specs/20260616-agent_environment_package.md`; this specification owns the session-static and turn-dynamic workspace contract projected into that envelope.
-- Authored agent manifest resolution and schema evolution, which belong to `docs/specs/20260703-agent_manifest_aep_resolution.md` and `docs/specs/20260703-schema_evolution_record_envelope.md`.
-- OpenShell credential injection, provider profile derivation, and policy-layer internalization, which belong to `docs/specs/20260703-openshell_mechanism_internalization.md`.
-- Vault, permission, audit, provider, Git hosting, object-store API, Box API, or backend-native file-transfer implementation details.
-- OpenShell CLI behavior, OpenShell upstream roadmap, Docker volume semantics, Kubernetes volume semantics, or managed-sandbox provider schemas.
-- Runtime Epoch lifecycle, RelayStream, Sandbox Integration, or route credentials, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
-
-## Core References
-
-- `docs/core/agent-session.md`
-- `docs/core/sandbox.md`
-- `docs/core/storage.md`
-- `docs/core/agent-supply.md`
-- `docs/core/vault.md`
-- `docs/core/policy.md`
-- `docs/core/evidence.md`
-- `docs/core/contract-evolution.md`
-
-## Summary
-
-OpenKit should optimize for long-lived reusable AgentSessions without pretending that sandbox filesystem mounts, working directories, process environments, and provider-provided environment placeholders can always be changed in place after a sandbox starts.
-
-The accepted model is: AgentSession layout is static, slot contents are Turn-dynamic, and every mutable or conversation-bearing slot is separately addressable by AgentSession inside a shared Sandbox.
-
-NanoCore resolves an agent setup into a session-static descriptor before launch, and the NanoHost materializes that descriptor into the Sandbox through Sandbox Integration. The substrate defines the worker-visible directory skeleton, writable and read-only path envelope, logical-model and credential-visibility envelope, network envelope, distinct worker-control, inference, and capability bindings, transcript sinks, output roots, and working-directory posture. Each Turn then materializes files, repositories, object-store prefixes, generated context, Artifacts, and outputs into predeclared slots inside that substrate through an existing native or bounded data path.
-
-This improves reuse for OpenShell-backed sessions because the sandbox starts with a broad but policy-approved workspace structure, while each turn can still receive fresh task data and produce reviewable change sets without requiring a new sandbox for every input change.
-
-## Goals / Non-goals
-
-### Goals
-
-- Make reusable AgentSessions safe and predictable when backend mounts are session-static.
-- Avoid frequent sandbox recreation by predeclaring stable workspace slots and filling their contents dynamically.
-- Keep NanoCore-owned records as product truth while allowing backends to use bind mounts, uploads, downloads, rsync, checkout, object-store sync, FUSE, or provider file APIs as transport projections.
-- Support both local containers and remote containers with one materialization contract.
-- Keep worker writes review-gated by default through `WorkspaceChangeSet` and staged apply.
-- Make session reuse explainable through a deterministic `SessionCompatibilityKey`.
-- Preserve conversation-context and Workspace-write isolation through per-AgentSession namespaces without claiming security and adjudication isolation.
-- Record OpenShell Providers v2 limitations honestly: backend-private credential materialization can change future effective policy and future process environments, but it does not mutate already-running process environments.
-
-### Non-goals
-
-- Do not make every workspace input a filesystem mount.
-- Do not require every backend to support every source kind or sync strategy.
-- Do not grant a broad static sandbox envelope unless server, workspace, user, vault, provider, and permission policy allow it.
-- Do not use a long-lived sandbox as hidden knowledge, hidden storage, or a bypass around workspace synchronization records.
-- Workers do not directly write back to external systems by default. Platform-managed Git hosting writes use selected Gateway MCP supply; native Git push is separately admitted user-space configuration. This specification does not grant direct S3, R2, GCS, Azure Blob, Box, or other domain-system writeback. The decision and its reason are recorded in [a decision record](../decisions/20261002-hosting_through_gateway_mcp.md).
-- Do not expose raw host paths, backend handles, upload handles, provider credentials, mount internals, or OpenShell-native IDs through product APIs.
-
-## Background
-
-OpenKit's existing AEP and workspace synchronization specs already separate authored manifests from resolved launch snapshots and already require worker writes to become reviewable change sets before workspace truth changes.
-
-The missing refinement is session reuse under backends whose mounts and process environment are static or effectively static after sandbox start.
-
-OpenShell is the immediate forcing function. OpenShell Providers v2 treats providers as profile-backed access bundles with credentials, endpoints, binaries, policy rules, and refresh behavior. Providers can be attached at sandbox creation, and current OpenShell documentation says runtime attach and detach update persisted provider lists and future effective policy reads, while credential environment changes apply only to new process launches after the sandbox observes the update. Already-running processes keep the environment they started with, so a long-running agent process that needs a newly attached provider placeholder must be restarted or replaced.
-
-This constraint is not a problem if OpenKit treats the sandbox as a reusable substrate. The sandbox starts with a stable directory layout and an approved static capability envelope. Later turns populate and collect content inside that envelope through data-plane operations rather than through dynamic remounting.
 
 ## Decision
 
@@ -132,13 +77,12 @@ An Agent write MUST check only its own selections against current authored catal
 
 ### Leased Storage Projection
 
-[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns later Storage adoption and reference formats. The existing Workspace/Artifact planes admit NanoCore-mediated MCP access or a leased read-only backend subpath mounted host-side by NanoHost. Writes stage for NanoCore commit; no sandbox FUSE or direct retrieval-engine route is introduced. The engineer approved host-side leased mounts for implementation after v0.1.0; this documentation change performs no host action.
-
-Policy owns grant scope/expiry; runtime removes or fences revoked exposure without deleting retained work. Disposable running-Turn snapshots preserve current readiness proof, not historical retention copies. Context source entries now select bounded delivered projections plus exact owner/version and digest references under the shared retention owner. This does not activate leased mounts or change cleanup for a separately admitted full read-only input snapshot.
+[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) owns later Storage adoption and reference formats. The existing Workspace/Artifact planes admit NanoCore-mediated MCP access or a leased read-only backend subpath mounted host-side by NanoHost. Writes stage for NanoCore commit; no sandbox FUSE or direct retrieval-engine route is introduced.
+Policy owns grant scope/expiry; runtime removes or fences revoked exposure without deleting retained work. Disposable running-Turn snapshots preserve current readiness proof, not historical retention copies. Context source entries now select bounded delivered projections plus exact owner/version and digest references under the shared retention owner. This rule does not change cleanup for a separately admitted full read-only input snapshot.
 
 ### Read-Only Turn Source Snapshot
 
-For each Turn, eagerly materialize only the exact selected, currently authorized input bytes. A Context digest reference retains its bounded delivered body, excerpt or descriptor and metadata. Explicit Artifact, Material and receiving-Turn file selections also admit the complete original as a disposable running-Turn input; S39 derives the combined live inventory from existing source digests and sizes, and streams originals through the existing verified per-file transfer without retaining another Core copy. A complete derived representation is not transferred merely because its excerpt was selected. Verify current original identity and selected ranges before first acceptance under the Context owner. A separately admitted full Artifact, upload, Material or other source snapshot uses existing input slots and data-plane transfers and verifies its source revision, size and digest before readiness. Record every byte actually delivered in the exact immutable inventory through the existing Workspace Input Snapshot, Materialization Record and Context Package proof. Model-visible inventories and their pagination remain bounded under [Context Package](20260703-worker_context_package.md#bounded-model-projection). The [large-file decision](../decisions/20261015-large_files_and_model_context.md) adds no lazy hydration, host-checkout reader, or source registry.
+For each Turn, eagerly materialize only the exact selected, currently authorized input bytes. A Context digest reference retains its bounded delivered body, excerpt or descriptor and metadata. Explicit Artifact, Material and receiving-Turn file selections also admit the complete original as a disposable running-Turn input; [Context Package](20260703-worker_context_package.md) derives the combined live inventory from existing source digests and sizes, and streams originals through the existing verified per-file transfer without retaining another Core copy. A complete derived representation is not transferred merely because its excerpt was selected. Verify current original identity and selected ranges before first acceptance under the Context owner. A separately admitted full Artifact, upload, Material or other source snapshot uses existing input slots and data-plane transfers and verifies its source revision, size and digest before readiness. Record every byte actually delivered in the exact immutable inventory through the existing Workspace Input Snapshot, Materialization Record and Context Package proof. Model-visible inventories and their pagination remain bounded under [Context Package](20260703-worker_context_package.md#bounded-model-projection). The [large-file decision](../decisions/20261015-large_files_and_model_context.md) adds no lazy hydration, host-checkout reader, or source registry.
 
 The view is read-only and separate from retained writable work slots, scratch, and output roots. The Git-only work-slot admission above still applies; selected product files enter declared read-only input slots, not a new work-slot source kind. A running Turn retains its admitted local snapshot of the bytes actually selected. Omitted originals remain references: current on-demand reads and processing resolve the exact owner/version and captured digest, or return unavailable. Later OpenKit search, reads, downloads, history and exports recheck current access and destination disclosure. Snapshot admission does not freeze those permissions or promise retention of omitted source bytes.
 
@@ -160,79 +104,7 @@ If a requested change touches a session-static field and the backend cannot appl
 
 ### SessionWorkspaceLayout
 
-The conceptual shape is:
-
-```jsonc
-{
-  "schemaVersion": 1,
-  "layoutId": "swl_01jz...",
-  "root": "/workspace",
-  "workingDirectory": "/workspace/worktrees/<workSlotRef>",
-  "slots": [
-    {
-      "id": "main-worktree",
-      "kind": "worktree",
-      "path": "/workspace/worktrees/<workSlotRef>",
-      "access": "read-write",
-      "allowedSourceKinds": ["git", "workspace-dir"],
-      "allowedMaterializationModes": ["checkout", "fetch", "bind", "copy", "upload", "rsync"],
-      "writeBack": "reviewed-change-set",
-      "retention": "session",
-      "lineageRequired": true
-    },
-    {
-      "id": "turn-inputs",
-      "kind": "input",
-      "path": "/openkit/sessions/<agent-session-id>/inputs",
-      "access": "read-only",
-      "allowedSourceKinds": ["workspace-file", "workspace-dir", "generated", "openkit-artifact", "http-archive"],
-      "allowedMaterializationModes": ["copy", "upload", "rsync"],
-      "writeBack": "discard",
-      "retention": "turn"
-    },
-    {
-      "id": "external-data",
-      "kind": "data",
-      "path": "/workspace/threads/<thread-id>/data",
-      "access": "read-only",
-      "allowedSourceKinds": ["s3", "r2", "gcs", "azure-blob", "box", "s3-files"],
-      "allowedMaterializationModes": ["object-store-sync", "provider-file-sync", "gateway-read"],
-      "writeBack": "artifact-only",
-      "retention": "policy"
-    },
-    {
-      "id": "turn-output",
-      "kind": "output",
-      "path": "/openkit/sessions/<agent-session-id>/outputs",
-      "access": "read-write",
-      "allowedSourceKinds": ["generated"],
-      "allowedMaterializationModes": ["create-empty"],
-      "writeBack": "artifact-or-reviewed-change-set",
-      "retention": "turn"
-    }
-  ],
-  "control": {
-    "transcriptRoot": "/openkit/threads",
-    "contextRoot": "/openkit/sessions/<agent-session-id>/context",
-    "instructionsRoot": "/openkit/sessions/<agent-session-id>/instructions"
-  }
-}
-```
-
-Slot kinds are:
-
-| Kind | Purpose |
-| --- | --- |
-| `worktree` | A repository checkout or mutable project tree that can produce reviewed workspace changes. |
-| `input` | Turn-specific files, directories, generated helpers, attachments, and prior artifacts that should not be written back. |
-| `data` | Larger external data from object stores, provider file APIs, file manifests, archives, or read-only workspace data. |
-| `artifact-input` | Prior OpenKit artifacts materialized as context. |
-| `output` | Declared output roots collected into artifacts and optional change sets. |
-| `scratch` | Ephemeral worker scratch space that is not product truth. |
-| `session` | OpenKit transcript, worker events, evidence manifests, and control files. |
-| `context` | Generated task context and context package material. |
-| `instructions` | Resolved static and generated instruction material. |
-| `cache` | Runtime or dependency cache allowed by policy and not treated as canonical workspace state. |
+`SessionWorkspaceLayout` is the admitted layout artifact in `packages/config-schema/src/session-workspace.ts`. That schema owns the slot fields, slot kinds, and write-back modes.
 
 Rules:
 
@@ -245,7 +117,7 @@ Rules:
 
 ### Default Directory Skeleton
 
-The fixed OpenShell Worker layout follows the work-slot and retained-volume owners below:
+The fixed OpenShell Worker layout follows the work-slot and retained-volume owners below. A reusable layout uses one shared base with workspace-policy overlays. An agent-family variant exists only when static requirements diverge.
 
 ```text
 /workspace/                                   whole retained volume
@@ -333,11 +205,11 @@ Endpoint-bearing sources in this table are resolved through workspace data sourc
 | Prior turn upload | `openkit-upload` | `input` | Copy or upload the attachment bytes by file id with digest verification and turn lineage; no knowledge governance required. |
 | Output directory | `generated` | `output` | Create empty before turn start, collect on turn end. |
 
-### S39 Dedicated Context Package Binding
+### Dedicated Context Package Binding
 
-The S39 accepted worker-Turn trace reuses the existing `generated` source kind and the existing `context` slot. Its one dedicated AEP workspace input is the exact S39 tuple: `kind=generated`, `source.kind=generated`, `target` equal to `SessionWorkspaceLayout.control.contextRoot`, `access=read-only`, and `materialization.slotId=context`. The selected slot MUST have `id=context`, `kind=context`, `path` equal to that control root and input target, `access=read-only`, `allowedSourceKinds` containing `generated`, `writeBack=discard`, and a local `copy` or remote `upload` mode supported by the selected backend.
+The [Context Package](20260703-worker_context_package.md) accepted worker-Turn trace reuses the existing `generated` source kind and the existing `context` slot. Its one dedicated AEP workspace input is the exact tuple: `kind=generated`, `source.kind=generated`, `target` equal to `SessionWorkspaceLayout.control.contextRoot`, `access=read-only`, and `materialization.slotId=context`. The selected slot MUST have `id=context`, `kind=context`, `path` equal to that control root and input target, `access=read-only`, `allowedSourceKinds` containing `generated`, `writeBack=discard`, and a local `copy` or remote `upload` mode supported by the selected backend.
 
-The session workspace planner MUST bind this exact input to the `context` slot before applying the general generated-input default; it MUST NOT route it to `turn-inputs`, infer a new slot from its path, or create a context-specific source adapter. Every other generated input continues through the existing authored mapping. The WIS, WMR, package-root digest, backend handoff, and ready predicate remain owned by S39 and reuse the existing Turn materialization records without a new status or lifecycle.
+The session workspace planner MUST bind this exact input to the `context` slot before applying the general generated-input default; it MUST NOT route it to `turn-inputs`, infer a new slot from its path, or create a context-specific source adapter. Every other generated input continues through the existing authored mapping. The WIS, WMR, package-root digest, backend handoff, and ready predicate remain owned by [Context Package](20260703-worker_context_package.md) and reuse the existing Turn materialization records without a new status or lifecycle.
 
 For a NanoHost on another host, the prepared immutable package root is named `context_<turnId>` and `WorkerContextPackageFiles` supplies the exact bytes plus the sorted `fileInventory` of package-relative path, byte length, and content digest. The backend matches that generated AEP input to NanoCore-private `workspaceRoots`, recomputes the sorted regular-file inventory and package-root digest, and issues exactly one `reference.import` per inventory entry after exact session admission and canonical AEP import, and before `turn.start`. A source path, host path, archive, adjacent or mutable locator, and every other source kind remain private and never cross the wire.
 
@@ -403,15 +275,7 @@ The decision and its reason are recorded in [a decision record](../decisions/202
 
 The static key includes the canonical resolved public native environment and its verified image/default identity, but never raw Vault values; equivalent maps with different authoring order have the same environment contribution. Metadata planning and final launch use the same already verified inputs, and stale image/configuration evidence fails revalidation rather than changing the key after admission.
 
-The key should cover:
-
-- agent id, profile id, runtime family, runtime image digest, command shape, process user and group, base working directory, worker-shim shape, and route-binding envelope
-- workspace root, slot ids, slot paths, slot kinds, slot access envelope, allowed materialization modes, output roots, transcript roots, and static filesystem policy digest
-- logical-model admission envelope, vault injection visibility classes, Gateway mapping version, and credential placeholder names when process-visible
-- network policy envelope, permission policy digest, sandbox policy digest, resource class, and backend capability summary
-- AEP schema version, required features, mapping versions, and backend family
-
-The key MUST NOT include raw secret values, raw host paths, backend-native handles, upload IDs, sandbox IDs, object-store credentials, or current turn payload digests.
+The base digest inputs are the agent, the backend, session-static control, the complete layout, policy, runtime, and vault. An absent top-level optional component is null. Network policy, credential visibility, and the permission digest enter through policy, vault, or layout when those owners supply them. They are not separate members of the base tuple. [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md) owns canonical JSON and SHA-256. This base digest is a named exception. It is `sha256:` plus the SHA-256 hex of a local stable JSON encoding. Object keys are sorted by UTF-16 code unit. Undefined object members are dropped. Array order is kept. An undefined or null scalar becomes null. The Session key that admission uses wraps that base digest with the sorted admitted logical-model ids. That wrapper is a second named exception. It is `sha256:` plus the SHA-256 hex of JSON text whose keys are `sessionWorkspaceKey` and then `allowedLogicalModelIds`, in that order. Canonical JSON would sort those keys the other way. This specification does not recompute either value. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns the physical Sandbox key and the [#735](https://github.com/lingkaix/openkit/issues/735) member gap. The key MUST NOT include raw secret values, raw host paths, backend-native handles, upload IDs, sandbox IDs, object-store credentials, or current turn payload digests. Cross-session dependency cache reuse is not admitted ([#397](https://github.com/lingkaix/openkit/issues/397)).
 
 A session can be reused when:
 
@@ -443,23 +307,13 @@ Creation, attachment, retry, recovery and purge follow the containing storageRef
 
 Workers do not directly write Core-owned source-of-truth data. Platform-managed external Git hosting effects use selected Gateway MCP authority. Native Git push remains optional user-space configuration requiring a user-injected credential and admitted git-receive-pack egress; OpenKit adds no native-push mechanism.
 
-Slot write-back modes are:
-
-| Mode | Meaning |
-| --- | --- |
-| `discard` | Changes in the slot are ignored after the turn except for restricted evidence when policy retains it. |
-| `artifact-only` | Collected outputs become artifacts but do not mutate workspace sources. |
-| `reviewed-change-set` | Changes are staged as a workspace review and require approval before apply. |
-| `artifact-or-reviewed-change-set` | NanoCore classifies outputs as artifacts, workspace changes, or both during import. |
-| `external-writeback` | Future explicit external system mutation path that requires its own required feature, permission decision, audit, and review policy. Selected Gateway MCP hosting is already governed by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) and is not slot external-writeback. |
-
-`external-writeback` is not part of the first implementation. Selected Gateway MCP hosting is already governed by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) and is not slot external-writeback.
+`packages/config-schema/src/session-workspace.ts` owns the write-back modes. `discard` ignores slot changes after the Turn except for restricted evidence when policy retains it. `artifact-only` collects outputs as artifacts and does not mutate workspace sources. `reviewed-change-set` stages a workspace review and requires approval before apply. `artifact-or-reviewed-change-set` classifies outputs as artifacts, workspace changes, or both during import. `external-writeback` requires its own required feature, permission decision, audit, and review policy. Selected Gateway MCP hosting is already governed by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) and is not slot external-writeback.
 
 ### Provider And Credential Rules
 
 Provider access should be included in the session-static envelope when the long-running worker process needs process-visible placeholders or provider-derived network policy.
 
-Gateway-mediated capabilities can remain turn-dynamic after a future AEP explicitly enables worker-local `capability.local`; Sandbox Integration projects them through `/capabilities/*` with a capability credential distinct from inference and worker control. Worker-local `inference.local` remains turn-dynamic through `/inference/*` with its own inference credential. Current AEP capability routes remain disabled; the accepted stock `ForwardTcp`/`RelayStream` pair and nested standard HTTP/2 target are implemented for the current worker-control and inference bindings without enabling capability.
+The currently admitted MCP plane uses `capability.local` through `/capabilities/*` with authority distinct from inference and control. Worker-local `inference.local` remains turn-dynamic through `/inference/*` with its own inference credential. Selected MCP supply enables the managed capability routes that [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns. That path is not a host-side mount. Host mounts and unsupported data strategies stay with their source and materialization owners. The accepted stock `ForwardTcp`/`RelayStream` pair and nested standard HTTP/2 target remain the current worker-control and inference bindings.
 
 If a provider is attached after sandbox start, NanoCore MUST distinguish future policy availability from live process environment availability.
 
@@ -481,24 +335,18 @@ Creation, update, termination, retry, recovery, conflict, missing, stale, restar
 
 ## Accepted Design
 
-The first implementation should add a planner in NanoCore that takes resolved AEP workspace input declarations and backend capability declarations and returns:
+The planner in `packages/config-schema/src/session-workspace.ts` takes resolved AEP workspace input declarations and backend capability declarations and returns `SessionWorkspaceMaterializationPlan`. That admitted artifact contains the compatibility key, the reuse or replacement decision, the layout, and the materialization that binds each input to a slot.
 
-- a desired `SessionWorkspaceLayout`
-- a `SessionCompatibilityKey`
-- a decision to reuse an existing session or create a replacement session
-- a `TurnWorkspaceMaterialization` plan that binds each input to a slot
-- a collection plan for outputs, transcripts, evidence, and workspace changes
+The planner is backend-portable.
 
-The planner should be backend-portable.
-
-Backend adapters should implement only transport and enforcement effects:
+Backend adapters implement only transport and enforcement effects:
 
 - local container adapter: bind, copy, local checkout, local staging, and direct output collection
 - OpenShell adapter: Sandbox create, credential injection, policy materialization, upload, download, exec, log collection, and evidence import
 - remote container adapter: tar, rsync, remote checkout, object-store staging, backend upload, output download, and recovery handle persistence
 - managed sandbox adapter: provider file APIs and provider workspace manifest APIs when supported
 
-Source adapters should normalize source-specific listing and digest behavior:
+Source adapters normalize source-specific listing and digest behavior:
 
 - Git adapter resolves refs and base commits
 - S3-compatible adapter covers AWS S3, R2, and compatible endpoints
@@ -507,114 +355,27 @@ Source adapters should normalize source-specific listing and digest behavior:
 - generated adapter writes task and helper files from NanoCore records
 - artifact adapter resolves prior artifact bytes with lineage
 
-## Current Implementation Projection
+## Acceptance
 
-The current implementation has a shared schema and planner slice in `@openkit/config-schema`. `packages/config-schema/src/session-workspace.ts` defines `SessionWorkspaceLayout`, `WorkspaceSlot`, `TurnWorkspaceMaterialization`, and `SessionCompatibilityKey` schemas; creates the default reusable `/workspace` and `/openkit` slot skeleton; computes a strict SHA-256 `SessionCompatibilityKey` from the session-static envelope without package lineage ids; maps workspace inputs into declared slots; and returns strict V1 reuse, replacement, or create decisions. The schema rejects duplicate slots, unsafe worker paths outside the public worker envelope, and writable slots that contain read-only slots. NanoCore AEP resolution projects this planner output into `extensions.openkit.sessionWorkspace` on resolved OpenShell packages so the NanoHost materializer reads the layout, compatibility key, turn materialization, and decision from the same package snapshot. Governed-worker session records persist this compatibility key so the scheduler rejects missing or mismatched reuse candidates before selecting a fresh session. The pure `workerSessionInputPaths` projection in `@openkit/worker-protocol` supplies the AgentSession-private AEP and Context roots. The exact generated Context Package inventory maps to the `context` identity and one fixed import per regular file after session admission and package-config; workspace materialization records preserve the backend-reported slot path as `materializedRootRef`, and path-only outputs return through the fixed verified export handoff. NanoCore App API and remote MCP retain their read-only materialization-record projections. Broader source adapters and superset-compatible reuse remain outside this implemented slice and keep the specification Partial.
+A long-lived session runs at least two Turns with different input contents in the same slot without remounting.
+A Turn that needs a new static provider or path envelope creates a replacement session.
+The replacement states that reason.
 
-Current AEP docs classify image, base command, initial process environment, static filesystem mounts, user/group identity, and working directory as static fields, and the session workspace planner now makes the strict compatibility key the center of V1 reuse. The durable scheduler contains broader inactive candidate shapes, but the accepted product path uses only an exact live reconnect or a fresh authorized session; resume and snapshot candidates do not expand this contract.
+## Implementation
 
-The current workspace synchronization implementation retains worker Git evidence, persists `BackendWorkspaceHandle`, `WorkerOutputManifest`, `WorkspaceApplyPlan`, `WorkspaceReconciliationRecord`, and `WorkspaceQuarantineRecord` rows as first-class records, and promotes product-safe evidence through automatic general `EvidenceBundle` producers. The redundant `WorkspaceSyncEvidenceBundle` record family has been removed without changing session-static layout or materialization semantics owned by this spec. The current production path is NanoHost-only: exact package-config and generated Context Package files use fixed imports, and declared path-only outputs use NanoHost-produced, NanoCore-verified exports. Worker Git fetch and checkout run on the launch path, and baseline acceptance runs before the first `turn.start`. For a new Git checkout, the Sandbox client reports HEAD and tree through `session.open`; NanoCore compares HEAD to the pinned commit before atomically accepting the outside scan pair. No host repository is read for baseline verification. Git-source captures retain work evidence without a host review or apply prerequisite; the non-Git review/apply path remains separate, and staging a captured candidate as a change set is not wired (issue #495). The planner returns no collection plan, and the local container, remote container, and managed sandbox adapters are unimplemented. External provider and object-store adapters, superset-compatible reuse, and broader backend-native mount support remain unimplemented or deferred as stated by their owners.
+- `packages/config-schema/src/`
+- `apps/nanocore/src/runtime/`
+- `apps/nanocore/src/config/`
 
-## Alternatives Considered
+## Implementation Gaps
 
-### Treat Every Input As A Dynamic Mount
+- A collection plan for outputs, transcripts, evidence, and workspace changes is returned with the materialization plan - the admitted SessionWorkspaceMaterializationPlan has no collection member - #777
+- A captured candidate is staged as a change set - On main, the staging helper has no production caller - #495
+- Local and remote container materialization bind, copy, tar, or rsync into declared slots - On main, product execution is NanoHost and OpenShell only and those adapters are not selectable - #777
+- A leased read-only backend subpath is mounted host-side - On main, that mount is not implemented - #272
+- A managed-sandbox adapter uses the provider file and workspace manifest APIs - On main, product execution admits OpenShell metadata planning only - #777
+- S3, R2, GCS, Azure, and Box source adapters normalize listing and digest evidence - On main, a work slot admits credential-free Git only - #777
 
-Rejected.
+## Decisions
 
-This sounds uniform, but it fights backends whose mount set is static after sandbox start and makes reusable sessions fragile. It also turns source differences into backend differences, causing every backend to understand every source kind.
-
-### Restart A Sandbox For Every Turn
-
-Rejected as the default.
-
-It is simple and maximally least-privilege, but it loses warm runtime value, increases latency and resource churn, and does not match the product goal of reusable AgentSessions. It remains the safe fallback when compatibility fails.
-
-### Give Every AgentSession A Very Broad Static Envelope
-
-Rejected.
-
-A broad envelope would maximize reuse but weaken least privilege and blur audit. The static envelope must be policy-approved, explainable, and bounded by workspace, user, provider, vault, permission, and sandbox policy.
-
-### Make OpenShell The Canonical Layout Model
-
-Rejected.
-
-OpenShell is the first serious backend and should influence the design, but OpenKit records must remain canonical and backend-portable. OpenShell paths, provider records, sandbox IDs, upload handles, and policy YAML stay as derived materialization output or evidence.
-
-## Consequences
-
-- AgentSession reuse becomes a deliberate compatibility decision instead of an accidental reuse of a warm runtime.
-- Long-lived sessions can handle many turns by filling stable slots instead of remounting filesystems.
-- Backends with static filesystem and process-environment constraints become first-class rather than special cases.
-- Object-store and provider-file inputs can start with staged sync and later add native mounts without changing manifest semantics.
-- The AEP must carry more explicit session-static layout information, and workspace synchronization must carry more explicit turn-dynamic materialization records.
-- Users may see more honest diagnostics: "new session required because provider placeholder was not present at process start" or "new session required because requested input cannot bind to any declared slot."
-
-## Rollout / Migration Plan
-
-1. Add schema definitions for `SessionWorkspaceLayout`, `WorkspaceSlot`, `TurnWorkspaceMaterialization`, and `SessionCompatibilityKey` in the package that owns AEP and workspace synchronization schemas.
-2. Update AEP resolution to produce a default reusable layout for container workers.
-3. Update session selection to compute compatibility keys and choose reuse, replacement, or blocked diagnostics before launch.
-4. Update local container materialization to bind or copy into declared slots.
-5. Update OpenShell materialization to create or verify the directory skeleton, then upload, checkout, sync, and collect through declared slots.
-6. Update remote container materialization to use tar or rsync into declared slots with digest verification.
-7. Add S3-compatible staged sync for AWS S3 and R2, then add exact object-list support for `s3-files`.
-8. Add GCS, Azure Blob, and Box provider-file sync after the S3-compatible path is stable.
-9. Add native FUSE or backend mount support only after recovery, digest evidence, read-only enforcement, and audit behavior are explicit.
-
-No legacy preservation is required for existing internal materialization shapes.
-
-## Testing Strategy / Acceptance Criteria
-
-- Schema tests accept valid layouts, slots, compatibility keys, and turn materialization records.
-- Schema tests reject overlapping slots, writable parents of read-only children, path traversal, raw host paths in public records, unsupported source kinds, unsupported materialization modes, and unsupported required features.
-- Planner tests prove that a compatible turn reuses a session and an incompatible turn selects replacement or fails closed.
-- Planner tests prove that turn payload digests do not affect `SessionCompatibilityKey`, while static layout, provider envelope, working directory, runtime image, and policy digest do affect it.
-- Local container tests prove workspace-relative files and directories bind or copy into slots and that collected outputs become artifacts or staged change sets.
-- Remote container tests prove tar or rsync materialization preserves digests and recovers from interrupted upload or download using NanoCore records.
-- NanoHost cross-host tests prove the sorted Context Package inventory becomes one verified regular-file import per entry before bridge open, output declarations remain path-only, NanoHost supplies actual export digest and length after accepted `final_status`, and NanoCore verifies and atomically stages each file before canonical collection.
-- Git tests prove exact remote-source clone or fetch into a worktree slot, local worker Git work, inspection capture where retained by its owner, and Gateway branch, file, and pull-request output without host apply. Non-Git approved-apply tests stay with their owner.
-- A new empty slot completes first initialization during `session.open`, before the native runtime starts, and completes baseline acceptance before the first `turn.start`. A retained slot is not re-baselined. For a Git source the expected identity is the commit id the data source pins: the Sandbox Git client fetches and checks out that commit, reports HEAD and tree, and NanoCore compares the commit id and reads no host repository. For another source the expected tree is the tree derived from the materialized bytes under the baseline inclusion [Workspace Synchronization](20260703-workspace_synchronization.md) defines. A source whose expected identity cannot be derived fails closed, and that AgentSession receives no first Turn.
-- A terminal Git fetch refusal during first initialization is reported through `session.open` without starting the native runtime, requesting baseline collection, or dispatching the first `turn.start`. When its existing bounded explanation is emitted, the exact open result admits it and the initiating Turn retains it under [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation); no fetch or Turn is replayed to recover diagnostics.
-- S3-compatible tests prove S3 and R2 use one adapter path with provider-specific endpoints and no raw credentials in records.
-- OpenShell tests prove provider attach limitations are represented honestly: a new provider needed by the already-running main process requires process replacement or session replacement.
-- Redaction tests prove backend handles, upload IDs, object-store temporary keys, and provider credentials do not leak into App API, end-user CLI, Web UI, audit summaries, or diagnostics.
-
-Acceptance requires that a long-lived session can run at least two turns with different input contents in the same slot without remounting, and that a turn requiring a new static provider or path envelope creates a replacement session with clear diagnostics.
-
-## Risks & Mitigations
-
-- Risk: static slot envelopes become too broad. Mitigation: require policy approval, access classification, and compatibility-key audit for the envelope.
-- Risk: slot contents become hidden workspace truth. Mitigation: all source-of-truth writes go through output manifests, change sets, staged review, and apply results.
-- Risk: OpenShell limitations are hidden behind optimistic reuse. Mitigation: explicit static-versus-dynamic classification and fail-closed session replacement when a live process cannot receive a change.
-- Risk: object-store sync becomes expensive for large datasets. Mitigation: support exact object manifests, digest caching, rsync-like deltas where available, and future gateway-read or FUSE only after evidence and recovery are designed.
-- Risk: remote recovery is ambiguous. Mitigation: persist backend handles, upload/download manifests, content digests, and evidence bundle ids before and after every transport phase.
-
-## Resolved Decisions
-
-Previously open questions are resolved by accepted V1 defaults: `SessionCompatibilityKey` matching is strict equality in V1, with superset-compatible reuse deferred and without a current owner; default reusable layouts use a shared base layout with workspace-policy overlays and agent-family-specific variants only when static requirements diverge; object-store inputs above 256 MiB or 10,000 objects switch to future gateway-read or native mount strategies once those modes exist; dependency cache reuse is disabled until cache poisoning policy, invalidation, and audit semantics are explicit.
-
-## Deferred / Future Work
-
-- Native FUSE or backend object-store mounts for S3, R2, GCS, Azure Blob, and Box after read-only enforcement, cache invalidation, recovery, and audit are designed.
-- External writeback to S3, R2, GCS, Azure Blob, Box, and other domain systems under explicit required features and approval policy. Selected Gateway MCP hosting is already governed by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) and is not slot external-writeback.
-- Snapshot, restore, fork, clone, and rollback record contracts have no current owner and remain future and non-authorizing. This specification does not define their layout or slot mechanics.
-- Cross-session cache reuse and cache poisoning controls.
-- A UI or bundled-CLI diagnostic surface that explains why a session was reused, replaced, stale, degraded, or blocked.
-
-## Links
-
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260703-workspace_synchronization.md`
-- `docs/specs/20260703-agent_manifest_aep_resolution.md`
-- `docs/specs/20260704-workspace_data_source_catalog.md`
-- `docs/specs/20260703-openshell_mechanism_internalization.md`
-- `docs/specs/20260703-storage_layout_record_ownership.md`
-- `docs/specs/20260703-vault_secret_injection.md`
-- `docs/specs/20260703-policy_enforcement_mapping.md`
-- `docs/specs/20260801-nanohost_workspace_data_boundary.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
-- `docs/core/agent-session.md`
-- `docs/core/sandbox.md`
-- `docs/core/storage.md`
-- External reference: NVIDIA OpenShell Providers v2, `https://docs.nvidia.com/openshell/latest/sandboxes/providers-v2`.
+- [Native environment managed outside the Sandbox](../decisions/20260930-native_environment_managed_outside_the_sandbox.md)

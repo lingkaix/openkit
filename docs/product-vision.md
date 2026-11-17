@@ -129,13 +129,7 @@ UI 应围绕 conversation-first 体验展开，形式上接近 `ChatGPT` 一类�
 
 ### 6.1 Agent 编排
 
-Core 的首要职责是 orchestrate `UI -> Core -> Agent` 的 agent 工作链路。
-
-当前阶段 orchestration 逻辑可以硬编码，由 Core 按固定规则选择 agent 和分发任务。
-
-演进方向是让 Core 具备动态规划能力，根据任务特征选择合适的 `agent config pack` 和 agent，而不是长期依赖预设路由。
-
-`agent config pack` 可以包含 instructions、context、skills 等组合，类似 agent 动态加载 skill 的方式。
+Core 为每个任务选择合适的 Agent 和 setup。用户给出任务，Core 完成选择。[Agent Supply](./core/agent-supply.md) 与 [Work Model](./core/work-model.md) 拥有这条边界。
 
 ### 6.2 多渠道 Communication Gateway
 
@@ -154,51 +148,19 @@ Core 统一处理来自不同 channels 的消息，并将其转化为内部任�
 
 ### 6.3 轻量对话与任务执行
 
-Core 本身可以具备简短对话能力，支持类似 ChatGPT 的 quick answer。
-
-Core 也可以完成轻量任务，参考 `nanobot` 的 ultra-lightweight posture。
-
-但 Core 不加载额外工具，不承担 heavy execution，复杂任务一律交给 agent 完成。
+Core 可以快速回答，也可以完成轻量任务，但不承担 heavy execution；复杂任务一律交给 Agents。[Architecture](./core/architecture.md) 与 [Mediation](./core/mediation.md) 拥有这条边界。
 
 ### 6.4 专用 Internal Agents
 
-随着系统成熟，Core 内部可以实现专门的轻量 agents 来承担特定 coordination 职责。
-
-- `Knowledge Manager`：管理 workspace knowledge、source-traceable retrieval、knowledge proposals 和 context material preparation。
-- `Task Evaluator`：对 agent 产出进行质量评估，决定是否需要 second pass、revision 或 escalation。
-- `Workflow Coordinator`：根据任务类型、历史效果和可用 runtime 规划 workflow mode、worker selection、context assembly 与 handoff pattern。
-
-这些 internal agents 仍受 `Core Boundary` 约束，属于 coordination plane，不承担 heavy execution。
+Core 有轻量的内部角色，用于协调。这些角色属于协调面，不承担重执行。[Architecture](./core/architecture.md) 拥有角色表。
 
 ### 6.5 Unified Proxy
 
-Core 提供统一的外部资源访问出口，参考 `Bifrost` 的 `AI Gateway` 模式。
-
-Unified proxy 覆盖以下能力。
-
-- `LLM Provider Proxy`：统一接口访问多家 LLM providers，支持 fallback 和 load balancing。
-- `MCP Server Proxy`：代理 agent 对 MCP servers 的访问。
-- `Third-party Resource Proxy`：代理对外部 APIs 和服务的访问。
-- `Network Proxy`：作为 agents 的统一网络出口。
-
-Proxy 的核心价值如下。
-
-- **Auth proxy**：让 agent 在不把 credentials 放入 prompts 或 stable product records 的情况下访问 authenticated resources；agent 的可见范围取决于经过批准的 injection path。
-- **Access control**：对 agent 可访问的外部资源进行限制和审批。
-- **Load balancing & rate limiting**：在多 agent 并发场景下管理外部资源访问压力。
-- **Audit & logging**：所有外部资源访问都经过 proxy，天然具备访问记录，支持 usage statistics、cost tracking 和 security audit。
+Core 为模型、工具、外部 API 和网络提供统一的受治理访问出口。Agents 可以在不把 credentials 放入 prompts 或 stable product records 的情况下访问 authenticated resources；凭证可见范围取决于获准的 injection path。Core 对 Agents 可访问的外部资源实施限制和审批，并管理多 Agent 并发时的外部资源访问压力。所有外部资源访问都经过这一出口并保留访问记录，支持 usage statistics、cost tracking 和 security audit。[Mediation](./core/mediation.md) 拥有这条边界。
 
 ### 6.6 Secret Vault
 
-`Secret Vault` 是专门管理终端用户凭证的安全组件，参考 `Claude Managed Agents Vaults`。
-
-基本工作方式如下。
-
-- 用户将访问外部服务的 secrets 存入 vault，例如 Linear API Key、GitHub Token 等。
-- 每次启动 AgentSession 时，传入对应的 `vault_id`。
-- Agent 调用外部工具时，由 proxy 层自动注入凭证。
-
-Credentials 必须保持在 agent prompts、context packages 和 stable product records 之外。每条获准 injection path 的 visibility、containment、redaction 与 audit contract 由 [Vault](./core/vault.md) 所有。
+`Secret Vault` 安全管理终端用户凭证。Credentials 必须保持在 agent prompts、context packages 和 stable product records 之外。[Vault](./core/vault.md) 拥有每条获准 injection path 的 visibility、containment、redaction 与 audit 边界。
 
 ### 6.7 Knowledge Base / Notebook
 
@@ -231,69 +193,15 @@ Kernel 持有核心客户数据，用户通过 `Generative UI` 查询和管理�
 
 ## 7. Knowledge 愿景
 
-Knowledge 是 OpenKit 长期价值的重要来源，但不应该在 `v1` 阶段做成过于激进、自动推断过多的复杂子系统。
+Knowledge 是 OpenKit 长期价值的重要来源。路线是先检索，再综合。阶段安排由 [路线图](./roadmap.md) 所有。
 
-更稳妥的路线是分阶段推进，先把 knowledge 当作 `retrieval problem`，再逐步扩展成 `synthesis problem`。
+### 7.1 先检索
 
-### 7.1 V1: Retrieval First
+Core 先把 Knowledge 当作检索与治理问题。这一阶段不应成为过于激进、自动推断过多的复杂子系统；应优先准确保存已有事实与明确知识，在任务需要时取回相关 context，避免注入过多无关或低可信度的信息。在检索优先阶段，应尽量避免自动生成大量长期偏好、把一次性行为推断为稳定习惯、对 user personality 和 working style 作高自信的自动总结，以及在证据不足时覆盖或改写已有 knowledge。[Knowledge](./core/knowledge.md) 拥有这条边界。
 
-`v1` 的核心原则如下。
+### 7.2 再综合
 
-- `knowledge selection, not knowledge generation by default`。
-- `history first, interpretation later`。
-- `explicit knowledge over speculative knowledge`。
-
-也就是说，Core 在初期主要负责以下工作。
-
-- 保存 `conversation history`。
-- 保存 `task history`。
-- 保存少量明确、结构化、低歧义的 knowledge。
-- 在任务启动时为当前 task / agent 选择最相关的 context。
-
-`v1` knowledge 可以优先限定在以下范围。
-
-- `user preferences`：例如输出风格、语言偏好、是否偏好 concise answer、是否希望先设计后实现。
-- `project context`：例如工作空间说明、关键约束、固定工具链、repo-level guidance。
-- `task summaries`：例如已完成任务的简短摘要、产物位置、关键决策。
-
-这一阶段的重点不是“自动理解用户的一切”，而是准确保存已有事实，在正确时机取回正确 context，并避免向 agent 注入过多无关或低可信度的信息。
-
-`v1` 应尽量避免以下行为。
-
-- 自动生成大量长期偏好。
-- 把一次性行为推断为稳定习惯。
-- 对 user personality 和 working style 做高自信的自动总结。
-- 在没有足够证据时覆盖或改写已有 knowledge。
-
-换句话说，`v1 treats knowledge as a retrieval and governance problem, not a synthesis-only problem`。
-
-### 7.2 V2: Knowledge-Driven Improvement
-
-在 `task history`、agent orchestration 和 retrieval 质量稳定之后，系统再进入 `v2`，逐步引入更接近长期上下文系统的能力。
-
-`v2` 可以开始支持以下能力。
-
-- 从历史任务中提取 `task summaries`。
-- 从多次重复信号中提取较稳定的 `user preferences`。
-- 识别某类任务更适合的 agent、skills 和 handoff pattern。
-- 基于历史结果优化默认 context injection 和 agent configuration。
-
-这一阶段的重点不只是保存 history，而是把 history 转化为可复用的工作知识。
-
-- 哪类 agent 更适合哪类任务。
-- 哪些 prompt / skill 组合更容易产出高质量结果。
-- 哪些 context 应该默认带入。
-- 哪些偏好已经足够稳定，可以视为长期 knowledge。
-
-`v2` 的 knowledge generation 必须带有明确控制机制。
-
-- `confidence`。
-- `freshness`。
-- `source traceability`。
-- `conflict handling`。
-- `human override`。
-
-系统不应把任何自动总结都视为事实，而应把它视为带来源和置信度的工作假设。
+检索稳定之后，再逐步引入综合，将 history 转化为可复用的工作知识。综合必须带有来源、置信度、时效性、冲突处理和人工覆盖这些明确控制。系统不应把任何自动总结都视为事实，而应把它视为带来源和置信度的工作假设。
 
 ## 8. Storage 与 Deployment
 
@@ -315,9 +223,9 @@ OpenKit 应让 durable product truth 保持 ownership-scoped、inspectable 和 p
 
 ### 9.1 最低用户管理与配置负担
 
-OpenKit 必须把用户对系统的管理与配置负担降到最低。默认体验不应要求用户自行配置或维护 Workspace、Worker Agent 或新的 sandbox image，也不应要求用户理解 AEP、Policy 或运行中治理的内部机制。
+OpenKit 必须把用户对系统的管理与配置负担降到最低。默认体验不应要求用户自行配置或维护 Workspace、Worker Agent 或新的 sandbox image，也不应要求用户理解系统内部的治理机制。
 
-NanoCore 内置的 agent 功能应在 user authorization 与 Core governance 边界内完成这些工作，包括生成和更新 AEP 与 Policy、选择和维护 Worker Agent 与 sandbox image，以及执行 in-the-middle 的监控、管理和更新。用户主要提供目标、约束、授权和必须由 human 作出的判断；只有系统无法安全决定，或需要扩大权限与 external effect 时，才要求用户介入。
+Core 及其内置 Agents 应在用户授权与 Core 治理边界内完成日常配置、维护、监控、管理和更新。用户主要提供目标、约束、授权和必须由 human 作出的判断；只有系统无法安全决定，或需要扩大权限与外部效果时，才要求用户介入。[Doctrine](./core/doctrine.md) 与 [Policy](./core/policy.md) 拥有这条边界。
 
 系统能够自动完成的管理工作，不应退化成默认的 `Config interface` 负担。
 
@@ -332,7 +240,7 @@ OpenKit 负责汇总和粘合用户完成工作所需的 components、data、too
 ### 9.3 其他原则
 
 - `Minimal implementation first`：先做最小可用实现，不在一开始追求完整平台化。
-- `Clear responsibility boundaries`：遵循 Foundation 与 Architecture，不把一个 component 扩张成另一个 product 或 runtime。
+- `Clear responsibility boundaries`：遵循 [Doctrine](./core/doctrine.md) 与 Architecture，不把一个 component 扩张成另一个 product 或 runtime。
 - `Reuse over reinvention`：优先封装 existing runtimes，而不是自研新 runtime。
 - `Speed matters`：系统需要快速响应，至少支持 quick answer 和基础工具调用。
 - `Small codebase`：控制复杂度，保持实现和维护成本可控。

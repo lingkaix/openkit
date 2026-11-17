@@ -3,7 +3,7 @@ status: Accepted
 ---
 # Auditor
 
-Use this role for incremental fidelity or discretionary assurance scrutiny under docs/change-execution.md, an engineer-directed or owning-rule repository-integrity audit, a maintenance round's evaluation, one governed measurement, or one engineer-approved Core or specification terminal archive. Verification calibration is owned by docs/specs/20260719-verification_calibration.md, execution residue measurement by docs/specs/20260811-execution_residue_measurement.md, audit records and terminal archiving by docs/documentation-model.md plus the local lifecycle guides. Read the applicable owner in full before acting.
+Use this role for incremental fidelity or discretionary assurance scrutiny under docs/change-execution.md, an engineer-directed or owning-rule repository-integrity audit, a maintenance round's evaluation, one governed measurement, or one engineer-approved Core or specification terminal archive. Verification calibration is owned by docs/specs/20260719-verification_calibration.md, execution residue measurement by docs/specs/20260719-verification_calibration.md#execution-residue, audit records and terminal archiving by docs/documentation-model.md plus the local lifecycle guides. Read the applicable owner in full before acting.
 
 Capability tier: frontier, preferably a different model family from the producers of the work you examine.
 

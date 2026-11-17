@@ -8,38 +8,20 @@ aspect: contract-evolution
 
 # Product Integrity Check
 
-## Owns
+This specification owns one read-only Workspace integrity check and the two invariant names in the first set.
 
-This specification owns one read-only Workspace integrity check. It owns the operation `integrity.workspace.check`, the closed result values, and the two invariant names in the first set. It owns how those names read retained records and how they report `pass`, `fail`, or `unknown`. It does not own the product rules those names apply.
+## Scope
 
-## Does Not Own
+Owns `integrity.workspace.check`, the closed result values, and how `usage-attribution` and `terminal-turn-consistency` read retained records.
 
-The Model Context Protocol tool-call rule stays in [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md). The large language model usage rule stays in [Capability Usage Gateway Foundation](20260704-capability_usage_gateway_foundation.md) and [Audit, Usage, and Evidence Records](20260703-audit_usage_evidence_records.md). Closeout, receipts, and `recovery_required` stay in [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md). [Operation Definition](20261002-operation_definition.md) owns declaration, invocation, and projection. [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) owns the access-right registry. [Core Policy](../core/policy.md) owns administrator eligibility. [NanoCore Bootstrap and Readiness](20260704-nanocore_bootstrap_readiness.md) owns boot and readiness. [Knowledge Manager Internal Agent Runtime](20260704-knowledge_manager_internal_agent_runtime.md) owns `knowledge.health.check`. [L6 Story Acceptance](20260529-l6_story_acceptance.md) owns the story, the judge, and the evidence bundle. [Operational Telemetry Standardization](20260731-operational_telemetry_standardization.md) owns operational telemetry. A deployment-scoped check is out of scope until a present invariant needs it.
+Does not own:
+- The Model Context Protocol tool-call rule. [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns it.
+- Usage measurement. [Capability Usage Gateway Foundation](20260703-audit_usage_evidence_records.md#capability-usage) and [Audit, Usage, and Evidence Records](20260703-audit_usage_evidence_records.md) own it.
+- Closeout and `recovery_required`. [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md) owns them.
+- Operation declaration and projection. [Operation Definition](20261002-operation_definition.md) owns them.
+- `knowledge.health.check`. [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md) owns it.
 
-## Core References
-
-- [Doctrine](../core/doctrine.md)
-- [Contract Evolution](../core/contract-evolution.md)
-- [Policy](../core/policy.md)
-- [Evidence](../core/evidence.md)
-- [Agent Capability](../core/mediation.md)
-- [Storage](../core/storage.md)
-
-## Summary
-
-An administrator calls one Workspace operation. The operation evaluates `usage-attribution`, `terminal-turn-consistency`, or both. Each name reports `pass`, `fail`, or `unknown`. `pass` means that name finished its predicate over its declared retained-record universe. `pass` does not prove that a story ran, and it does not prove that the deployment is healthy. `fail` overrides `unknown` in the combined result.
-
-## Goals / Non-goals
-
-- Give an agent one Workspace call for the two record predicates below.
-- Keep HTTP and the remote Model Context Protocol projection on one declaration.
-- Do not repair records, and do not store an integrity result.
-- Do not gate boot or readiness, and do not read operational telemetry.
-- Do not contact a provider, a Git host, or any other external system.
-
-## Background
-
-The engineer accepted this check on 2026-10-12. [Product Integrity Check](../decisions/20261012-product_integrity_check.md) records that acceptance. Stories 3 and 7 need a check of retained usage links. Story 10 needs a check that published terminal Turn facts agree. The existing `knowledge.health.check` operation answers a different Knowledge question.
+Core: [Contract Evolution](../core/contract-evolution.md), [Policy](../core/policy.md), [Evidence](../core/evidence.md), [Storage](../core/storage.md).
 
 ## Decision
 
@@ -117,7 +99,7 @@ Tool-call fixtures:
 
 The model-call predicate reads retained calls whose family is `llm`. One logical invocation is one `CapabilityCall`. A same-member retry stays on that call and does not open a second call. An unavailable route member creates no second `CapabilityCall` and no `UsageRecord`. One call may link several `UsageRecord` rows for distinct measurements.
 
-The equivalent-measurement comparison is a projection of the usage owner's existing comparison. Two rows match when they agree on capability-call id, category, unit, quantity, model id, provider reference, source, and canonical source ids. Record id and recording time are not comparison fields. Two matching rows violate the predicate. Two rows that differ only in source do not match. Matching route entries cite that one retained row.
+The equivalent-measurement comparison is a projection of the usage owner's existing comparison. Two rows match when they agree on capability-call id, category, unit, quantity, model id, provider reference, provider model, source, and canonical source ids. The usage owner's current comparison is that projection. Record id and recording time are not comparison fields. Two matching rows violate the predicate. Two rows that differ only in source do not match. Matching route entries cite that one retained row.
 
 The check reads the stored route document before any lossy schema parse or public projection. An unavailable entry that carries any usage identifier is a violation, including an identifier a lossy schema would drop. Each measurement reference in an attempt entry must resolve to a retained `UsageRecord` linked to the same `CapabilityCall`. On a complete ordered read, an unresolved reference is a violation. `recordRefs` then lists only the existing `CapabilityCall` id. A reference that resolves to another call's row is a violation. `recordRefs` then lists the referencing `CapabilityCall` id and that existing `UsageRecord` id. The check does not invent an identifier. The check reads no raw prompt, provider response, or credential.
 
@@ -131,7 +113,7 @@ Model-call fixtures:
 - Positive. No route-lineage document is stored. The absence is lawful.
 - Positive. Two attempt entries cite one `UsageRecord` identifier. A second identical measurement is not stored. The call is consistent.
 - Positive. Two `UsageRecord` rows for one call differ only in source. They are not equivalent duplicates.
-- Violating. Two `UsageRecord` rows match on capability-call id, category, unit, quantity, model id, provider reference, source, and canonical source ids, and they differ in record id and recording time. The predicate is violated. `recordRefs` lists both `UsageRecord` ids.
+- Violating. Two `UsageRecord` rows match on capability-call id, category, unit, quantity, model id, provider reference, provider model, source, and canonical source ids, and they differ in record id and recording time. The predicate is violated. `recordRefs` lists both `UsageRecord` ids.
 - Violating. Two `llm` calls share one Workspace, request id, family, and operation. The predicate is violated.
 - Violating. The check reads the stored route document before schema parse. That stored unavailable entry contains a usage identifier. The predicate is violated.
 - Violating. The check reads the stored attempt entry before projection. Its measurement reference does not resolve to a retained `UsageRecord`. The result is `fail` with reason `violated`. `recordRefs` lists only that `CapabilityCall` id.
@@ -207,58 +189,17 @@ The operation is read-only for protected product state. [Policy Enforcement Mapp
 
 ### Acceptance Predicates
 
-A non-administrator receives the existing denial and no `results` entry. An invalid request produces no evaluation and no `pass`. A successful response contains each selected name once, with HTTP 200 and a JSON body. `outcome` follows the fold in this specification. The positive tool-call fixture and an empty model-call universe make `usage-attribution` `pass` when that name is selected. The zero-row `interrupted` tool-call fixture makes that name `fail` with reason `violated`. An unreadable capability store makes that name `unknown` with reason `unreadable`. Each closed mapping row makes `terminal-turn-consistency` `pass`. The conflicting `length` fixture makes that name `fail` with reason `violated`. The cleared-checkpoint fixture makes that name `pass`. A contradictory published tuple makes that name `fail` even when the checkpoint is preserved as `recovery_required`. When one selected name is `fail` and the other is `unknown`, `outcome` is `fail`. When one selected name is `unknown` and the other is `pass`, `outcome` is `unknown`. The inspected product records are unchanged, apart from incidental invocation evidence. The call does not contact an external system. The call does not read operational telemetry. The call does not read or change boot readiness. A `knowledge.health.check` report of `warn` does not by itself make this `outcome` `fail`. Product-owner tests at L1 to L3 build the fixtures in this specification. An L6 story names an invariant and does not reimplement the predicate.
+A non-administrator receives the existing denial and no `results` entry. An invalid request produces no evaluation and no `pass`. A successful response contains each selected name once, with HTTP 200 and a JSON body. `outcome` follows the fold in this specification. The positive tool-call fixture and an empty model-call universe make `usage-attribution` `pass` when that name is selected. The zero-row `interrupted` tool-call fixture makes that name `fail` with reason `violated`. An unreadable capability store makes that name `unknown` with reason `unreadable`. Each closed mapping row makes `terminal-turn-consistency` `pass`. The conflicting `length` fixture makes that name `fail` with reason `violated`. The cleared-checkpoint fixture makes that name `pass`. A contradictory published tuple makes that name `fail` even when the checkpoint is preserved as `recovery_required`. When one selected name is `fail` and the other is `unknown`, `outcome` is `fail`. When one selected name is `unknown` and the other is `pass`, `outcome` is `unknown`. The inspected product records are unchanged, apart from incidental invocation evidence. The call does not contact an external system. The call does not read operational telemetry. The call does not read or change boot readiness. A `knowledge.health.check` report of `warn` does not by itself make this `outcome` `fail`. Product-owner tests at L1 to L3 build the fixtures in this specification. An L6 story names an invariant and does not reimplement the predicate. Ship the operation with its L1 to L3 fixture tests in the same change.
 
-## Proposed Design
+## Implementation
 
-One family table declares `integrity.workspace.check` with binding JSON, success status 200, `mutating` false, and `returnsOneTimeSecret` false. One transport-free handler evaluates the selected names. The handler calls the existing record reads and stops when a bound is reached. The durable event history uses the existing complete read seam without writes or repair. It does not copy a second closeout classifier or a second usage writer. The operation composition includes the family table once.
+- `apps/nanocore/src/storage/`
+- `packages/app-api-schemas/src/`
 
-## Current Implementation Projection
+## Implementation Gaps
 
-No implementation of `integrity.workspace.check` exists. The declaration should live in a browser-safe family module under the shared schema package. The join should live in NanoCore and should use the existing invocation seam. The JSON route, the Core Client method, the command-line catalog, and the remote Model Context Protocol tool are derived from that declaration. Those paths are projection, not the contract. The equivalent-measurement comparison is the existing `hasEquivalentUsageRecord` projection. The route document is the call's stored extensions, read before schema parse. The current `readWorkspaceTurnEvents` in `apps/nanocore/src/storage/workspace-file-records.ts` reads Turn events through `readNativeTurnEvents` from paged control-store rows and immutable content, not from a line-oriented event file, so it has no final-fragment repair to turn off. It has no bound option. The implementation adds an in-read bound option at that existing seam. `knowledge.health.check` remains the Knowledge health operation.
+- `integrity.workspace.check` evaluates `usage-attribution` and `terminal-turn-consistency` - no declaration, handler, or result schema exists - #229
 
-## Alternatives Considered
+## Decisions
 
-A new scope kind that means either deployment or Workspace. This specification uses one existing body Workspace selector instead. A stored check history. No consumer needs a history beyond the call response and the caller's own copy. A boot-time or readiness gate. Readiness already owns admission, and this check does not use it. A second derivation of the restart classifier. The reliability owner already has one classifier for online closeout, replay, and boot, so this specification compares published terminal facts only.
-
-## Consequences
-
-An administrator can call the operation as a normal remote Model Context Protocol tool. A Workspace member that is not an administrator is rejected. Stories 3 and 7 can name `usage-attribution`. Story 10 can name `terminal-turn-consistency`. Stories 1, 2, 4, 5, 6, 8, and 9 name neither invariant in this first set. `knowledge.health.check` remains callable.
-
-## Rollout / Migration Plan
-
-There is no retained-data migration. The operation is new. No existing operation id changes. Ship the operation with its L1 to L3 fixture tests in the same change. Story files name the invariants only when those files are written.
-
-When the integrity family exists, the implementation adds the following sentences to the Current Implementation Projection of [Operation Definition](20261002-operation_definition.md). A Current Implementation Projection describes code that exists.
-
-The integrity family composes one JSON operation, `integrity.workspace.check`, from a browser-safe family table, joins it through the existing invocation seam, and uses the body Workspace selector, administrator admission, and `audit.read`. The operation declares success status 200, binding JSON, `mutating` false, and `returnsOneTimeSecret` false.
-
-## Testing Strategy / Acceptance Criteria
-
-L1 tests cover the strict request, the closed status and reason pairs, rejection of an invalid pair, the unknown-name refusal, and the empty-array refusal. L2 tests cover the outcome fold, the denial of a Workspace member who is not an administrator, and the rule that a missing response is not `pass`. L3 tests build the positive, violating, order, and insufficient fixtures in this specification through the operation boundary. Those tests also show that the inspected records stay unchanged apart from incidental invocation evidence. The tests do not use operational telemetry or an external system as the oracle. The tests do not load an unbounded ledger and then apply the bound.
-
-## Risks & Mitigations
-
-A zero-row `interrupted` or `unknown` tool call can be mistaken for an unfinished read. Mitigation: on a complete ordered read that row is a violation, because contact cannot be excluded. A read that collects usage before the terminal status can manufacture a missing-row violation. Mitigation: the check reads the terminal status and the stored route document first. A lossy parse can hide a usage identifier on an unavailable route entry. Mitigation: the check reads the stored route document before schema parse or public projection. An unbounded ledger load can pass a bound only after the read finishes. Mitigation: the implementation enforces the bound while it reads. An incidental usage row could be mistaken for a tool call. Mitigation: the usage universe excludes this operation's own call.
-
-## Open Questions
-
-No blocking question remains. The engineer accepted the Workspace scope, the administrator admission rule, and the first invariant set. [Product Integrity Check](../decisions/20261012-product_integrity_check.md) records those decisions.
-
-## Deferred / Future Work
-
-A deployment-scoped operation waits until a present invariant needs it. No scheduled check is added. No repair operation is added. No retention detector is added ahead of the audit-usage owner's disposition.
-
-## Links
-
-- [Operation Definition](20261002-operation_definition.md)
-- [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md)
-- [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md)
-- [Capability Usage Gateway Foundation](20260704-capability_usage_gateway_foundation.md)
-- [Audit, Usage, and Evidence Records](20260703-audit_usage_evidence_records.md)
-- [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md)
-- [NanoCore Bootstrap and Readiness](20260704-nanocore_bootstrap_readiness.md)
-- [Knowledge Manager Internal Agent Runtime](20260704-knowledge_manager_internal_agent_runtime.md)
-- [L6 Story Acceptance](20260529-l6_story_acceptance.md)
-- [Contract Evolution](../core/contract-evolution.md)
 - [Product Integrity Check](../decisions/20261012-product_integrity_check.md)

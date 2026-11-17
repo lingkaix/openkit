@@ -1,6 +1,6 @@
 # Agent Roles
 
-This directory holds one harness-neutral contract per registered agent role. Each contract states the question the role answers, what it reads, what it may write, its capability tier, its leading words, and what it cannot accept. The Role Contracts section of docs/documentation-model.md owns the type; docs/change-execution.md owns which roles exist, when they are composed, and the position and function model.
+This directory holds one harness-neutral contract per registered agent role. Each contract states the question the role answers, what it reads, what it may write, its capability tier, and what it cannot accept. A role file that contains a leading-words line also states those words. The researcher states purpose, tier, and rules, and it has no leading words. The Role Contracts section of docs/documentation-model.md owns the type; docs/change-execution.md owns which roles exist, when they are composed, and the position and function model.
 
 ## Roles
 

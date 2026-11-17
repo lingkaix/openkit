@@ -2,633 +2,169 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: "2026-10-19"
 aspect: evidence
 ---
 # Audit, Usage, And Evidence Records
 
-## Normalized Startup Failure Evidence
+This specification is the single owner of the durable `AuditEvent`, `UsageRecord`, `EvidenceBundle`, and `RuntimeEvidence` record contracts, cross-record linkage with `CapabilityCall`, `PermissionDecision`, and `VaultUse`, the shared capability-call and usage ledger foundation, storage scope homing, product visibility and redaction boundaries, retention-class assignments, and the server-owned Workspace deletion closure.
 
-The [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation) owns the closed product-safe Git fetch explanation. At result acceptance, the existing Harness operation slot validates authenticated operation lineage and records Core acceptance time; later dispatch may replace that slot, so it is not retained receipt history. Durable Turn, AEP and backend records keep their existing scope and lineage. `observedAt` is producer observation time, not independently verified wall-clock truth. Receipt validation rejects mismatched operation, stage/reason, identity and malformed facts before acknowledgement. Worker-observed HTTP status is not trusted policy-enforcement evidence.
+## Scope
 
-After terminal persistence, the Turn error and terminal event retain the accepted explanation independently of optional telemetry and sandbox lifetime. A crash between result acceptance and Turn persistence can leave cause unavailable, particularly after cleanup dispatch replaces the receipt; no atomicity across those writes or recovered historical receipt is promised. Existing record retention and source/destination audience rules apply; receipt identifiers confer no access and restricted runtime lineage is not copied to ordinary product projections. Partial evidence and private-output truncation remain explicit. Missing or unavailable producer delivery cannot be reconstructed by speculation or replay, and later evidence never silently rewrites the original result. No raw output, secret, URL or host path is admitted to these normalized facts, including for administrators. No separate failure store or new retention lifecycle is introduced.
+Owns:
+- Concrete durable record schemas, cross-record lineage, storage scope homing, product visibility layers, redaction rules, and producer obligations for `AuditEvent`, `UsageRecord`, `EvidenceBundle`, `CapabilityCall`, `PermissionDecision`, `VaultUse`, and `RuntimeEvidence`.
+- The adapter-neutral shared capability-call and usage ledger (`GatewayCallContext`, `CapabilityCallRecorder`, `UsageRecorder`, and family usage normalizers in `apps/nanocore/src/capability/`) used across LLM, Worker MCP, internal Assistant MCP, Knowledge, runtime, storage, and Workspace producers.
+- The server-owned Workspace deletion closure (`workspace-deletion-closure`, `closureVersion: 1`), its pre-terminal cutoff, inventory and manifest sealing, and legal-hold preflight.
 
-## Personal Conversation And Scoped Learning Evidence
+Does not own:
+- Abstract usage, mediation, or policy invariants ([Evidence](../core/evidence.md), [Mediation](../core/mediation.md), [Policy](../core/policy.md)), rate limits, budgets, pricing, billing, invoices, quotas, or cost-allocation UI.
+- Public LLM Gateway HTTP routes, provider routing, pi-ai request/response mapping, usage extraction, or error normalization ([LLM Gateway Responses API](20260526-llm_gateway_responses_api.md), [Pi-Ai Unified LLM Backend](20260708-pi_ai_unified_llm_backend.md)).
+- Worker MCP catalog shape, server lifecycle, tool argument validation, dispatch, result-size measurement, schema snapshots, or MCP error codes ([Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md), [Worker Agent Capability](20260703-worker_agent_capability.md)), or sub-agent provenance and runtime cache lineage ([Worker Runtime Sub-Agent Provenance](20260711-worker_runtime_subagent_provenance.md)).
+- Vault secret storage ([Vault](../core/vault.md), [Vault Backend Implementation](20260704-vault_backend_implementation.md)), Artifact file or Workspace synchronization protocol semantics, raw backend-native log formats, SQLite table DDL, or Workspace registry/deletion/recovery authorization ([Multi-User Workspace System](20260715-multi_user_workspace_system.md)).
+- Current Goal, Card, Plan, and Task-link Audit producers ([Goal](20261002-goal.md)); the former generic pending-input queue and ordinary portable Workspace import are absent, and no generic plugin framework, pi-ai MCP routing, automatic Gateway agent loop, external API proxy, or asynchronous accounting outbox is included in this foundation.
 
-Private dialogue and private Memory are not payloads for shared effect audit. Management mutations retain actor, target scope, exact base/candidate identity, gate/command lineage and outcome through existing AuditEvent records; effect visibility does not expose the originating private Thread. Scope-qualified Memory/Knowledge operations and assessment/consolidation calls retain the owning User/Workspace/Server and current responsible actor in existing evidence. Assessment results use existing Knowledge Observations and never impersonate a human Review. Do not duplicate private source text, secrets or a personal summary in Server/Workspace audit or usage records.
+Core: [Evidence](../core/evidence.md), [Mediation](../core/mediation.md), [Storage](../core/storage.md), [Vault](../core/vault.md), [Policy](../core/policy.md).
 
-Notebook publication admission uses the specific optional `notebookAdmission` field on AuditEvent: exact `ownerScope`, request ID, input digest, nullable base commit, prepared candidate commit, producer, direct/delegated instruction or Proposal authority, and source references. The notebook owner defines those historical facts and their validation. Retain them in the existing database of that exact User, Workspace or Server before advancing the published Git ref; another scope or an app-local database cannot accept them. Ordinary Audit records omit this field. It contains no page body, summary text, generic metadata bag or reusable permission. Existing Audit write failure prevents publication; a later completed Audit or command receipt is a separate effect and never inferred from the admission record.
+## Definitions
 
-## Turn Interruption Attribution
-
-The existing Workspace AuditEvent records an accepted public turn.interrupt command with action `turn.interrupt`, category `command`, outcome `succeeded`, its admitted actor, and exact Workspace, Thread, Turn and request lineage. The actor is the requesting identity from operation admission, not the Turn triggerActor. Record it only in fresh successful command execution; ordinary command replay returns its existing result without inserting another event or changing the recorded actor. A rejected or unresolved interruption supplies no success event. This event means that the Stop request was accepted; terminal state and runtime cleanup remain with their existing owners.
-
-This is an existing Audit producer, not a new Item field, record family, receipt or interruption lifecycle. Audit storage failure remains an explicit command error and does not roll back an already reached runtime effect. Crash gaps or historical missing events remain unavailable; neither retry nor Web reconstructs an actor from the Turn, permission admission, telemetry or current viewer. Existing command receipts retain their own replay and failure rules; no cross-store atomicity or automatic repair is promised.
-
-For internal Chat, Administration and Knowledge Manager interruption that waits for its retained terminal outcome, successful command acceptance requires the native terminal acknowledgement with the original Stop receipt and Audit. When an original submission command seals with that same outcome, its original receipt and Audit join the same transaction. A failure of this tuple returns recovery_required and publishes no success receipt or Audit for either command; cancellation knowledge remains the actually reached runtime fact.
-
-Workspace Audit reads filter Thread-scoped events by the caller's current exact Thread audience as well as current Workspace authority. Historical actor references describe responsibility and grant no current access. The Web Usage and audit surface displays the recorded actor and a link to the exact accessible Thread. Missing actor is explicitly not recorded; it is not replaced with the current User. Acceptance uses a real public interruption by a member different from the Turn initiator, verifies its public Audit actor and exact lineage, preserves the initiating triggerActor, proves replay does not add or relabel the event, and proves that another User cannot read private Thread interruption history.
-
-## Summary
-
-This spec defines the target record model for audit, usage, and evidence.
-
-The clean target is to split three concerns that are currently easy to blur: audit explains responsibility and policy, usage measures consumed resources, and evidence preserves proof material. They must link through common lineage, but they should not collapse into one log table or raw backend transcript.
-
-Agent-capability-mediated usage production belongs to `docs/core/mediation.md`. `UsageRecord`, usage attribution, and future non-gateway metering direction belong to `docs/core/evidence.md`. This spec owns the concrete record-linking projection for audit, usage, and evidence records.
-
-## Owns
-
-- Cross-record linkage between `AuditEvent`, `UsageRecord`, `EvidenceBundle`, `CapabilityCall`, `PermissionDecision`, `VaultUse`, and `RuntimeEvidence`.
-- Storage source-of-truth guidance for audit, usage, evidence indexes, and file-backed proof material.
-- Product visibility and redaction rules for audit-visible, item-visible, diagnostics-only, and restricted evidence layers.
-- Current protocol and NanoCore implementation projection for audit, usage, capability-call, verification, checkpoint, workspace-sync, and runtime evidence records.
-- Producer obligations for recording or explicitly omitting audit, usage, and evidence at stable boundaries.
-- The server-owned Workspace deletion closure contents, exact seal, pre-terminal cutoff, redaction, retention, and legal-hold preflight.
-
-## Does Not Own
-
-- Agent-capability-mediated usage semantics, rate limits, or budgets.
-- Future system-wide metering policy outside concrete record projection.
-- Pricing, billing, invoices, quotas, or cost allocation policy.
-- Permission policy semantics.
-- Vault secret storage.
-- Artifact file semantics or workspace synchronization protocol semantics.
-- Raw backend-native log formats.
-- Workspace registry status, deletion-request phases, mutation admission, owner authorization, and recovery authorization. `docs/specs/20260715-multi_user_workspace_system.md` owns those lifecycle decisions.
-
-## Core References
-
-- `docs/core/evidence.md`
-- `docs/core/mediation.md`
-- `docs/core/storage.md`
-- `docs/core/vault.md`
-- `docs/core/policy.md`
-
-## Related Docs
-
-- `docs/specs/20260703-schema_evolution_record_envelope.md`
-- `docs/specs/20260921-work_data_retention_format.md` — owns the system-prompt digest slot's meaning and the semantic boundary; this spec owns the producer and the `CapabilityCall` record.
-
-## Goals
-
-- Define durable record families for audit, usage, and evidence.
-- Decide which records are SQLite source of truth and which are file-backed evidence.
-- Normalize OpenShell and worker-shim evidence without making backend-native records product truth.
-- Link every governed action to workspace, thread, turn, AgentSession, capability call, policy decision, vault grant, and artifact where applicable.
-- Establish redaction and product visibility rules.
-
-## Non-goals
-
-- Do not define final table DDL.
-- Do not implement billing.
-- Do not expose raw backend logs to product surfaces.
-- Do not store secret values, raw provider tokens, or unrestricted request payloads.
-- Do not require every internal diagnostic event to be item-visible.
+- **`AuditEvent`**: immutable responsibility record (`AuditEventSchema` in `packages/protocol/src/models/audit.ts`) explaining who or what caused an action, what policy or credential applied, what resource was affected, and the outcome.
+- **`UsageRecord`**: resource-consumption measurement record (`UsageRecordSchema` and `ServerUsageRecordSchema` in `packages/protocol/src/models/usage.ts`). Process-local Gateway usage summaries (`apps/nanocore/src/llm/gateway-usage.ts`) are runtime diagnostics, never durable `UsageRecord` rows.
+- **`EvidenceBundle`** and **`RuntimeEvidence`**: compact index records (`EvidenceBundleRecordSchema` and `ServerEvidenceBundleRecordSchema` in `packages/app-api-schemas/src/evidence-bundles.ts`; `RuntimeEvidenceRecordSchema` in `packages/app-api-schemas/src/runtime-evidence.ts`) pointing to file-backed proof material, normalized manifests, and bounded backend lifecycle summaries.
+- **`CapabilityCall`**, **`PermissionDecision`**, and **`VaultUse`**: linked privileged-call (`CapabilityCallSchema` in `packages/protocol/src/models/capability.ts`), policy-decision, and secret-reference-use records. They link to `AuditEvent`, `UsageRecord`, and `EvidenceBundle` by stable IDs and digests, and never replace `AuditEvent`.
 
 ## Record Families
 
-CapabilityCall uses the [Protocol owner union](../core/protocol.md#thread-semantics). Workspace calls remain in their Workspace database; Server calls remain in Core. The admitted database scope supplies storage authority. A nullable SQL Workspace column alone supplies none. Wire and portable records retain the explicit owner. Usage measurements keep their existing attribution contract.
+SQLite owns authoritative `AuditEvent`, `UsageRecord`, `CapabilityCall`, `PermissionDecision`, `VaultUse`, `EvidenceBundle` index, and `RuntimeEvidence` index rows; file storage owns raw or redacted evidence files, normalized manifests, transcript exports, Artifact files, Workspace change manifests, and Context Package traces (which may be cited as evidence of what a Worker saw without granting command or permission authority), linked from SQLite by stable IDs and SHA-256 digests. Independent retained `schema_version` (`1`) markers are validated before JSON decoding or replay on stored Audit, CapabilityCall, UsageRecord, PermissionDecision, EvidenceBundle, and RuntimeEvidence rows (`apps/nanocore/src/audit-events.ts`, `apps/nanocore/src/capability/usage-ledger-native.ts`), without requiring every row to carry a full file record envelope (`ownerScope`, `redactionLevel`, or `requiredFeatures`). Records follow [Contract Evolution](../core/contract-evolution.md) and [Schema Evolution And Record Envelope](20260703-schema_evolution_record_envelope.md): fields affecting responsibility, policy outcome, permission, Vault use, resource attribution, retention, redaction, evidence promotion, or product visibility are authority-bearing.
 
-Use these record families:
+**`AuditEvent` (`AuditEventSchema` and `AuditAuthenticationSchema` in `packages/protocol/src/models/audit.ts`, with severity `AuditSeveritySchema`)**:
+- Retains immutable `id` (`aud` UUIDv7, or UUIDv5 for the three boot-start, boot-outcome, and shutdown events in `apps/nanocore/src/bootstrap/audit.ts` under [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids)), recorder-supplied `createdAt` and `occurredAt`, positive `resourceRevision` when lifecycle CAS supplies one, and allowlisted `authentication` describing the initiating actor's credential rather than a target token (stored in `audit_events.authentication_json`).
+- `actor` is the authenticated initiating `ActorRef` (never the current viewer); `subject` is the affected invitee, member, disabled user, or new owner when distinct from `actor` (ordinary ownership transfer records former owner as `actor` and new owner as `subject`; administrator transfer-to-self records administrator as `actor` and former owner as `subject`; invitee terminal actions and administrator add-self recovery leave `subject: null`).
+- Private dialogue and private Memory text never enter shared effect Audit or Usage payloads. Scoped Memory/Knowledge operations and assessment/consolidation calls retain the owning User, Workspace, or Server and responsible actor; assessment results use Knowledge Observations and never impersonate a human Review. Optional `notebookAdmission` (`KnowledgeNotebookAdmissionSchema` in `packages/protocol/src/models/audit.ts`) commits the notebook-admission payload in the exact User, Workspace, or Server database before advancing the published Git ref (omitted on ordinary Audit rows, containing no page body or reusable permission).
+- Workspace MCP create, version selection, binding mutation, and Plugin import record actual command actor, authentication, request, entry/version reference, resulting catalog revision, and outcome without declarations, locators, binding contents, or source bytes. Authority-bearing Workspace data-source catalog edits (`kind`, `access`, `sensitivity`, `vaultGrantRef`) record source ID and changed authority keys without locators or credentials. First staged Workspace review and review-gated apply each emit one linked Workspace `AuditEvent` and one compact `EvidenceBundle` index (inheriting `sourceId` from materialization when omitted by worker manifests, without duplicating on upsert or replay). Terminal worker checkpoints emit one Workspace `AuditEvent` and promote a normalized `RuntimeEvidence` index on first terminal transition. For bounded Approvals, the terminal `PermissionDecision` and its same-transaction linked Workspace `AuditEvent` require reciprocal `auditEventId` and `permissionDecisionId` and matching originating `require_approval` tuple (`workspaceId`, approval ID, action, resource/subject summaries, and approval kind).
+- Public readback uses `audit.server-list` and `audit.workspace-list` (`vault.server-use-list` and `vault.use-list` for non-secret `VaultUse` rows; `permission.server-list` and `permission.workspace-list` for `PermissionDecision` rows). Thread-scoped Workspace Audit reads enforce the caller's current Thread audience in addition to Workspace authority; Web displays the recorded `actor` and accessible Thread link without substituting the current user when `actor` is absent.
 
-- `AuditEvent`: explains who or what caused an action, what policy applied, and what happened.
-- `UsageRecord`: measures consumed resources.
-- `EvidenceBundle`: points to proof material and normalized manifests.
-- `CapabilityCall`: records a gateway-mediated privileged call. A `family: 'llm'` call opened above the provider split carries the system-prompt digest; other families have no system prompt and MUST NOT be described as carrying one.
-- `PermissionDecision`: records a policy outcome.
-- `VaultUse`: records secret-reference use without secret material.
-- `RuntimeEvidence`: records backend lifecycle and worker evidence summaries.
+### Turn Interruption Attribution
 
-The system-prompt digest is carried on `family: 'llm'` `CapabilityCall` records opened above the provider split. `docs/specs/20260921-work_data_retention_format.md` owns the slot's meaning and the semantic boundary; this spec owns the producer and the record. Knowledge, MCP, worker-checkpoint, administration, workspace-transfer, and Goal propose-tool `CapabilityCall` rows have no system prompt and MUST NOT carry this digest. The digest MUST NOT be specified as instrumentation of a converter or of a particular upstream client. One Gateway client (`PiAiGatewayClient`) currently serves every production Gateway path (`apps/nanocore/src/llm/README.md`); two subscription-account families (`openai-codex` and `xai` at `apps/nanocore/src/llm/provider-subscription-operation-implementations.ts`); nine pi-ai upstream provider plugins registered in `createDefaultPiAiGatewayModels` (`apps/nanocore/src/llm/pi-ai-client.ts`); authored profile providers with no subscription id on the same dispatcher; and direct Chat Completions and Responses mappings into stock Context and options, followed by requested-format projections in `apps/nanocore/src/llm/pi-ai-client.ts`. The resolved upstream API and admitted member capability select the request-local native envelope. The public-format converter paths are removed, so neither a converter nor a stock wire hook supplies the intended-prompt producer. The semantic boundary is upstream of provider adaptation, and the producer obligation attaches to the record that is already opened per call above the provider split. An attributed logical Gateway invocation opens one CapabilityCall before the route plan runs and finishes it once at the logical outcome; a new call that can span members leaves its own `providerRef` null. The grouping is not injective: an absent prompt and an explicit default literal produce different pre-adapter digests and identical outgoing instructions. The digest groups by what Core intended, not by what the provider received; that non-injectivity is intended and MUST NOT be "fixed" by moving the boundary. The public Gateway retains the same pre-adapter digest on its existing Server-owned CapabilityCall when Workspace lineage is absent and Core is available. With no Core database it cannot retain a call or digest; this remaining absence is explicit.
-
-`CapabilityCall`, `UsageRecord`, `PermissionDecision`, and `VaultUse` are linked record families, not replacements for audit.
-
-A terminal `CapabilityCall` whose external result cannot be proved after a crash is `unknown`; one whose execution is known to have stopped without a complete result is `interrupted`. Either may retain partial redacted audit, usage, and evidence links, but neither proves whether an external effect occurred. `unknown` is never automatic replay authority; external inspection or reconciliation, or a fresh authorized request, is required.
+Fresh successful public `turn.interrupt` execution records one Workspace `AuditEvent` (`action: 'turn.interrupt'`, `category: 'command'`, `outcome: 'succeeded'`) with the requesting `actor` from operation admission (never `Turn.triggerActor`) and exact Workspace, Thread, Turn, and `requestId` lineage (`apps/nanocore/README.md`). Command replay adds or relabels no event, and rejected or unresolved interruption emits no success event; the event records Stop-request acceptance while terminal state and cleanup stay with their owners. Missing historical actor facts and crash gaps remain unavailable; do not reconstruct attribution from Turn, permission or telemetry records or introduce replay or automatic repair.
 
 ### Gateway Route Lineage
 
-CapabilityCall carries an optional namespaced `extensions` document, persisted in the nullable text `extensions_json` column on `capability_calls`. Its first namespace, `openkit.gateway/routeLineage`, contains `logicalModelId` and an ordered `entries` array for that one logical Gateway invocation. It uses the existing record envelope's optional extension rules; it is not a new record family, store, observation type, or required-feature token. The decision and its reason are recorded in [the route-lineage home decision](../decisions/20261002-gateway_route_lineage_home.md).
-
-An `unavailable` entry covers a plan exclusion or a selected member's Provider or subscription failure before a Provider call. It carries `kind: "unavailable"`, `routeMemberId`, `providerProfileId` and `providerModel` when resolution produced them, `selectionReason`, the closed `failureKind`, and a safe `unavailableReason`. It has no UsageRecord IDs and creates no second CapabilityCall or UsageRecord. Neither entry kind stores `accountSlotId`; a Workspace record is not a safe home for a server-level account identity.
-
-An `attempt` entry covers one reached dispatch attempt, including each same-member retry. It carries `kind: "attempt"`, the same route-member, resolved Provider profile, native model and selection fields, `attemptOrder`, `retryIndex`, `failureKind` when failed, `outputBegan`, `terminalResult`, and `usageRecordIds` when the existing ledger retained measurements. Gateway-owned `requestedEffort`, `effectiveEffort`, and `effectiveEffortReason` for an absent effective effort remain optional attempt facts when recorded; no value is fabricated. `outputBegan` is true only when a text, reasoning, or Tool-call event or a validated successful non-stream result was released; commit state is not persisted as this fact.
-
-The Gateway dispatcher appends the entries in the existing call owner's SQLite transaction before advancing to another attempt or member; attributed consumers supply their one already-opened CapabilityCall, while public consumers without Workspace metadata use that same lifecycle in the existing Core-owned Server families when Core is available. A consumer without Core keeps only request-local selection. Each logical invocation finishes that call once at its terminal outcome, including internal or Worker failures with no usage, which remain legal CapabilityCalls. A same-member retry appends to the open call rather than starting another call or finishing the earlier failure as the logical outcome. Restart preserves committed entries and maps an abandoned running call to `unknown` under the existing recovery rule; missing terminal facts remain unknown and confer no replay authority. The Goal Coordinator's existing LLM CapabilityCall records the Turn it runs under, not null.
-
-UsageRecord remains the unique measured-consumption authority, with `providerRef` identifying the measured member. Its nullable `providerModel` retains the actual resolved provider-native model beside logical `modelId`; historical absence supplies no physical-model evidence and is never reconstructed from current routing. The released attempt entry identifies the serving member descriptively; it does not override the null `providerRef` on a new multi-member call or immutable measurement attribution. Identical usage reports still collapse through the existing equivalent-measurement predicate, and every matching entry cites that one retained UsageRecord; no separate per-attempt billing is introduced. A failed attempt without a usage report has no invented measurement. Historical profile-valued call `providerRef` values and existing no-supply logical-model values without the document keep their stored meaning; absence records no route chain and never fabricates one. Export and import preserve the document as optional extension content under existing scope, audience, retention, and reference rules.
-
-General Server Thread work extends the existing CapabilityCall, UsageRecord, work-observation and EvidenceBundle families with immutable Server ownership and no Workspace identity. Core storage and `server/evidence/` are their unique homes. The same capture coverage, environment, source lineage, failure, restart and retention rules apply. Server work never enters Workspace export or a parallel ledger. Current Server administration authority admits reads; historical attribution grants no current access.
-
-## Storage Ownership
-
-SQLite source-of-truth records:
-
-- audit events
-- usage records
-- capability calls
-- permission decisions
-- vault use rows
-- evidence bundle indexes
-- runtime evidence indexes
-
-File-backed source-of-truth records:
-
-- raw or redacted evidence files
-- normalized evidence manifests
-- transcript exports
-- artifact files
-- workspace change manifests
-- context package traces
-
-SQLite rows should link to file-backed evidence by stable evidence ids and digests.
-
-## Storage Scope Homing
-
-Every durable audit, usage, capability-call, permission-decision, and vault-use row carries `ownerScope` per the record envelope, and the scope decides the home database:
-
-- Rows whose authority belongs to Workspace content — turns, items, capability calls, context packages, worker sessions, workspace sync, workspace-scoped vault use — home in `workspace.sqlite`, and their evidence files home under the workspace `evidence/` tree. A workspace backup or export is self-contained for portable Workspace-owned audit history.
-- Workspace registry, membership, invitation, ownership-transfer, administrator-recovery, and user-disable lifecycle authority lives in `core.sqlite`. Its sole authoritative `AuditEvent` therefore lives in the same Core transaction even when it carries `workspaceId`; it is deployment-local access history, is excluded from portable Workspace export, and is retained by a full deployment backup. A Workspace audit read model may aggregate these Core rows by `workspaceId`, but it must not copy or dual-write them into `workspace.sqlite`.
-- Server control-plane rows — auth sessions, server config changes, provider account lifecycle, gateway account rotation, scheduler operations, migrations — home in `core.sqlite`, with evidence under `server/evidence/`.
-- Restart recovery armed, exact adoption, recovery timeout, cleanup CAS fence, and terminal capacity release are scheduler control-plane audit events in `core.sqlite`. New events reference the exact execution attempt and carry its product-safe process-key-hash reference, backend digest, and Workspace lineage under the [scheduler owner](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup), but never the raw process key, bearer token, transcript, or backend credential. Retained records keep the lease, scheduler epoch, and other lineage they already contain; this amendment does not rewrite them. There is no challenge or settlement-phase event family.
-- Rows that concern only a user identity — login events, user config changes — home in `user.sqlite`.
-
-The initial Generative Kernel is a named exception within Workspace storage: each successful app/schema/lifecycle/data command writes its existing-schema AuditEvent in that app's `data.sqlite`, in the same transaction as the business change and completed receipt. The event keeps `ownerScope: workspace` and names the app, collection/record IDs or bounded affected-set digest, schema/record revisions, authenticated actor, request and originating Item/Turn/CapabilityCall lineage where present, product operation and outcome. It contains no raw field values or response body. Failure to write this commit evidence rolls back the mutation. Denials and pre-transaction failures follow the existing enforcement owner's audit policy; they do not invent an app authority or emit a fake successful event.
-
-Workspace audit reads aggregate these app-local rows without dual-writing them to `workspace.sqlite`. If a requested complete audit read encounters unavailable app authority, it must report incomplete/unavailable evidence rather than a complete empty history. Portable export inventories each app's audit projection under the existing audit family; the Workspace deletion closure's `records/workspace-audit-events.jsonl` includes app-local events at the same exclusive Workspace cutoff. Legal-hold and retention checks cover the app-local home identically. This is a storage partition of the existing AuditEvent owner, not a new journal or a new permission decision ledger. Native presentation admission AuditEvents stay in Workspace SQLite with their admitted presentation; file-backed Item publication keeps its separate outcome semantics.
-
-When one event spans scopes, the primary row homes at the responsibility subject. A workspace turn consuming a server-owned provider account records its usage row at the workspace, because the workspace is the attribution and billing subject; the server side MAY keep a derived aggregate, and derived aggregates MUST be marked derived and rebuildable, never a second source of truth.
-
-Cross-scope linkage uses ids and digests only. Correctness MUST NOT depend on cross-database foreign keys or joins; read models MAY aggregate across scopes.
-
-Workspace deletion MUST produce a sealed, server-owned audit closure under `server/exports/` before removal. The closure is distinct from and references one verified operational recovery backup by exact identity and manifest digest; it does not modify that backup or reuse its manifest. Records under `legal-hold` retention block deletion before a new backup or closure is created. After deletion, the closure and its exact referenced operational backup retain the Workspace content and evidence; other retained generations remain governed by their retention owners. The Core registry tombstone, non-authorizing retained original-owner membership, removed non-owner membership rows, revoked invitation rows, deletion request, terminal deletion AuditEvent, and command receipt remain deployment-local governance records under their own owners.
-
-Retained retirement follows the [Workspace lifecycle owner](20260715-multi_user_workspace_system.md#retained-retirement-of-a-quarantined-workspace). Its Core transaction appends one attributed retirement AuditEvent with the exact Workspace, request and resulting registry revision. This event proves only product retirement with retained data and no storage reclamation. It does not prove cleanup, a hold check, content integrity or portable recovery. Identical command replay adds no second event. Because retirement preserves all data and held evidence, it neither creates a deletion closure nor substitutes unreadable evidence with an empty inventory. Ordinary deletion and its legal-hold preflight remain unchanged.
-
-## Workspace Deletion Closure
-
-Implementation is Partial. New closure production binds the operational backup selected before the deletion registry transition, under [Online Workspace Recovery](../decisions/20261027-online_workspace_snapshots_and_recovery.md). Retained export-reference closures keep their original immutable bytes and audit meaning; they do not supply operational recovery continuity. Existing retention and holds still apply. This owner amendment activates with the complete deletion/snapshot cutover; it adds no W-stage closure writer or legacy import reader.
-
-The closure root is `server/exports/workspace-closures/<workspaceId>/<closureId>/`, created privately as a previously absent `0700` directory whose regular files use mode `0600`. It has this closed V1 shape:
-
-```text
-workspace-closure.json
-records/core-workspace-registry.jsonl
-records/core-workspace-memberships.jsonl
-records/core-workspace-invitations.jsonl
-records/core-audit-events.jsonl
-records/workspace-audit-events.jsonl
-records/permission-decisions.jsonl
-records/vault-use.jsonl
-records/usage-aggregates.jsonl
-records/evidence-manifests.jsonl
-evidence/<bundleId>/<retained files when required by the bundle retention owner>
-```
-
-New closures declare the required feature `workspace.recurring-history.v1` and also contain `records/recurring-history.jsonl`, with one validated inert recurrence history document for the exact Core-homed graph at the cutoff. The feature requires that file and its complete source tuple. Retained closures without that feature keep their original closed file set and report no recurrence coverage; absence never establishes that recurrence did not occur. Unknown required features still refuse. The referenced operational backup separately retains any previously imported inert source-history file. After sealing, the terminal deletion transaction removes the Workspace's Core recurrence rows and recurring AuditEvents; the new terminal deletion AuditEvent remains under the existing owner.
-
-All record paths are present even when their family is empty. The Core registry file contains the exact pre-terminal registry projection, membership and invitation files retain active and terminal projections, and the two audit files preserve their distinct authority homes. The permission, Vault-use, usage, and evidence files contain the complete Workspace-governance set at the closure cutoff; usage is a deterministic aggregate over retained rows and never replaces those rows before deletion. Restricted raw bytes enter `evidence/` only when their current retention owner requires them to survive deletion, and the manifest names that retention class and exact evidence digest without widening product visibility.
-
-`workspace-closure.json` is an envelope-wrapped record with `recordType: workspace-deletion-closure`, `closureVersion: 1`, source deployment and Workspace ids, deletion request id, original owner User id, source registry revision, closure id, cutoff timestamp, exact literal `cutoff: pre-terminal-deletion`, referenced operational backup identity and manifest digest, required features, and one canonical content inventory. The inventory lists every non-manifest file exactly once with relative path, byte length, and SHA-256 digest; `contentDigest` is SHA-256 over the exact canonical inventory serialization. The deletion request separately binds the SHA-256 digest of the exact `workspace-closure.json` file bytes, including their terminal newline, so a manifest-only byte change is detectable without an impossible self-inventory entry. The manifest contains no credential, secret, backend locator, host path, raw authorization header, password, Token hash, or plaintext Token.
-
-The deletion owner checks every concrete legal-hold record owner before creating the recovery backup or changing registry state. The first predicate queries every Workspace `EvidenceBundle` whose `retentionClass` is `legal-hold` and parses every durable `WorkspaceQuarantineRecord` whose strict payload may carry the same value; one blocking regression is required for each owner, and a coverage check MUST fail when a later durable schema can carry `legal-hold` but the deletion predicate does not classify it. A hold grants no read, recovery, deletion, or membership authority and returns a product-safe blocked result with zero recovery-backup, closure, registry, or staging mutation.
-
-Closure capture occurs only after the Workspace mutation fence is exclusive and the registry has transactionally moved from `active` to `deleting`, and before canonical-root rename or the terminal deletion transaction. That point is the pre-terminal cutoff. The terminal deletion AuditEvent, retained original-owner membership, removed non-owner membership rows, revoked invitation rows, and terminal command receipt are intentionally absent from the closure and remain authoritative in Core; pre-terminal Core history and the exact deleting registry projection are present.
-
-Creation owns a previously absent closure root, writes and `fsync`s retained files, writes the manifest last, `fsync`s the directory, and verifies the exact inventory, envelope, and manifest-file digest before the deletion request may advance. A caught failure removes only that owned unsealed root. Once the exact manifest-file digest is bound into the deletion request, a closure is immutable; an exact retry reverifies it, and any missing, extra, changed, or contradictory byte returns `recovery_required` without resealing, repair, authority change, or deletion continuation.
-
-The closure is non-authorizing historical evidence. It cannot grant membership, select a recovery actor, make a portable actor current, authorize import, reopen a deleted Workspace, or replace the registry tombstone. Recovery authorization comes only from the deleted registry tombstone under the multi-user specification; the closure supplies verified evidence and the operational-backup reference after that authorization succeeds.
-
-Closure readers ignore unknown descriptive manifest and lineage fields and project only known facts. The complete inventory entries remain exact, unsupported required features refuse, and the manifest digest continues to cover the original file bytes. Once sealed, annotations remain part of immutable evidence identity and cannot be rewritten or interpreted as deletion or recovery authority.
-
-## Schema Evolution
-
-Audit, usage, capability-call, permission-decision, vault-use, evidence-bundle, and runtime-evidence records follow the general unknown-field and fail-closed rules in `docs/core/contract-evolution.md` and the concrete envelope mechanics in `docs/specs/20260703-schema_evolution_record_envelope.md`.
-
-Domain-specific additions owned by this spec:
-
-- Fields that affect responsibility, policy outcome, permission, vault use, resource attribution, retention, redaction, evidence promotion, or product visibility are authority-bearing for these record families.
-- Unknown evidence kinds may be retained as restricted evidence when policy allows it, but they must not be promoted into canonical items, artifacts, workspace changes, audit events, usage records, permission decisions, or vault-use records until NanoCore understands and verifies them.
-
-The `openkit.gateway/routeLineage` namespace is optional descriptive evidence, not authority-bearing resource attribution: UsageRecord `providerRef` remains the measured member, and new multi-member CapabilityCalls leave their canonical `providerRef` null. The document does not decide responsibility, policy, permission, Vault use, routing, billing measurement, retention, redaction, evidence promotion, or visibility; those authority-bearing decisions stay in their existing canonical owners. Its serving-member explanation therefore requires no new required-feature token, and unknown optional extension content grants no authority.
-
-## AuditEvent
-
-`AuditEvent` should carry:
-
-- audit event id
-- event category
-- severity
-- stable `ActorRef` when an actor exists
-- optional `authentication` with closed `credentialKind` (`local`, `session`, `token`) and nullable access Token or authentication Session `credentialId`, never a channel or credential material
-- subject reference when the affected subject differs from the actor
-- positive resource revision when the audited lifecycle mutation uses compare-and-swap
-- workspace id when applicable
-- thread id when applicable
-- turn id when applicable
-- agent id when applicable
-- AgentSession id when applicable
-- item id when applicable
-- capability call id when applicable
-- permission decision id when applicable
-- vault grant id when applicable
-- resource summary
-- action
-- outcome
-- request id when the audited command or decision has one
-- policy reference
-- evidence bundle ids
-- timestamp
-- redaction level
-- required features when the audit record depends on a newer required semantic
-
-Audit events are immutable.
-
-The actor and subject fields are nullable `ActorRef` values. The actor is the authenticated principal that issued the lifecycle command. The subject is the affected invitee, member, disabled user, or new owner when that principal differs from the actor. Ordinary ownership transfer records the former owner as actor and the new owner as subject; administrator transfer-to-self records the administrator as actor and the former owner as subject. Invitee terminal actions and administrator add-self recovery leave the subject null when actor and subject are the same principal.
-
-Authentication attribution records the credential used by the initiating actor, not the credential being issued, revoked or rotated. Session authentication retains its canonical Session record id when supplied. Otherwise it retains an available resolved administrative Token id; with neither record, and for a local actor, it uses null. Unknown credential kinds and malformed credential ids refuse new records. Stored descriptive additions may be ignored, but cannot change known attribution facts. Workspace portability preserves these facts as historical source identities; it never binds an imported credential or confers current authority. SQLite stores the allowlisted summary in `audit_events.authentication_json` in the existing Core, User, Workspace or App Audit home. No separate credential history is created.
-
-Workspace MCP create, version selection, binding mutation and Plugin import retain the actual command actor, available authentication summary, request, selected entry/version reference, resulting catalog revision and outcome in the existing Workspace Audit family. Declarations, endpoint locators, binding contents and imported source bytes do not enter Audit. A refused catalog mutation does not emit a successful mutation event. Token lifecycle Audit names the initiating actor and authenticating Token independently from its target Token.
-
-The capability owner captures an available admitted actor, non-secret credential summary and known command request identity in the existing linked Audit family with action `capability.admit` before contacting the effect provider. Admission and call insertion use the same owning SQLite transaction. Admission outcome is `unknown`, not evidence that the effect succeeded. Terminal and restart-unknown Audit retain that paired attribution from the same admission; the call request ID takes precedence, then the retained command request ID, then an available trusted finish context. Audit-only command correlation never changes call or usage identity or idempotency; historical absence stays unknown and a later caller cannot replace it. Public inference without Workspace metadata uses the existing Server CapabilityCall and UsageRecord variants in Core; it does not create a synthetic Workspace. Workspace inference keeps its existing home. Usage records contain only measured consumption. Borrowed Core database ownership stays with the App.
-
-
-### Security Event Projection
-
-The following Server-scope event projection follows [Runtime Security](20261109-runtime_security.md) E5. Each producer MUST supply its listed fields; missing fields are reported as unsupported. Findings, notification text and sensitive report bodies do not enter these event summaries. Existing scope, actor and redaction rules remain mandatory.
-
-| Event | Producer | Required fields | Rule |
-| --- | --- | --- | --- |
-| `auth.token.issue` | Access-token operations | Token id, scope, owner, principal, actor, expiry | R1 if `server-admin`; else R1d |
-| `auth.token.revoke`, `auth.token.rotate` | Access-token operations | Token id, scope, actor | R1d |
-| `auth.admin-recovery.issue` | Administrator recovery | Target user, actor | R1 |
-| `auth.bootstrap.consume` | Bootstrap | Actor | R1 |
-| `administration.configuration.apply` | Configuration apply | Changed sections, actor | R1 for the security section; else R1d |
-| `server.config.update` | Server configuration | Changed keys, actor | R1d |
-| `policy.write` | Policy administration | Scope, full-diff classification, actor | R1d if widening |
-| `user.disable` | User administration | Target, actor | R1d |
-| `app.update.start` | App update | Target digest, actor | R1d |
-| `channel.pairing.bind`, `channel.pairing.unbind` (new) | Channel pairing | Channel kind, user, binding revision, actor | R1 if the user is a server administrator; else R1d |
-| `auth.failure-threshold` (new) | Limiter, bearer middleware | Kind, key kind, window, count | R2, R4 |
-| `auth.revoked-credential-presented` (new) | Bearer verifier | Token id, scope, status, source | R3 |
-
-Pairing and unpairing MUST retain the actual actor and binding revision. Threshold signals MUST retain bounded counts without credential values. `policy.write` MUST retain scope and full-diff classification, including deletions and weakened gates.
-
-## UsageRecord
-
-`UsageRecord` should carry:
-
-- usage record id
-- workspace id
-- thread id when applicable
-- turn id when applicable
-- AgentSession id when applicable
-- capability call id when applicable
-- responsible user id when attributable consumption or an automated effect occurs on behalf of a user
-- provider reference
-- category
-- closed measurement unit, including `tokens` and estimated `usd`
-- quantity
-- model id when applicable
-- endpoint family when applicable
-- cache metrics when applicable
-- cost estimate when available, explicitly represented as telemetry rather than billing truth
-- measurement source
-- timestamp
-- required features when the usage row depends on a newer required semantic
-
-Usage categories:
-
-- `llm`
-- `tool`
-- `runtime`
-- `storage`
-- `network`
-- `sandbox`
-
-Usage rows may be aggregated for diagnostics, but raw metering rows should remain queryable until retention policy deletes or compacts them.
-
-## Recurring Trigger Attribution
-
-Recurring definition create/edit/pause/resume/delete and terminal trigger transitions emit the existing `AuditEvent` with exact command actor or automation actor, responsible user, Workspace, schedule and occurrence/range lineage, and redacted result. These Workspace-owned rows home in `core.sqlite` with their recurring product records as the explicit [Storage](20260703-storage_layout_record_ownership.md) transaction exception. Mutation or terminal transition and its AuditEvent commit together; failed audit persistence rolls back that local transition. There is no cross-database audit transaction or second audit journal. Workspace audit reads and portable export include this exception; it is distinct from non-portable deployment access history also stored in Core.
-
-Core-homed portable recurring audit is selected by the selected Workspace ID and exactly one action from `recurring.schedule.create`, `recurring.schedule.edit`, `recurring.schedule.pause`, `recurring.schedule.resume`, `recurring.schedule.delete`, `recurring.occurrence.terminal`, or `recurring.expired-range.record`, with the matching retained recurring subject identity. A Workspace ID alone never makes a Core AuditEvent portable; other Core action families retain their existing export disposition. Workspace audit aggregation uses descending `(createdAt, id)` keyset order and the same pair as its cursor across every included source, with globally unique AuditEvent IDs and no per-database offset or copied rows. Audit rows are immutable; a later inserted row preceding the cursor appears on refresh rather than destabilizing the current page.
-
-The trigger owner's at-most-three admission-attempt summaries and expired ranges are authoritative product history, not copies of worker logs or replacements for AuditEvent. No AuditEvent is required per expanded instant of an expired range: one attributed range transition preserves the exact covered set. After occurrence acceptance, queue/Turn owners record execution outcomes; audit projection failure never resubmits accepted work. Retain recurring history and its audit under `workspace-audit`, including existing legal-hold and Workspace deletion closure behavior. `apps/nanocore/src/storage/automation-definition-native.ts` and `apps/nanocore/src/storage/recurring-attempt-native.ts` produce the seven recurring actions above in the same Core transaction as the mutation.
-
-## Current Implementation Projection
-
-User-facing evidence readback uses the transport-neutral operation catalog, bundled CLI, and remote MCP; selected worker MCP evidence remains on the separately authenticated private capability plane and its existing durable read models rather than becoming an end-user route authority.
-
-The optional route-lineage document and column, single logical-call boundary, failed internal/Worker call coverage without usage, redacted capability-usage projection, extension-preserving export, reused-public-request-ID refusal, and Goal Coordinator Turn attribution are implemented. Attributed public, Worker, internal-role, Goal, administration and Quick Chat inference open one CapabilityCall before the route plan and finish it once at the logical terminal outcome, including a released terminal stream failure; rewriting the route-lineage document keeps any other namespace already stored on that record. The Gateway-owned requested and effective effort attempt facts are implemented.
-
-The current implementation provides the aligned record families below:
-
-- `packages/protocol/src/models/usage.ts` exports `UsageRecordSchema`, generated JSON Schema, and conformance coverage. Usage rows now include `sourceIds` for workspace data source lineage when a measurement touches catalog-backed workspace data.
-- `packages/protocol/src/models/audit.ts` exports `AuditEventSchema`, generated JSON Schema, and conformance coverage. `workspaceId` is nullable because server-scope audit events do not belong to a workspace. Audit events now carry optional `permissionDecisionId` and `vaultGrantId` linkage fields for policy and vault lineage.
-- `packages/protocol/src/models/capability.ts` exports `CapabilityCallSchema`, generated JSON Schema, and conformance coverage. Capability calls include `sourceIds` for workspace data source lineage when a call touches catalog-backed workspace data and nullable `packageSnapshotId`, `runtimeOriginRef`, and `runtimeCacheLineageRef` fields for trusted worker-inference correlation; UsageRecord and AuditEvent link through `capabilityCallId` instead of duplicating those runtime fields. The generated JSON Schema carries status-dependent timestamp nullability, while parsed-instant ordering remains a canonical Zod refinement because standard JSON Schema cannot compare sibling date-time values.
-- `apps/nanocore/src/llm/gateway-usage.ts` records process-local LLM gateway usage summaries for diagnostics. These are not durable `UsageRecord` rows.
-- `apps/nanocore/src/bootstrap/audit.ts` writes durable server-scope boot lifecycle rows to `boot_audit_events` and now projects boot start, boot outcome, and orderly shutdown into server-owned general `AuditEvent` rows. It records a boot start row after migrations make storage writable, including the data-root layout version, data-root lock acquisition summary, and any stale holder that was broken, records the boot outcome after phase execution completes, and records the first orderly shutdown event on `SIGINT` / `SIGTERM` after HTTP close and before data-root lock release.
-- `apps/nanocore/src/audit-events.ts` provides the first general audit recorder skeleton for server and workspace databases. Core and Workspace databases create `audit_events`, including its linkage columns, in their respective `0000_baseline.sql` schemas; `recordServerAuditEvent` and `recordWorkspaceAuditEvent` validate against `AuditEventSchema`, preserve optional capability call, permission decision, and vault grant lineage, and reject raw payload-shaped field names before writing rows. Server-owned audit events are exposed through `POST /api/app/operations/audit.server-list`, `client.operations['audit.server-list']`, and the bundled CLI `audit.server-list` operation; workspace-owned audit events are exposed through `POST /api/app/operations/audit.workspace-list`, `client.operations['audit.workspace-list']`, and `audit.workspace-list`.
-- Access-token lifecycle owners in `apps/nanocore/src/auth/credential-operations.ts` and `apps/nanocore/src/auth/access-token-lifecycle-native.ts` write server-owned general `AuditEvent` rows for successful bootstrap consumption, token issuance, token revocation, and token rotation. These events record stable action names, token ids, scopes, owners, and authenticated actor ids when present, but never record bootstrap tokens, plaintext access-token secrets, token hashes, credential-store material, or raw authorization headers.
-- Server-owned vault-use evidence rows are exposed through `POST /api/app/operations/vault.server-use-list`, `client.operations['vault.server-use-list']`, and the bundled CLI `vault.server-use-list` operation. Workspace-owned vault-use evidence rows are exposed through `POST /api/app/operations/vault.use-list`, `client.operations['vault.use-list']`, and `vault.use-list`. Both surfaces contain only non-secret `VaultUse` metadata and linked audit ids, not credential material or backend secret locators, and their authorization follows the owning matrix in `docs/specs/20260704-vault_backend_implementation.md`.
-- Every authorized authored provider API-key request with a valid request body emits the exact server `AuditEvent` action `vault.set_provider_api_key` with a succeeded, failed, or denied outcome. It uses the fixed redacted resource `vault:<backendKind>`, an outcome-specific fixed summary, and no provider id, API key, Vault reference id, backend locator, or provider profile body. A backend credential effect followed by a Core reference failure records `provider_api_key_recovery_required`; it does not claim cross-domain rollback even when best-effort backend revocation settles.
-- `apps/nanocore/src/llm/provider-subscription-accounts.ts` implements and actively emits the exact server `AuditEvent` actions `provider_subscription.account.create`, `provider_subscription.account.update`, `provider_subscription.account.delete`, `provider_subscription.credential.store`, `provider_subscription.credential.rotate`, `provider_subscription.credential.revoke`, and `provider_subscription.reconcile`, plus credential reads through the existing audited `vault.resolve` producer. Each lifecycle row uses the fixed redacted resource `provider-subscription:<subscriptionProviderId>:<accountSlotId>`, an outcome-specific fixed summary, `null` on success or one stable provider-subscription error code on failure, and no credential, Vault reference, provider body, raw account id, or path. Composition adds no provider-subscription-specific public audit schema, route, operation, or readback contract.
-- `apps/nanocore/src/policy/permission-decisions.ts` writes durable `PermissionDecision` rows for boot policy self-checks, OpenAI-compatible LLM gateway policy outcomes, real bounded worker-turn launch decisions, and policy-originated approval or escalation rows. Ordinary Task launch PermissionDecision and Audit remain with the worker admission/checkpoint owners. The Goal owner records Goal commands and Goal/Card/Plan/Task-link evidence; Goal dispatch uses ordinary Task admission. The old Goal Mode worker-launch rows are not a current producer. Boot and gateway decisions are server-scoped; workspace decisions are stored in the owning `workspace.sqlite`. Both server- and workspace-owned permission decisions now receive a linked `AuditEvent` row through the general audit recorder with `permissionDecisionId` filled. Server-owned permission decisions are exposed through `POST /api/app/operations/permission.server-list`, `client.operations['permission.server-list']`, and the bundled CLI `permission.server-list` operation; workspace-owned permission decisions are exposed through `POST /api/app/operations/permission.workspace-list`, `client.operations['permission.workspace-list']`, and `permission.workspace-list`.
-- `CapabilityCallSchema` (`packages/protocol/src/models/capability.ts`) now declares optional `systemPromptDigest`. The public Gateway and AEP Worker inference producers in `apps/nanocore/src/llm/gateway-routes.ts` compute the digest from the pre-adapter request and persist it through `apps/nanocore/src/llm/system-prompt-digest.ts` in `capability_calls.system_prompt_digest` before Provider adaptation. The digest groups canonical Core-intended system prompts and keeps an absent prompt distinct from an explicit default literal. The accepted producer is `family: 'llm'` calls opened above the provider split, not every `CapabilityCall`; other families and other family-LLM usage rows such as Quick Chat omit it. The schema and SQLite constraint restrict the digest to Gateway-entry `llm.chat_completions` and `llm.responses` calls. The shared ledger row mapper in `apps/nanocore/src/capability/usage-ledger.ts` carries the stored digest through capability-usage readback and Workspace export. An absent digest stays absent.  Two subscription provider families are admitted today, `openai-codex` and `xai` (`apps/nanocore/src/llm/provider-subscription-operation-implementations.ts`, `PROVIDERS`). Every production Gateway path currently dispatches through `PiAiGatewayClient` (`apps/nanocore/src/llm/README.md`). `createDefaultPiAiGatewayModels` registers nine upstream provider plugins, including `xaiProvider` (`apps/nanocore/src/llm/pi-ai-client.ts`). `LLMGatewayProviderDispatcher` applies common Responses admission before pair resolution and passes both public formats unchanged to their matching Pi client methods. `PiAiGatewayClient` maps each admitted request into stock Context and options and projects stock results directly to the requested format, with and without tools. Native handling uses the resolved upstream API and admitted member capability; one request-local envelope carries missing same-protocol semantics through the supported hooks. No Codex-only public mapping branch or public-format converter remains. Authored profile providers with no subscription id use the same dispatcher. The producer therefore cannot be a converter hook. Public `/v1/chat/completions` and `/v1/responses` calls persist durable `CapabilityCall` rows when the request carries `metadata.openkit.workspaceId` and the Core database is available, with linked `UsageRecord` rows when provider usage is available; a public call with no Workspace lineage uses the existing Server call and usage families in Core and retains the same digest. A deployment without a Core database cannot retain that chain; no record is fabricated.
-- `apps/nanocore/src/capability/usage-ledger.ts` writes workspace-scoped `CapabilityCall` and `UsageRecord` rows through the shared recorder, persists stable source id arrays for source-aware calls, and emits linked terminal `AuditEvent` rows when capability calls finish. `queued` and `running` are the only nonterminal values; the terminal vocabulary is `succeeded`, `failed`, `denied`, `aborted`, `timed-out`, `interrupted`, and `unknown`. One Workspace transaction writes a terminal call and its linked AuditEvent at the same instant with the owned outcome mapping or rolls both back; restart recovery maps every leftover `running` call to `unknown` with `capability_call_recovered_after_restart` and makes no stronger inference. Workspace Knowledge Store entry writes, source registration, source read, retrieval, maintenance writes, Knowledge Manager answer, proposal draft, repair suggestion, health check, and context preparation persist durable `knowledge` capability calls and one linked `category: "tool"`, `unit: "capability_calls"` usage row for each successful App API operation. QuickChatAgent LLM calls persist one durable `CapabilityCall` per logical invocation, including failures without usage, with linked `UsageRecord` rows when provider usage is available. Public `/v1/chat/completions` and `/v1/responses` calls routed through the pi-ai adapter persist durable `CapabilityCall` and linked `UsageRecord` rows when the request carries `metadata.openkit.workspaceId`; public calls without Workspace metadata use the existing Server records in Core when available; calls without Core remain process-local diagnostics only. Selected Worker MCP list and tool calls use this same ledger; list operations emit no usage, while each upstream-contacting tool call emits exactly one `category: "tool"`, `unit: "tool_calls"` row even if its later terminal outcome fails, times out, is interrupted, or becomes unknown. Terminal worker checkpoints emit one durable `runtime.worker_turn` capability call plus one `category: "runtime"`, `unit: "sandbox_sessions"` usage row, workspace export emits linked storage usage. Authenticated Worker `work.artifact.submit` uses the built-in MCP CapabilityCall producer; broader diagnostic capability production remains incomplete. Worker Knowledge ask and tell record CapabilityCall evidence, as the implementation summary states.
-- Workspace-attributed pi-ai gateway calls now project one terminal raw usage observation into positive input, output, cache-read, and cache-write `tokens` rows plus one positive estimated-`usd` row when reported. Provider-error and aborted terminal observations are recorded before public normalization; public responses, errors, diagnostics, and durable rows never retain the raw usage object or prompt-cache key.
-- `apps/nanocore/src/evidence-bundles.ts` stores workspace-owned compact `EvidenceBundle` indexes in `workspace.sqlite` through `drizzle/workspace/0000_baseline.sql`. Automatic producer-owned bundle creation and readback use `POST /api/app/operations/evidence.bundle-list`, `client.operations['evidence.bundle-list']`, and the bundled CLI `evidence.bundle-list` operation; no manual App API, Core Client, or remote MCP interface creation command exists. Runtime provenance creates separate restricted-raw and product-safe normalized-index bundles: ordinary reads hide the stored restricted raw refs, deterministic expiry deletes only `evidence/backend/<rawBundleId>/`, clears the row refs, and marks it `expired`, while the normalized index remains governed and resolvable. Default workspace export carries an expired ref-free source-digest row plus the normalized index and omits restricted files and locators.
-- `apps/nanocore/src/runtime/runtime-evidence.ts` stores workspace-owned normalized `RuntimeEvidence` indexes in `workspace.sqlite` through `drizzle/workspace/0000_baseline.sql`. Existing producers cover terminal worker checkpoints and materialization readiness, and the deterministic transcript-collection producer records provenance capture completeness, stream/frame and origin counts, worker-inference reconciliation counts, gateway completeness, and linked raw/index EvidenceBundle ids without copying raw backend payloads or native identifiers. NanoCore exposes readback through `POST /api/app/operations/evidence.runtime-list`, `client.operations['evidence.runtime-list']`, and the bundled CLI `evidence.runtime-list` operation. Workspace export carries these rows through `records/runtime-evidence.jsonl`.
-- `apps/nanocore/src/storage/workspace-stage-review-records.ts` (re-exported by `apps/nanocore/src/runtime/workspace-sync-records.ts`) persists staged workspace review records and now emits one linked workspace `AuditEvent` plus one compact `EvidenceBundle` index when a review is first staged. Change-set payloads inherit `sourceId` from the existing materialization record when worker manifests omit it, so downstream review records retain catalog-source lineage without trusting the worker to restate it. Upserted review updates do not duplicate the audit or evidence rows.
-- `apps/nanocore/src/storage/workspace-apply-result-records.ts` (re-exported by `apps/nanocore/src/runtime/workspace-apply-results.ts`) persists review-gated workspace apply results and now emits one linked workspace `AuditEvent` plus one compact `EvidenceBundle` index when a new apply result is stored. Idempotent replays do not duplicate the audit or evidence rows.
-- `apps/nanocore/src/runtime/goal-owner.ts` persists current Goal, Card, Plan and Task-link records and emits their workspace `AuditEvent` rows. The old `goal-store` module is gone. These audit summaries omit goal and task title or objective text.
-- `apps/nanocore/src/runtime/worker-checkpoints.ts` persists worker checkpoint rows and now emits one workspace `AuditEvent` when a checkpoint first transitions into a terminal worker stage. Repeated terminal updates do not duplicate the audit row.
-- The old goal verification and goal review modules are gone. They are not current Audit producers. Current Goal evidence stays with `apps/nanocore/src/runtime/goal-owner.ts`.
-- No current generic pending-input record or audit producer exists. The former pending-user-turn module and its enqueue, consume, convert, and cancel audit writers were deleted with the unauthoritative queue. The current Goal owner emits Audit for its accepted commands and excludes raw input and content digests. Audit rows cannot prove delivery or reconstruct missing business state. A generic pending-input producer is not claimed.
-- `apps/nanocore/src/config/runtime-config-files.ts` detects authority-bearing workspace data source catalog edits and the NanoCore runtime config route records workspace `AuditEvent` rows when `kind`, `access`, `sensitivity`, or `vaultGrantRef` changes for a source. These audit rows record the source id and changed authority fields without locator or credential material.
-- `apps/nanocore/src/storage/schema/worker-turn-checkpoints.ts` stores redacted worker checkpoint diagnostics and compact terminal evidence references, and terminal checkpoint transitions now promote a product-safe normalized runtime evidence index.
-- Workspace synchronization records store evidence references, redaction status, verification summaries, materialization records, staged reviews, and apply results. The compact `EvidenceBundle` ledger now automatically indexes first-slice materialization readiness evidence, staged review evidence refs, patch digests, and apply-result lineage, but workspace synchronization does not yet automatically promote raw backend transport material into bundle rows.
-- OpenShell backend code emits redacted launch, teardown, transcript, artifact, and backend evidence summaries.
-- Internal-agent, provider, repository, workspace, checkpoint, and runtime diagnostics include redaction helpers and tests for token, host-path, provider-secret, and raw-secret-shaped values.
-
-The current usage schema has durable workspace storage, a shared recorder, internal QuickChat LLM usage, workspace-attributed public LLM gateway usage for pi-ai, native OpenAI-compatible, and Codex provider paths, first-slice Knowledge Store entry create, entry update, entry delete, source registration, source read, retrieval, observation, claim, promotion, conflict, resolution, and Knowledge Manager answer, proposal draft, repair suggestion, health check, and context preparation usage, selected Worker MCP tool-call usage, terminal worker-turn runtime usage, and workspace export storage usage.  Future knowledge gateway operations, additional storage producers, additional network producers, and broader sandbox usage producers can extend the same record model without blocking the V1 implementation.
-
-Current `UsageRecordSchema` ownership fields include `workspaceId`, optional `threadId`, optional `turnId`, optional `itemId`, optional `capabilityCallId`, optional `agentId`, optional `agentSessionId`, and `sourceIds`.
-
-Stage 7 adds exactly one required nullable `responsibleUserId` to `UsageRecord`. A Workspace-attributed row produced by an authenticated request or AEP-backed runtime effect must store the non-null user derived by the successful current-authority predicate; a server diagnostic or system-only measurement with no user-accountable Workspace effect stores `null`. A fresh apply request attributes its own authenticated command actor rather than the originating worker. The value is immutable historical attribution after removal or disable and never authorizes an effect, selects storage, or substitutes for current Core membership and policy. Existing CapabilityCall, AuditEvent, RuntimeEvidence, scheduler, and worker-control records gain no Stage 7 actor field: they retain their existing Turn, AgentSession, AEP snapshot, request, and cross-record links, with `AEP.scope.triggerActor` remaining the sole runtime actor authority.
-
-Current measurement fields include `unit`, `quantity`, `category`, `providerRef`, logical `modelId`, resolved `providerModel`, `source`, `recordedAt`, and `requestId`. The closed unit vocabulary includes `usd` only for provider-reported cost estimates; it does not establish billing, currency conversion, or allocation policy.
-
-The current `category` enum covers `llm`, `tool`, `runtime`, `storage`, and `network`. This target spec still keeps `sandbox` as a future conceptual category until an active sandbox usage producer lands.
-
-The current implementation has a boot-lifecycle durable audit table, boot lifecycle server `AuditEvent` producers, first server- and workspace-scoped general `audit_events` tables and recorder skeletons, terminal capability-call audit producers including selected Worker MCP calls, public server and workspace audit-event readback, server and workspace permission-decision audit producers with permission-decision linkage, public server and workspace permission-decision readback, server/workspace VaultUse audit producers with vault-grant linkage when grant-backed, vault admin server `AuditEvent` producers linked to `vault_admin_audit_events`, access-token lifecycle server `AuditEvent` producers for bootstrap consumption, token issuance, token revocation, and token rotation, staged workspace-review audit producers, workspace apply-result audit producers, terminal worker-checkpoint audit producers, first-slice terminal worker-checkpoint and materialization-readiness `RuntimeEvidence` producers with import-boundary unknown-field stripping, terminal worker-turn runtime usage producers, workspace export storage usage producers, scheduler admission retry and cancel workspace audit producers, workspace data source catalog authority-edit audit producers, first-slice workspace-owned compact `EvidenceBundle` indexes with read-only App API, Core Client, and bundled CLI projections backed by automatic trusted producers, import-boundary unknown-field stripping, import-boundary unknown-kind quarantine, and ephemeral-diagnostic compaction, durable QuickChat and workspace-attributed public LLM usage producers for pi-ai, native OpenAI-compatible, and Codex gateway paths, usage-ledger import unknown-field stripping, and first-slice durable permission decision producers for boot policy self-checks, LLM gateway policy outcomes, worker-turn launch decisions, and policy-originated approval or escalation rows. Worker Knowledge ask and tell record CapabilityCall evidence. Artifact, diagnostic and pending-input audit producers are not claimed complete. Ordinary import is absent and is not an audit producer. Current Goal, Card, Plan and Task-link Audit stays with the Goal owner. Ordinary Task launch PermissionDecision and Audit remain with the worker admission and checkpoint owners. Goal dispatch uses ordinary Task admission. The old goal-store, verification and review producers are gone.
-
-The authored provider API-key producer, seven provider-subscription lifecycle producers, and their existing audited `vault.resolve` dependency are active through the provider-neutral App API. Unified pi-ai Gateway calls continue to project provider-reported terminal usage through the existing durable workspace-attributed recorder, including positive input, output, cache-read, cache-write, and estimated-`usd` rows when reported; quota reads add no usage owner or durable ledger. Physical removal of the legacy provider artifacts is complete. This spec remains `Partial` because its broader producer and retention gaps remain as listed below, while reviewed provider-pair cleanup and credential-backed provider verification are not yet complete.
-
-## EvidenceBundle
-
-`EvidenceBundle` should carry:
-
-- evidence bundle id
-- owner scope
-- workspace id when applicable
-- thread id when applicable
-- turn id when applicable
-- AgentSession id when applicable
-- backend type when applicable
-- source kind
-- normalized summary
-- raw evidence refs
-- redacted evidence refs
-- content digests
-- retention class
-- sensitivity class
-- import status
-- created timestamp
-- required features when the evidence bundle depends on a newer required semantic
-
-Evidence import status:
-
-- `collected`
-- `verified`
-- `normalized`
-- `promoted`
-- `quarantined`
-- `expired`
-
-Only `promoted` evidence can be treated as supporting canonical product records.
-
-Unknown or unsupported evidence kinds must remain unpromoted.
+`CapabilityCall` (`CapabilityCallSchema` in `packages/protocol/src/models/capability.ts`) carries an explicit `WorkOwner` union (`workspace` or `server`, forbidding top-level `workspaceId`), status-dependent `startedAt`/`completedAt` timestamps (with parsed-instant terminal ordering enforced in Zod), optional `systemPromptDigest` (`SystemPromptDigestSchema`, carried only on `family: 'llm'` Gateway-entry `llm.chat_completions` and `llm.responses` calls opened above the provider split to group Core-intended prompts before provider adaptation across `PiAiGatewayClient`'s two current default subscription provider families `openai-codex` and `xai` and nine registered upstream `pi-ai` provider plugins, keeping an absent prompt distinct from an explicit default literal), and optional namespaced `extensions` (`CapabilityCallExtensionsSchema` in `capability_calls.extensions_json`). The canonical retained call extension decoder preserves unknown namespaces and admitted Worker raw-output state while live projections strip unknown namespaces; `openkit.knowledge/delivery` retains the exact serialized `answer` string on asking capability calls under its Knowledge owner, and `openkit.gateway/routeLineage` retains `logicalModelId` and ordered `entries` (`GatewayRouteLineageEntrySchema` in `packages/protocol/src/models/capability.ts`):
+- `unavailable` entries record plan exclusions or pre-call provider/subscription failures before any dispatch attempt is reached, with no usage measurement reference.
+- `attempt` entries record each reached dispatch attempt and same-member retry in execution order, with output release (`outputBegan`) true only when text, reasoning, or Tool-call events or a validated non-stream result was released. Equivalent reports retain one `UsageRecord` and every matching entry cites that retained ID; a failed attempt without a measurement has no invented `UsageRecord` or separate per-attempt billing.
+- Neither entry stores `accountSlotId`. The `openkit.gateway/routeLineage` document is descriptive evidence requiring no `requiredFeatures` token; `audit.read` capability-usage readback projects the redacted route chain under current Workspace and Thread audience checks while omitting credentials, Vault locators, raw account IDs, and raw upstream errors.
+
+**Normalized startup failure, `EvidenceBundle`, and `RuntimeEvidence`**:
+- At worker-turn startup failure acceptance ([Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation)), the Harness operation slot validates authenticated operation lineage and records Core acceptance time (`observedAt` is producer observation time, not wall-clock truth, and worker HTTP status is not policy proof), admitting no raw output, secret, URL, or host path even for administrators.
+- `EvidenceBundleRecordSchema` and `ServerEvidenceBundleRecordSchema` (`packages/app-api-schemas/src/evidence-bundles.ts`) define the Workspace and Server bundle index shapes (with `rawEvidenceRefs` hidden from ordinary reads). Bundles are created only by automatic domain producers and exposed read-only via `evidence.bundle-list`; public App API, OpenAPI, Core Client, and remote MCP surfaces MUST NOT expose a manual bundle-creation operation. Only `promoted` understood evidence supports canonical product records, while unknown evidence kinds are quarantined or kept unpromoted as restricted evidence. Product-safe records link restricted bundles by ID and digest rather than copying restricted content. When restricted provenance expires (`apps/nanocore/src/evidence-bundles.ts`), NanoCore deletes only `evidence/backend/<rawBundleId>/`, clears the row's raw refs, and marks `importStatus: 'expired'` while preserving the governed normalized index; default Workspace export carries the expired ref-free row and normalized index while omitting restricted files and locators (admitted restricted originals travel only under the administrator export exception without refreshing retention, hold state, or expiry).
+- `RuntimeEvidenceRecordSchema` and `RuntimeEvidenceManifestEntrySchema` (`packages/app-api-schemas/src/runtime-evidence.ts`, exposed read-only via `evidence.runtime-list` and exported in `records/runtime-evidence.jsonl`) define the normalized runtime evidence shape, with required `createdAt` and nullable `startedAt`, `completedAt`, and `collectedAt` lifecycle timestamps (missing lifecycle times remain `null` rather than fabricated), `policyDigest` (SHA-256 of the exact admitted AEP `policy` JSON using snapshot serialization, changing whenever policy content changes and preserved without live recomputation), and `transcriptSummary` (with `worker.runtime-provenance.v1` capture completeness and lineage). Current producers cover terminal worker checkpoints, materialization readiness, transcript collection, and backend cleanup teardown (`worker-backend-cleanup-projection.ts`). Raw OpenShell/OCSF payloads and private epoch invalidation reports remain restricted non-authorizing inputs.
+
+**Storage scope homing and Workspace deletion closure**:
+- Database capability selects the storage home (`apps/nanocore/src/audit-events.ts`, `usage-ledger.ts`): Workspace-content rows home in `workspace.sqlite` with files under `<workspace>/evidence/`; Server control-plane rows (boot lifecycle, auth sessions, server config, provider accounts, scheduler operations, migrations, and Server Thread work) home in `core.sqlite` with files under `server/evidence/`; Workspace registry, membership, invitation, ownership-transfer, administrator-recovery, and user-disable Audit rows home in `core.sqlite` (deployment-local access history excluded from portable Workspace export); User-identity rows home in `user.sqlite`. Spanning events home at the responsibility subject (server-side copies are marked derived/rebuildable), and cross-scope links use IDs and digests without cross-database foreign keys.
+- Two explicit transaction exceptions apply:
+  1. **Generative Kernel app-local Audit**: successful app/schema/lifecycle/data commands write their `AuditEvent` in that app's `data.sqlite` in the same transaction as the mutation and receipt (retaining revisions, actor, request, and Item/Turn/CapabilityCall lineage without field bodies). Workspace Audit reads aggregate app-local rows without dual-writing (reporting incomplete/unavailable if an app DB is unavailable), and portable export and deletion closures include them at the exclusive Workspace cutoff.
+  2. **Recurring trigger Audit**: Workspace-owned recurring schedule create/edit/pause/resume/delete and terminal occurrence/expired-range transitions (`recurring.schedule.create`, `recurring.schedule.edit`, `recurring.schedule.pause`, `recurring.schedule.resume`, `recurring.schedule.delete`, `recurring.occurrence.terminal`, `recurring.expired-range.record`, with one event per expired range rather than per expanded instant and at-most-three attempt summaries in product history) commit in `core.sqlite` in the same transaction as the recurring mutation and join Workspace Audit reads (using descending `(createdAt, id)` keyset pagination across sources) and portable export only when matching both `workspaceId` and one of those seven actions plus retained recurring subject identity.
+- Scheduler restart recovery armed, exact adoption, recovery timeout, cleanup CAS fence, and terminal capacity release are Core control-plane `AuditEvent` boundaries referencing the exact execution attempt and product-safe process-key-hash, backend digest, and Workspace lineage without raw process keys or credentials. Execution-substrate epoch invalidation (`runtime.epoch.invalidate`, carrying elapsed lifetime, outcome, and redacted interrupted-session lineage) and capacity-restoring readiness (`runtime.epoch.ready`, carrying fence-to-capacity elapsed time and outcome) are Audit-visible (never Item-visible) Core control-plane `AuditEvent` boundaries where substrate classification stays in `resource`/`summary` rather than `action`. Diagnostics MUST NOT claim complete Audit/Usage or measured epoch frequency/cost while producers are unimplemented. Retained quarantine retirement (`Multi-User Workspace System`) appends one Core `AuditEvent` with Workspace, request, and registry revision without creating a deletion closure or claiming reclamation.
+- **Product visibility, retention assignment, and redaction**: Item-visible records carry user-relevant approvals, denials, blocked states, Artifact notices, review events, and final worker summaries; Audit-visible records carry policy decisions, capability calls, Vault use, backend/epoch lifecycle, provider routing, usage attribution, and evidence import; Diagnostics-only records carry health checks, retry counts, feature negotiation, and degraded capability details; Raw restricted evidence carries backend logs, raw payloads, and sensitive traces (never exposed by product APIs, except that admitted original bodies travel intact in administrator-authorized portable Workspace export under current Thread audience and body-read checks per [Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md)). Under [Storage](../core/storage.md#retention-classes), diagnostics-only health, retry, feature-negotiation, and invalidation records use `ephemeral-diagnostic`; normalized Worker Turn, Artifact, Workspace sync review, and verification evidence uses `turn-evidence` (retained with the Turn without promoting linked `restricted-raw` bytes or extending their expiry); governance `AuditEvent`, `UsageRecord` (kept queryable as raw rows until retention policy deletes or compacts them), `PermissionDecision`, `CapabilityCall`, `VaultUse`, recurring trigger history, deletion, revocation, and authority-change records use `workspace-audit` (while Server control-plane facts keep their Server home under their owner's class); and raw backend logs, provider payloads, native transcripts, quarantined output, private runtime provenance, and any authorized bounded raw capture use `restricted-raw` (raw audio and runtime-private reasoning are not retained by default: raw-audio capture is forbidden until an accepted owner declares a capture path, and bounded capture requires an accepted owner spec plus a current permission-owner allow and stays `restricted-raw`), while `legal-hold` blocks deletion until released without granting read, recovery, membership, promotion, or Agent authority. No record may contain secret values, raw authorization headers, API keys, raw provider account IDs, raw prompt-cache keys, unrestricted file contents, backend-private session tokens, full host paths, or raw environment variables; correlation uses stable redacted labels or digests.
+- **Workspace deletion closure (`WorkspaceDeletionClosureSchema`, `ClosureInventoryEntrySchema`, and `verifyWorkspaceDeletionClosure` in `apps/nanocore/src/workspace-deletion-evidence.ts`)**: before terminal Workspace deletion and after the exclusive mutation fence moves the registry from `active` to `deleting` (the `pre-terminal-deletion` cutoff), NanoCore seals a private `0700` directory (`0600` files) at `server/exports/workspace-closures/<workspaceId>/<closureId>/` bound to the exact verified operational recovery backup ID and manifest digest (keeping the closure distinct from the backup without changing or reusing the backup manifest). After deletion, the closure and its exact referenced operational backup retain the Workspace content and evidence; other retained generations remain governed by their retention owners. The closure contains `workspace-closure.json` (`recordType: 'workspace-deletion-closure'`, `closureVersion: 1`, declaring `workspace.recurring-history.v1`, complete requested envelope and operational-backup identity, an exact `contentInventory` containing each non-manifest file once with relative path, byte length, and SHA-256 digest enforced by `verifyWorkspaceDeletionClosure`, `contentDigest` as the SHA-256 of `JSON.stringify(contentInventory)` as a named retained serialization exception, and no credentials or locators; the deletion request separately binds the SHA-256 of the newline-terminated `workspace-closure.json` bytes), all ten mandatory JSONL files even when empty (`records/core-workspace-registry.jsonl`, `records/core-workspace-memberships.jsonl`, `records/core-workspace-invitations.jsonl`, `records/core-audit-events.jsonl`, `records/workspace-audit-events.jsonl` including app-local Audit, `records/permission-decisions.jsonl`, `records/vault-use.jsonl`, `records/usage-aggregates.jsonl` as a deterministic aggregate that does not replace raw rows before deletion, `records/evidence-manifests.jsonl`, and `records/recurring-history.jsonl`; retained closures without `workspace.recurring-history.v1` keep their nine-file set), and conditional `evidence/<bundleId>/` files when required by retention class. The terminal deletion `AuditEvent`, retained original-owner membership, removed non-owner memberships, revoked invitations, and terminal command receipt remain in Core outside the closure. The closure is non-authorizing historical evidence; readers ignore unknown descriptive fields while enforcing exact inventory, required features, and original-byte digests.
+
+## Security Events
+
+Server-scope security event projection follows [Runtime Security](20261109-runtime_security.md): each producer MUST record its required fields in `core.sqlite` (reporting missing historical source facts as unsupported rather than inferring them), excluding findings, notification text, and sensitive report bodies:
+
+| Event action | Producer | Required retained facts |
+| --- | --- | --- |
+| `auth.token.issue` | Access-token operations | Token ID, scope, owner, principal, actor, expiry |
+| `auth.token.revoke`, `auth.token.rotate` | Access-token operations | Token ID, scope, actor |
+| `auth.admin-recovery.issue` | Administrator recovery | Target User, actor |
+| `auth.bootstrap.consume` | Bootstrap | Actor |
+| `administration.configuration.apply` | Configuration apply | Changed sections, actor |
+| `server.config.update` | Server configuration | Changed keys, actor |
+| `policy.write` | Policy administration | Scope, full-diff classification (including deletions and weakened gates), actor |
+| `user.disable` | User administration | Target User, actor |
+| `app.update.start` | App update | Target digest, actor |
+| `channel.pairing.bind`, `channel.pairing.unbind` | Channel pairing | Channel kind, User, binding revision, actor |
+| `auth.failure-threshold` | Limiter, bearer middleware | Kind, key kind, window, bounded count (no credential values) |
+| `auth.revoked-credential-presented` | Bearer verifier | Token ID, scope, status, source |
+
+Authoring a provider API key emits `vault.set_provider_api_key` with fixed redacted resource `vault:<backendKind>`, outcome (`succeeded`, `failed`, `denied`), and `provider_api_key_recovery_required` if Core reference persistence fails after a backend effect. Provider-subscription accounts (`apps/nanocore/src/llm/provider-subscription-accounts.ts`) emit `provider_subscription.account.create`, `provider_subscription.account.update`, `provider_subscription.account.delete`, `provider_subscription.credential.store`, `provider_subscription.credential.rotate`, `provider_subscription.credential.revoke`, and `provider_subscription.reconcile` (plus audited `vault.resolve` reads) with fixed redacted resource `provider-subscription:<subscriptionProviderId>:<accountSlotId>` and no secret or raw account ID.
+
+Deception and containment sensors ([Runtime Security](20261109-runtime_security.md)) publish redacted Server control-plane safety facts with verified sensor identity, admitted execution/delivery lineage, Policy/grant revision, and actual operation outcomes through existing `AuditEvent`, `PermissionDecision`, `CapabilityCall`, `VaultUse`, and `EvidenceBundle` records without copying Workspace content to Server storage, accepting caller-supplied target/honey/memory values, or inferring containment/recall from missing or failed stops. Repeated trips reuse the existing restriction and notice lifecycle under static rate/cardinality bounds and reserved critical capacity (recording excess observations as bounded counts with explicit gaps), and recovery reads original journal/Policy/native receipts without granting effect authority to notification Turns.
+
+## Capability Usage
+
+One adapter-neutral shared ledger (`apps/nanocore/src/capability/usage-ledger.ts` and `usage-ledger-native.ts`) serves all `CapabilityCall` and `UsageRecord` producers (LLM Gateway, QuickChat/Assistant, selected Worker MCP, internal Assistant MCP, Knowledge Store/Manager, terminal worker checkpoints, and Workspace export). Neither `pi-ai` nor MCP adapters own a parallel durable ledger; routes and dispatchers invoke the shared recorder directly without a separate event bus.
+
+### GatewayCallContext
+
+Before contacting an upstream provider or MCP server, the producer resolves a `GatewayCallContext` carrying:
+- `authorityActor` (transient enforcement input: the authenticated request `ActorRef`, owning AEP `scope.triggerActor`, or `null` only for unattributed Server diagnostics; never copied onto `CapabilityCall` or `RuntimeEvidence`, while `UsageRecord` stores only the derived nullable `responsibleUserId` from the successful current-authority check).
+- `workspaceId` for Workspace-owned calls (`workspace.sqlite`), or `null` for Server-owned calls (`core.sqlite`, `owner: {kind: 'server'}`; in the current increment only Server Knowledge Manager work, authorized unattributed public Gateway calls when Core is available, and separate health/bootstrap probes run at Server scope, while public calls without Core remain process-local diagnostics only).
+- Nullable `threadId`, `turnId` (recorded on Goal Coordinator LLM calls as the active Turn, never `null`), `itemId`, `agentId`, `agentSessionId`, `packageSnapshotId`, `schemaSnapshotId`, product-safe `runtimeOriginRef` (`rto_...`), and `runtimeCacheLineageRef` (`rcl_...`), plus touched `sourceIds`.
+- `capabilityId`, `family` from the closed seven-family ledger vocabulary in `apps/nanocore/src/storage/control-store-capability.ts` (distinct from route supply categories), exact `operation`, nullable per-invocation `requestId`, nullable `providerRef` and `serviceRef`, and `redactionClass`.
+- Workspace-attributed execution requires `workspaceId` and a non-null `authorityActor` that passes the current-authority predicate ([Multi-User Workspace System](20260715-multi_user_workspace_system.md)) for `llm.gateway.use`, `tool.use`, or `network.egress` before starting a call or contacting upstream. Internal Assistant MCP uses authenticated User/Workspace/Thread/Turn/request lineage without an Agent, AgentSession, or AEP ([Internal Agent Resource Integration](20260909-internal_agent_resource_integration.md)). On command-initiated Assistant Turns (`conversation.submit`), each logical inference call uses a `null` per-invocation `requestId` and allocates a fresh `CapabilityCall` while carrying the command `requestId` separately to Audit via `auditLineage` (without altering internal Assistant MCP request lineage). The context and ledger rows MUST NOT carry prompt text, tool arguments, tool results (outside the typed `openkit.knowledge/delivery` extension), secrets, bearer tokens, raw URLs with credentials, provider payloads, or raw prompt-cache keys.
+
+### CapabilityCall Lifecycle
+
+1. **`startCapabilityCall(context)`**: in the owning SQLite transaction before upstream contact, inserts the pending `CapabilityCall` row and paired `capability.admit` `AuditEvent` (`outcome: 'unknown'`, capturing available actor, authentication summary, and command request lineage). An attributed logical Gateway invocation opens one `CapabilityCall` before the route plan runs (`providerRef: null` when spanning multiple route members), appends `openkit.gateway/routeLineage` entries in the owning transaction before each next attempt or member, and finishes the call once at the logical outcome.
+2. **`recordUsage(callId, usage[])`**: persists zero or more `UsageRecord` rows when measured consumption exists (contacted Worker MCP calls may combine usage and terminal finish in one native transaction).
+3. **`finishCapabilityCall(callId, outcome)`**: commits the terminal `CapabilityCall` status (`CapabilityCallStatusSchema` in `packages/protocol/src/models/capability.ts` and [Mediation](../core/mediation.md)) and its linked terminal `AuditEvent` in the same owning database transaction at the same instant, or rolls both back (reusing admission-captured actor/authentication, with request-ID precedence: call `requestId`, then captured command `requestId`, then trusted finish context).
+
+### Call And Usage Identity
+
+- **Start idempotency and replay**: the start lookup key is `(workspaceId, requestId, family, operation)` within the owning database (`workspaceId` is `null` in `core.sqlite`). When a row exists (excluding reused caller-supplied `requestId` values on public Gateway LLM calls, which Gateway refuses before dispatch), exact replay is permitted only when `capabilityId`, `threadId`, `turnId`, `itemId`, `agentId`, `agentSessionId`, `packageSnapshotId`, `schemaSnapshotId`, `runtimeOriginRef`, `runtimeCacheLineageRef`, canonical sorted/deduplicated `sourceIds`, `providerRef`, `serviceRef`, and `redactionClass` match (`callId`, `summary`, status, `errorCode`, timestamps, and `authorityActor` are excluded). Equivalent measurement retry returns the existing `UsageRecord` and ID without duplication, comparing `capabilityCallId`, `category`, `unit`, `quantity`, `modelId`, `providerModel`, `providerRef`, `source`, and normalized `sourceIds`.
+- **Identifier allocation**: independent default call and usage IDs allocate `cap` and `use` UUIDv7 once per new row ([Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids)). Caller-supplied derived `cap` UUIDv5 IDs are admitted only from their four declared allocating owners: [Pending Requests](20260930-pending_requests.md), [Worker Agent Capability](20260703-worker_agent_capability.md), [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md), and [Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md). All `UsageRecord` rows (including terminal-checkpoint, export-inventory, and contacted pending-call measurements) use independent `use` UUIDv7 allocation.
+
+**`UsageRecord` (`UsageRecordSchema`, `ServerUsageRecordSchema`, and `UsageUnitSchema` in `packages/protocol/src/models/usage.ts`)**:
+- Validates against `UsageRecordSchema` (Workspace-owned) or `ServerUsageRecordSchema` (Server-owned with `owner: {kind: 'server'}` and no Workspace anchor), retaining required nullable `responsibleUserId` (historical attribution derived from the successful current-authority check; never grants authority), measured nonnegative `quantity` (unavailable consumption is never fabricated as zero), logical requested `modelId` distinct from nullable resolved `providerModel` (never backfilled or relabeled by later retries/fallbacks), nullable OpenKit `providerRef` (never a raw `pi-ai` provider name), and stable OpenKit `source` label.
+- **Producer measurement rules**:
+  - **LLM (`category: 'llm'`)**: `pi-ai` Gateway calls observe raw terminal usage once before public normalization (including on provider error or client abort) and emit positive `tokens` rows for input, output, cache-read, and cache-write plus one positive `usd` row when provider-reported cost exists (treated strictly as telemetry, never billing or invoice authority; QuickChat falls back to one `requests` row only when token usage is absent).
+  - **MCP (`category: 'tool'`)**: `mcp.call-tool` (from Workers or internal Assistant) whose upstream contact occurred or cannot be excluded emits exactly one row with `unit: 'tool_calls'`, `quantity: 1`, MCP catalog/redacted service `providerRef`, `modelId: null`, and NanoCore source label (plus optional bounded `bytes` rows when measured). `mcp.list-servers` and `mcp.list-tools` create `CapabilityCall` and `AuditEvent` rows but zero `UsageRecord` rows.
+  - **Knowledge, runtime, and storage**: the named metered Workspace Knowledge operations use the shared Knowledge usage producer (`recordKnowledgeGatewayUsage` in `apps/nanocore/src/knowledge-operations.ts`) to emit `category: 'tool'`, `unit: 'capability_calls'` rows (and Worker Knowledge `ask`/`tell` record `CapabilityCall` evidence); terminal worker checkpoints emit `runtime.worker_turn` calls and `category: 'runtime'`, `unit: 'sandbox_sessions'`, `quantity: 1` rows; Workspace export emits `category: 'storage'`, `unit: 'files'` and `'bytes'` rows. Derived usage aggregates are marked rebuildable and never replace raw `UsageRecord` rows.
 
 ## Retention Classes
 
-`docs/core/storage.md` owns the closed retention-class vocabulary and legal-hold deletion boundary. This spec assigns those classes to audit, usage, and evidence material:
+See [Storage](../core/storage.md#retention-classes) and [Agent Data Retention And Deletion](../core/storage.md#agent-data-retention-and-deletion).
 
-| Class | Purpose | Default handling |
-| --- | --- | --- |
-| `ephemeral-diagnostic` | Short-lived health checks, retries, and optional feature negotiation. | Delete or compact aggressively after diagnostics windows close. |
-| `turn-evidence` | Evidence needed to explain one worker turn, artifact, workspace review, or verification result. | Retain with the turn until workspace retention policy compacts or archives it. |
-| `workspace-audit` | Audit, usage, permission, capability, and vault-use rows needed for workspace governance. | Retain according to workspace audit policy and export with workspace audit bundles. |
-| `restricted-raw` | Raw backend logs, raw payload snippets, sensitive operational traces, and quarantined evidence. | Restrict by default, retain for a bounded window, and expose only redacted manifests, except through the portable export exception under Raw restricted evidence. |
-| `legal-hold` | Material explicitly held by policy, administrator action, or external compliance requirement. | Follow the Core deletion block until the hold is removed. |
+## Failure And Recovery
 
-When a record has both product and restricted evidence, the product-safe record should reference the restricted evidence bundle by id and digest rather than duplicating restricted content.
+- **Validation and pre-contact refusal**: malformed authority-bearing fields (`workspaceId`, `family`, `operation`, `providerRef`, `permissionDecisionId`, `vaultGrantId`, `capabilityCallId`, unknown credential kinds, or mismatched startup-failure receipt identity/operation/stage) and allocation failures fail closed before upstream contact or row creation; missing optional diagnostic lineage may record degraded diagnostics without inventing authority. A call rejected by policy before upstream contact (or refused after a Pending Request claim) finishes as `denied` (or failed execution refusal) with `CapabilityCall` and `AuditEvent` rows and zero `UsageRecord` rows.
+- **Immutable replay conflict and closed calls**: any contradiction on the 14 immutable attribution fields for an existing `(workspaceId, requestId, family, operation)` key fails closed before upstream contact without creating a row or mutating state. A `null` per-invocation `requestId` grants no request-key replay (the command owner prevents duplicate execution), and a closed `CapabilityCall` is never reopened; terminal update on an already closed call is a no-op.
+- **Contacted failure, timeout, abort, and accounting failure**: a call that contacts upstream and then fails, times out, or is aborted by the client records any measurable partial `UsageRecord` rows and finishes as `failed`, `timed-out`, or `aborted` with a normalized OpenKit error code (never raw `pi-ai` or MCP stack traces or SSE secrets). After a definite Usage write failure following contact, the recorder attempts to finish the call as `failed` with `usage_record_failed` and surfaces the accounting failure. An unknown acknowledgement remains `unknown` and authorizes neither a failure diagnosis nor a retry or rewrite of the original call. Required Worker accounting fails closed, whereas manual Server diagnostics may return a typed usage-write diagnostic without claiming full accounting. Public response timing does not wait on asynchronous accounting beyond fail-closed durability boundaries.
+- **Crash, interruption, and boot recovery**: a call known to have stopped incomplete finishes as `interrupted`; an in-flight `running` call left by a crash is marked `unknown` with `capability_call_recovered_after_restart` on boot scan (`usage-ledger.ts`). Neither `interrupted` nor `unknown` proves whether an external effect occurred or authorizes automatic replay. A crash between startup-failure receipt acceptance and Turn persistence may leave cause unavailable without cross-store atomicity, and later evidence never rewrites an original result.
+- **Audit and mutation coupling**: Notebook admission `AuditEvent` failure prevents Git ref advancement; app-local `data.sqlite` `AuditEvent` failure rolls back the Light App business mutation; Core recurring `AuditEvent` failure rolls back the local schedule/occurrence transition (while Audit projection failure after occurrence acceptance never resubmits work). Public `turn.interrupt` Audit storage failure returns an explicit command error without rolling back a reached runtime stop, while internal Chat/Administration/Knowledge Manager interruption shares a native transaction across terminal acknowledgement, Stop receipt, and Audit. When that terminal outcome also seals the original submission, its original receipt and Audit join the same transaction. Tuple failure returns `recovery_required` without a success receipt or success Audit for either command, while any reached cancellation remains an actual runtime fact. Derived indexes, embeddings, summaries, prompt caches, provider sessions, and runtime materializations are non-authoritative and invalidated immediately on source deletion, authorization loss, incompatible revision, or policy change. Deletion follows the lineage resource owner without rewriting historical commands, Reviews, or Goal outcomes, and Agent code MUST NOT guess a cascade or erase evidence independently; unproved expiry, deletion, or revocation fails ordinary reads closed with the record's degraded, restricted, quarantined, expired, or `recovery_required` outcome.
+- **Deletion legal-hold preflight and closure sealing**: before creating a recovery backup or changing Workspace registry state, deletion scans every Workspace `EvidenceBundle` with `retentionClass: 'legal-hold'` and every durable `WorkspaceQuarantineRecord` (enforced by a schema coverage check), returning a safe blocked result with zero mutations when held. Closure creation owns an absent root, `fsync`s files, writes `workspace-closure.json` last, `fsync`s the directory, and verifies inventory, envelope, and manifest digest before advancing the deletion request; caught failure removes only the unsealed owned root, and any byte mismatch on retry returns `recovery_required` without resealing or repair. After closure sealing, the terminal deletion transaction removes the Workspace's Core recurring graph and its recurring Audit while retaining the new terminal deletion Audit in Core; failure rolls back that terminal transition.
 
-### Agent Data Mapping
+## Acceptance
 
-Agent-produced and Agent-adjacent data uses the existing classes above without a new Agent retention vocabulary:
+- **L0/L1/L2 schema, redaction, and table-driven replay conformance**: under [Test Strategy](20260529-test_strategy.md), verify schema conformance and canary redaction across public responses, protocol records, usage/audit rows, and diagnostics, plus one table-driven L1 check of the `(workspaceId, requestId, family, operation)` start key covering exact replay and immutable-attribution contradiction with an unchanged capability-call row count.
+- **L3 process-level attribution, interruption, and producer proof**: verify a public `turn.interrupt` by a Workspace member distinct from the Turn initiator (proving recorded interrupter `actor`, preserved `Turn.triggerActor`, replay idempotency, and private-Thread audience isolation) and representative `pi-ai` LLM and stub-MCP tool calls producing linked `CapabilityCall`, `UsageRecord`, and `AuditEvent` rows.
+- **L6 story acceptance**: verify one Worker task that uses both LLM inference and one MCP tool and exposes attributable usage for both under the same Workspace.
 
-- Raw audio and runtime-private reasoning are not retained by default. Bounded raw capture requires an accepted owning capture specification plus a current permission-owner allow and remains `restricted-raw`; a bounded redacted health, retry, or feature-negotiation summary is `ephemeral-diagnostic`. Raw-audio capture is forbidden until an accepted owner declares a capture path. Neither is an Item, completion proof, review authority, or recovery prerequisite.
-- Raw provider payloads, native Worker transcripts, unrestricted logs, sensitive traces, quarantined output, and private runtime provenance retained for a bounded need are `restricted-raw`. Product-safe evidence carries only the restricted bundle id, digest, redacted summary, sensitivity, import status, and applicable lineage.
-- Normalized evidence needed to explain one Worker Turn, Artifact, Workspace Sync Review, or verification result is `turn-evidence`. Promotion of a normalized record never promotes its linked restricted bytes or extends their bounded window.
-- Agent-related audit, usage, permission, capability, Vault-use, deletion, revocation, and authority-change facts needed for Workspace governance are `workspace-audit`. Server control-plane facts retain their existing server home while using the class their owner already assigns.
-- `legal-hold` may block deletion of any covered retained material, but it grants no read, promotion, recovery, or Agent authority.
+## Implementation
 
-Search indexes, embeddings, summaries, prompt caches, provider sessions, runtime materializations, and other derived projections are reconstructible and cannot support an authority or evidence requirement merely because they exist. Source deletion, authorization loss, incompatible revision, or policy change makes them ineligible immediately and triggers invalidation or rebuild from remaining current sources. A persisted short-lived invalidation diagnostic is `ephemeral-diagnostic`; a normalized proof required to explain one governed Turn or review is `turn-evidence`; no derived bytes are copied into a new evidence family merely to preserve them.
+- `packages/protocol/src/models/`
+- `packages/app-api-schemas/src/`
+- `apps/nanocore/src/`
+- `apps/nanocore/src/capability/`
+- `apps/nanocore/src/runtime/`
 
-Deletion follows the responsibility and resource owner recorded in lineage. The current owner check prevents future reads and promotions immediately, then the applicable Thread, Turn, Item, Artifact, Knowledge, evidence, audit, Workspace, user, or Vault lifecycle controls physical removal, closure export, independent retention, and legal hold. Deleting a source does not rewrite historical commands, Reviews, Goal outcomes, or separately accepted resources, and Agent code cannot guess a cascade or delete evidence independently.
+## Implementation Gaps
 
-If deletion, restricted-raw expiry, invalidation, or revocation cannot be proved, ordinary product reads fail closed and the owning record reports its existing degraded, restricted, quarantined, expired, or recovery-required outcome. Core does not infer external-runtime erasure, replay deletion blindly, promote stale evidence, or build a settlement workflow. Restart resumes from the owning durable record and file manifest; retry is a fresh authorized owner operation.
+- `server.config.update`, `channel.pairing.bind`, `channel.pairing.unbind`, and `auth.revoked-credential-presented` have producers - On main, these four events have no producer - #737
+- Sign-in failure thresholds produce bounded Audit signals - On main, only the bearer/source crossing produces `auth.failure-threshold`; no sign-in source/account event is written - #736
+- Five scheduler recovery boundaries (recovery armed, exact adoption, recovery timeout, cleanup CAS fence, and terminal capacity release) emit Core `AuditEvent` rows - On main, the scheduler restart-recovery, execution-attempt, and NanoHost attempt-recovery owners emit none of these five events - #768
+- Execution-substrate epoch invalidation and capacity-restoring readiness emit `runtime.epoch.invalidate` and `runtime.epoch.ready` Core `AuditEvent` rows - On main, the two recorders in `apps/nanocore/src/runtime/nanohost-epoch-audit.ts` have no production callers - #741
+- Automatic `EvidenceBundle` promotion and `RuntimeEvidence` normalization cover richer OpenShell launch, capability-negotiation, policy-apply, provider-attach, worker-shim startup, heartbeat/control-relay, file-transfer, Artifact/workspace-change collection, and backend-error summaries - On main, `RuntimeEvidence` producers cover terminal worker checkpoints, materialization readiness, transcript collection, and backend cleanup teardown only - #410
+- Additional non-Gateway resource usage producers - Additional Knowledge gateway, storage, network, and failed-attempt resource-consumption usage producers beyond current LLM, MCP, metered Knowledge, terminal worker-turn, and Workspace export paths are not implemented - #391
+- Broader Artifact, diagnostic, and general command-boundary Audit producers - Audit producers for Artifact registration, runtime teardown, and general command boundaries outside the implemented lifecycle, capability, policy, Vault, sync, checkpoint, and recurring slices are incomplete - #768
 
-The durable lifecycle class is explicitly not applicable to raw audio and private reasoning under the default because no durable record is created. Definition, authority and projection, failure, and acceptance remain applicable: observable acceptance requires no default raw audio or private-reasoning row or file, every authorized bounded raw capture to use `restricted-raw` with hidden ordinary refs, normalized proof to use `turn-evidence`, governance facts to use `workspace-audit`, derived reads to fail after deletion or revocation, owner-specific resources to retain independent lifecycle, and `legal-hold` to block deletion without authorizing access.
+## Decisions
 
-## Runtime Evidence
-
-Runtime evidence includes:
-
-- sandbox create request summary
-- backend capability negotiation summary
-- policy apply summary
-- provider attach summary
-- worker-shim startup summary
-- heartbeat summary
-- file upload and download manifests
-- transcript collection summary
-- workspace change collection summary
-- teardown summary
-- backend error summary
-- execution-substrate epoch invalidation report reference at restricted visibility, as an evidence input carrying no authority
-- runtime-native event capture and runtime-origin index collection summary when `worker.runtime-provenance.v1` is required
-
-OpenShell-native records are evidence inputs. NanoCore-owned runtime evidence records are normalized outputs.
-
-## OpenShell Evidence Normalization Baseline
-
-The first OpenShell evidence importer should normalize only the fields needed for launch debugging, turn replay, audit linkage, and product-safe diagnostics.
-
-Normalize:
-
-- backend type and backend version when available
-- local or remote placement
-- gateway or target summary without secret endpoint tokens
-- sandbox name or backend session summary as a redacted locator
-- workspace id, thread id, turn id, AgentSession id, and package snapshot id when known
-- policy file digest and policy summary
-- worker image, source, or sandbox profile summary
-- upload manifest paths, sizes, and digests
-- download manifest paths, sizes, and digests
-- transcript collection summary
-- artifact collection summary
-- workspace change manifest summary
-- control relay status and last heartbeat timestamp
-- capability route summary
-- exit code, signal, stop reason, or timeout reason
-- redacted stdout and stderr summaries
-- stable backend error code and redacted message
-- created, started, completed, and collected timestamps when available
-
-Do not normalize raw OpenShell payloads into product records merely because the backend exposes them. Raw OCSF or backend-native payloads remain restricted evidence unless an accepted spec promotes a field into the OpenKit runtime evidence shape.
-
-## Product Visibility
-
-Item-visible:
-
-- user-relevant approvals, denials, blocked states, artifact notices, review events, and final worker summaries
-
-Audit-visible:
-
-- policy decisions, capability calls, vault use, backend lifecycle, provider routing, usage attribution, and evidence import
-
-Diagnostics-only:
-
-- health checks, retry counts, backend feature negotiation, and degraded optional capability details
-
-Raw restricted evidence:
-
-- backend-native logs, raw request or response payloads, and sensitive operational traces
-
-The existing Workspace `audit.read` capability-usage reader gains a redacted route-lineage projection under current Workspace and applicable Thread audience checks: logical ID, route-member ID, unavailable/attempt disposition, selection reason, closed kind, attempt order, retry index, output-began fact, terminal result, and which entry was released. It omits credentials, Vault locators, raw account IDs and raw upstream errors; account-slot identity is not stored at all. Public errors, model discovery and ordinary Thread activity gain no private chain.
-
-Product APIs must not expose raw restricted evidence. The one exception is the portable Workspace export archive and its import: admitted original bodies of retained work data, restricted originals included, travel intact in the archive and are restored intact, so that a re-imported Workspace keeps complete information. The exception is collected only under the exporting actor's current Thread audience and body-read authorization. For an ordinary caller it never applies to other users' private Threads. A currently usable administrator credential's export includes those private Threads under the administrator eligibility rule in [Core Permissions](../core/policy.md). The exception never applies to system-managed Vault, provider, and runtime secret material, and it does not change any other product API. An imported body keeps its retention class, sensitivity classification, hold state, and original expiry; import grants no fresh retention window and no wider visibility, and content already expired or unavailable at export stays so ([decision](../decisions/20260924-restricted_bodies_travel_in_export.md)).
-
-## Redaction
-
-Records must not contain:
-
-- secret values
-- raw authorization headers
-- API keys
-- raw provider account ids
-- raw prompt cache keys
-- unrestricted file contents
-- backend-private session tokens
-- full host paths
-- raw environment variables
-
-When a value is needed for correlation, store a stable redacted label or digest.
-
-## Producer Obligations
-
-NanoCore should emit or import audit and usage records at these boundaries:
-
-- app API command accepted or denied
-- bundled CLI, Agent Skill, or worker-supplied tool operation accepted or denied
-- worker session launch
-- worker restart recovery armed, exactly adopted, timed out, cleanup CAS-fenced, and capacity released
-- AEP snapshot materialization
-- sandbox lifecycle changes
-- permission decision
-- approval requirement and decision
-- capability call
-- vault grant use
-- workspace review and apply
-- artifact registration
-- knowledge proposal and review
-- runtime teardown
-- execution-substrate epoch invalidation
-- execution-substrate readiness that returns fenced capacity
-
-### Deception And Containment Evidence
-
-[Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) requires redacted sensor, restriction and stop evidence through existing AuditEvent, PermissionDecision, CapabilityCall, Vault-use and EvidenceBundle records. Trusted sensor boundaries emit Server control-plane safety facts with opaque execution/evidence references. Original Workspace call evidence keeps its existing home and audience. This does not grant the Server trigger Workspace membership, content access or a copy of the Workspace log.
-
-Record verified sensor identity, exact admitted execution and delivery lineage, Policy/grant revision and actual operation outcomes through the existing fields. Caller-supplied target identity, raw source bodies, honey values and runtime memory are excluded. Missing evidence and failed/unknown stop remain explicit; no successful containment or credential recall is inferred. Repeated trips reuse the exact restriction and existing notice lifecycle. Static cardinality/rate bounds and reserved recovery/critical-alarm capacity apply before A1 activation. Excess observations become bounded durable counts in existing reports/Audit summaries with explicit gaps; missing work never counts as contained. Existing journal work/input references link the trusted sensor event, exact target and template; operation/invocation/output references link original Policy and native operation receipts. Recovery reads those originals; no notification Turn gains effect authority. Existing family allocation, retention and redaction apply; this adds no event store, action queue or retained sensor shape.
-
-### Execution-Substrate Epoch Boundaries
-
-The two epoch boundaries above are `AuditEvent` records in the same family as the existing restart-recovery and capacity-release rows: runtime and scheduler control-plane events. They introduce no new record family, no new storage scope, and no new retention class.
-
-They home in `core.sqlite` with evidence under `server/evidence/`, and they take the same `ownerScope` and retention class as the existing scheduler control-plane audit events. That homing is what makes them representable: one epoch may host AgentSessions belonging to more than one Workspace, so a single Workspace-homed row could not carry the event. One control-plane row per boundary carries the affected AgentSession lineage the same way new restart-recovery rows reference the exact execution attempt and Workspace lineage, and a Workspace audit read model MAY aggregate by `workspaceId` without copying or dual-writing.
-
-An epoch-invalidation event uses the exact audit action `runtime.epoch.invalidate` and carries the elapsed epoch lifetime, the outcome, and redacted lineage for the AgentSessions it interrupted. An epoch-readiness event uses the exact audit action `runtime.epoch.ready` and carries the elapsed time from fence to advertised capacity. Both exist so that invalidation frequency and rebuild cost are answerable from durable records, because the substrate's own evidence does not survive the epoch it describes.
-
-The `action` value is an audit-owned name. The substrate's own invalidation classification is carried as a bounded resource or summary value, never as the `action`, so a runtime specification's classification vocabulary cannot become the audit action vocabulary and cannot change this record's shape by changing its own list.
-
-Both records are audit-visible, alongside the other backend-lifecycle events, because an epoch invalidation interrupts every AgentSession it hosts and is not health-check or retry detail. Private substrate identity, process identifiers, roots, sockets, and backend handles are redacted to a stable opaque reference or omitted. Neither record becomes item-visible, and neither substitutes for the affected AgentSessions' own terminal records.
-
-A substrate's private invalidation report is an evidence input only. It is not an `EvidenceBundle`, it is not imported wholesale, and a reference to it carries no authority — it must not be read to resume, adopt, settle, or classify an external effect, and no readiness or capacity decision may depend on it.
-
-If a producer is not implemented, diagnostics must not claim that audit or usage is complete. The two epoch recorders exist in `apps/nanocore/src/runtime/nanohost-epoch-audit.ts`, but no production path calls them, so no current diagnostic may present epoch invalidation frequency or rebuild cost as measured.
-
-## Resolved Decisions
-
-- Audit explains responsibility, policy path, affected resource, and outcome; usage measures consumed resources; evidence preserves proof material. They link by lineage but remain separate records.
-- Agent-capability-mediated usage belongs to Agent Capability. This spec owns durable record projection and linkage, not gateway usage policy.
-- Workspace-scoped audit and usage rows should live in workspace-owned storage. Server-scope rows should live in server-owned storage. Rows with no workspace context are server-scoped.
-- Failed policy checks that consume no upstream or runtime resource should emit audit and permission records, not usage records.
-- Context package traces are file-backed context trace records. They may be referenced by audit events and evidence bundles when they prove what a worker saw.
-- Raw backend logs and OpenShell-native records are evidence inputs only; normalized OpenKit records decide product meaning.
-- Unknown evidence kinds are evidence inputs only and must not be promoted until NanoCore understands and verifies their schema and lineage.
-- Evidence bundle creation is owned by NanoCore domain producers at stable materialization, review, apply, verification, runtime, or audit boundaries. Public App API, Core Client, and remote MCP interface surfaces are read-only for evidence bundles and must not expose a manual bundle-creation command.
-- Process-local gateway usage summaries are diagnostics, not durable usage records.
-- Provider-reported cost is stored only as a positive estimated-`usd` usage row with normal capability lineage; it is not an invoice or billing authority.
-- The first retention classes are `ephemeral-diagnostic`, `turn-evidence`, `workspace-audit`, `restricted-raw`, and `legal-hold`.
-- Audit-family rows home with their authoritative responsibility owner. Workspace-content audit lives in `workspace.sqlite`; Core-owned registry, membership, invitation, ownership-transfer, administrator-recovery, and user-disable audit lives only in `core.sqlite` even when it carries `workspaceId`. Portable export excludes that deployment-local access history, while a full deployment backup retains it.
-- Stable actor references remain historical lineage after membership removal, user disable, or retained historical import and never reconstruct an access grant.
-- Membership, invitation, owner-transfer, shared-write, approval, review, and user-lifecycle mutations are required audit producer families in the multi-user baseline.
-- For the bounded Approval projection, the terminal `PermissionDecision` is the decision authority and its same-transaction linked Workspace `AuditEvent` is the sole actor and winning-request projection. The terminal row is complete only when it matches the originating `require_approval` row's Workspace, approval id, action, resource summary, subject summary, and approval kind, `PermissionDecision.auditEventId` equals that AuditEvent id, and `AuditEvent.permissionDecisionId` equals the terminal decision id. `PermissionDecision` does not duplicate `ActorRef`; a missing or contradictory source tuple or audit link makes the claim incomplete and fail closed.
-- Spanning events home at the responsibility subject; server-side copies are derived aggregates, never a second source of truth.
-- Workspace deletion produces a sealed server-owned audit closure export before removal; `legal-hold` blocks deletion.
-- The closure has a pre-terminal cutoff and is non-authorizing. The registry tombstone and terminal deletion AuditEvent remain in Core, while the closure independently seals the deployment-local governance snapshot and exact portable recovery-export reference.
-- The first OpenShell evidence normalization pass should keep product-safe launch, policy, upload/download, transcript, artifact, workspace-change, control, capability, outcome, and redacted error summaries while leaving raw backend-native payloads as restricted evidence.
-
-## Deferred / Future Work
-
-- Wire product boundary producers to the durable audit event recorder.
-- Add durable usage producers for future knowledge gateway metering, additional storage producers, network producers, broader sandbox lifecycle measurements, and any denied or failed capability attempts where measurable resources are consumed.
-- Extend automatic `EvidenceBundle` promotion and evidence-kind normalization beyond the current producers; extend `RuntimeEvidence` beyond terminal worker checkpoints, materialization readiness, and transcript collection into richer OpenShell launch, heartbeat, file-transfer, workspace-change, teardown, and backend-error normalization.
-- Wire every relevant producer to fill the available permission decision and vault-use audit links.
-- Add credential-channel context and broader producer linkage outside the exact current actor-attribution and usage producer families only when an owning specification requires it. The current usage projection owns the single UsageRecord responsible-user projection and current implemented governed-effect paths above; automation execution remains with the recurring-trigger specification, and broader usage coverage remains future work.
-- Extend retention compaction beyond explicit ephemeral-diagnostic and restricted-provenance expiry into scheduled maintenance, workspace policy configuration, and broader retention classes.
-- Normalize broader OpenShell evidence fields beyond the first terminal-checkpoint and materialization-readiness runtime evidence slices.
-- Implement the remaining ownership-scope homing gaps outside the now-implemented Workspace deletion closure.
-- Extend schema evolution fixtures beyond the current unsupported required-feature, evidence-bundle/runtime-evidence/usage-ledger unknown-field stripping, and evidence-kind quarantine slices to cover broader authority-bearing fail-closed cases.
-
-## Testing Strategy
-
-- Schema tests for audit, usage, and evidence records.
-- Actor-attribution tests for human, agent, automation, integration, and system actions, including redaction and historical retention after access removal.
-- Producer tests for key NanoCore boundaries.
-- Import tests for OpenShell-style evidence.
-- Redaction tests with provider tokens, host paths, and env vars.
-- Query tests by workspace, thread, turn, AgentSession, capability call, and policy decision.
-- Retention tests for raw evidence and compacted usage.
-- Schema evolution tests proving optional fields are tolerated while unsupported responsibility, policy, vault, retention, redaction, and evidence-promotion semantics fail closed.
-- Contract tests proving manual evidence-bundle creation is absent from App API, OpenAPI, Core Client, and the remote MCP interface while automatic producers and read-only bundle access remain available.
-- Closure tests proving legal hold blocks before export, every closed record path and exact retained byte is sealed, the cutoff excludes the terminal deletion event while retaining the deleting registry projection, restricted evidence visibility does not widen, manifest or inventory tamper fails, retry reverifies immutable bytes, and neither closure nor portable actor lineage authorizes recovery.
-
-## Risks & Mitigations
-
-- Risk: Raw logs are mistaken for audit. Mitigation: only normalized audit rows answer policy and responsibility questions.
-- Risk: Usage totals cannot be attributed. Mitigation: require lineage on every usage-producing gateway and runtime boundary.
-- Risk: Evidence storage grows without bound. Mitigation: use retention classes and compaction.
-- Risk: Audit becomes too noisy for users. Mitigation: separate item-visible, audit-visible, diagnostics-only, and restricted evidence layers.
-
-## Links
-
-- `docs/core/evidence.md`
-- `docs/core/mediation.md`
-- `docs/core/storage.md`
-- `docs/core/vault.md`
-- `docs/specs/20260703-schema_evolution_record_envelope.md`
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260629-openkit_policy_model.md`
-- `docs/specs/20260703-storage_layout_record_ownership.md`
-- `docs/specs/20260703-worker_agent_capability.md`
-- `docs/specs/20260715-multi_user_workspace_system.md`
-- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
-
-## Policy Content In Worker Outcome Lineage
-
-Worker runtime provenance outcomes retain the SHA-256 digest of the exact admitted AEP `policy` JSON in the existing RuntimeEvidence `policyDigest` field. The label `policy.snapshotId` alone is not content identity. The producer hashes the parsed Policy JSON using the same JSON serialization as the immutable AEP snapshot owner; it does not read later live configuration. Identical labels with changed Policy content must yield different digests. Import preserves historical evidence without recomputation; a missing historical digest remains unknown. This adds no snapshot store, authority or decision workflow.
+- [Restricted Bodies Travel In Export](../decisions/20260924-restricted_bodies_travel_in_export.md)
+- [Gateway Route Lineage Home](../decisions/20261002-gateway_route_lineage_home.md)
+- [Gateway Converges On Pi-Ai IR](../decisions/20261006-gateway_converges_on_pi_ai_ir.md)
+- [Assistant Inference Request Lineage](../decisions/20261015-assistant_inference_request_lineage.md)
+- [Identifier Owner Declarations](../decisions/20261015-identifier_owner_declarations.md)
+- [Identifier Derivation And Import Allocations](../decisions/20261016-identifier_derivation_and_import_allocations.md)
+- [Native Admission Fairness](../decisions/20261025-native_admission_fairness.md)
+- [Online Workspace Snapshots And Scoped Recovery](../decisions/20261027-online_workspace_snapshots_and_recovery.md)

@@ -10,7 +10,7 @@ The coordinator approved the L-GO C03/C04/C06 plan on 2026-10-18 at 14:40Z. This
 
 ## Owners And Write Boundaries
 
-[Information Consolidation](../../specs/20261018-nanocore_interception_and_information_consolidation.md) owns C06. [Skill Versioning](../../specs/20260711-skill_catalog_versioning_pinning.md) owns pins and selected-version lineage. [Kernel Operations](../../specs/20260908-generative_kernel_data_operations.md) owns app-local mutation evidence. Audit and current invocation admission keep their existing owners.
+[Information Consolidation](../../specs/20260703-policy_enforcement_mapping.md) owns C06. [Skill Versioning](../../specs/20260711-skill_catalog_versioning_pinning.md) owns pins and selected-version lineage. [Kernel Operations](../../specs/20260908-generative_kernel_data_operations.md) owns app-local mutation evidence. Audit and current invocation admission keep their existing owners.
 
 L-GO owns catalog pin publication, its read projection, Kernel command context and operation joins. L-AK agreed the seam and alone writes Knowledge paths. L-RT owns AEP/runtime consumer paths and the single C04 no-private-procedure-copy regression. L-CH owns the mediation Audit and Policy schema edits; this change does not edit those files. The A15 helper writes only its separate Kernel/operation worktree and branch, which is merged rather than cherry-picked.
 

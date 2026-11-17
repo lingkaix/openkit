@@ -97,7 +97,7 @@ This report records non-authorizing findings from the work-data retention and Tu
 - **Observation:** Public entry `startPublicLlmGatewayCall` at `apps/nanocore/src/llm/gateway-routes.ts:126-179` returns `null` with no CapabilityCall when `coreDb` is absent (`:137-139`) or lineage is absent (`:143-145`); the survey's `:153` currently lands on the inner `startCapabilityCall` invocation. Worker entry `startWorkerInferenceCall` at `:621` throws `WorkerInferenceRouteError` 503 when `coreDb` is absent (`:638-642`) and again when attribution fails (`:682-688`); its `startCapabilityCall` is at `:655`. `mode-entry-routes.ts:3576` writes `redactionClass: 'metadata'` while both gateway entries write `'metadata-only'`; `packages/app-api-schemas/src/capability-usage.ts:10` types `redactionClass` as `z.string().min(1)`, so both spellings parse.
 - **Impact:** A public Gateway call without lineage is entirely silent: no CapabilityCall is written, so the assumed fallback that such a call still records a CapabilityCall does not exist. An audit filter on `redactionClass === 'metadata-only'` misses repository-read calls.
 - **Evidence:** Direct read of the cited lines at HEAD `968f5a4e`. Source: R34.3 row 8.
-- **Owner:** `docs/specs/20260704-capability_usage_gateway_foundation.md`
+- **Owner:** `docs/specs/20260703-audit_usage_evidence_records.md#capability-usage`
 - **Next action:** Obtain that owner's admission of when a Gateway call must write a CapabilityCall, including the no-lineage public path. Do not implement a new recording obligation from this finding.
 
 ## [open] WDC-FND-011 — Item id derivation formulas differ per entry point

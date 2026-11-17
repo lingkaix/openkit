@@ -94,7 +94,7 @@ All threads, turns, items, artifacts, knowledge records, AgentSessions, and work
 
 Thread selection brings the user or channel into a durable work container. It does not imply that an AgentSession already exists.
 
-## First External Team Channel
+## Common Channel Contract
 
 Discord is the first external team channel under the [2026-10-15 ruling](../decisions/20261015-discord_first_and_desktop_deferred.md). Channel accounts bind to current Core actors; channel membership alone grants no Workspace access or authority. Inbound deduplication and exact command/request identity preserve the existing Core replay boundary. Outbound delivery is a projection of Core outcomes, never a second workflow or proof that a recipient read or accepted a result.
 

@@ -64,13 +64,13 @@ Knowledge does not own workflow progression, worker execution, final semantic co
 
 Artifacts may become Knowledge Sources, but artifacts are not required between ordinary source ingest and a Knowledge Proposal.
 
-The Knowledge Manager only manages and queries its notebook scope. It has no network tools or effects outside that purpose. Claim confidence retains its numeric 0..1 meaning; a future Policy-bound assessor supplies evidence, never publication authority. Current authority and required human decisions still apply; the approved unified assessment mechanism is Not Started.
+The Knowledge Manager only manages and queries its notebook scope. It has no network tools or effects outside that purpose. Claim confidence retains its numeric 0..1 meaning. A Policy-bound evidence assessor supplies evidence and never publication authority. Current authority and required human decisions still apply.
 
 Claim MUST be an OKF page managed and queried by the Knowledge Manager, without a separate canonical claims ledger. Reusable observations and conflict analysis use OKF Observation pages under the same Notebook lifecycle. Operational event identity, actual decisions and Audit retain their existing owners. Solidified reusable procedures belong in Skills; all other reusable understanding belongs in the owner-scoped Knowledge Base. Governed Knowledge publication refuses competing Procedure page authority; descriptive context and exact Skill references may remain. Operational history, raw Sources, candidates, app records and authority configuration retain their owners and MUST NOT become extra curated grounding stores. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this consolidation.
 
 Rule, Effect and business Objective pages use governed Scope Schema types and applicability metadata for type-aware retrieval; an Objective page does not own Goal execution. An Effect states its basis and last check. Retrieved rules and confidence MUST NOT grant authority; safety-critical rules use a pinned Skill or a Policy-bound independent validator.
 
-The Server Knowledge maintenance Thread is Server-owned and visible under current Server administration authority. Workspace membership does not admit its history.
+The Server Knowledge maintenance Thread is Server-owned and visible under current Server administration authority. Workspace membership does not admit its history. A run uses explicit Server inputs and human notebook changes. It does not learn automatically across Workspaces.
 
 The Knowledge Manager uses existing Thread, Turn and Item owners for conversation continuity. It owns no separate runtime, scheduler, retry queue or publication authority.
 
@@ -140,9 +140,9 @@ Administrator masking records a tombstone through an ordinary notebook commit. N
 
 ## Automatic Learning And Evidence Assessment
 
-Consolidation and learning from the scope's recent authorized Threads are part of v0.1.0 Knowledge Manager maintenance. Daily scheduling has one on/off setting per Server, User and Workspace scope, default off; enable it only for acceptance, testing and evaluation. Explicit run requests remain available. Each run starts with fresh context, retains its inputs and produces fixed-base candidate commits. Current maintenance delegation or required proposal approval governs publication; the diff is the review surface. Existing trigger and work owners retain scheduling and outcomes; no separate learning scheduler is introduced.
+Consolidation and learning from the scope's recent authorized Threads are part of Knowledge Manager maintenance. Daily scheduling has one on/off setting per Server, User and Workspace scope, default off; enable it only for acceptance, testing and evaluation. Explicit run requests remain available. Each run starts with fresh context, retains its inputs and produces fixed-base candidate commits. Current maintenance delegation or required proposal approval governs publication; the diff is the review surface. Existing trigger and work owners retain scheduling and outcomes; no separate learning scheduler is introduced.
 
-Knowledge Manager run records MUST NOT become later learning inputs. Human edits since the prior run MUST be included as inputs and MUST NOT be overwritten; stale-base publication fails. Failed or skipped scheduled runs MUST have a visible outcome. Usage aging and AI evidence assessment remain deferred until after v0.1.0.
+Knowledge Manager run records MUST NOT become later learning inputs. Human edits since the prior run MUST be included as inputs and MUST NOT be overwritten; stale-base publication fails. Failed or skipped scheduled runs MUST have a visible outcome. Usage aging and AI evidence assessment are outside this maintenance.
 
 Users may explicitly save, inspect, edit or forget personal Memory and eligible Knowledge. A current task instruction overrides a remembered preference for that task without silently rewriting it. Direct user expression is distinguishable from a model inference; inferred learning follows current notebook maintenance authority and any required review. Existing source, candidate, review, page and evidence owners preserve the difference between a proposal, an assessment and an applied change.
 
@@ -183,7 +183,6 @@ Knowledge and personal Memory written from an externally influenced agent contex
 - User Memory, Workspace Knowledge and Server Knowledge MUST remain isolated by current owner and source authority; personal material MUST NOT silently enter shared work or another scope.
 - Forgetting MUST stop retrieval and stale candidate application before derived cleanup and MUST prevent automatic resurrection from the same source versions.
 - AI assessment MUST remain evidence, never permission or human Review; content-bound assessment MUST be invalidated by a changed candidate or evidence.
-
 - Reviewed knowledge MUST remain human-authoritative and MUST NOT become agent-owned.
 - Direct human creates and edits MUST pass current validation and MUST NOT preserve a reviewed-proposal acceptance label across changed bytes.
 - Workspace Knowledge MUST expose one typed OKF Notebook page contract for direct human list/create/edit/delete and history. A second KnowledgeEntry type system or `openkit_entry_kind` metadata MUST NOT be retained; the existing OKF type owns page meaning. The Notebook owner defines public projections and one publication mechanism.
@@ -195,5 +194,3 @@ Knowledge and personal Memory written from an externally influenced agent contex
 - Worker receipt of selected Knowledge requires its owning Context Package delivery trace or the exact answer bytes in its existing Knowledge Manager capability call.
 - Knowledge Pages MUST NOT store secret values.
 - Raw external records MUST remain owned by their external system unless explicitly captured as OpenKit source material.
-
-Server Knowledge maintenance records its work and approval on a Server-owned Thread. Current Server administration authority controls visibility; Workspace membership grants no access. A run uses explicit Server inputs and human notebook changes, with no automatic learning across Workspaces.

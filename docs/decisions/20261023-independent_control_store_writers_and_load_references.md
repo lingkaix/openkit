@@ -69,6 +69,6 @@ Use the first real-effect native measurement and release-candidate deployment-ho
 ## Affected Owners
 
 - [Durable Execution And Control Store](../specs/20261019-durable_execution_and_control_store.md).
-- [Runtime Scheduling And Scale](../specs/20260703-runtime_scheduling_scale.md).
+- [Runtime Scheduling And Scale](../specs/20260703-durable_scheduler_design.md#scale-limits).
 - [Control Store Mixed-Writer Exception](20261020-control_store_mixed_writer_exception.md), retained except for the specific amendments above.
 - [Storage](../core/storage.md), whose safety rules remain unchanged.

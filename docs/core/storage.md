@@ -72,7 +72,7 @@ One Core server may use multiple SQLite databases.
 
 A server-level database belongs to one Core server installation and may hold global indexes, known users, workspace registry data, server metadata, and migration metadata.
 
-A user-level database belongs to one user and may hold user-level metadata, preferences, workspace list or order, and user-level indexes.
+A user-level database belongs to one user and may hold user-level metadata, preferences, workspace list or order, and user-level indexes. It holds that User's private authority and projections, including command receipts, personal Thread read receipts, and User-home Audit and Policy evidence. It may reference Workspace or Thread identifiers. It is not canonical shared Workspace authority. Canonical users and authentication remain Server-owned. Corruption or unreadability of one User database fails that User only: boot continues for other Users, dependent operations for that User fail closed, and the failure creates no replacement database and infers no recovered loss. A shared, server-authority, or ownership violation remains globally critical.
 
 A Workspace control database belongs to one Workspace and owns its mutable control and product-record state. Derived indexes, vector or embedding metadata and read models retain their distinct projection role.
 
@@ -166,10 +166,11 @@ ephemeral-diagnostic
 turn-evidence
 workspace-audit
 restricted-raw
+restricted-evidence
 legal-hold
 ```
 
-Owning record specifications assign these existing tokens and their retention windows. `restricted-raw` is an access class, not a demonstrated-need retention gate or a duration. Valuable observed work data is retained by default without a demonstrated future use, as recorded in the [completeness decision](../decisions/20261019-work_data_retention_completeness.md). Owning records keep their capture coverage and ordinary retention policy. Raw reads require current owner authorization and an audit record. No class grants access. Material under `legal-hold` MUST NOT be compacted or deleted until the hold is released.
+Owning record specifications assign these existing tokens. `restricted-raw` is an access class, not a demonstrated-need retention gate or a duration. `restricted-evidence` is an admitted quarantine token beside `workspace-audit` and `legal-hold`. It is not an alias for `restricted-raw`. Ordinary current owner and Policy access applies. The class grants no separate raw-read gate, no independent deletion authority, and no expiry. Valuable observed work data is retained by default without a demonstrated future use, as recorded in the [completeness decision](../decisions/20261019-work_data_retention_completeness.md). Owning records keep their capture coverage and ordinary retention policy. Raw reads require current owner authorization and an audit record. No class grants access. Material under `legal-hold` MUST NOT be compacted or deleted until the hold is released.
 
 ### Agent Data Retention And Deletion
 
@@ -201,7 +202,7 @@ A separate product-record lifecycle for an unadmitted raw-audio/private-state ca
 
 Each OpenKit-owned retained family has an explicit format marker in its record header or its existing owning inventory. New record formats start at version 1. Writers and readers use the shared marker helper: writers emit the marker, and readers check it before decoding the family's payload. A missing or unknown version fails closed. Family-owned retained schemas are independent of release-coupled wire schemas; a wire-only change cannot change the meaning of a stored version. The shared v1 marker remains 1; a future family format selects its own decoder and does not change the shared version constant. Existing native database journals govern scalar-only SQL storage; independently decoded JSON-bearing rows carry their own version. Original content and opaque native bytes are not rewritten to add an OpenKit header. Their versioned owning descriptors retain their exact digest and interpretation.
 
-This rc.10 cutover uses the accepted pre-stable reset boundary. It adds no converter, legacy reader or dual write. The coordinator performs the single deployment reset; this rule authorizes no host or account action.
+The pre-stable reset boundary adds no converter, legacy reader or dual write. This rule authorizes no host or account action.
 
 ### Storage Scope Direction
 

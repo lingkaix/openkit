@@ -155,7 +155,7 @@ The post-rebase read-only backlog contains 98 open issues and no issue carrying 
 
 | Finding | Owner or receiver | Current disposition and disclosure |
 | --- | --- | --- |
-| #245 | [Runtime Scheduling](../../specs/20260703-runtime_scheduling_scale.md) | Closed after staged startup and CPU-limited admission; listed under changes, removed from current known failures. No new provider/host qualification claim |
+| #245 | [Runtime Scheduling](../../specs/20260703-durable_scheduler_design.md#scale-limits) | Closed after staged startup and CPU-limited admission; listed under changes, removed from current known failures. No new provider/host qualification claim |
 | #246 | [OpenCode Adapter](../../specs/20260716-opencode_worker_adapter.md) | Disclosed one-CPU close-proof failure. Keep errors, fencing and all assertions/deadlines; do not claim native persistence or successful retaining close. Separate from #245 |
 | #247 | [Shared Conversation Decision](../../decisions/20261015-shared_conversation_and_single_agent_threads.md) | Deferred until after `v0.1.0` and the private Timeline. Design record only; not a delivered feature |
 | #249 | Retrieval Kernel notice supply, `apps/retrieval-kernel/notices/GAPS.json`, engineer ruling above | The four gaps may ship in prereleases with public disclosure. Close all four before first stable. Open first-stable blocker, unlabeled; notes and this record disclose the exact crate/version set |

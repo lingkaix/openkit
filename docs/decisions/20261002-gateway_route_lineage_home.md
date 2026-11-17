@@ -41,4 +41,4 @@ Coordinator-proposed revisit conditions, not an Engineer ruling: a named reader 
 - docs/specs/20260526-llm_gateway_responses_api.md
 - docs/specs/20260703-audit_usage_evidence_records.md
 - docs/specs/20260921-work_data_retention_format.md
-- docs/specs/20260704-capability_usage_gateway_foundation.md
+- docs/specs/20260703-audit_usage_evidence_records.md#capability-usage

@@ -26,7 +26,7 @@ Run provider registry, profile, data-root, LLM config, dispatcher, diagnostics, 
 
 ## Related Design
 
-- [Capability Usage Gateway Foundation](../../../../docs/specs/20260704-capability_usage_gateway_foundation.md)
+- [Audit, Usage, And Evidence Records](../../../../docs/specs/20260703-audit_usage_evidence_records.md#capability-usage)
 - [Vault Secret Injection](../../../../docs/specs/20260703-vault_secret_injection.md)
 
 `data-root.ts` captures the model extension catalog together with loaded Provider profiles. The registry contains projected extension-plus-profile metadata for listed models only; the loader never persists that projection into authored profiles.

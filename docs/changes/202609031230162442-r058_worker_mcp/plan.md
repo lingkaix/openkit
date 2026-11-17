@@ -63,7 +63,7 @@ branch: codex/r058-worker-mcp
 - `docs/core/vault.md` owns injection plans, uses, receipts, uncertainty, revocation, and teardown.
 - `docs/specs/20260704-worker_mcp_tool_supply.md` owns the R058 MCP catalog, transports, tools, schema snapshots, policy, approval, usage, failures, and acceptance.
 - `docs/specs/20260703-worker_agent_capability.md` owns the worker-local capability route and independent credential boundary.
-- `docs/specs/20260704-capability_usage_gateway_foundation.md` owns shared CapabilityCall, UsageRecord, idempotency, terminal, and recovery behavior.
+- `docs/specs/20260703-audit_usage_evidence_records.md#capability-usage` owns shared CapabilityCall, UsageRecord, idempotency, terminal, and recovery behavior.
 - `docs/specs/20260531-human_attention_intervention_model.md` owns approval gates and forbids implicit current-call or AgentSession resumption.
 - `docs/specs/20260629-worker_runtime_communication_model.md` owns the shared Worker Shim contract and single Sandbox Integration path.
 - `docs/specs/20260716-codex_worker_adapter.md` owns the pinned Codex adapter and inline native configuration projection.

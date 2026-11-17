@@ -21,7 +21,7 @@ This spec consolidates the agent setup, profile, manifest loading, and runtime s
 
 This spec is the high-level setup and runtime supply entry point. Exact authored manifest fields, AEP snapshot identity, runtime scheduling, worker capability routes, and backend-specific materialization are owned by the specialized specs linked below.
 
-Runtime placement details are refined by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`. Host-local staging and harness behavior are implementation projections; real Worker Agent product paths use container placements.
+Runtime placement details are refined by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-durable_scheduler_design.md#scale-limits`, and `docs/specs/20261116-nanohost_openshell_gateway.md#scope`. Host-local staging and harness behavior are implementation projections; real Worker Agent product paths use container placements.
 
 The current contract is NanoCore-first. NanoCore owns agent identity, selected profile, runtime placement, resolved worker environment, policy intent, workspace inputs, review outputs, and product-visible readiness. The current local and remote disposable OpenShell Cell placements materialize that contract without becoming product state.
 
@@ -136,7 +136,7 @@ They remain useful for field-level background, but new work should start from:
 - [Worker Runtime Communication Model](../20260629-worker_runtime_communication_model.md)
 - [Worker Agent Capability](../20260703-worker_agent_capability.md)
 - [Workspace Synchronization](../20260703-workspace_synchronization.md)
-- [OpenShell Disposable Cell Lifecycle](../20260715-openshell_disposable_cell_lifecycle.md)
-- [Runtime Scheduling And Scale](../20260703-runtime_scheduling_scale.md)
+- [OpenShell Disposable Cell Lifecycle](../20261116-nanohost_openshell_gateway.md#scope)
+- [Runtime Scheduling And Scale](../20260703-durable_scheduler_design.md#scale-limits)
 - [Runtime Model](../../core/runtime-model.md)
 - [Agent Supply](../../core/agent-supply.md)

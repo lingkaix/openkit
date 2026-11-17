@@ -1,71 +1,30 @@
 ---
 status: Accepted
-implementation: Partial
+implementation: Implemented
 kind: concept
-updated: 2026-10-15
 aspect: architecture
 ---
+
 # Workflow Coordinator Internal Core Role
+
+This specification owns the deterministic Workflow Coordinator: explicit Task selection and the structured worker request.
+
+## Scope
+
+Owns trusted explicit Task selection, worker selection, and the structured worker request. The Assistant owns conversation.
+
+Does not own:
+- User-facing mode semantics. [Work Model](../core/work-model.md) owns them.
+- Assistant replies. [Chat Mode](20260704-chat_mode_assistant.md) owns them.
+- Knowledge Manager behavior. [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md) owns that role.
+- Goal truth and the model Coordinator. [Goal](20261002-goal.md) owns them.
+- Worker control, the scheduler, and context-package delivery. Their existing owners retain them.
+
+Core: [Architecture](../core/architecture.md), [Work Model](../core/work-model.md), [Agent Supply](../core/agent-supply.md).
 
 ## Goal Boundary
 
 Goal progression, Goal Plan decisions, Goal stop decisions, and the model Coordinator role belong to [Goal](20261002-goal.md). This specification keeps trusted explicit Task selection and worker-request composition; the Assistant owns conversation. It does not own Goal truth and it does not perform Goal progression effects. [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) records the split. A test of this role requires neither a Goal stop conversion nor `remainingWorkerIterations=0`.
-
-## Owns
-
-- The reusable Workflow Coordinator Internal Core Role contract.
-- Trusted explicit Task selection and composition. The Assistant owns conversation. This role does not classify Chat, Task, or Goal from prose.
-- Worker selection, routing decisions, semantic structured-worker-request composition, and delegation drafts for Chat and Task.
-- The structured boundary by which mode services supply knowledge, readiness, context, and evidence summaries and consume Coordinator decisions.
-
-## Does Not Own
-
-- User-facing mode semantics. `docs/core/work-model.md` and the mode specs own those projections.
-- Core Assistant direct replies. `docs/specs/20260704-chat_mode_assistant.md` owns those.
-- Knowledge Manager service behavior. `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` owns that role.
-- Worker runtime control, scheduler, AEP, context package file format, workspace sync, or external hosting effect execution.
-- Durable Chat or Task owner tuples, Goal state, workflow progression effects, or context persistence, materialization, and delivery.
-- Future Task Evaluator behavior.
-- Goal truth, Plan versions, the wake marker, Goal completion, scheduling, worker execution, or terminal transition authority. `docs/specs/20261002-goal.md` owns the Goal and the model Coordinator role.
-
-## Core References
-
-- `docs/core/architecture.md`
-- `docs/core/work-model.md`
-- `docs/core/agent-supply.md`
-- `docs/core/agent-session.md`
-- `docs/core/knowledge.md`
-- `docs/core/policy.md`
-
-## Summary
-
-Workflow Coordinator is the deterministic Internal Core Role that turns caller-supplied intent and authorized summaries into structured coordination decisions. It accepts trusted explicit Task selection, selects eligible workers, and composes bounded worker requests from the preserved instruction and authorized context. The Assistant owns conversation. This role does not classify Chat, Task, or Goal from prose. It does not draft a Goal Plan or produce a Goal stop. The model Coordinator is a separate role owned by `docs/specs/20261002-goal.md` over the shared internal Agent runtime. That role does not convert Workflow Coordinator into a provider-backed service.
-
-It is not a worker runtime. It does not execute shell commands, edit files, push commits, or maintain the Knowledge Store directly. It coordinates NanoCore services and worker agents through existing contracts.
-
-## Goals / Non-goals
-
-### Goals
-
-- Compose an explicit Task request. The Assistant owns conversation, including Goal handoff.
-- Make Coordinator decisions structured, testable, and explainable.
-- Preserve caller-supplied context references in worker delegation.
-- Prevent mode-specific implementations from inventing parallel worker-selection or routing logic.
-- Keep heavy execution delegated to worker agents.
-
-### Non-goals
-
-- Do not build a graph runtime, swarm planner, or generic agent framework.
-- Do not let Coordinator bypass scheduler, worker control, permissions, vault, Action Center, or workspace sync.
-- Do not let Coordinator write files or commit/push directly.
-- Do not make Coordinator the Knowledge Manager.
-- Do not require ML-based dynamic planning in V1.
-
-## Background
-
-`docs/core/architecture.md` defines Workflow Coordinator as the semantic decision role for non-trivial worker-agent work. `docs/core/work-model.md` separates its bounded routing, selection, and worker-context decisions from the durable state and effects owned by workflow boundaries.
-
-This specification fixes the implementation-facing deterministic interface shared by Chat Mode and Task Mode. Goal progression is outside it.
 
 ## Decision
 
@@ -75,14 +34,15 @@ This specification fixes the implementation-facing deterministic interface share
 - Mode services perform authorized Knowledge Manager reads and provide the resulting source-traceable references to Coordinator. Coordinator owns their semantic inclusion in the structured worker request; the caller owns the read effect plus context persistence, materialization, and worker delivery.
 - Coordinator selects a worker and composes the request only for trusted explicit Task entry; mode services apply accepted decisions through the named durable owner tuples. Task Mode has no durable mode record. The Assistant calls the Goal owner's create operation for a Goal handoff; Workflow Coordinator does not classify that handoff or call a Goal Plan or Goal stop function.
 - The model Coordinator is one role over `docs/specs/20260813-internal_agent_runtime.md`, bound to one Goal, and `docs/specs/20261002-goal.md` owns that role. This specification admits no second mutation-capable coordinator.
+- Evaluation is a pure deterministic function of the supplied inputs. It does not read or mutate scheduler, permission, Vault, worker-control, Knowledge, Action Center, Task-owner, or Goal state.
 
 ## Contract / Expected Behavior
 
 ### Coordinator inputs
 
-The mode service supplies only trusted `explicit_task` entry intent for bounded Task delegation. That value comes from the operation or accepted handoff, never caller prose, retrieved content, or a model-supplied authorization claim. The V1 routing input contains exactly that entry intent, the user prompt, optional `user_prompt` routing context, available worker candidates and their readiness summaries, one Workspace summary, one Thread state summary, optional redacted recent failures, optional prepared context references, and optional bounded `workerRequestDetails`. `workerRequestDetails` contains exactly acceptance criteria, resource declarations, expected artifacts, constraints, verification instructions, review policy, escalation conditions, and nullable Review context; it contains no objective, context references, schema version, request id, adapter payload, or durable owner fields. Task Mode may omit it and use the fixed bounded defaults in S12.
+The mode service supplies only trusted `explicit_task` entry intent for bounded Task delegation. That value comes from the operation or accepted handoff, never caller prose, retrieved content, or a model-supplied authorization claim. `WorkerCoordinatorInput` in `apps/nanocore/src/internal-agents/worker-coordinator.ts` is the admitted input. It does not carry routing context or a recent-failure field. Task Mode may omit bounded request details and use the fixed defaults in [Task Mode](20260704-task_mode_worker_delegation.md#worker-execution).
 
-The V1 input has no request id, policy engine result, permission record, raw evidence, provider prompt, or durable lifecycle fields. Callers retain those responsibilities and MUST NOT pass raw secrets, full unrestricted workspace files, backend handles, or adapter-native launch payloads. The bounded details are authorized facts rather than a second worker request: the mode service owns their exact source reads, while Coordinator alone combines the immutable prompt and details with the ordered references, validates the exact output, and creates `workerRequest`.
+Callers retain request identity, policy, and durable lifecycle. They MUST NOT pass raw secrets, full unrestricted workspace files, backend handles, or adapter-native launch payloads. The mode service owns exact source reads. Coordinator alone combines the immutable prompt and authorized details with the ordered references, validates the exact output, and creates `workerRequest`.
 
 ### Request classification
 
@@ -94,7 +54,7 @@ For an accepted Task Mode `worker_turn`, `requiredUserAction=none` and the prela
 
 ### Worker selection
 
-Worker selection consumes only the caller-supplied candidate id, display name, `ready`, `blocked`, or `unknown` readiness, and optional bounded redacted reasons. Workflow Coordinator selects only a ready candidate and omits the runtime label until it has a consumer. Goal discovery additionally requires the supported `codex` or `opencode` runtime label under its owning contract because that discovery consumes it.
+Worker selection consumes only the caller-supplied candidate id, display name, `ready`, `blocked`, or `unknown` readiness, and optional bounded redacted reasons. Workflow Coordinator selects the first eligible ready candidate in caller-supplied order and omits the runtime label until it has a consumer. Goal discovery uses the release-registry runtime labels under [Goal](20261002-goal.md#worker-discovery).
 
 When `task.start` supplies an exact `agentId`, the caller restricts the eligible candidates to that Agent. Workflow Coordinator selects it only when it is eligible and ready, and never substitutes another candidate. A missing, ineligible, or unready selection produces `blocked` with no worker payload; Task admission maps this to `409 task_mode_not_delegated` before effects. Omission keeps ordinary selection ([accepted #133 decision](../decisions/20261012-exact_task_agent_selection.md)).
 
@@ -115,7 +75,7 @@ Coordinator inputs, failure summaries, and structured worker requests use [bound
 
 ### Output shapes
 
-V1 produces one concrete shape. `WorkerCoordinatorDecision` contains `decision`, `confidence`, `explanation`, `selectedWorkerCandidate`, `requiredUserAction`, `delegationDraft`, and `workerRequest`; only `decision=worker_turn` may make the last three worker fields non-null. Its `workerRequest` is the semantic worker-context decision and contains exactly `schemaVersion`, `objective`, `acceptanceCriteria`, ordered `contextRefs`, `resources`, `expectedArtifacts`, `constraints`, `verification`, `reviewPolicy`, `escalationConditions`, and nullable `reviewContext`. `constraints` contains exactly `maxContextTokens` and `maxWorkerIterations`; `requiresUserConfirmation` is not a Coordinator field because accepted worker selection has no prelaunch gate, while post-step human review is owned only by `reviewPolicy`. Escalation conditions remain a separate exact array and are not renamed or truncated into generic stop conditions.
+`WorkerCoordinatorDecision` is the admitted decision. The structured worker request, including optional `reporting`, is the admitted request in `apps/nanocore/src/internal-agents/delegation.ts`. Only `decision=worker_turn` may make the worker fields non-null. `reviewContext` is null for every Task Mode attempt. `requiresUserConfirmation` is not a Coordinator field. Post-step human review is owned only by `reviewPolicy`. Escalation conditions remain a separate exact array.
 
 After acceptance, the mode service schema-parses the exact structured request and serializes the parsed value as compact JSON. Those exact bytes become the scheduler Turn input, AEP Turn input, worker input, and the existing Turn-owned `user-message` Item; this JSON-over-text mapping is the V1 adapter compromise and does not authorize a second payload record, delivery receipt, or settlement workflow. A routing summary, request digest, checkpoint, or scheduler row cannot prove worker delivery by itself. Before the Turn-owned Item exists, the request remains prepared but unproved; after the Item exists with the same bytes, ordinary Turn and worker-runtime evidence determines whether execution started or failed.
 
@@ -123,68 +83,15 @@ Task Mode's Turn, Item, checkpoint, evidence, and command tuple, Context Package
 
 Coordinator outputs are request-scoped deterministic values, not durable records or a private lifecycle. After acceptance, the Task business-owner tuple above is durable authority; Task Mode has no mode record. Identical bounded input MUST produce the same decision; restart recomputes it from durable caller-owned inputs, and a failure before the owning business mutation leaves no Coordinator state to recover.
 
-## Accepted Design
+## Implementation
 
-Implement Workflow Coordinator as pure deterministic functions over trusted entry intent, caller-supplied request, worker-readiness, Thread, Workspace, authorized context-reference, and evidence or failure summaries. Task Mode persists and applies its Turn, Item, checkpoint, evidence, and command tuple. Mode services perform Knowledge Manager reads, context persistence and materialization, scheduler requests, Action Center source mutations, and evidence reads through their existing owners. The model Coordinator is not this role. The legacy Goal plan and stop path leaves with the new Goal implementation and is not this role's contract. This specification does not make Workflow Coordinator provider-backed and does not add another agent framework.
+- `apps/nanocore/src/internal-agents/`
 
-## Current Implementation Projection
+## Implementation Gaps
 
-NanoCore has the functional V1 deterministic Workflow Coordinator routing and worker-request slice. `apps/nanocore/src/internal-agents/worker-coordinator.ts` owns its typed readiness input, worker selection, semantic worker request, and delegation functions. Product mode services call these functions directly and public App API schemas validate the resulting route projections. The unused provider-output schema, generic registry definition, tool allowlists, runner, private event lifecycle, and diagnostics projection have been deleted; Coordinator is neither registered nor diagnosed as a provider-backed agent. The module accepts only the trusted `explicit_task` entry intent and emits only `worker_turn`, which selects the first ready candidate, or `blocked`, when no candidate is ready. It has no conversational classification and no Goal plan or stop functions.
+None.
 
-Task Mode now consumes this slice through `POST /api/app/operations/task.start`: NanoCore supplies trusted explicit Task entry intent to the Coordinator before launch. Coordinator selects and composes without semantic reclassification. NanoCore rejects failed worker admission or any worker decision with a non-`none` required action and starts the selected worker through the durable scheduler. Coordinator returns `requiredUserAction=none` for a selected worker Turn. The Task Mode path also prepares source-traceable context refs from Knowledge Manager when workspace knowledge matches the task prompt and passes those refs to Coordinator. Direct Task and Chat-to-Task schema-parse the one Coordinator-composed request with `reviewContext=null`, serialize compact JSON, and use the exact bytes for scheduler, AEP, worker, Turn, and Turn-owned Item input. The shared request has the accepted resource and escalation arrays and no caller-confirmation or generic-stop field. The public Task response and command receipt do not copy that otherwise unowned decision merely to support replay. S39 now persists and verifies the immutable Worker Context Package trace for the exact request bytes; complete materialized Knowledge content remains incomplete under its owning specification.
+## Decisions
 
-The legacy Goal consumption of worker selection, approved-Task worker requests, plan proposal, and post-worker stop summaries leaves with the new Goal implementation and is not this role's contract.
-
-The unified `conversation.submit` Assistant branch does not route through the Coordinator: ordinary conversation reaches the Assistant model and its fixed Tools, and the retired keyword classifier has no production consumer. A confirmed Assistant Task handoff supplies the trusted `explicit_task` entry intent to the Coordinator in `apps/nanocore/src/mode-entry-routes.ts`, as direct `task.start` does. Historical deterministic L6 evidence covered the Task path: Task handoff created the visible status item, started bounded worker progress, and exposed the worker approval gate. The retired MCP-only and `chat.start` stories are not active release gates.
-
-The deterministic explicit-Task routing, exact worker-request composition, and byte delivery for direct Task and confirmed Chat-to-Task handoff are implemented, and the generic runtime and diagnostics boundary defect is closed. The Worker Context Package and Work Resource Interaction Model specifications still own materialized Context Package delivery. Command replay and launch recovery for a Task stay with the Task and worker-turn owners rather than Coordinator state. The deterministic Coordinator owns only its admitted decisions.
-
-## Alternatives Considered
-
-- Encode routing separately in each mode. Rejected: Chat and Task would drift and duplicate worker selection.
-- Make Coordinator a user-selectable agent. Rejected: it is a Core coordination role, not worker supply.
-- Use deterministic rules for V1. Accepted because every current consumer needs bounded classification and selection rather than open-ended reasoning; a provider-backed extension is justified only by observed cases the deterministic contract cannot represent.
-
-## Consequences
-
-- Direct Task entry and confirmed Chat-to-Task handoff share one explicit-delegation contract. Undecided conversation remains with the Assistant under the Work Model.
-- Coordinator behavior remains testable through structured outputs without a second runtime.
-
-## Testing Strategy / Acceptance Criteria
-
-- L1: exact input, classification, worker selection, delegation, and structured worker-request tests.
-- L1: worker-selection tests across unavailable, denied, unsuitable, and preferred worker cases.
-- L2: contract tests for Coordinator outputs consumed by Task Mode and Chat handoff.
-- L3: NanoCore black-box tests for Task Mode delegation using Coordinator outputs.
-- L6: story acceptance where a user request moves through Assistant, Coordinator, worker execution, evidence, and final result.
-
-Acceptance: Coordinator decisions match the one exact V1 shape, public projections validate at their owning route boundary, worker selection uses only supplied readiness, and no Coordinator function reads or mutates scheduler, permission, vault, worker control, Knowledge, Action Center, Task-owner, or Goal state.
-
-## Risks & Mitigations
-
-- Risk: Coordinator output becomes too free-form. Mitigation: closed TypeScript return shapes, exact deterministic unit tests, and public schema validation at route boundaries.
-- Risk: Coordinator hides important reasoning. Mitigation: record concise rationale and evidence references.
-- Risk: Coordinator over-calls workers. Mitigation: Assistant handles Chat Mode; Coordinator accepts only trusted explicit Task delegation. Explicit Task selection authorizes one bounded attempt under the Task owner's hard admission and effect controls.
-
-## Resolved Decisions
-
-Previously open questions are resolved by accepted V1 defaults: the Coordinator is deterministic and has no internal model profile; user-visible surfaces may show its concise routing rationale without exposing ranking details or policy-sensitive context.
-
-## Deferred / Future Work
-
-- Dynamic planning from history and measured outcomes.
-- Multi-worker graph planning.
-- Task Evaluator integration.
-- Workspace-authored workflow recipes.
-
-## Links
-
-- `docs/core/architecture.md`
-- `docs/core/work-model.md`
-- `docs/specs/20260704-chat_mode_assistant.md`
-- `docs/specs/20260704-task_mode_worker_delegation.md`
-- `docs/specs/20261002-goal.md`
-- `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`
-- `docs/specs/20260703-worker_context_package.md`
-- `docs/specs/20260703-agent_manifest_aep_resolution.md`
-- `docs/specs/20260813-internal_agent_runtime.md`
+- [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md)
+- [Explicit Task Agent Selection](../decisions/20261012-exact_task_agent_selection.md)

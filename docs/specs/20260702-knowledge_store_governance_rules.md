@@ -1,72 +1,39 @@
 ---
 status: Accepted
-implementation: Partial
 kind: concept
+implementation: Partial
 aspect: knowledge
 ---
 # Knowledge Store Governance Rules
 
-## Versioned Source Pointers
+This specification defines the governance rules that make the canonical Knowledge model enforceable across Open Knowledge Format (OKF) files, the OpenKit Knowledge Profile, Scope Schemas, save-time validation, Source and Derived Representation lineage, Observations and Claims, delegated editing and required human Review, and Knowledge-selection traces.
 
-[File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) replaces the external Source registry with Notebook-owned OKF SourceSummary pointers. Existing Source identity, capture/disclosure/sensitivity and review requirements remain binding; summaries are interpretation, not independent corroboration. Raw bytes stay outside Git.
+## Scope
 
-A changed original updates the same Source pointer in one commit. Historical digest-qualified citations must match their exact original bytes or report unavailable; deletion retains the unavailable pointer.
+### Owns
 
-## Summary
+- The three-layer Knowledge Store schema contract (OKF-compatible Markdown, OpenKit Knowledge Profile, and Scope Schema), conformance levels, required governance fields, and save-time enforcement.
+- Scope Schema lifecycle, validation, reviewed migration flow, and failure behavior.
+- Source identity, versioned `SourceSummary` pointers, immutability, and Derived Representation lineage.
+- Reusable Observation, Claim, conflict-assessment, delegated-publication, required Proposal/Review, and history/restoration governance rules.
+- Knowledge-selection trace contributions and boundaries against Worker Context Package delivery proof.
 
-This specification defines the concrete governance rules that make the canonical Knowledge model enforceable in portable files, schemas, validation, proposals, human review, content lineage, retrieval, and bounded maintenance.
+### Does Not Own
 
-OpenKit uses OKF-compatible Markdown as the portable envelope, an OpenKit Knowledge Profile for system-wide governance, and one scope schema for owner-specific constraints; the existing Workspace Schema is its current Workspace-only projection.
+- Canonical Knowledge semantics in `docs/core/knowledge.md`.
+- Concrete file paths, record encodings, digest derivations, SQLite tables, routes, or retrieval-pipeline mechanics in `docs/specs/20260703-knowledge_store_implementation.md`, or fixed-base multi-page editing in `docs/specs/20260909-knowledge_notebook_editing.md`.
+- Knowledge Manager operation names, callers, and request lifecycles in `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`, or Personal Memory, scoped learning, and completed-work reflection in `docs/specs/20260909-personal_memory_and_knowledge_learning.md`.
+- Worker Context Package identity, materialization, and delivery proof in `docs/specs/20260703-worker_context_package.md`.
+- Permission-policy semantics, Audit schemas, Vault storage, Worker capability transport, workspace synchronization, UI design, or external domain schemas.
 
-Programmatic validation protects structural correctness, the Knowledge Manager supports semantic maintenance through separately owned explicit operations, and explicit maintenance delegation and required human Knowledge Review preserve authority.
-
-Generated learning uses the unified notebook publisher under current maintenance authority or an exact required human Review. It never self-authorizes, self-confirms or bypasses a required decision.
-
-## Owns
-
-- OKF-compatible Markdown as the portable knowledge envelope.
-- The OpenKit Knowledge Profile and Scope Schema governance layers.
-- Scope schema lifecycle, validation, migration, conformance levels, and failure behavior.
-- Save-time enforcement for governed knowledge records.
-- Source identity, source immutability expectations, derived-representation lineage, and source-reference health.
-- Observation, claim, conflict, delegated editing, required proposal/review, content-lineage and history governance.
-- Knowledge-selection trace requirements contributed to a separately owned Context Package.
-
-## Does Not Own
-
-- Canonical Knowledge semantics, which `docs/core/knowledge.md` owns.
-- Concrete file paths, record encodings, content-digest encoding, database tables, routes, protocol fields, or migration implementation, which the Knowledge Store implementation contract owns.
-- Knowledge Manager operation names, callers, typed outputs, or request lifecycle, which the Knowledge Manager service contract owns.
-- Context Package identity, files, delivery trace, replay, worker materialization, or final prompt composition, which their owning workflow and Context Package contracts own.
-- Permission-policy semantics, audit record schemas, Vault storage, worker capability transport, workspace synchronization, or UI design.
-- Domain-specific schemas or raw source-of-truth records owned by external systems.
-
-## Core References
+### Core
 
 - `docs/core/knowledge.md`
 - `docs/core/policy.md`
 - `docs/core/evidence.md`
 - `docs/core/storage.md`
 
-## Goals / Non-goals
-
-Goals:
-
-- Keep knowledge user-readable and portable while making active records machine-checkable.
-- Keep invalid, stale, conflicting, sensitive, or unauthorized material from silently influencing workers.
-- Preserve human authority and exact source, proposal, review, page-content, actor, request, and audit lineage.
-- Make accepted proposal application and reversal bounded, idempotent, restart-safe, and fail-closed without another workflow.
-- Keep Knowledge selection explainable without duplicating Context Package delivery ownership.
-
-Non-goals:
-
-- Do not define concrete routes, tables, paths, protocol payloads, UI components, or worker prompt assembly.
-- Do not create a persistent Knowledge Manager agent, hook system, maintenance runner, retry queue, settlement workflow, or rollback service.
-- Do not auto-promote generated learning or use citations, elapsed time, schedules, or absence of rejection as review authority.
-- Do not require a specific editor, renderer, search engine, vector store, or graph database.
-- Do not define domain-specific HR, marketing, finance, analytics, or engineering schemas.
-
-## Decision
+## Format And Schema Contract
 
 The governed Knowledge Store has three layers:
 
@@ -76,27 +43,12 @@ OKF-compatible files
     -> Scope Schema
 ```
 
-Only active `scope-schema-valid` pages that pass authorization, sensitivity, freshness, conflict, and retrieval policy may enter default worker Knowledge selection. `restricted` pages and non-Memory `confidential` pages are excluded as `sensitive_content`; `stale` and `expired` pages are excluded as `freshness_expired`.
-
-Ordinary generated edits may publish under explicit notebook maintenance delegation; critical content and sensitive effects retain exact required human decisions under `20260909-knowledge_notebook_editing.md`.
-
-An accepted review authorizes one Knowledge Store application, but active knowledge changes only when the exact resulting page revision and its complete lineage become durable.
-
-Restoration and removal use the same exact-base notebook publisher, with current validation and required confirmation, preserving prior content/history and operation evidence.
-
-## Format And Schema Contract
-
-OKF-compatible files provide Markdown, YAML frontmatter, links, citations, index files, and log files as the portable envelope.
-
-The OpenKit Knowledge Profile defines mandatory governance fields and base rules that every owner scope preserves.
-
-The Scope Schema defines allowed page, source, observation, and claim types plus field constraints, views, proposal rules, review rules, and lint rules for one User, Workspace or Server owner.
-
-Each owner scope MUST have one active machine-checkable Scope Schema in YAML or JSON.
-
-The schema MUST identify its version, owner or maintainer, active status, timestamps, allowed extension points, validation rules, and review requirements.
-
-Scope schemas MAY strengthen OpenKit rules but MUST NOT remove or weaken required governance fields.
+- OKF-compatible files provide Markdown, YAML frontmatter, links, citations, index files, and log files as the portable envelope.
+- The OpenKit Knowledge Profile (`OPENKIT_KNOWLEDGE_PROFILE_VERSION` in `apps/nanocore/src/knowledge/okf.ts`) defines mandatory governance fields and base rules that every owner scope preserves.
+- The Scope Schema (`DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION` by default in `apps/nanocore/src/knowledge/okf.ts`) defines allowed page, source, observation, and claim types plus field constraints, views, proposal rules, review rules, and lint rules for one User, Workspace, or Server owner.
+- Only active `scope-schema-valid` pages that pass authorization, sensitivity, freshness, conflict, and retrieval policy may enter default Worker Knowledge selection; `restricted` pages and non-Memory `confidential` pages are excluded as `sensitive_content`, and `stale` or `expired` pages are excluded as `freshness_expired`.
+- Each owner scope MUST have one active machine-checkable Scope Schema in YAML or JSON identifying its version, owner or maintainer, active status, timestamps, allowed extension points, validation rules, and review requirements.
+- Scope Schemas MAY strengthen OpenKit rules and add domain types, but MUST NOT remove or weaken required governance fields.
 
 Schema changes MUST use a reviewable migration flow:
 
@@ -106,230 +58,97 @@ Schema changes MUST use a reviewable migration flow:
 4. Require human review when active retrieval, required fields, sensitivity, source-reference shape, or review rules change.
 5. Apply the change only after authorization and preserve the previous valid schema plus the report.
 
-If migration cannot repair a record safely, that record becomes an invalid or needs-review draft excluded from active retrieval.
-
-If schema migration cannot prove a complete valid result, OpenKit MUST retain the previous valid schema and MUST NOT publish a partially migrated active schema.
-
-Reviewed Workspace schema application uses the [short exclusive DatabaseOwner section](20261019-durable_execution_and_control_store.md#reviewed-workspace-schema-application), without an idle requirement or lifecycle freeze. Activation commits byte-identical reviewed candidate content with Audit and original receipt; reviewed impact classes must bound actual impact, and Audit records actual inventory. A changed base or new class refuses for re-review. Pending schema-dependent writes retain and revalidate their schema head; immutable traces remain history. Implementation projection: `apps/nanocore/src/knowledge-operations.ts` (`createKnowledgeOperationImplementations`, `knowledge.schema.apply`) still uses the old freeze; its removal and native impact-class application remain pending in MAIN #598.
+If migration cannot repair a record safely, that record becomes an invalid or needs-review draft excluded from active retrieval. If schema migration cannot prove a complete valid result, OpenKit MUST retain the previous valid schema and MUST NOT publish a partially migrated active schema. Reviewed Workspace schema application (`knowledge.schema.apply`) uses [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md#reviewed-workspace-schema-application) without an idle requirement or lifecycle freeze: activation commits byte-identical reviewed candidate content with Audit and original receipt when reviewed impact classes bound actual impact, refusing on a changed base or new impact class for re-review while pending schema-dependent writes revalidate their schema head and immutable traces remain history.
 
 ## Conformance And Required Fields
 
-OpenKit distinguishes portable format compatibility from active Knowledge validity.
+OpenKit distinguishes portable format compatibility from active Knowledge validity:
 
 | Level | Meaning | Permitted use |
 | --- | --- | --- |
-| `OKF-compatible` | The material follows the pinned portable Markdown and frontmatter envelope. | Import, inspection, source retention, or transformation. |
-| `OpenKit-profile-valid` | The record satisfies OpenKit-required fields and base rules. | Drafts, proposals, generic tooling, and validation workflows. |
-| `scope-schema-valid` | The record satisfies the active Scope Schema. | Active Knowledge after review and policy eligibility. |
+| `OKF-compatible` | Follows the pinned portable Markdown and frontmatter envelope. | Import, inspection, source retention, or transformation. |
+| `OpenKit-profile-valid` | Satisfies OpenKit-required fields and base rules. | Drafts, proposals, generic tooling, and validation workflows. |
+| `scope-schema-valid` | Satisfies the active Scope Schema. | Active Knowledge after review and policy eligibility. |
 
 External material MAY remain a source or lower-conformance draft until transformed and reviewed; format compatibility alone never authorizes active retrieval.
 
-Every active Knowledge Page and every draft Knowledge Page validated for possible activation MUST carry these fields or equivalent structured metadata. Proposals, Reviews, Source records, operational WorkObservation, User suppression, retrieval traces, indexes, Audit and usage records use their separately owned exact schemas and are not active Knowledge Pages:
+Every active Knowledge Page and every draft Knowledge Page validated for possible activation MUST carry the required profile fields defined by `REQUIRED_PROFILE_FIELDS` and `REQUIRED_SCOPED_KNOWLEDGE_FEATURES` in `apps/nanocore/src/knowledge/okf.ts` (Proposals, Reviews, Source records, operational `WorkObservation`, User suppression, retrieval traces, indexes, Audit, and Usage records use their own schemas):
 
-- `type`
-- `title`
-- `schema_version`
-- `openkit_status`
-- `scope`
-- `source_refs`
-- `review_state`
-- `sensitivity`
-- `freshness`
-- `created_at`
-- `updated_at`
+- `type`: an OpenKit base type (`OPENKIT_BASE_TYPES`) or an allowed Scope Schema domain extension (`OPENKIT_DOMAIN_TYPES` in `apps/nanocore/src/knowledge/okf.ts`). Under [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md), Skills own reusable procedures, so governed ScopeSchema and page admission refuse `Procedure` (while generic external OKF parsing remains permissive for `Procedure`, and descriptive Topic/context pages or references to selected Skill versions remain valid).
+- `title`: human-readable, non-empty string; `schema_version`: identifies the validating Scope Schema; `created_at` and `updated_at`: machine-readable ISO 8601 offset timestamps.
+- `openkit_status`: the unique OpenKit lifecycle authority (`DEFAULT_STATUS_VALUES` in `apps/nanocore/src/knowledge/okf.ts`). Standard OKF `status` is a deterministic projection (`STANDARD_STATUS_BY_OPENKIT_STATUS`: `draft` -> `draft`, `active` -> `stable`, and the remaining states -> `deprecated`; missing standard `status` means `stable`, and a conflicting projection is invalid). Standard `status` alone never activates an external page.
+- `scope`: identifies the exact User, Workspace, or current Server owner (`KnowledgeOwnerScopeSchema` in `packages/protocol/src/models/knowledge-notebook.ts` under `docs/specs/20260909-personal_memory_and_knowledge_learning.md`); narrower source restrictions remain additional constraints, never scope substitution.
+- `source_refs`: string list that MUST exist even when empty; empty references are allowed only for direct user-authored notes, indexes, or policy-approved seed pages.
+- `review_state` (`DEFAULT_REVIEW_STATE_VALUES` in `apps/nanocore/src/knowledge/okf.ts`; there is no provisional active state), explicit `sensitivity` (`DEFAULT_SENSITIVITY_VALUES` and `KNOWN_SENSITIVITY_VALUES`, explicit even when `public` or `internal`), and `freshness` (`DEFAULT_FRESHNESS_VALUES`).
 
-Field behavior:
-
-- `type` MUST be an OpenKit base type or an allowed Scope Schema extension.
-- `title` MUST be human-readable and non-empty.
-- `schema_version` MUST identify the validating Scope Schema.
-- `openkit_status` is the unique OpenKit lifecycle authority and MUST distinguish draft, active, archived, superseded, invalid, and deleted records. Standard OKF `status` is a deterministic projection: draft maps to `draft`, active maps to `stable`, and the other four states map to `deprecated`. A missing standard status means `stable`; a conflicting projection is invalid. Standard status alone never activates an external page.
-- Notebook revision is the service-resolved Git commit ID, outside page frontmatter. Profile v4 removes the unimplemented `openkit_revision` counter; exact identity is owner scope, notebook revision, page path and SHA-256 content digest.
-- `scope` MUST identify the exact User, Workspace or current Server owner under `20260909-personal_memory_and_knowledge_learning.md`; narrower source restrictions remain additional constraints, never scope substitution.
-- `source_refs` MUST exist even when empty; empty references are allowed only for direct user-authored notes, indexes, or policy-approved seed pages.
-- `review_state` MUST distinguish unreviewed, user-authored, delegated, accepted, rejected, deferred, and needs-review records; there is no provisional active state.
-- `sensitivity` MUST be explicit even when material is public or internal.
-- `freshness` MUST distinguish evergreen, time-bound, stale, expired, unknown, and current material.
-- `created_at` and `updated_at` MUST be machine-readable timestamps.
-
-Governed reusable base types are `SourceSummary`, `KnowledgePage`, `Entity`, `Topic`, `Observation`, `Claim`, `Decision`, `Lesson`, `Proposal`, `Index`, and `Log`. The [information consolidation contract](20261018-nanocore_interception_and_information_consolidation.md#information-and-record-authority) retires competing `Procedure` page authority: Skills own solidified reusable procedures, and governed ScopeSchema/page admission refuses that type. Generic external OKF parsing remains permissive for `Procedure`; descriptive Topic/context pages and exact references to selected Skill versions remain valid Knowledge.
-
-Scope Schemas MAY add domain types, but consumers MUST preserve the base governance fields even when they do not understand an extension. OpenKit Knowledge Profile v4 uses `openkit_status`; the standard OKF lifecycle does not add a second state machine, retry policy, or recovery owner. Unknown nested YAML metadata is retained as data, including provenance, trust, and Attested Computation fields; reading or saving it never executes code, performs attestation, accesses a network, or grants authority. Secret-like field-name rejection applies recursively, including arrays; cyclic or excessive alias expansion is rejected before traversal. Frontmatter values are ordinary content and are not rejected by credential patterns under [No Credential-Pattern Rejection Of Ordinary Content](../decisions/20261006-no_credential_pattern_rejection_of_ordinary_content.md).
+Notebook revision is the service-resolved Git commit ID outside page frontmatter (exact identity is owner scope, notebook revision, page path, and SHA-256 content digest). Consumers MUST preserve base governance fields even when they do not understand a domain extension. Unknown nested YAML metadata (including provenance, trust, and Attested Computation fields) is retained as data without executing code, performing attestation, accessing a network, or granting authority. Secret-like field-name rejection (`SECRET_FIELD_PATTERN`) applies recursively including arrays, and cyclic or excessive YAML alias expansion is rejected before traversal; frontmatter values are ordinary content and are not rejected by credential patterns ([No Credential-Pattern Rejection Of Ordinary Content](../decisions/20261006-no_credential_pattern_rejection_of_ordinary_content.md)).
 
 ## Save-Time Enforcement
 
-All governed writes MUST pass through the Knowledge Store validation boundary.
+- All governed writes MUST pass through the Knowledge Store validation boundary, covering malformed frontmatter, missing fields, disallowed types, invalid `openkit_status`, conflicting standard `status` projection, invalid `review_state` or `source_refs`, forbidden secret-like field names, missing `sensitivity`, invalid `freshness`, and attempts to weaken required fields.
+- Code MUST reject an invalid active write or retain it only as an invalid draft excluded from active retrieval; an invalid edit MUST NOT overwrite the latest valid active page.
+- Imports, rough notes, integrations, and drafts MAY be retained as invalid drafts with inspectable validation errors.
+- Repairing an invalid draft produces a valid active page only under current explicit maintenance authority or an exact required human Review through the notebook publisher; structural validity alone never authorizes activation.
 
-Code MUST reject an invalid active write or retain it only as an invalid draft excluded from active retrieval.
+## Versioned Source Pointers And Lineage
 
-Validation MUST cover malformed frontmatter, missing fields, disallowed types, invalid `openkit_status`, conflicting standard OKF `status` projection, invalid review state or source references, forbidden secret-like fields, missing sensitivity, invalid freshness values, and attempts to weaken OpenKit-required fields.
+- [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) replaces the external Source registry with Notebook-owned OKF `SourceSummary` pointers at `sources/<sourceId>.md`; raw bytes stay outside Git, and summaries are interpretation rather than independent corroboration.
+- A changed original updates the same Source pointer in one commit; historical digest-qualified citations MUST match their exact original bytes or report unavailable, and deletion retains the unavailable pointer.
+- Every Knowledge Source has stable identity across changes to derived representations, summaries, or Knowledge Pages, recording source identity, type, original location when available, capture time, producer, integrity digest, access and sensitivity, derived-representation links, and retention policy.
+- Captured source evidence is immutable by default, and every Derived Representation MUST retain lineage to the exact Knowledge Source ID and content digest from which it was produced ([Work Resource Interaction](20260713-work_resource_interaction_model.md#bounded-media-processors) owns bounded PDF text-layer and explicit vision derivatives, which never constitute Knowledge publication or human review).
+- An external locator without captured identity MAY support review, but MUST NOT be presented as immutable captured evidence.
 
-An invalid edit MUST NOT overwrite the latest valid active page.
+## Maintenance Records, Proposals, And Human Review
 
-Imports, rough notes, integrations, and drafts MAY be retained as invalid drafts when preserving the material is useful, and their validation errors MUST remain inspectable.
+Reusable Claims, Observations, and conflict analysis belong to the canonical OKF Notebook (`WorkObservation`, Audit, actual decisions, transient lint/health projections, and User suppression retain their separate owners; no standalone Claim, Observation, or conflict JSONL family exists):
 
-Repairing an invalid draft may produce a valid active page only under current explicit maintenance authority or an exact required human Review through the notebook publisher; otherwise it remains a valid draft or pending proposal. Structural validity alone never authorizes activation.
+- An Observation is not active knowledge by default. Observation capture MUST be selective, and the owning scope policy SHOULD bound allowed types, producers, required sources, retention, expiration, aggregation, promotion criteria, and high-impact review requirements. An Observation MAY be ignored, retained, summarized, aggregated, attached to a pending proposal, or expired without automatic promotion from repetition.
+- A Claim is a reusable assertion that MUST carry sources, finite numeric `confidence` in `[0, 1]`, `freshness`, `scope`, and `review_state`; Claims MAY guide source-grounded editing, but never grant publication authority.
+- A recorded conflict assessment (`conflict_status`) is only `unresolved` or `resolved`; absence is not a resolution, and low confidence alone MUST NOT create a conflict or weak-evidence assessment.
+- Active Claim or Observation pages marked `unresolved` are withheld from retrieval. A current draft or active Observation with `conflict_status: unresolved` also withholds its `subject_refs` pages from active retrieval and refuses relevant target/source Proposal acceptance before a human Review is appended (`source_refs` never substitutes for `subject_refs`; unpinned subjects apply to the object, and exact digest pins apply only to those bytes). Knowledge selection MUST surface unresolved conflicts and never present one side as uncontested truth when competing views are preserved.
 
-## Source Identity And Lineage
+Under `docs/specs/20260909-knowledge_notebook_editing.md` and `docs/specs/20260909-personal_memory_and_knowledge_learning.md`:
 
-Every Knowledge Source MUST have stable identity across changes to derived representations, summaries, or Knowledge Pages.
+- Ordinary authorized maintenance publishes a validated fixed-base Git revision (`review_state: delegated`) without manufacturing a synthetic human Review; direct human edits use the same publisher (`review_state: user-authored`), and changed content invalidates earlier content-bound Review or assessment labels.
+- Designated critical content and sensitive effects require the exact Knowledge Proposal and human Review path, freezing owner scope, base and candidate commits, candidate digest, source references, producer, rationale, and current assessment/critical-content requirements; the human accepts, rejects, or defers those exact bytes, and no model may accept its own candidate.
+- Optional AI evidence assessment (`prove`) is a digest-, source-, and rubric-bound Observation with result and limitations; it is never a Review or authorization source, and an advisory assessment cannot veto an authorized human decision, while an explicitly authored critical-content policy may require assessment evidence before generated activation.
+- For Workspace Knowledge, publication commits the expected-head check, admitted head, applicable original Review, required Audit, and original command receipt in one native SQL transaction; for User Memory and Server Knowledge, the compare-and-set published Git ref is the content publication decision and Audit/receipts complete the command. Incomplete or contradictory publication/receipt evidence returns `recovery_required` without inference or automatic missing-page repair.
+- Generated knowledge MUST retain exact registered Source references or the strict completed-Worker Turn / final `assistant-message` Item / [Worker Context Package](20260703-worker_context_package.md) trio when claiming Worker output; generated pages are not independent factual corroboration, and imported, workspace-only, reconstructed, or standalone retrieval history MUST NOT claim Worker output.
+- Archive, supersede, multi-page merge/split, link repair, confirmed removal, and restore are final-tree edits through the same fixed-base publisher; explicit forgetting suppresses current and normal historical retrieval and automatic re-extraction while retaining Git, Source, evidence, and backup bytes under disclosed retention rules.
+- Explicit maintenance, the accepted personal capture composition, and the default-off daily maintenance schedule in `docs/specs/20260909-personal_memory_and_knowledge_learning.md` may invoke Knowledge Manager; any other recurring or event trigger requires its own accepted owner, and no citation-based confirmation or TTL promotion is authorized.
+- Health inspection (`health-check` in `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`) MUST remain explicit and report-only, never applying repairs, drafting proposals, scheduling work, or mutating knowledge.
 
-Source metadata SHOULD record source identity, type, original location when available, capture time, producer, integrity digest when practical, access and sensitivity, derived-representation links, and retention policy when relevant.
+## Knowledge Selection Trace And Capability Conformance
 
-Captured source evidence is immutable by default.
-
-Every Derived Representation MUST retain lineage to the exact Knowledge Source id and content digest from which it was produced.
-
-An external locator without captured identity MAY support review, but it MUST NOT be presented as immutable captured evidence.
-
-## Personal Memory, Scoped Capture And Assessment
-
-User Memory, Workspace Knowledge and Server Knowledge use the same governance with distinct current owners and output audiences. Personal conversation enters through a source-registered exact snapshot; it is not Worker/S39 evidence. The interaction-bounded, opt-in personal capture defined by `20260909-personal_memory_and_knowledge_learning.md` is an explicit exception to the older future-only passive-learning direction and does not authorize a recurring background job.
-
-Generated learning and consolidation use explicitly delegated ordinary publication or the existing exact required Review path. Optional AI prove is a digest/source/rubric-bound assessment recorded as an existing Observation with result and limitations; it is never a Review or an authorization source. A policy-free advisory assessment cannot veto an authorized human decision. An explicitly authored critical-content policy may require assessment evidence before generated activation; the enforcement owner is that policy, not the model. Direct user editing stays available, invalidates content-bound assessment and cannot falsely preserve an accepted or verified label.
-
-## Maintenance Records
-
-Reusable Claims, Observations and conflict analysis belong to the canonical OKF Notebook. An Observation is not active knowledge by default. Operational events, actual decisions, Audit, transient lint/health projections and User suppression retain their existing owners; they are not reusable-fact ledgers.
-
-Observation capture MUST be selective and the owning scope policy SHOULD bound allowed types, producers, required sources, retention, expiration, aggregation, promotion criteria, and high-impact review requirements.
-
-An Observation MAY be ignored, retained, summarized, aggregated, attached to a pending proposal, or expired; repetition does not promote it automatically.
-
-A Claim is a reusable assertion that may influence future work and therefore MUST carry sources, finite numeric confidence from zero through one, freshness, scope and Review state. Preserve a recorded conflict assessment without inventing one when absent.
-
-Claims MAY guide source-grounded notebook editing, but a claim record is never publication authority; current maintenance delegation or an exact required Review remains necessary.
-
-A recorded conflict assessment is only `unresolved` or `resolved`; absence is not a resolution. Confidence, freshness, Review and whole-page lifecycle retain their separate fields. Low confidence alone MUST NOT create a conflict or weak-evidence assessment.
-
-Knowledge selection MUST surface unresolved conflicts and MUST NOT present one side as uncontested truth when the owning scope intentionally preserves competing views.
-
-Reusable fact edits retain history through the existing Git Notebook publisher, with current authority, exact-base publication, required Review, ordinary archive/removal and restore. No canonical Claim, Observation or conflict JSONL family remains. WorkObservation, Audit, actual decisions and User suppression are unchanged.
-
-## Proposal And Human Review Rules
-
-`20260909-knowledge_notebook_editing.md` owns one edit/publication contract. Ordinary authorized maintenance publishes a validated fixed-base Git revision without a synthetic review. A required review uses the existing Knowledge Proposal/Review owners and freezes owner scope, base/candidate commits, candidate digest, source references, producer, rationale and current assessment/critical-content requirements. The human accepts, rejects or defers exactly those bytes. Changed content/base requires a new proposal; no model may accept its own candidate. Pending/rejected/deferred candidates remain outside published content.
-
-Publication revalidates scope, path, OKF/profile/schema, sources, confidentiality, current authority and exact base. Its unique content decision is the compare-and-set published ref; Audit and command receipts separately establish successful command completion. Failure and replay follow the notebook owner, with no inference from current page bytes, no duplicated prior-page Source archive and no repair runner. Human direct edits use the same publisher and are user-authored; delegated edits are marked delegated, not human-reviewed. Changed content invalidates earlier content-bound review/assessment labels.
-
-Generated knowledge retains exact registered Source references or the existing strict completed-worker Turn/final Item/S39 evidence trio when claiming worker output. Current or historical generated pages may guide organization and comparison but are not independent factual evidence; preserve their underlying admitted source lineage. Imported, workspace-only, reconstructed or standalone retrieval history cannot masquerade as a new worker result. Only S39 proves worker delivery. Source references and captured evidence remain owned by their existing records, not Git history alone.
-
-Active pages may preserve explicitly marked uncertainty. Active Claim or Observation pages marked `unresolved` are withheld from retrieval. A current draft or active Observation with `conflict_status: unresolved` also withholds its subject pages from active retrieval and refuses relevant target/source Proposal acceptance before a human Review is appended. `subject_refs` names affected objects; supporting `source_refs` never substitutes for it. Current native admission checks same-Notebook target identity and any exact digest when the assessment is written. An unpinned subject applies to the object; an exact pin applies only to those bytes. Unsupported target families remain refused until their native owner reader exists. Resolution, archive and confirmed removal are ordinary Notebook edits; a new base needs a new exact Proposal. A model score supplies neither resolution nor authority.
-
-Archive/supersede are retained metadata edits through the same publisher. Multi-page merge/split and link repair are final-tree edits, not distinct workflows. Removing published pages requires exact human confirmation; restore appends an exact-base validated revision. Explicit forgetting additionally suppresses current and normal historical retrieval and automatic re-extraction, with truthful source/evidence/backup retention. No historical reset or downstream-effect reversal is implied.
-
-Knowledge Manager owns the bounded invocation and semantic editing; the Knowledge Store owns all publication. Explicit maintenance and the accepted personal capture composition may call it; a new recurring/event trigger still needs its own accepted owner. No private lifecycle, automatic trigger, evaluation authority or second scheduler follows from the permission to edit.
-
-## Health And Repair
-
-The Knowledge Manager service contract exclusively owns the V1 health operation and report shape.
-
-This governance contract requires that health inspection remain explicit and report-only.
-
-It MUST NOT apply repairs, draft proposals, schedule work, or mutate knowledge.
-
-Ordinary semantic repair uses explicitly delegated notebook maintenance and its final-tree publisher. Authority, source restrictions, schema and sensitive effects remain separate current decisions; report-only health cannot silently apply a repair.
-
-## Knowledge Selection Trace Boundary
-
-Knowledge retrieval MUST produce a deterministic selection result for identical authoritative inputs, index state, and policy state.
-
-Its trace contribution MUST identify selected Knowledge Page ids and content digests, selected source or derived-representation references, excluded candidate identifiers and reasons, and applicable freshness, sensitivity, conflict, policy, and budget decisions.
-
-The concrete Context Package owner decides package identity, trace shape, file inventory, delivery proof, replay, materialization, and product-versus-audit visibility.
-
-The governed Knowledge retrieval trace proves only that selection ran; it does not prove worker delivery or use.
-
-Only the owning worker-Turn delivery trace may prove which selected Knowledge reached a worker.
-
-Restricted trace evidence MUST remain redacted or access-controlled under the owning policy and audit contracts.
-
-## Capability Conformance
+Knowledge retrieval MUST produce a deterministic selection result for identical authoritative inputs, index state, and policy state. Its trace contribution identifies selected Page IDs and content digests, selected Source or Derived Representation references, excluded candidate identifiers and reasons, and applicable freshness, sensitivity, conflict, policy, and budget decisions. The retrieval trace proves only that selection ran; only the owning Worker-Turn [Context Package](20260703-worker_context_package.md) delivery trace (which may project a bounded body, excerpt, or descriptor with a separate delivered digest) proves which selected Knowledge reached a Worker. Restricted trace evidence remains redacted or access-controlled under current policy and audit contracts.
 
 | Surface | Minimum governance |
 | --- | --- |
 | Import or capture | Portable source material or lower-conformance draft. |
 | Draft create or rough note | OpenKit required fields when governed; invalid material may remain an invalid draft. |
 | Proposal creation | `OpenKit-profile-valid` target shape or an invalid draft with attached errors. |
-| Active Knowledge save | Human-authored, delegated or human-reviewed, policy-eligible, `scope-schema-valid` page with complete content and actor lineage. |
+| Active Knowledge save | Human-authored, delegated, or human-reviewed, policy-eligible, `scope-schema-valid` page with complete content and actor lineage. |
 | Default notebook view | Active valid pages plus pending proposals and user-selected maintenance views. |
 | Default worker Knowledge selection | Active, authorized, non-expired, policy-eligible `scope-schema-valid` pages. |
 | Lower-conformance source snippet | Explicit policy authorization plus traceable source identity and exclusion reasoning. |
 | Health inspection | Any conformance level, report only. |
 
-## Source And Projection Evidence
+## Acceptance
 
-Source intake preserves exact original bytes or an admitted immutable source reference. [Work Resource Interaction](20260713-work_resource_interaction_model.md#bounded-media-processors) owns bounded PDF text-layer and explicit vision derivatives. Each derivative retains its original digest, processor identity, locators, and coverage. Extraction and indexing do not constitute Knowledge publication or human review.
+- Under [OpenKit Test Strategy](20260529-test_strategy.md), L1 governance checks verify active-write validation, secret-field rejection, source identity, delegated publication and required human-review authority, direct-mutation lineage, multi-page publication and history restoration, and fail-closed partial evidence; L2 contract checks verify that Proposal, Review, Page, command, actor, Source, digest, and Audit lineage remains resolvable across boundaries without exposing `restricted` evidence or adding a second lifecycle owner.
 
-A Context Package may deliver a bounded body, excerpt, or descriptor under [its owner](20260703-worker_context_package.md#bounded-model-projection). Its delivered digest is separate from canonical source/page identity. Missing, stale, unsupported, or budget-limited content remains explicit; no complete absence or delivery claim follows from an incomplete representation. Existing notebook publication, suppression, forgetting, and audience rules remain binding.
+## Implementation
 
-## Current Implementation Projection
+- OKF parser, profile/Scope Schema validation, conflict reader, and schema application: `apps/nanocore/src/knowledge/`.
+- Governed retrieval, index rebuild, and Proposal/Review codecs: `apps/nanocore/src/storage/`, `apps/nanocore/src/`.
+- Shared protocol models and operation schemas: `packages/protocol/src/`, `packages/app-api-schemas/src/`.
 
-Default retrieval evaluates freshness labels. Date-based expiry is not implemented.
+## Implementation Gaps
 
-Workspace publication uses one native SQL transaction for its expected-head check, admitted head, applicable original Review, required Audit and original command receipt. Git refs, authored schema files and predecessor Proposal/Review files do not select current Workspace authority. User Memory and Server Knowledge keep their existing scope owners.
+- Date-derived freshness expiry in default retrieval - Default retrieval evaluates freshness labels only; automatic date-based expiry is not implemented - #259
+- Citation-based confirmation and TTL promotion - Citation-driven confirmation and TTL promotion are not implemented - #259
+- Incompatible imported Notebook schema migration tools - Rich imported Notebook migration is not implemented; unsupported required semantics fail closed - #404
 
-Canonical OKF Claims and reusable Observations share the Notebook content history and current readers. Unresolved subject assessments drive the existing Proposal and retrieval refusals; supporting evidence does not identify subjects. Standalone fact DTOs, monthly JSONL and portable ledger records are retired without conversion. The ordinary validation, source, Review, index, query trace and explicit context-preparation owners remain in force.
+## Decisions
 
-The transport-neutral operation catalog, bundled CLI, and public App API project those existing owners. No user-facing stdio MCP facade remains. That absence is the deleted stdio package and is not a prohibition of the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md).
-
-Worker ask/tell use Knowledge Manager's governed operation projection under current Task and scope admission.
-
-The Notebook owner saves fixed-base Proposal candidates in the single Git content owner. Exact human Review names the Proposal digest and base/candidate commits; accepted publication uses that retained candidate without rewriting original producer attribution. Stale base returns conflict. Bounded reverse copies the selected original path into the current fixed base and publishes a new revision; reversing a created path and explicit page removal require exact human confirmation and retain Git history. Current source/audience admission, Audit and ordinary command receipts remain mandatory; incomplete publication evidence returns `recovery_required`, with no missing-page repair.
-
-Context preparation references the single governed retrieval trace and exposes no standalone worker-context trace or materialization. Only S39 materializes and proves worker delivery.
-
-No citation-based confirmation, TTL promotion or new scheduled trigger is implemented. Explicitly delegated notebook editing has a partial implementation (`apps/nanocore/src/knowledge/notebook-agent-editing.ts` and delegated publication in `apps/nanocore/src/knowledge/notebook-publication.ts`), qualified under [Knowledge Notebook Editing](20260909-knowledge_notebook_editing.md).
-
-Concrete implementation detail remains in the Knowledge Store implementation, Knowledge Manager service, and Context Package specifications rather than being duplicated here.
-
-## Testing Strategy / Acceptance Criteria
-
-Use existing package and NanoCore suites; this specification authorizes no new runner, harness, or fixture framework.
-
-- L1 governance tests cover active-write validation, secret rejection, source identity, delegated publication and required human-review authority, direct-mutation lineage, multi-page publication and history restoration, and fail-closed partial evidence.
-- L2 contract tests prove proposal, review, page, command, actor, source, digest, and audit lineage remains resolvable without exposing restricted evidence or adding another lifecycle owner.
-- S61 owns implementation and interruption tests, S17 owns caller and error tests, S39 owns direct-Task delivery tests, and S18 owns the single real L6 composition; this governance spec does not duplicate them.
-
-Acceptance requires all of these predicates:
-
-- Generated content cannot publish without explicit current maintenance authority or its exact required human Review.
-- One authorized candidate publishes one complete Git revision, including all of its validated changed pages.
-- Every active page resolves to published content/provenance; required human reviews bind exact candidate bytes, and successful commands have exact Audit/receipt evidence.
-- Missing or contradictory application evidence fails `recovery_required` without inference or repair.
-- Workspace-only, imported, reconstructed, or standalone Knowledge provenance cannot claim worker output.
-- Only the owning worker delivery trace proves later Knowledge use.
-
-## Risks & Mitigations
-
-- Risk: human review becomes noisy before real proposal volume exists. Mitigation: use notebook-scoped delegation for ordinary edits and retain exact review for designated critical content.
-- Risk: separate review and page writes leave a bounded interrupted state. Mitigation: publish content through one Git ref and report command success only when separate evidence verifies; retain explicit recovery-required results otherwise.
-- Risk: reversal is mistaken for undoing downstream effects. Mitigation: reversal changes future active Knowledge only and preserves prior use evidence.
-- Risk: Knowledge selection trace duplicates Context Package authority. Mitigation: retain only the Knowledge contribution and defer package identity, delivery, and replay to the owning contract.
-
-## Resolved Decisions
-
-- OKF-compatible Markdown is the portable envelope; the OpenKit Knowledge Profile and Scope Schema decide active validity.
-- Programmatic validation enforces structure, Knowledge Manager operations support bounded maintenance, and authorized humans own Knowledge Review.
-- Invalid material may remain a draft but never silently enters active retrieval.
-- Raw captured sources are immutable by default and Derived Representations retain exact source-version lineage.
-- Observations and claims remain evidence; authorized notebook publication creates reusable interpretation.
-- Generated learning may use delegated publication; source lineage, current authority and any required Review remain mandatory.
-- All notebook edits use one exact-base multi-page publisher with Git content lineage and explicit partial command-evidence handling.
-- Reversal/restoration publishes a new exact-base revision through the same owner and never claims to undo external effects or erase intervening history.
-- Knowledge selection contributes traceable page ids, content digests, and exclusions, while the separately owned worker delivery trace alone proves worker receipt.
-
-## Deferred / Future Work
-
-- Richer source conversion, binary capture, semantic retrieval, and broader source-reference validation remain deferred until current retrieval evidence justifies them.
-- Health-driven ordinary notebook repairs use current maintenance authority; schema/authority changes remain separate configuration effects.
-- Passive, event-triggered, or scheduled proposal drafting requires real-use evidence plus a separately accepted trigger contract and cannot itself grant maintenance authority.
-- Richer imported notebook migration tools remain deferred until real incompatible bundles require them.
-
-## Links
-
-- `docs/core/knowledge.md`
-- `docs/specs/20260703-knowledge_store_implementation.md`
-- `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`
-- `docs/specs/20260703-worker_context_package.md`
-- `docs/specs/20260710-self_improvement_evaluation_loop.md`
+- [No Credential-Pattern Rejection Of Ordinary Content](../decisions/20261006-no_credential_pattern_rejection_of_ordinary_content.md)

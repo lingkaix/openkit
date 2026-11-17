@@ -1,86 +1,45 @@
 ---
 status: Accepted
-implementation: Partial
 kind: mechanism
+implementation: Implemented
 aspect: vault
 ---
 # Vault Backend Implementation
 
-## Owns
+This specification owns the NanoCore `VaultBackend` interface, the sole `encrypted-file` backend implementation used in both local and server deployment modes, its external raw master-key file and envelope-encryption format, per-reference versioning, rotation grace, destructive revocation, strict enumerable inventory and revoked-tombstone predicates, `VaultUse` resolution emission, and public Workspace and Server shared-MCP secret administration.
 
-- The `VaultBackend` boundary that NanoCore uses to resolve, store, rotate, revoke, list, and health-check secret material.
-- The one current NanoCore backend, `encrypted-file`, for both local and server deployment modes.
-- The encrypted-file store, raw master-key file source, envelope encryption, unlock model, and lock-state behavior.
-- Versioning, rotation grace, revocation, authenticated non-secret entry metadata, and failed-closed store-integrity behavior beneath the Vault record model.
-- `VaultUse` audit emission at every backend resolution of secret material.
-- Storage and export rules for secret material and scope homing within one deployment.
+## Scope
 
-## Does Not Own
+### Owns
 
-- `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse` record semantics, which belong to `docs/specs/20260703-vault_secret_injection.md`.
-- Provider-subscription account existence, slot identity, account-to-reference binding, and reviewed orphan cleanup, which belong to `docs/specs/20260721-provider_subscription_accounts.md`.
-- Injection paths into workers and OpenShell provider derivation, which belong to `docs/specs/20260703-openshell_mechanism_internalization.md`.
-- Permission policy for `vault.use` and grant authorization, which belong to `docs/specs/20260629-openkit_policy_model.md` and `docs/specs/20260703-policy_enforcement_mapping.md`.
-- Workspace backup and export packaging, which belongs to `docs/specs/20260704-workspace_backup_export_import.md`.
-- Storage layout ownership trees, which belong to `docs/specs/20260703-storage_layout_record_ownership.md`.
-- Runtime credential revocation effects, sandbox termination, epoch invalidation, cleanup, and transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+- The internal `VaultBackend` boundary (`resolve`, `store`, `rotate`, `revoke`, `listReferences`, `health` in `apps/nanocore/src/vault/vault-backend.ts`) and the sole `encrypted-file` backend implementation (`DATA_ROOT/server/vault/`) for both local and server modes, with no backend selector, fallback, compatibility reader, passphrase derivation, environment master key, KMS, external secret manager, journal, or replacement enumeration API.
+- The external raw `32`-byte master-key file contract (`vault.encryptedFile.keyFilePath`), `aes-256-gcm` envelope encryption, unlock/lock lifecycle, failed-unlock rate limiting, per-entry versioning, rotation grace, destructive revocation, authenticated `VaultEntryMetadata` (including the server-only `providerSubscriptionAccount` projection), and the backend-recognized revoked tombstone predicate.
+- `VaultUse` emission at every backend material resolution, data-root export and backup exclusions for secret material and master keys, and public Workspace secret administration (`vault.secret-*`, `vault.grant-*`), authored Provider API-key storage (`vault.provider-api-key-set`), and Server shared-MCP secret administration (`mcp-credential`).
 
-## Core References
+### Does Not Own
+
+- `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse` record semantics, credential access declarations, and harness Login lifecycle in `docs/specs/20260703-vault_secret_injection.md`.
+- Provider-subscription account lifecycle, slot identity, `account.json` binding, and reviewed orphan cleanup in `docs/specs/20260721-provider_subscription_accounts.md`.
+- Worker credential delivery channels and OpenShell provider derivation in `docs/specs/20260703-openshell_mechanism_internalization.md`, or Runtime Epoch lifecycle, Sandbox termination, and transport in `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+- Permission Policy and enforcement points in `docs/specs/20260629-openkit_policy_model.md` and `docs/specs/20260703-policy_enforcement_mapping.md`.
+- Physical `DATA_ROOT` layout in `docs/specs/20260703-storage_layout_record_ownership.md`, or Workspace backup and export archives in `docs/specs/20260704-workspace_backup_export_import.md`.
+
+### Core
 
 - `docs/core/vault.md`
 - `docs/core/storage.md`
 - `docs/core/policy.md`
 - `docs/core/evidence.md`
 
-## Summary
-
-NanoCore uses one `VaultBackend` implementation, `encrypted-file`, in both local and server modes. Ciphertext and authenticated non-secret entry metadata live under `DATA_ROOT/server/vault/`; the raw 32-byte master-key file is owner-only with exact `0600` permissions and lives outside `DATA_ROOT`.
-
-Secret material is versioned by `(vault reference id, version)`. Rotation writes a new per-entry version, revocation makes every version unresolvable and destroys its material, every resolution emits redacted `VaultUse` evidence, and secret material never enters SQLite, normal workspace files, exports, errors, or diagnostics.
-
-Codex and xAI/Grok provider-subscription credentials use this same store through distinct server-owned Vault references. Another provider, including Claude, may reuse the storage mechanism only after a separate accepted entitlement and provider contract authorizes that provider path.
-
-## Goals / Non-goals
-
-### Goals
-
-- Define one direct backend path for every NanoCore deployment mode.
-- Provide a headless encrypted store with strict key-file, permission, atomic-write, tamper, rotation, revocation, audit, and redaction behavior.
-- Authenticate the provider and slot projection needed to detect provider-subscription material whose `account.json` metadata is missing, corrupt, or contradictory.
-- Keep store-integrity failures enumerable and failed closed until explicitly reviewed cleanup proves safe destruction.
-
-### Non-goals
-
-- Do not define another backend, backend selector, fallback, compatibility reader, migration path, backend registry, journal, intent record, or replacement enumeration API.
-- Do not implement passphrase derivation, environment master keys, KMS, external secret managers, hardware-backed keys, or a key-source registry.
-- Do not redefine Vault records, grant lifetimes, injection visibility classes, receipt shapes, account metadata, or provider entitlement.
-- Do not define workspace backup archives or a secret-editing product UI.
-
-## Background
-
-`docs/specs/20260703-vault_secret_injection.md` owns the Vault record and injection model, while this spec owns the concrete encrypted storage boundary. `docs/core/vault.md` requires secret values to remain outside prompts, records, logs, normal workspace files, and public diagnostics. `docs/core/storage.md` keeps Vault material outside ordinary storage records.
-
-The encrypted-file backend serves the accepted one-process, one-data-root, small-deployment baseline without deployment-mode selection or duplicate material stores.
-
-## Decision
-
-1. `encrypted-file` is the only current NanoCore Vault backend kind and is used by both local and server modes.
-2. The encrypted store lives under `DATA_ROOT/server/vault/`; it contains only ciphertext, strict non-secret inventory, and authenticated non-secret metadata, and it is never nested inside a Workspace tree.
-3. The sole configured master-key source is an absolute regular non-symlink file outside `DATA_ROOT`, owned by the NanoCore process user, with exact `0600` permissions and exactly 32 raw bytes.
-4. The store uses envelope encryption: one master key wraps a unique data key for each material version, and Node stdlib `aes-256-gcm` authenticates the ciphertext and its reference, version, ownership, expiry, and optional provider-slot metadata.
-5. Each entry or state file is written independently through a same-directory write-new-then-rename operation with exact `0600` file permissions; Vault directories use `0700`.
-6. A crash may leave an extra entry, missing state, stale state, or other enumerable disagreement. Normal resolution, inventory consumers, reconciliation, account mutation, and pair reuse fail closed on that disagreement; only the reviewed cleanup boundary may destroy attributable material and release the pair.
-7. Rotation, revocation, lock state, typed redacted failures, audited resolution, and export exclusion remain part of the backend contract.
-
 ## Contract / Expected Behavior
 
 ### VaultBackend Boundary
 
-A `VaultBackend` MUST implement these operations, all keyed by Vault reference id and never by raw locator strings from callers:
+A `VaultBackend` (`apps/nanocore/src/vault/vault-backend.ts`, `apps/nanocore/src/vault/vault-encrypted-file-backend.ts`) MUST implement these operations, all keyed by `VaultReference` ID and never by raw locator strings from callers:
 
 - `resolve(referenceId, version?)`: return the requested material version, or the current version when unspecified; fail typed when the reference is unknown, revoked, expired past grace, locked, unavailable, or internally inconsistent.
-- `store(referenceId, material, metadata)`: write version 1 through one atomic entry-file replacement and then one separate atomic state-file replacement for a reference that has no material, or fail without overwriting existing or inconsistent state.
-- `rotate(referenceId, material)`: write version N+1 through one atomic entry-file replacement and then advance the strict state through one separate atomic replacement; never overwrite an existing version.
+- `store(referenceId, material, metadata)`: write version `1` through one atomic entry-file replacement and then one separate atomic state-file replacement for a reference that has no material, or fail without overwriting existing or inconsistent state.
+- `rotate(referenceId, material)`: write version `N+1` through one atomic entry-file replacement and then advance the strict state through one separate atomic replacement; never overwrite an existing version.
 - `revoke(referenceId)`: make every version immediately unresolvable, destroy all attributable material versions, and retain only the non-secret revocation inventory required for audit and orphan detection.
 - `listReferences(scope?)`: return non-secret metadata for strict consistent live or revoked inventory rows, filtered by scope, and fail rather than omit any malformed, unauthenticated live material, missing required live entry, extra, or contradictory entry or state encountered in the addressed inventory.
 - `health()`: return `available`, `locked`, or `unavailable` with a redacted diagnostic.
@@ -89,208 +48,99 @@ Rules:
 
 - Secret material may cross the boundary only in `resolve` return values and `store` or `rotate` inputs.
 - Backend errors use only `vault-locked`, `reference-not-found`, `version-expired`, `reference-revoked`, or `backend-unavailable` and never include material, raw locators, local paths, decrypted metadata, caught messages, or provider payloads.
-- `VaultReference` metadata remains the generic SQLite source of truth. The backend owns material and material-integrity metadata and MUST NOT become account, binding, authorization, or provider-dispatch authority.
-- `encrypted-file` is a fixed backend kind, not a deployment setting. There is no backend selection or runtime fallback.
+- `VaultReference` metadata remains the generic SQLite source of truth (`apps/nanocore/src/vault/vault-references.ts` and `apps/nanocore/src/storage/vault-native.ts` distinguish a fresh reference insert from an idempotent match, accept only an equal or one-step-ahead active material-version projection, and transactionally revoke a reference, its dependent grants and plans, and active injection receipts according to proved visibility). The backend owns material and material-integrity metadata and MUST NOT become account, binding, authorization, or provider-dispatch authority.
+- `encrypted-file` is a fixed backend kind in both local and server modes across config, App API, storage, import, OpenAPI, and bundled-client projections; there is no backend selection or runtime fallback. Codex and xAI/Grok provider-subscription credentials share this store through distinct server-owned `VaultReference`s (`apps/nanocore/src/llm/provider-subscription-accounts.ts`), and another provider (including Claude) may reuse the storage mechanism only after a separate accepted entitlement and provider contract authorizes that path. The `vault.bootstrap-codex-auth` operation acquires a User-owned Codex harness Login under User Policy, `PermissionDecision`, and Audit (`docs/specs/20260703-vault_secret_injection.md#harness-subscription-logins`) as an explicit exception to Server administration without relaxing any other Vault operation.
 
 ### Public Workspace Secret Administration
 
-Deployment-admin actors may create workspace references from request-only material, rotate their material, revoke references, and create or revoke workspace gateway-only grants for selected MCP use and explicit GitHub Worker runtime-env grants. Workspace authorization still applies to the addressed Workspace. A currently usable administrator credential satisfies that Workspace authorization under the administrator eligibility rule in [Core Policy](../core/policy.md). Workspace bearer Tokens and ordinary sessions without derived deployment-admin authority cannot mutate this administrative surface. Existing filtered reference and grant lists remain the redacted inventory authority.
+Deployment-admin actors may create Workspace references from request-only material, rotate their material, revoke references, and create, narrow, or revoke Workspace-lifetime grants for supported sinks (`CreateWorkspaceVaultSecretRequestSchema`, `RotateWorkspaceVaultSecretRequestSchema`, `CreateWorkspaceVaultGrantRequestSchema`, and `NarrowWorkspaceVaultGrantRequestSchema` in `packages/app-api-schemas/src/vault-admin.ts`). Workspace authorization applies to the addressed Workspace, and a currently usable administrator credential satisfies that Workspace authorization under the Administrator Eligibility rule in [Core Policy](../core/policy.md); Workspace bearer Tokens and ordinary sessions without derived deployment-admin authority cannot mutate this administrative surface. Existing filtered reference and grant lists remain the redacted inventory authority.
 
-`POST /api/app/operations/vault.secret-create` accepts `{ workspaceId, secretKind, material }`, assigns a fresh reference id, stores encrypted backend version 1, then creates matching workspace Core metadata. `secretKind` is a bounded lowercase identifier; it is a classification, not a credential value. `vault.secret-rotate` accepts `{ workspaceId, referenceId, material }` and preserves reference and grant identities. After current administrator and exact Workspace reference admission, `vault.secret-revoke` commits the existing Core reference/grant/plan/receipt revocation cascade before backend material destruction. The operation then attempts backend destruction and awaits the existing runtime interruption and binding cleanup. Backend failure cannot roll back the Core fence or skip runtime cleanup. Success requires both backend destruction and proved runtime closure; unproved cleanup keeps the existing recovery and Runtime Epoch rules. Revoked ids remain redacted history and are never reused or physically deleted from Core.
+`POST /api/app/operations/vault.secret-create` accepts `CreateWorkspaceVaultSecretRequestSchema`, assigns a fresh reference ID (`UUIDv7`), stores encrypted backend version `1`, then creates matching Workspace Core metadata. `secretKind` is a bounded lowercase classification identifier, never a credential value. `vault.secret-rotate` accepts `RotateWorkspaceVaultSecretRequestSchema` and preserves reference and grant identities. After current administrator and exact Workspace reference admission, `vault.secret-revoke` commits the Core reference/grant/plan/receipt revocation cascade before backend material destruction, then attempts backend destruction and awaits runtime interruption and binding cleanup; backend failure cannot roll back the Core fence or skip runtime cleanup, success requires both backend destruction and proved runtime closure (unproved cleanup retains `recovery_required` and Runtime Epoch rules), and revoked IDs remain redacted history that is never reused or physically deleted from Core.
 
-`vault.grant-create` accepts `{ workspaceId, referenceId, expiresAt?, injectionPath?, targetAgentId?, targetAgentSessionId?, targetCapabilityId? }` for a matching active workspace reference. Omitted or `gateway-only` injection creates a fresh Workspace-lifetime gateway-only grant for selected MCP use under the Vault and [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owners. Explicit `runtime-env` injection accepts only a `github-token` reference and creates a different Workspace-lifetime grant limited to `runtime-env`; it is Worker-visible and cannot substitute for a gateway-only MCP grant. Optional Agent and AgentSession targets restrict use to exact matching current execution facts. Public capability targets admit only the exact Gateway operations `mcp.list-tools` and `mcp.call-tool`; neither the `mcp` family wildcard nor an arbitrary capability string is an exact target. A runtime-env grant rejects any capability target because its current consumer cannot prove that route. An omitted target adds no restriction and does not bypass current scope, actor, Policy, lifetime or sink checks. Each creation uses a new grant id, preserves the reference and its current material version, and adds no binding automatically. An expiry must be in the future; the issuer stores its canonical UTC timestamp. This slice does not create additional lifetimes, runtime-file grants, server/user reference management, a generic grant-policy editor, or automatic binding. The first release adds no platform-managed private source credential. The hosting decision and its reason remain in [the decision record](../decisions/20261002-hosting_through_gateway_mcp.md).
+`vault.grant-create` (`CreateWorkspaceVaultGrantRequestSchema`) addresses a matching active Workspace reference:
 
-`vault.grant-list` is the redacted review of every retained constraint and lifecycle fact. `vault.grant-narrow` accepts `{ workspaceId, grantId, constraints: { targetAgentId?, targetAgentSessionId?, targetCapabilityId?, allowedInjectionPaths?, expiresAt? } }` for the supported Workspace-lifetime gateway-only or GitHub runtime-env grant shape. Every supplied dimension must retain or reduce the original authority, and at least one must reduce it strictly. A non-null target cannot be cleared or replaced. Visibility paths must be a non-empty subset of the original paths; retaining a path is valid when another dimension shrinks. Expiry must be canonical, future and no later than the original bound. Scope, reference, lifetime, issuance and approval or Policy lineage remain unchanged. Unsupported shapes, inactive or expired grants, imported history, and missing, revoked or wrong-scope references cannot become replacement authority.
+- Omitted or `gateway-only` `injectionPath` creates a fresh Workspace-lifetime `gateway-only` grant for selected MCP use under `docs/specs/20260703-vault_secret_injection.md` and `docs/specs/20260704-worker_mcp_tool_supply.md`.
+- Explicit `runtime-env` `injectionPath` accepts only a `github-token` reference and creates a Workspace-lifetime grant limited to `runtime-env` (used by an Agent Manifest `requirementId: github-token` declaration with `targetEnvVarName: GITHUB_TOKEN` via `credentialBindings` for explicit user-space private clone/fetch or native Git push, while default hosting uses catalog-bound `gateway-only` MCP grants under [Hosting Through Gateway MCP](../decisions/20261002-hosting_through_gateway_mcp.md)); a `runtime-env` grant cannot substitute for a `gateway-only` MCP grant, and a `gateway-only` grant never authorizes Sandbox environment injection.
+- Explicit `runtime-file` `injectionPath` creates a high-risk Workspace-lifetime `runtime-file` grant under `docs/specs/20260703-vault_secret_injection.md#runtime-file-visibility`.
+- Optional `targetAgentId` and `targetAgentSessionId` restrict use to exact matching current execution facts. Public `targetCapabilityId` admits only exact `mcp.list-tools` or `mcp.call-tool` (never an `mcp` wildcard or arbitrary string), and `runtime-env` and `runtime-file` grants reject any `targetCapabilityId` because their consumers are not capability routes. Omitted targets add no restriction and bypass no scope, actor, Policy, lifetime, or sink check. Each creation allocates a new grant ID, preserves the reference and its material version, requires any `expiresAt` to be a future canonical UTC timestamp, and adds no binding automatically.
 
-Narrowing atomically revokes the original and its dependent injection projections, creates a distinct target-issued replacement, and writes initiating-human Audit with the original grant resource and replacement grant id in the same Core transaction. The response is `{ revokedGrant, grant }`. The existing binding remains on the revoked original until its owner explicitly binds the replacement. A failed Core write rolls back the entire narrowing effect. A lost response is unknown: inspect grant inventory and the linked Audit before a new request. A retry against the revoked original returns conflict and cannot issue another replacement. Wrong-scope or missing grants return 404, invalid or unchanged constraints return 400, and unavailable current authority returns 409. No backend write or material resolution occurs, so narrowing remains available while locked; use still checks current material authority and backend health. No background transition or automatic recovery is added.
+`vault.grant-list` provides redacted review of retained constraints and lifecycle facts. `vault.grant-narrow` (`NarrowWorkspaceVaultGrantRequestSchema` -> `NarrowWorkspaceVaultGrantResponseSchema`) addresses a supported Workspace-lifetime `gateway-only`, GitHub `runtime-env`, or `runtime-file` grant: every supplied dimension must retain or reduce original authority with at least one strict reduction (a non-null target cannot be cleared or replaced, `allowedInjectionPaths` must be a non-empty subset, and `expiresAt` must be canonical, future, and no later than the original bound), while scope, reference, lifetime, `issuance`, and approval/Policy lineage stay unchanged and unsupported, inactive, expired, `imported-history`, or mismatched grants are rejected. Narrowing atomically revokes the original grant and dependent injection projections, creates a distinct target-issued replacement, and writes initiating-human Audit in one Core transaction without touching the backend (so narrowing works while locked, while bindings require an explicit update and retries against the revoked original return `409`). Wrong-scope or missing grants return `404`, invalid or non-narrowing constraints return `400`, and stale/conflicting authority returns `409`.
 
-`vault.grant-revoke` revokes either supported Workspace grant and dependent injection state using the existing Core lifecycle. Grant revocation needs no material access and remains available while the backend is locked. The supported administration operations do not by themselves prove request review or delivery. The current request and review projection is owned by [Vault Secret Injection](20260703-vault_secret_injection.md#supported-grant-request-and-review). Other lifetimes and credential classes remain unavailable.
+`vault.grant-revoke` revokes a supported Workspace grant and dependent injection state in one Core transaction and remains available while the backend is locked. Request and review workflows are owned by `docs/specs/20260703-vault_secret_injection.md#supported-grant-request-and-review`.
 
-An Agent Manifest `requirementId: github-token` declaration with `visibility: runtime-env` and `targetEnvVarName: GITHUB_TOKEN` uses the separate Worker grant through a Workspace `credentialBindings` entry. Turn admission validates the exact grant, reference, backend scope, material version, and health before worker-visible injection; Vault use and injection evidence remain redacted. Revocation makes later Turns ineligible and follows the existing stale-receipt/session lifecycle for already injected material. That runtime-env grant is explicit user-space configuration. It may carry a read-only token for private clone and fetch, or a credential the user injects for native Git push. It is not the default hosting route. Default hosting uses catalog-bound gateway-only grants and does not place `GITHUB_TOKEN` in the worker. A runtime-env grant cannot substitute for a gateway-only MCP grant, and a gateway-only grant does not authorize sandbox environment injection.
-
-Each successful transition emits redacted administrative audit evidence. Secret input is confined to the immediate request and backend store/rotate call; responses expose only the existing redacted reference or grant shape and use `Cache-Control: no-store`. CLI material arrives in stdin JSON, never argv. Web uses a password field cleared on submission, discards mutation responses, and retains no material in query/mutation caches, browser storage, URLs, or error objects.
-
-Missing or wrong-scope records fail without mutation. Rotation and either grant creation require exact active Core/backend identity, owner, locator, and version agreement. A non-GitHub reference requested for runtime-env, unsupported injection path, past expiry, locked or unavailable storage, and any inventory disagreement fail without a grant. Turn injection also fails closed on wrong scope, version disagreement, revoked or missing material, and locked or unavailable backend; it does not expose material to the Worker on failure. Ordered backend and Core writes are not a transaction: a failed fresh metadata insert triggers best-effort destruction of newly stored material; other partial or interrupted effects return a fixed redacted failure requiring inventory inspection before a new request. Neither restart nor retry reconstructs metadata, advances a mismatched version, revives a revoked id, or automatically repairs an unknown result. Grant-only revocation uses one Core transaction. There is no new durable state family or background lifecycle.
-
-Acceptance is observable through synthetic material round trips, version advancement, exact workspace and admin denial, a gateway-only grant used only for selected MCP supply, separate runtime-env grant creation and successful bound Turn injection, refusal of that runtime-env grant as a substitute for the gateway-only MCP grant, Turn-injection refusal on backend scope/version/health disagreement, destructive revocation, and absence of the canary from inventory, audits, and Web caches.
+Each transition emits redacted administrative Audit evidence. Secret input is confined to the immediate request and `VaultBackend.store`/`rotate` call; responses expose only the redacted reference or grant shape with `Cache-Control: no-store`, CLI material arrives on stdin JSON (never argv), and Web clears password inputs on submit, discards mutation responses, and stores no material in caches, browser storage, URLs, or error objects. Missing or wrong-scope records, Core/backend identity/owner/locator/version disagreement, non-GitHub `runtime-env` requests, unsupported paths, or past expiry fail without mutation. Locked or unavailable storage refuses operations that resolve, store, or rotate material, including when Core or native publication capability is missing. Metadata grant narrowing and grant revocation stay available while locked and keep their cleanup and fencing requirements. Those metadata operations do not require unlock. Because ordered backend and Core writes are not a single transaction, a failed fresh metadata insert triggers best-effort destruction of newly stored material, while other partial or interrupted effects return a fixed redacted failure requiring inventory and Audit inspection before a new request without automatic reconstruction or version advancement.
 
 ### Authored Provider API Keys
 
-`vault.provider-api-key-set` (`POST /api/app/operations/vault.provider-api-key-set`) is the deployment-admin operation for storing or replacing one authored provider profile's API key. The profile MUST be the unique valid file-backed profile with that exact id and MUST declare one safe `vault://<referenceId>` secret reference. The logical input contains only `{ providerId, apiKey }`; the redacted response contains only `{ configured: true, providerId }`. Raw key material may enter only the immediate request and `VaultBackend.store` or `rotate` input and MUST NOT appear in responses, diagnostics, audit, configuration, or Core metadata.
+`vault.provider-api-key-set` (`POST /api/app/operations/vault.provider-api-key-set`) is the deployment-admin operation for storing or replacing one authored Provider profile's API key. The public response is only the redacted configured observation for that provider:
 
-New API-key Provider profile authoring allocates one independent canonical `vault` UUIDv7 through the shared Protocol generator and persists its complete value in `secretRef` as `vault://<referenceId>`. This includes the Web create form and the server-authored Provider file template. A pending Web create for the same Provider id retains that exact candidate across retry until successful publication. Changing the Provider id starts a different profile candidate with its own independently allocated reference. Reading, reload, key replacement and recovery consume the recorded full reference; they do not derive it from the Provider id, allocate a replacement, or discover another reference. A manually authored profile must declare a complete canonical `vault` reference before the first backend store. The existing first-write, rotation, pairing, failure and non-reuse rules below remain unchanged.
+- The profile MUST be the unique valid file-backed profile with that exact `providerId` and declare one canonical `vault://<referenceId>` in `secretRef`. New API-key Provider profile authoring (Web create form and server template) allocates one independent canonical `vault` `UUIDv7` via the shared Protocol generator and persists `vault://<referenceId>` in `secretRef` (retaining the same candidate across pending Web create retries for the same `providerId`, while a changed `providerId` allocates a fresh reference); reading, reload, key replacement, and recovery consume the recorded `secretRef` without deriving it from `providerId` or discovering another reference.
+- The first successful write stores backend version `1` and creates the server-owned active `encrypted-file` `VaultReference` for that provider API key. A later write rotates the same reference and advances the Core version. Reference/backend disagreement, missing paired authority, malformed/ambiguous Provider configuration, a locked backend, or concurrent same-reference writes fail closed (resuming only from equal-version state or the backend-one-version-ahead prefix of a prior ordered write), and failure after a fresh backend store revokes that material and returns `recovery_required` because a consumed reference ID is never reused. Provider `secretRef: vault://<referenceId>` resolution for Gateway and Quick Chat calls uses the audited wrapper, converts public failures to fixed provider-unavailable responses, and keeps typed Vault detail only in redacted internal evidence.
 
-The first successful write stores backend version 1 and creates the exact server-owned Core `VaultReference` with display name `Provider API key`, secret kind `provider-api-key`, the configured backend kind and locator, active status, and version 1. A later write rotates the same reference and advances the Core version. Existing reference or backend metadata disagreement, missing paired authority, malformed or ambiguous provider configuration, a locked backend, and concurrent same-reference writes fail without claiming success; a new request may continue only from the exact accepted equal-version state or the backend-one-version-ahead prefix produced by the preceding ordered write. Failure after a fresh backend store revokes that material and returns recovery-required because the consumed reference id cannot be reused. This operation deliberately has no clear, revoke, compatibility, or implicit credential-discovery behavior; removal requires a future accepted lifecycle because a revoked reference id is not reusable.
-
-`VaultEntryMetadata` has one optional provider-subscription inventory projection with this exact strict shape:
-
-```ts
-type ProviderSubscriptionAccountProjection = {
-  subscriptionProviderId: "openai-codex" | "xai";
-  accountSlotId: string;
-};
-
-type VaultEntryMetadata = {
-  ownerScope: "server" | "user" | "workspace";
-  workspaceId?: string;
-  userId?: string;
-  providerSubscriptionAccount?: ProviderSubscriptionAccountProjection;
-};
-```
-
-`accountSlotId` matches `^[a-z0-9][a-z0-9_-]{0,63}$`. The nested object rejects missing, extra, or unsupported values and is permitted only when `ownerScope` is `server` and `workspaceId` and `userId` are absent. Invalid metadata fails as redacted typed `backend-unavailable` before material is stored. Rotation preserves the projection unchanged, revocation retains it only in non-secret inventory, and `listReferences` returns it without material.
-
-The projection is non-secret and non-authoritative. It exists only so filesystem inventory can attribute encrypted material to a local provider and slot when account metadata is absent or invalid. It MUST NOT create or reconstruct an account, establish or change a binding, select a credential, authorize use, enter a public response, or add provider or slot columns to `vault_references`.
+`VaultEntryMetadata` and `ProviderSubscriptionAccountProjection` (`apps/nanocore/src/vault/vault-backend.ts`) own the strict optional provider-subscription inventory projection on encrypted entries. The projection is permitted only when owner scope is server and Workspace and User ids are absent. Invalid metadata fails as redacted `backend-unavailable` before storing material. Rotation preserves the projection, revocation retains it only in non-secret `state.json` inventory, and `listReferences` returns it without material; it exists solely so filesystem inventory can attribute encrypted material to a local provider and slot when `account.json` is absent or invalid, and never creates/reconstructs an account, changes a binding, authorizes use, enters public responses, or adds columns to `vault_references`.
 
 ### Backend-Recognized Revoked Tombstone
 
-An exact backend-recognized revoked tombstone for a current provider-subscription binding is not a new record, marker, MAC, journal, or state. It exists only when the current `encrypted-file` backend completes whole-inventory strict validation through `listReferences` and accepts exactly one current-binding inventory row with all of these values: `referenceId` equals the account binding; `backendKind` is `encrypted-file`; `ownerScope` is `server`; `workspaceId` and `userId` are absent; `providerSubscriptionAccount.subscriptionProviderId` and `accountSlotId` exactly equal the account pair; `revoked` is `true`; `currentVersion` and `versionCount` are equal positive safe integers; and the reference directory contains no material entry, writer entry temporary, state temporary, or unknown residue. The canonical revoked `state.json` inventory row is the only permitted remaining reference-directory artifact. Any whole-inventory failure, duplicate current-binding row, field mismatch, unsafe version, live or temporary material, or unknown residue means the predicate is not satisfied and the caller fails closed.
-
-Because revocation destroys every encrypted entry, this predicate is not a claim that the tombstone itself has cryptographic authentication from surviving material. It is durable backend revocation proof established by strict backend inventory under the accepted owner-only-filesystem, single-NanoCore, single-writer threat boundary. It may be consumed only by the Provider Subscription Accounts contract to let an already-started logout or delete finish the exact generic Core revocation cascade and binding clear or account deletion. It does not authorize a Vault store, rotate, revoke, or other Vault write; ordinary account validity; same-reference persistence or reuse; metadata restoration; another recovery action; a public operation; or automatic repair.
+An exact backend-recognized revoked tombstone for a current provider-subscription binding (`apps/nanocore/src/vault/vault-encrypted-file-backend.ts`, consumed by `apps/nanocore/src/llm/provider-subscription-accounts.ts`) exists only when `listReferences` completes whole-inventory strict validation and accepts exactly one current-binding row with `referenceId` equal to the account binding, `backendKind: "encrypted-file"`, `ownerScope: "server"`, absent `workspaceId` and `userId`, matching `providerSubscriptionAccount.subscriptionProviderId` and `accountSlotId`, `revoked: true`, equal positive safe integers `currentVersion` and `versionCount`, and zero material entry files, writer temporaries, state temporaries, or unknown residue in the reference directory (leaving only canonical revoked `state.json`). Any mismatch or residue fails closed. It is durable backend revocation proof under the single-NanoCore owner-only-filesystem boundary and may be used only by `docs/specs/20260721-provider_subscription_accounts.md` to let an already-started logout or delete finish the generic Core revocation cascade and binding clear/account deletion; it never authorizes a Vault write, ordinary account validity, reference reuse, metadata restoration, or automatic repair.
 
 ### encrypted-file Store
 
-- The store root is `DATA_ROOT/server/vault/` for both local and server modes.
-- `header.json` authenticates the store format, `raw-key-file` key kind, creation timestamp, verification nonce, and fixed purpose without storing key bytes or recoverable material. Header and entry envelopes use only the shared retained-v1 `schemaVersion: 1` marker through `readRetainedV1` and `writeRetainedV1`. The header verification associated data uses the same marker. Missing, unknown and predecessor-only markers fail with the existing redacted backend error; no converter or legacy reader is provided for this pre-reset format cut.
-- Each material version lives at `entries/<referenceId>/<version>.enc`, and each reference has strict non-secret inventory at `entries/<referenceId>/state.json`.
-- Every entry uses a unique data key and AES-256-GCM. Associated data authenticates the reference id, version, canonical creation timestamp, owner metadata, exact version-expiration projection, and optional provider-subscription projection. Moving, copying, or renaming ciphertext to another reference or version MUST fail authentication.
-- A live `state.json` is trusted only when its identity, ownership, current version, version count, expiration data, revocation state, and optional provider-subscription projection agree with the authenticated entry set. After revocation destroys that entry set, the strict backend-recognized tombstone predicate above is the only accepted revoked-state validation.
-- Per-entry envelopes are the unit of write; rotation or revocation of one reference MUST NOT re-encrypt the whole store.
-- New files use exact `0600`, Vault directories use exact `0700`, and every file replacement uses same-directory write-new-then-rename so a torn write is never accepted as valid content.
-
-The accepted single-NanoCore, single-writer deployment assumes an owner-only filesystem and excludes a hostile same-UID participant concurrently replacing parent directories between validation and a leaf `rename` or `unlink`. `O_NOFOLLOW` and descriptor identity protect opened leaf files, but Node stdlib provides no directory-fd `openat` or `unlinkat` guarantee; any detected mismatch MUST fail closed. This excluded deployment violation does not authorize a native dependency, recovery state, second backend, compatibility path, or broader security claim.
+- The store root is `DATA_ROOT/server/vault/` (`0700` directories, `0600` files, rejecting symlinked children and unsafe paths in `apps/nanocore/src/vault/vault-store-directory.ts` and `apps/nanocore/src/vault/vault-encrypted-file-store.ts`) for both local and server modes, and is never nested inside a Workspace tree.
+- `header.json` authenticates the store without storing key bytes or recoverable material. Header and entry envelopes use the shared retained-v1 `schemaVersion: 1` marker via `readRetainedV1` and `writeRetainedV1`, including header verification associated data, and fail closed on a missing, unknown, or predecessor marker without a legacy reader.
+- Each material version lives at `entries/<referenceId>/<version>.enc`, and each reference has strict non-secret inventory at `entries/<referenceId>/state.json`. Every entry uses a unique data key and Node stdlib `aes-256-gcm`. Associated data binds the entry, so moving, copying, or renaming ciphertext fails authentication. `apps/nanocore/src/vault/vault-encrypted-file-store.ts` owns the envelope.
+- A live `state.json` is trusted only when it agrees with the authenticated entry set. After revocation destroys the entry set, only the backend-recognized revoked tombstone predicate above is accepted. Per-entry envelopes are written independently via same-directory exclusive `O_NOFOLLOW` write-new-then-rename (`0600`) without re-encrypting the whole store, assuming the single-NanoCore owner-only-filesystem boundary and failing closed on any detected descriptor or directory mismatch.
 
 ### Integrity And Orphan Detection
 
-The backend's existing filesystem namespace is enumerable by internal directory traversal. This is an implementation property of the store and does not add a public operation, a new enumeration interface, or another durable record family.
-
-Inventory MUST inspect every reference directory, strict state file, material-version filename, writer temporary, and unknown artifact in the addressed scope. A live entry authenticates its provider-slot projection before that projection may participate in account orphan checks; a revoked reference is accepted only through the backend-recognized tombstone predicate above. A missing required live entry, malformed, unauthenticated, extra, stale, temporary, or contradictory entry or state file is a redacted `backend-unavailable` integrity failure and MUST NOT be omitted, inferred from a path, repaired from `account.json`, used to reconstruct metadata, or treated as absence.
-
-A process crash between independently atomic entry and state writes may leave a complete orphan file or stale projection. The backend does not compensate, forward-settle, or automatically repair that state. Ordinary resolution, provider-account listing, reconciliation, account deletion, binding clear, and pair reuse remain failed closed until the reviewed cleanup procedure in `docs/specs/20260721-provider_subscription_accounts.md` authenticates attribution, revokes and destroys every attributable version, verifies absence or unresolvability, applies any existing generic Core revocation cascade, and only then removes residue.
+Internal directory traversal inspects every reference directory, `state.json`, `<version>.enc`, writer temporary, and unknown artifact in the addressed scope without adding a public enumeration API or second record family. A live entry authenticates its provider-slot projection before participating in account orphan checks; any missing required live entry, malformed, unauthenticated, extra, stale, temporary, or contradictory entry or state file fails closed as redacted `backend-unavailable` (never omitted, inferred from a path, repaired from `account.json`, or treated as absence). A crash between independently atomic entry and state writes is never auto-repaired; ordinary resolution, provider-account listing, reconciliation, account deletion, binding clear, and pair reuse remain failed closed until either explicit `revoke` destroys mutually attributable canonical and complete writer-temporary material or the reviewed cleanup procedure in `docs/specs/20260721-provider_subscription_accounts.md` completes.
 
 ### Master Key And Lock State
 
-The configured key path is `vault.encryptedFile.keyFilePath` in `config/server.jsonc`. It MUST be absolute, outside `DATA_ROOT`, and name a regular non-symlink file owned by the NanoCore process user with exact `0600` permissions and exactly 32 raw bytes. Loading uses one bounded `O_RDONLY | O_NOFOLLOW` descriptor plus `fstat` on that descriptor; unsupported platforms or filesystems and every ownership, mode, type, length, or authentication failure remain redacted and locked.
+The sole configured master-key source is `vault.encryptedFile.keyFilePath` in `config/server.jsonc` (`apps/nanocore/src/vault/vault-key-file.ts`), which MUST be an absolute canonical path outside `DATA_ROOT` (rejecting parent-symlink aliases) naming a regular non-symlink file owned by the NanoCore process user with exact `0600` permissions and `32` raw bytes, loaded via one `O_RDONLY | O_NOFOLLOW` descriptor and `fstat`:
 
-- If no valid configured key is available at boot, boot proceeds with the Vault `locked`; Vault-dependent operations fail `vault-locked`, and readiness reports only the Vault subsystem degraded.
-- Boot and authenticated admin unlock verify the key against `header.json` before exposing an available backend. A header may be initialized only for an empty safe store; a wrong key, malformed or unsupported header, tampered metadata, or non-empty headerless store never rewrites the store.
-- Admin lock zeros the process-owned master-key buffer and returns the backend to `locked` without touching stored entries. Retained backend references reject reads and writes after lock or key replacement.
-- Master keys, unwrapped data keys, temporary key-file buffers, request buffers, and failed replacement keys are zeroed at their lifecycle boundaries and never enter logs, diagnostics, SQLite, or disk outside the configured key file.
+- If no valid configured key is available at boot, boot proceeds with the Vault `locked` (`apps/nanocore/src/vault/vault-unlock-state.ts`), Vault-dependent operations (`vault.read`, `vault.use`, `secret.inject`) fail `vault-locked`, and readiness reports the Vault subsystem degraded.
+- Boot and authenticated `server-admin` unlock verify the key against `header.json` before exposing an available backend (failed-unlock rate limiting refuses after a current default of `5` failures within `60,000 ms` in `apps/nanocore/src/vault/vault-operation-implementations.ts`). `header.json` is initialized only for an empty safe store; a wrong key, malformed/unsupported header, tampered metadata, or non-empty headerless store never rewrites the store.
+- Admin lock zeros the process-owned master-key buffer and returns the backend to `locked` without touching stored entries, invalidating retained backend instances. Master keys, unwrapped data keys, temporary key-file buffers, decrypt intermediates, request buffers, and failed replacement keys are zeroed at their lifecycle boundaries and never enter logs, diagnostics, SQLite, or disk outside the configured key file.
 
 ### Versioning, Rotation, And Revocation
 
-- Versions are monotonically increasing integers beginning at 1.
-- `rotate` atomically writes version N+1 before atomically advancing state and marks prior non-expired versions with the configured grace expiry.
-- Within grace, explicit prior-version resolution succeeds; current resolution returns N+1. After grace, prior resolution fails `version-expired`, and the backend destroys expired material.
-- `revoke` invalidates all versions immediately with no grace, guarantees that no version resolves again, and destroys every attributable material file.
-- Each transition emits the audit event owned by the audit specification; backend and Core record updates remain separate ordered effects rather than a claimed cross-domain transaction.
+- Versions are monotonically increasing safe positive integers beginning at `1`.
+- `rotate` atomically writes version `N+1` before atomically advancing `state.json` and marks prior non-expired versions with the configured grace expiry (`rotationGraceMs`, current default `0 ms` in `apps/nanocore/src/vault/vault-encrypted-file-backend.ts`). Within grace, explicit prior-version resolution succeeds while current resolution returns `N+1`; after grace, prior-version resolution fails `version-expired` and expired material is destroyed.
+- `revoke` invalidates all versions immediately with zero grace, guarantees that no version resolves again, and destroys every attributable material file, emitting the audit event owned by `docs/specs/20260703-audit_usage_evidence_records.md`.
 
 ### Vault-Use Audit Emission
 
-- Every successful `resolve` emits a `VaultUse` row with reference id, resolved version, resolving path, actor context, owner scope, outcome, backend kind, and timestamp, never material.
-- Failed resolution emits the same redacted evidence with its typed failure code.
-- `store`, `rotate`, `revoke`, unlock, and lock emit their own audit actions as owned by `docs/specs/20260703-audit_usage_evidence_records.md`.
-- Batch resolution emits one `VaultUse` row per reference.
+- Every successful `resolve` (and each reference in a batch resolution) emits one redacted `VaultUse` row (`apps/nanocore/src/vault/vault-use-audited-backend.ts`) and never includes material. Failed resolution emits the same redacted row with its typed failure code. `store`, `rotate`, `revoke`, unlock, and lock emit their own `AuditEvent` actions under `docs/specs/20260703-audit_usage_evidence_records.md`.
 
 ### Storage, Export, And Scope
 
-- Secret material lives only in encrypted entry files. It MUST NOT appear in SQLite, item logs, knowledge, artifacts, AEP snapshots, evidence bundles, normal workspace files, errors, or diagnostics.
-- Workspace export carries non-secret Vault references only. It excludes `server/vault/`, and data-root backup excludes the external master-key file.
-- Tooling that scans, indexes, syncs, or exports the data root treats `server/vault/` as opaque.
-- One NanoCore deployment is one Vault trust domain. Server-, user-, and Workspace-scoped references may share the encrypted store, but every entry authenticates its owner scope and applicable owner id.
-- A resolution whose caller scope differs from the reference owner scope is explicit cross-scope use and must carry the required grant and audit context.
+- Secret material lives only in encrypted `entries/<referenceId>/<version>.enc` files and never enters SQLite, item logs, Knowledge, Artifacts, AEP snapshots, evidence bundles, normal workspace files, errors, or diagnostics.
+- Workspace export carries non-secret Vault references only and excludes `server/vault/`, data-root backup excludes the external master-key file, and tooling that scans, indexes, syncs, or exports `DATA_ROOT` treats `server/vault/` as opaque.
+- One NanoCore deployment is one Vault trust domain: `server`, `user`, and `workspace` references share `DATA_ROOT/server/vault/` while every entry authenticates its `ownerScope` and owner ID, and any resolution whose caller scope differs from `ownerScope` is explicit cross-scope use requiring the governing grant and Audit context.
 
 ### Server Shared-MCP Secret Administration
 
-Current deployment-administrator authority may manage the existing Server reference/grant shapes only for the shared-MCP reference classification `mcp-credential`. This bounded path lists redacted metadata, accepts material only in create/rotate requests, and supports issue, strict revoke-and-replace narrowing, grant revocation and reference revocation. Server grants use Server lifetime and exactly Gateway-only visibility; exact optional Agent, AgentSession, operation and expiry bounds retain their existing meanings. It admits no User lifecycle, Worker-visible sink, Provider key, subscription account, bootstrap reference, source credential or automatic binding. Scope alone cannot authorize mutation of another Server reference family.
+Current deployment-administrator authority may manage Server `VaultReference` and `VaultGrant` records only for the shared-MCP classification `mcp-credential` (`apps/nanocore/src/vault/server-mcp-authority.ts`, `apps/nanocore/src/vault/vault-operation-implementations.ts`):
 
-Reference creation, rotation and revocation retain the existing ordered backend/Core effects and truthful partial/unknown results. Grant narrowing reuses the existing Core transaction and linked initiating-human Audit; it preserves reference, Server scope, lifetime and lineage, and changes no binding automatically. Current inventory and Audit are the inspection path after a lost response. Expired or revoked grants, unavailable or locked material, contradictory metadata, imported history and missing current target facts fail closed. No new secret store, grant registry or cross-domain transaction is introduced.
+- This path lists redacted metadata, accepts material only in create/rotate requests, and supports grant issuance, strict revoke-and-replace narrowing, grant revocation, and reference revocation. Server grants use `server` lifetime and `gateway-only` visibility with optional exact Agent, AgentSession, operation (`mcp.list-tools` / `mcp.call-tool`), and future expiry bounds, admitting no User lifecycle, Worker-visible sink, Provider key, subscription account, bootstrap reference, source credential, or automatic binding.
+- Reference creation, rotation, and revocation follow the ordered backend/Core effect rules, and grant narrowing reuses the single Core transaction and initiating-human Audit while preserving reference, `server` scope, lifetime, and lineage.
+- The Server catalog's exact current shared-MCP binding supplies the cross-scope use authority in `docs/specs/20260704-worker_mcp_tool_supply.md#shared-server-origin-and-vault-use` (a Workspace-owned declaration cannot consume a Server grant); the audited backend records Server `VaultUse` in `core.sqlite` while its linked `AuditEvent` retains consuming Workspace, actor, and capability-call lineage.
 
-The Server catalog's exact current shared-MCP binding supplies the explicit cross-scope use authority described by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md#shared-server-origin-and-vault-use). A Workspace-owned declaration cannot consume that grant. The audited backend records Server-owned use in Core and its linked general Audit retains consuming Workspace, actor and capability-call lineage; the wrapper's scope check or mere presence of a grant id cannot substitute for the Gateway's current canonical binding/grant check.
+## Acceptance
 
-## Accepted Design
+- Cryptographic, filesystem, and lifecycle verification proves `aes-256-gcm` round trips, header and entry associated-data tamper rejection (including cross-reference/version moves and `providerSubscriptionAccount` binding), external `0600` regular no-follow `32`-byte master-key validation outside `DATA_ROOT`, `0700` store directory and symlink/temporary-file rejection, strict whole-inventory validation and the exact backend-recognized revoked tombstone predicate, version advancement and grace expiry, destructive revocation, buffer zeroization on lock/key replacement, healthy locked boot in both local and server modes, and exact Workspace, Provider API-key, and Server shared-MCP (`mcp-credential`) administrative boundaries with zero secret leakage across inventory, Audit, CLI, or Web caches.
 
-The backend layer is a NanoCore-internal module with one fixed `encrypted-file` implementation. Its directory-per-reference layout maps entry and state changes to independently atomic file replacements while keeping the entire namespace enumerable for integrity and orphan checks.
+## Implementation
 
-Unlock state owns one mutable master-key `Buffer`, zeros it at explicit lifecycle boundaries, and exposes lock state to readiness. The audit wrapper surrounds material resolution so every accepted credential-use path records `VaultUse` evidence.
+- Encrypted-file store, master-key loader, unlock state, audited backend wrapper, and Vault operations: `apps/nanocore/src/vault/`.
+- Retained reference, grant, plan, receipt, and `VaultUse` SQLite schemas and native codecs: `apps/nanocore/src/storage/`, `apps/nanocore/src/storage/schema/`.
+- Provider API-key and subscription account consumers: `apps/nanocore/src/providers/`, `apps/nanocore/src/llm/`.
+- Public Vault administration and injection schemas: `packages/app-api-schemas/src/`, `packages/protocol/src/`.
 
-## Current Implementation Projection
+## Implementation Gaps
 
-- `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, and `VaultInjectionReceipt` exist as durable non-secret metadata in `core.sqlite`, and `VaultUse` exists in the scope-owning SQLite database. Workspace-scoped metadata has filtered App API, Core Client, and remote MCP and administrator CLI readback.
-- `apps/nanocore/src/vault/vault-backend.ts` defines the sole `encrypted-file` backend kind, the internal boundary, typed redacted errors, health projection, owner-scope metadata checks, locked implementation, and strict server-only `openai-codex | xai` provider-subscription projection with bounded slot validation.
-- `apps/nanocore/src/vault/vault-key-file.ts` enforces an absolute canonical path outside `DATA_ROOT`, including parent-symlink aliases, no-follow descriptor loading and identity verification, process-user ownership, exact `0600`, regular-file type, and exact 32-byte content with redacted failures.
-- `apps/nanocore/src/vault/vault-store-directory.ts` and `apps/nanocore/src/storage/fs-layout.ts` enforce the `0700` store directory, reject symlinked store children and unsafe existing paths, and keep path failures redacted.
-- `apps/nanocore/src/vault/vault-encrypted-file-store.ts` implements the authenticated header, per-entry envelope, same-directory exclusive no-follow atomic replacement, reference-and-version binding, associated-data authentication of canonical creation time, ownership, exact expiration, and provider-slot metadata, and temporary and decrypt-intermediate buffer zeroization with Node stdlib `aes-256-gcm`.
-- `apps/nanocore/src/vault/vault-encrypted-file-backend.ts` implements health, store, resolve, rotate, revoke, and strict enumerable inventory over encrypted entries and per-reference state; ordinary operations fail closed on malformed, missing, extra, stale, unsafe-version, temporary-file, symlink, metadata, or state disagreement, while explicit revoke alone may destroy mutually attributable canonical and complete writer-temporary material without touching unverifiable residue. Retained instances are invalidated after their owned key is replaced or locked.
-- `apps/nanocore/src/vault/vault-references.ts` now provides generic Core helpers that distinguish a fresh reference insert from an idempotent match, accept only an equal or one-step active material-version projection, and transactionally revoke a reference, its dependent grants and plans, and active injection receipts according to their proved visibility; focused tests cover conflicts, rollback, retry, missing or revoked references, and skipped or regressed versions. NanoHost terminates the affected sandbox and invalidates the complete Runtime Epoch when deletion cannot be proved; the deleted Cell implementation's whole-Cell recycle is historical only.
-- The composed `apps/nanocore/src/llm/provider-subscription-accounts.ts` manager consumes those helpers and the encrypted-file backend for strict `account.json` binding, store, rotation, revocation, pair-scoped `CredentialStore` and stock `Models` views, handle invalidation, and safe reconciliation. Stock pi-ai device login, refresh, logout, and authenticated Codex and xAI inference now use those exact pair-scoped handles.
-- The admin Vault API exposes redacted status, unlock, lock, authored provider API-key store or replacement, VaultUse readback, and Workspace reference discovery or rebind with server-admin and Workspace authorization, rate limiting, secret-input-only request fields, and linked audit evidence. The running route still requires that server-admin and Workspace-authorization conjunction. A currently usable administrator credential satisfies the Workspace authorization under the administrator eligibility rule in [Core Policy](../core/policy.md), and that running conjunction is not the target.
-- The audited backend wrapper records resolution success and typed failure, rejects implicit cross-scope use, and supports provider, Codex runtime-file, and generic MCP credential resolution without exposing material. The public issuer creates gateway-only grants with optional exact supported targets; the selected MCP consumer checks them under current Vault authority, and material stays at the Gateway sink. Local fixture coverage does not establish live vendor hosting acceptance.
-- The local and server boot paths both compose the same locked encrypted-file state at `DATA_ROOT/server/vault/`, load the external key only through the bounded key-file path, zero the temporary buffer, report truthful degraded readiness, and reuse one process Vault state through shutdown.
-- Provider `secretRef: vault://<referenceId>` resolution uses the audited wrapper for Gateway and Quick Chat calls, converts public failures to fixed provider-unavailable responses, and keeps typed Vault detail only in redacted internal evidence.
-- Config, App API, storage, workspace-import, generated OpenAPI, and bundled-client projections admit only `encrypted-file`.
+None.
 
-The encrypted-file-only backend convergence, generic Core lifecycle helpers, startup composition, public provider-subscription routes, and pi-ai credential consumers are implemented and tested. The Vault backend itself still does not create accounts, infer bindings, expose provider-subscription operations, or release pairs. This spec remains `Partial` because the explicitly reviewed provider-pair cleanup surface owned by `docs/specs/20260721-provider_subscription_accounts.md`, credential-backed provider verification, and the public gateway-only grant cutover for selected MCP use remain outstanding; no backend selector, alternate store, automatic repair, or second credential authority is introduced.
+## Decisions
 
-## Alternatives Considered
-
-### SQLCipher Whole-Database Encryption
-
-Rejected because secrets do not belong in SQLite, whole-database encryption couples credential custody to unrelated records, and it does not provide the required per-entry identity and provider-slot authentication.
-
-## Consequences
-
-- Local and server deployments share one backend path and one security model.
-- NanoCore owns a small stdlib AEAD file format and an external raw-key operational requirement.
-- A locked or internally inconsistent Vault is a truthful first-class degraded state.
-- Store crashes can require reviewed cleanup, but they do not require another state machine, journal, compatibility reader, or automatic repair path.
-
-## Rollout / Migration Plan
-
-The same-release backend clean cut is complete: both deployment modes compose `encrypted-file`, schemas and stored backend-kind projections admit only that value, strict provider-slot authentication and failed-closed inventory checks are active, and the alternate backend, selection code, platform adapters, and dedicated tests are deleted. No data migration, import, fallback, compatibility path, or alternate-backend reader is provided; affected development credentials are stored again through the accepted encrypted-file path, while provider-subscription account and login cutover remains owned by `docs/specs/20260721-provider_subscription_accounts.md`.
-
-## Verification Status
-
-Focused coverage proves encrypted round trips, header and entry tamper rejection, provider-slot metadata and associated-data binding, canonical external key separation, correct and wrong keys, malformed and headerless stores, exact permissions, atomic replacement, safe version parsing, temporary-file and symlink containment, strict entry and state inventory, attributable revoke-only cleanup, rotation, revocation, retained-reference invalidation, buffer zeroization, admin authorization and redaction, audited resolution, both deployment-mode compositions, alternate-backend deletion, and healthy locked boot. Provider-subscription tombstone coverage must additionally prove whole-inventory validation, the exact unique revoked-row fields and safe equal versions, absence of every material, temporary, and unknown artifact, failed closure for every mismatch, and absence of any Vault write or ordinary-validity authority.
-
-Remaining alignment requires the provider-subscription account, storage, credential-store, login, and reviewed pair-release integration owned by `docs/specs/20260721-provider_subscription_accounts.md`, plus its release-level and packaged acceptance evidence; no backend selector, alternate path, automatic repair, or second credential authority is authorized while that work remains incomplete.
-
-## Risks & Mitigations
-
-- Risk: file-store cryptography acquires subtle flaws. Mitigation: Node stdlib AEAD only, a minimal versioned format, authenticated identity metadata, and permanent tamper tests.
-- Risk: an operator supplies a weakly protected, replaced, in-root, or wrong key file. Mitigation: external absolute path, no-follow same-descriptor validation, exact ownership, type, `0600`, length, and authenticated-header checks.
-- Risk: a crash leaves a valid file that disagrees with inventory. Mitigation: enumerate the existing entry/state namespace, authenticate attribution, fail closed, and require reviewed cleanup before reuse.
-- Risk: the encrypted store is captured by Workspace tooling. Mitigation: the opaque-directory rule and export exclusion remain permanent checks.
-
-## Resolved Decisions
-
-- `encrypted-file` is the sole current backend for local and server modes.
-- The store has one active raw master key outside `DATA_ROOT` and no compatibility, recovery-key, selector, fallback, or export layer.
-- Provider-subscription account metadata remains in `account.json`; encrypted entries authenticate only the non-secret provider-slot projection needed for orphan detection.
-- Independently atomic entry and state writes plus failed-closed reviewed cleanup are sufficient for the accepted deployment baseline; no journal, intent record, registry, or new enumeration API is authorized.
-
-## Deferred / Future Work
-
-- Automatic rotation schedules and rotation policy; this spec provides only rotation mechanics.
-- Operator recovery-key workflows for the encrypted store.
-- Explicit encrypted Vault export with a separately accepted key lifecycle and audit contract.
-
-## Links
-
-- `docs/specs/20260721-provider_subscription_accounts.md`
-- `docs/specs/20260715-multi_user_workspace_system.md`
-- `docs/specs/20260703-vault_secret_injection.md`
-- `docs/specs/20260703-storage_layout_record_ownership.md`
-- `docs/specs/20260703-openshell_mechanism_internalization.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
-- `docs/specs/20260704-nanocore_bootstrap_readiness.md`
-- `docs/specs/20260704-workspace_backup_export_import.md`
-- `docs/specs/20260629-openkit_policy_model.md`
-- `docs/specs/20260529-test_strategy.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
-- `docs/core/vault.md`
-- `docs/core/storage.md`
-- `docs/core/policy.md`
-- `docs/core/evidence.md`
-
-The existing `vault.bootstrap-codex-auth` operation acquires a Codex harness Login for the actual human User through the existing User Policy, PermissionDecision and Audit owners. Core refreshes the submitted credential through the stock Codex provider, verifies the provider-scoped account equality, and stores only the refreshed material under that User. Its result is the existing redacted Login projection. It creates no Workspace grant and does not change Gateway provider-subscription accounts. Production activation, quota observations, Thread affinity and full-service delivery qualification remain pending. The User acquisition is an explicit exception to Server administration, not a relaxation of any other Vault operation.
+- [Hosting Through Gateway MCP](../decisions/20261002-hosting_through_gateway_mcp.md)

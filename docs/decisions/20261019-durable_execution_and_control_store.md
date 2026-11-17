@@ -56,6 +56,6 @@ Revisit database placement if measured scale defeats bounded handles and the reb
 
 - [Storage](../core/storage.md), [Runtime Model](../core/runtime-model.md), and [Fault Tolerance](../core/fault-tolerance.md).
 - [Durable Execution And Control Store](../specs/20261019-durable_execution_and_control_store.md), [Storage Layout](../specs/20260703-storage_layout_record_ownership.md), and [File Storage And Knowledge Packages](../specs/20261018-file_storage_and_knowledge_packages.md).
-- [Durable Scheduler](../specs/20260703-durable_scheduler_design.md), [Scheduling Scale](../specs/20260703-runtime_scheduling_scale.md), [Bootstrap](../specs/20260704-nanocore_bootstrap_readiness.md), and [NanoHost](../specs/20260802-nanohost_runtime_and_transport.md).
+- [Durable Scheduler](../specs/20260703-durable_scheduler_design.md), [Scheduling Scale](../specs/20260703-durable_scheduler_design.md#scale-limits), [Bootstrap](../specs/20260704-nanocore_bootstrap_readiness.md), and [NanoHost](../specs/20260802-nanohost_runtime_and_transport.md).
 - [Recurring Triggers](../specs/20260711-scheduler_recurring_event_triggers.md), [Work Data Retention](../specs/20260921-work_data_retention_format.md), and [Backup/Export](../specs/20260704-workspace_backup_export_import.md).
 - [Notebook](../specs/20260909-knowledge_notebook_editing.md), [Operational Telemetry](../specs/20260731-operational_telemetry_standardization.md), and [Goal Freeze And Export / Backup Separation](20260928-goal_freeze_and_export_backup_boundary.md).

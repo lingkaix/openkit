@@ -50,9 +50,9 @@ Absorption is distillation, not copying. `[DOC-015]` binds it: no criterion that
 - [`docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`](../../specs/20260704-knowledge_manager_internal_agent_runtime.md)
 - [`docs/specs/20260704-agent_session_continuity.md`](../../specs/20260704-agent_session_continuity.md)
 - [`docs/specs/20260704-session_static_workspace_materialization.md`](../../specs/20260704-session_static_workspace_materialization.md)
-- [`docs/specs/20260709-quick_chat_workspace.md`](../../specs/20260709-quick_chat_workspace.md)
+- [`docs/specs/20260715-multi_user_workspace_system.md#personal-workspace`](../../specs/20260715-multi_user_workspace_system.md#personal-workspace)
 - [`docs/specs/20260802-nanohost_runtime_and_transport.md`](../../specs/20260802-nanohost_runtime_and_transport.md)
-- [`docs/specs/20260703-runtime_scheduling_scale.md`](../../specs/20260703-runtime_scheduling_scale.md)
+- [`docs/specs/20260703-durable_scheduler_design.md#scale-limits`](../../specs/20260703-durable_scheduler_design.md#scale-limits)
 - [`docs/specs/20260703-worker_control_protocol.md`](../../specs/20260703-worker_control_protocol.md)
 - [`docs/specs/20260703-workspace_synchronization.md`](../../specs/20260703-workspace_synchronization.md)
 - [`docs/specs/20260703-audit_usage_evidence_records.md`](../../specs/20260703-audit_usage_evidence_records.md)
@@ -123,9 +123,9 @@ The accepted Chat-subordinate Gate identity carries forward unchanged — a non-
 | --- | --- |
 | Conversation record model | `docs/core/work-model.md`, `docs/core/agent-session.md` |
 | Agent mechanism and Tool boundary | [docs/core/agent-workflow.md](../../core/work-model.md), `docs/core/mediation.md` |
-| Assistant and interaction semantics | `docs/specs/20260704-chat_mode_assistant.md`, `docs/specs/20260709-quick_chat_workspace.md`, `docs/core/communication.md`, `docs/core/policy.md` |
+| Assistant and interaction semantics | `docs/specs/20260704-chat_mode_assistant.md`, `docs/specs/20260715-multi_user_workspace_system.md#personal-workspace`, `docs/core/communication.md`, `docs/core/policy.md` |
 | Goal orchestration | `docs/specs/superseded/20260704-goal_mode_coordination.md`, `docs/specs/20260704-workflow_coordinator_internal_agent.md`, `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` |
-| Runtime topology | `docs/core/sandbox.md`, `docs/core/runtime-model.md`, `docs/specs/20260802-nanohost_runtime_and_transport.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-worker_control_protocol.md` |
+| Runtime topology | `docs/core/sandbox.md`, `docs/core/runtime-model.md`, `docs/specs/20260802-nanohost_runtime_and_transport.md`, `docs/specs/20260703-durable_scheduler_design.md#scale-limits`, `docs/specs/20260703-worker_control_protocol.md` |
 | Continuity, materialization, retention | `docs/specs/20260704-agent_session_continuity.md`, `docs/specs/20260704-session_static_workspace_materialization.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260704-workspace_data_source_catalog.md`, `docs/core/storage.md`, `docs/specs/20260703-audit_usage_evidence_records.md` |
 | NanoCore internal roles | `apps/nanocore/src/internal-agents/**`, `apps/nanocore/src/mode-entry-routes.ts`, `apps/nanocore/src/turn-routes.ts` |
 | NanoCore runtime | `apps/nanocore/src/runtime/**`, `apps/nanocore/src/context/**`, `apps/nanocore/src/agents/**` |
@@ -245,16 +245,16 @@ Non-authorizing until a later change record admits it. Each names an owner and a
 | Personal and Deployment Knowledge scopes | `docs/core/knowledge.md` | An accepted ownership, visibility, retrieval, storage, export, and deletion contract |
 | Work Overview product surface and cross-Workspace discovery | A new accepted work-discovery specification | WP-8 shows the bounded `work.search` and `work.read` reads insufficient for the Assistant journey |
 | Rich user-driven Task-to-Goal promotion | `docs/specs/20260704-task_mode_worker_delegation.md` | The admitted lower-layer handoff predicates are verified and a user-driven promotion story independently satisfies current L6 admission; the existing rule-based escalation path stands until then |
-| Runtime Phase 2, concurrent Turns across AgentSessions | `docs/specs/20260703-runtime_scheduling_scale.md` | WP-10 verified and one Harness adapter proves safe native multiplexing under real-runtime test |
+| Runtime Phase 2, concurrent Turns across AgentSessions | `docs/specs/20260703-durable_scheduler_design.md#scale-limits` | WP-10 verified and one Harness adapter proves safe native multiplexing under real-runtime test |
 | Runtime Phase 3, multiple Harness instances and families | `docs/specs/20260802-nanohost_runtime_and_transport.md` | A review requiring agent-runtime-family independence, which same-family review may not silently satisfy |
-| Runtime Phase 4, eviction policy, read-only cache sharing, placement heuristics | `docs/specs/20260703-runtime_scheduling_scale.md` | Measured latency or memory need from production traces |
+| Runtime Phase 4, eviction policy, read-only cache sharing, placement heuristics | `docs/specs/20260703-durable_scheduler_design.md#scale-limits` | Measured latency or memory need from production traces |
 | Deferred `tool.find` progressive discovery | `docs/core/mediation.md` | Measured catalog scale or representative model selection errors that role routing cannot fix |
 | Parallel Tool execution, dynamic Tool registration, generic hook pipelines, exact Turn replay | [docs/core/agent-workflow.md](../../core/work-model.md) | A concrete accepted need; none exists |
 | Unattended administration without per-action human approval | A separately accepted durable owner | An accepted requirement for an unattended, event-triggered administration lifecycle with its own budgets, breakers, evidence, and recovery |
 | Unversioned object-source manifests and large-data lazy access | `docs/specs/20260704-workspace_data_source_catalog.md` and its source adapters | One real source requires it |
 | Human-centered usability principles: experience outcomes, progressive disclosure, grounded and honest progress, action clarity, cross-channel parity, scale without cognitive overload | `docs/core/work-model.md` and `docs/core/communication.md` for the parts they own; a product-surface specification for the rest | The Work Overview surface activates, since these principles describe the surface that displays it. Approval strength graded by reversibility is the one member already admitted, to WP-3, because WP-8 binds consequential Tools that need it |
-| Warm Harness residency policy: at most one compatible default warm Harness for a recently active project Workspace, with activation signal, idle lifetime, memory ceiling, and eviction order | `docs/specs/20260703-runtime_scheduling_scale.md` | WP-10 verified, so a Sandbox can hold more than one AgentSession and residency has something to optimize |
-| Off-peak Sandbox rebuild as drift control: close an idle aged Sandbox, discard local state, re-materialize from the current desired setup generation | `docs/specs/20260703-runtime_scheduling_scale.md` with `docs/specs/20260704-session_static_workspace_materialization.md` | Measured residency traces exist to set the idle and age thresholds. Accepted 2026-08-13 as a cost and hygiene mechanism only; per-Turn freshness is already guaranteed by the freshness barrier, so a stale resident Sandbox makes a Turn slower and never wrong |
+| Warm Harness residency policy: at most one compatible default warm Harness for a recently active project Workspace, with activation signal, idle lifetime, memory ceiling, and eviction order | `docs/specs/20260703-durable_scheduler_design.md#scale-limits` | WP-10 verified, so a Sandbox can hold more than one AgentSession and residency has something to optimize |
+| Off-peak Sandbox rebuild as drift control: close an idle aged Sandbox, discard local state, re-materialize from the current desired setup generation | `docs/specs/20260703-durable_scheduler_design.md#scale-limits` with `docs/specs/20260704-session_static_workspace_materialization.md` | Measured residency traces exist to set the idle and age thresholds. Accepted 2026-08-13 as a cost and hygiene mechanism only; per-Turn freshness is already guaranteed by the freshness barrier, so a stale resident Sandbox makes a Turn slower and never wrong |
 | Layered autonomous cost and human-attention policy: deployment, user, Goal, and runtime-capacity ceilings; what is metered; attention severity, deduplication, rate limiting, and quiet periods | Deployment policy and [docs/core/metering.md](../../core/evidence.md) for the ceilings; `docs/specs/20260531-human_attention_intervention_model.md` for attention | WP-11 verified, so unattended progression exists to bound. The per-Goal `budget` field is the one member already admitted, to WP-4, because the Orchestrator cannot be built without it |
 | Product acceptance definition as five end-to-end journeys: Assistant, Task, Goal, portfolio, and channel parity | A product-surface specification | WP-7 through WP-11 and WP-13 are verified and each proposed journey independently satisfies current L6 admission, so product journeys are layered over settled lower-level owners rather than over the discarded WP-14 trajectory |
 | Owner-private Side Chat, direct addressing, and typed promotion | A new accepted Side Chat specification grounded in `docs/core/communication.md`, `docs/core/policy.md`, and `docs/specs/20260704-chat_mode_assistant.md` | An accepted owner defines the exact Side Thread and subject binding, read and disclosure authority, creation through termination and restart, stale, replay, conflict, transport-uncertain, and terminal failure semantics, typed promotion causation and exactly-once outcome, and externally observable acceptance predicates; only a later change record may then admit implementation |
@@ -451,16 +451,16 @@ One new specification of roughly 200 to 300 lines, plus 40 to 80 lines across `a
 
 ### WP-3 — Assistant Contract And Interaction Semantics
 
-- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/specs/20260704-chat_mode_assistant.md`; `docs/specs/20260709-quick_chat_workspace.md`; `docs/core/communication.md`; `docs/core/policy.md`; `docs/core/mediation.md` as amended by WP-2
+- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/specs/20260704-chat_mode_assistant.md`; `docs/specs/20260715-multi_user_workspace_system.md#personal-workspace`; `docs/core/communication.md`; `docs/core/policy.md`; `docs/core/mediation.md` as amended by WP-2
 - **Seam:** what the Assistant may read, what it may disclose, and what counts as a command
-- **Artifact inventory:** `docs/specs/20260704-chat_mode_assistant.md`; `docs/specs/20260709-quick_chat_workspace.md`; `docs/core/communication.md`; `docs/core/policy.md`
+- **Artifact inventory:** `docs/specs/20260704-chat_mode_assistant.md`; `docs/specs/20260715-multi_user_workspace_system.md#personal-workspace`; `docs/core/communication.md`; `docs/core/policy.md`
 - **Scope:** the nine admitted WP-3 decisions. Excludes Web Search, Personal and Deployment Knowledge, the Work Overview surface, and realtime voice, all of which are backlog
 - **Mode and permitted writes:** implementation
 - **Risk tier:** Tier 4. The recorded WP-3 escalation observed that `docs/core/policy.md` now carries binding Assistant read-scope, output-audience, publication, and authorization-failure rules, so authorization is the highest touched surface; this package does not touch credentials, sandbox containment, irreversible external effects, or data deletion
 - **Dependencies:** WP-2 verified
 - **Predicate, decided half:** as WP-1, over this package's decision list
 - **Predicate, bounded comparison:** the accepted Quick Chat boundary is unchanged in capability and changed only in that a work request can no longer terminate in a bare refusal. This claim is quantified over one named document rather than over the corpus, so it is decided here — but by a clause-by-clause comparison against the pre-change revision, never by a reviewer's impression of the finished text
-- **Oracle:** `strong`; same instrument as WP-1, plus `git diff` of `docs/specs/20260709-quick_chat_workspace.md` against its pre-change revision, read clause by clause against the capability list that revision states. Both are prior, finite, reproducible, and re-runnable. The named predicate failure is that the reviewer identifies one missing, misowned, incomplete, or contradicting Assistant decision, the comparison shows any pre-change Quick Chat capability widened or removed beyond replacing the bare work-request refusal, or a named command reports its own documentation-model, lifecycle, index, or test assertion failure; setup, permission, or collection failure leaves the predicate undecided
+- **Oracle:** `strong`; same instrument as WP-1, plus `git diff` of `docs/specs/20260715-multi_user_workspace_system.md#personal-workspace` against its pre-change revision, read clause by clause against the capability list that revision states. Both are prior, finite, reproducible, and re-runnable. The named predicate failure is that the reviewer identifies one missing, misowned, incomplete, or contradicting Assistant decision, the comparison shows any pre-change Quick Chat capability widened or removed beyond replacing the bare work-request refusal, or a named command reports its own documentation-model, lifecycle, index, or test assertion failure; setup, permission, or collection failure leaves the predicate undecided
 - **Failure disposition:** a disclosure decision that cannot be stated without widening an accepted permission boundary stops and escalates under `[SCOPE-004]`
 - **Next owner:** test author, builder, independent reviewer, verifier, then WP-8
 
@@ -493,7 +493,7 @@ Three to four files, roughly 200 to 350 added lines. Net line count may be negat
 
 ### WP-5 — Shared Sandbox Topology And Capacity
 
-- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/core/sandbox.md`; `docs/core/runtime-model.md`; `docs/specs/20260802-nanohost_runtime_and_transport.md`; `docs/specs/20260703-runtime_scheduling_scale.md`; `docs/specs/20260703-worker_control_protocol.md`
+- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/core/sandbox.md`; `docs/core/runtime-model.md`; `docs/specs/20260802-nanohost_runtime_and_transport.md`; `docs/specs/20260703-durable_scheduler_design.md#scale-limits`; `docs/specs/20260703-worker_control_protocol.md`
 - **Seam:** what may be shared inside one Sandbox and what may never be
 - **Artifact inventory:** the five documents above
 - **Scope:** the seven admitted WP-5 decisions. Excludes runtime Phases 2 through 4
@@ -552,7 +552,7 @@ Six files, roughly 200 to 300 added lines. `agent_session_continuity.md` is wher
 
 ### WP-8 — Assistant Role Assembly
 
-- **Authority:** `docs/specs/20260704-chat_mode_assistant.md` and `docs/specs/20260709-quick_chat_workspace.md` as amended by WP-3; `docs/core/mediation.md` as amended by WP-2
+- **Authority:** `docs/specs/20260704-chat_mode_assistant.md` and `docs/specs/20260715-multi_user_workspace_system.md#personal-workspace` as amended by WP-3; `docs/core/mediation.md` as amended by WP-2
 - **Seam:** the Assistant entry path, from `mode-entry-routes.ts` through the loop to a finalized Item
 - **Artifact inventory:** `apps/nanocore/src/mode-entry-routes.ts`; new role-assembler modules under `apps/nanocore/src/internal-agents/`; Tool implementations binding `knowledge.search`, `work.search`, `work.read`, `workspace.create`, `task.start`, and `goal.start` to their existing owners; `apps/nanocore/README.md`
 - **Scope:** true multi-turn Thread context assembly, the fixed seed Tool set in deterministic order, per-call reauthorization, typed refusal returned to the model, and the Quick Chat handoff path that resolves or creates the executing Workspace inside one confirmation. Excludes `web.search`, administration Tools, and the Work Overview surface
@@ -566,7 +566,7 @@ Six files, roughly 200 to 300 added lines. `agent_session_continuity.md` is wher
 
 ### WP-9 — Runtime Record Decomposition And Thread-Affine AgentSession
 
-- **Authority:** `docs/core/sandbox.md`, `docs/core/runtime-model.md`, and `docs/specs/20260703-runtime_scheduling_scale.md` as amended by WP-5; `docs/specs/20260704-agent_session_continuity.md` as amended by WP-6
+- **Authority:** `docs/core/sandbox.md`, `docs/core/runtime-model.md`, and `docs/specs/20260703-durable_scheduler_design.md#scale-limits` as amended by WP-5; `docs/specs/20260704-agent_session_continuity.md` as amended by WP-6
 - **Seam:** the current Worker Backend Session record, which conflates lease, Workspace, Thread, Turn, AgentSession, package, physical backend session, and cleanup lifecycle
 - **Artifact inventory:** `apps/nanocore/src/runtime/**`; `apps/nanocore/src/agents/**`; the worker backend session store and its recovery path
 - **Scope:** split the conflated record into Sandbox binding, Harness instance, AgentSession runtime binding, and execution lease; implement Thread-affine AgentSession reuse with compatibility and hygiene checks; reconcile the runtime `TurnStatus` enum with the three-state terminal set WP-1 states in `docs/core/protocol.md`, which requires retiring `cancelled` as a terminal value and re-expressing every path that currently produces it as an interruption request against a Turn that still terminates `interrupted`; settle IP-1. Excludes a second resident AgentSession, which is WP-10

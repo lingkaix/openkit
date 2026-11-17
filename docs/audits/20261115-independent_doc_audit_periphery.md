@@ -107,7 +107,7 @@ None. Each guide finding is a projection drift corrected in place. The code fact
 
 ### Q-251. Does the deployment target judgment still hold without a single worker slot?
 
-- Context: `docs/deployment.md:16` and `:18` rest the small-team target on "the single-writer, single-slot profile" of `20260703-runtime_scheduling_scale.md` and name "work queueing behind the single worker slot" as the overturn signal. That specification now sets an authored active-Turn bound with a default of 20 (`:78`) and admits concurrent Turns (`:94`); the code default is `HARNESS_DEFAULT_MAX_ACTIVE_TURNS = 20` (`packages/worker-protocol/src/harness-control.ts:18`). The single-writer part still agrees with the specification.
+- Context: `docs/deployment.md:16` and `:18` rest the small-team target on "the single-writer, single-slot profile" of `20260703-durable_scheduler_design.md#scale-limits` and name "work queueing behind the single worker slot" as the overturn signal. That specification now sets an authored active-Turn bound with a default of 20 (`:78`) and admits concurrent Turns (`:94`); the code default is `HARNESS_DEFAULT_MAX_ACTIVE_TURNS = 20` (`packages/worker-protocol/src/harness-control.ts:18`). The single-writer part still agrees with the specification.
 - Options: (A) Restate the judgment on the single writer and the authored active-Turn bound, with saturation of that bound as the overturn signal. (B) Keep the text as history.
 - Recommendation: A, because a judgment must rest on the current owner.
 - Meanwhile: no change.

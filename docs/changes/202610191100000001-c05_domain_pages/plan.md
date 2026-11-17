@@ -6,7 +6,7 @@ status: verified
 
 ## Intent
 
-Deliver C05 as one additive feature after the pre-reset cut, before rc.11: official Rule, Effect and business Objective domain types, required declared metadata and native/KM type/applicability selection. The accepted [consolidation owner](../../specs/20261018-nanocore_interception_and_information_consolidation.md#information-and-record-authority), [Notebook owner](../../specs/20260909-knowledge_notebook_editing.md) and [Knowledge](../../core/knowledge.md) govern this work. C03 remains unchanged. C01 and marker cohorts are not dependencies. The frozen original a60e3404b22fcea0583a28a0211e6074ef143433 supplies the previously reviewed field reference; it is not rewritten or merged.
+Deliver C05 as one additive feature after the pre-reset cut, before rc.11: official Rule, Effect and business Objective domain types, required declared metadata and native/KM type/applicability selection. The accepted [consolidation owner](../../specs/20260703-policy_enforcement_mapping.md#interception), [Notebook owner](../../specs/20260909-knowledge_notebook_editing.md) and [Knowledge](../../core/knowledge.md) govern this work. C03 remains unchanged. C01 and marker cohorts are not dependencies. The frozen original a60e3404b22fcea0583a28a0211e6074ef143433 supplies the previously reviewed field reference; it is not rewritten or merged.
 
 ## Shape And Ablation
 

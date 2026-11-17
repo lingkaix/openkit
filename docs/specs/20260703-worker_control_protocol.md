@@ -1,162 +1,66 @@
 ---
 status: Accepted
-implementation: Partial
 kind: boundary
-updated: "2026-10-08"
+implementation: Implemented
 aspect: communication
 ---
 # Worker Control Protocol
 
-## Summary
+This specification owns `openkit-worker-control-v2`, the end-to-end worker-control wire protocol between governed worker containers and NanoCore, including upward worker-to-NanoCore control routes, downward private Harness control operations, directional reader and emitter validation, and incremental native work observation envelopes.
 
-This spec defines `openkit-worker-control-v2`, the minimal end-to-end control protocol between governed worker containers and NanoCore, independent of the transport intermediaries that carry it.
+## Scope
 
-The clean target is narrow: control is for session liveness, candidate event append, final status, the typed interrupt and live-steer commands, and small notifications. It is not an agent capability gateway projection, shell gateway, file-transfer channel, product-state API, or replacement for workspace review.
+Owns:
 
-V2 serves the one-process, one-configured-NanoHost shared-runtime profile with multiple compatibility-keyed Harnesses and multiple open AgentSessions for distinct Threads. Each AgentSession and Thread has at most one active Turn. [Runtime Scheduling And Scale](20260703-runtime_scheduling_scale.md) owns concurrent admission within the declared Harness and Sandbox bounds. A transport loss or a NanoCore restart may adopt the exact same worker through predecessor-fenced NanoHost reconnect under the existing proof contract. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively. The protocol does not provide transparent failover or distributed control availability.
+- The worker-visible `/worker-control/*` protocol between Sandbox Integration and NanoCore, including authentication, lineage, monotonic sequencing, idempotency, bounded outage retry, and canonical verification.
+- Upward worker-to-NanoCore `heartbeat`, `artifact_notice`, `event_append`, `final_status`, `supply_refresh_ack`, and `capability_summary` routes, plus the cancellation-only first-final exception and transcript Item exact-value replacement.
+- The seven private Harness control operations (`session.open`, `session.inspect`, `turn.start`, `turn.steer`, `turn.interrupt`, `session.close`, and `harness.drain`) and the Integration-initiated `POST /worker-control/harness/poll` and `POST /worker-control/harness/result` protocol.
+- Directional descriptive-reader and exact-emitter validation rules and `native-content-v1` incremental work observation chunk admission.
 
-## Owns
+Does not own:
 
-- The worker-visible end-to-end control-plane protocol between Sandbox Integration and NanoCore.
-- Control-plane lineage, sequence, authentication, idempotency, retry, and verification rules.
-- Worker-to-NanoCore liveness, candidate event append, final status, artifact notice, and capability summary semantics.
-- NanoCore-to-worker delivery semantics for the typed interrupt and live-steer commands.
-- The fixed Sandbox Integration-to-Harness AgentSession and Turn control operations, their authority boundary, and the prohibition on arbitrary executable instructions.
-- The exact Integration-initiated Harness-control pull and result paths, envelopes, operation identity, sequence, refusal, idempotency, reconnect, and replay semantics.
-- The rule that worker-control records become product-visible only after NanoCore verification.
-- End-to-end control delivery and local session-file evidence requirements.
+- The shared container communication model, internal execution backend port, NanoHost adapter liveness, and resident runtime adapter base contract: [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md) owns them.
+- Agent Capability routes, session loopback credential minting, attribution, drain, and destruction, and built-in MCP tool supply: [Worker Agent Capability](20260703-worker_agent_capability.md) and [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) own them.
+- NanoHost transport, Runtime Epoch lifecycle, stock OpenShell supervision, RelayStream and HTTP/2 carriage, and predecessor connection fencing: [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns them.
+- Durable scheduling, AgentSession continuity records, Task live-steer public lifecycle, and Turn stop-reason canonicalization: [Durable Scheduler Design](20260703-durable_scheduler_design.md), [AgentSession Continuity](20260704-agent_session_continuity.md), [Task Mode Worker Delegation](20260704-task_mode_worker_delegation.md), and [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md) own them.
+- Workspace snapshot chains and staging, AEP and manifest resolution, and retained work data storage layout: [Workspace Synchronization](20260703-workspace_synchronization.md), [Agent Environment Package](20260616-agent_environment_package.md), [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md), and [Work Data Retention Format](20260921-work_data_retention_format.md) own them.
 
-## Does Not Own
-
-- Agent Capability calls for LLM, MCP, tools, network, credentials, context, usage, or rate limits.
-- Large artifact transfer, patch transfer, raw transcript transfer, or workspace snapshot transfer.
-- Product item schemas, turn log storage, audit ledgers, metering ledgers, or workspace review records.
-- Runtime-native transcript parsing rules.
-- Deployment-specific reachability mechanics beyond the worker-visible protocol contract.
-- NanoHost identity, Runtime Epoch lifecycle, RelayStream or HTTP/2 feasibility, route carriage, predecessor connection fencing, and sandbox lifecycle.
-- Harness placement, compatibility, capacity grants, native adapter implementation, and product scheduling decisions.
-
-## Core References
-
-- `docs/core/communication.md`
-- `docs/core/runtime-model.md`
-- `docs/core/agent-session.md`
-- `docs/core/work-model.md`
-- `docs/core/mediation.md`
-- `docs/core/evidence.md`
-
-## Goals
-
-- Define the worker-visible sandbox-local Integration route family.
-- Define request lineage, sequence, idempotency, and authentication requirements.
-- Define worker-to-NanoCore messages and NanoCore-to-worker commands.
-- Support mandatory end-to-end delivery through the accepted Integration projection while retaining transcript evidence on the data plane.
-- Keep Sandbox Integration subordinate to NanoCore canonical verification.
-
-## Non-goals
-
-- Do not carry large artifacts, patches, bundles, or raw logs over the control plane.
-- Do not expose arbitrary shell execution.
-- Do not let Sandbox Integration mutate product state.
-- Do not duplicate capability calls; `/capabilities/*` owns privileged-service traffic, with only selected MCP currently implemented.
-- Do not define runtime-native transcript parsing in this spec.
-- Do not add a general offline command queue, replacement-worker protocol, multi-target failover, settlement workflow, or feature-specific recovery harness.
-
-## Background
-
-`docs/specs/20260629-worker_runtime_communication_model.md` requires every real worker container to run Sandbox Integration and expose an AEP-resolved sandbox-local `/worker-control/*` binding. `docs/specs/20260802-nanohost_runtime_and_transport.md` carries that protocol through one standard HTTP/2 session inside one stock OpenShell RelayStream and the one authoritative NanoCore-to-NanoHost session.
-
-The missing design is the concrete protocol boundary and message family.
-
-## Current Implementation Projection
-
-The accepted seventh operation `turn.steer` is implemented in the Harness (`packages/worker-shim/src/harness.ts`), the Codex and Pi adapters and the NanoCore Task live steer path (`apps/nanocore/src/runtime/task-steer-receipt.ts`); the existing six-operation evidence below does not qualify it. Adapter qualification and public receipt retention must be proved before enabling it.
-
-NanoCore implements Artifact and Review exact-value rejection and transcript Item replacement through one shared byte matcher, requiring complete original-materialization evidence and exact-version restart reconstruction before canonical admission.
-
-The poll cadence is implemented with an independent heartbeat and a private Harness poll. After an empty private Harness poll, the loop waits until 250 ms from that poll's start before polling again; heartbeat delivery is separate, and retryable outages follow the bounded retry owner. The private Harness poll is the only interrupt path; the bounded-turn command loop is deleted.
-
-The current implementation uses the closed version-2 literal for worker-control request, response, and private Harness outer envelopes while canonical transcript, event, Artifact, provenance, workspace-change, and inner capability-summary records retain version 1. Refreshed exact-candidate real-host success and restart/reconnect interrupt evidence remain pending:
-
-- `packages/worker-protocol` owns the shared schema vocabulary for worker lineage, schema-conformant candidate event records, worker-control operation names, and bounded request/response envelopes.
-- `packages/worker-shim` is the current Sandbox Integration and owns both the credential-free private Harness pull/result client and the Sandbox-side bearer-authenticated per-Turn control client carried through the same nested HTTP/2 bridge and NanoHost route projection. It instantiates one Harness for each `harnessInstanceId`, keeps operation sequencing independent per Harness, and runs the six implemented operations over resident AgentSession bindings with the authored aggregate active-Turn bound and at most one active Turn per AgentSession in each Harness. One Thread also has at most one active Turn. The production adapter registry registers the resident `codex`, `deepseek`, `opencode`, and `pi` adapters.
-- `apps/nanocore/src/runtime/nanohost-harness-records.ts` owns the sequenced private operations. `session.open` carries `resume` and, at dispatch, two freshly minted distinct session loopback credentials; only their SHA-256 digests over the credential text persist, in the queued command and on the AgentSession runtime binding row, which `session.close` deletes. `turn.interrupt` admits only the purpose `interrupt`, and `session.close` settles on `closed` with absent private state. Terminal `session.inspect` releases the Turn slot only for an `open` or `failed` binding with clean disposable state; child liveness is reported but is never that proof.
-- `apps/nanocore/src/runtime/worker-control-gateway.ts` owns the process-local gateway state for one registered Agent Environment Package snapshot: sandbox token or scheduler-owned sandbox binding ref, heartbeat, artifact notices, supply refresh acknowledgements, capability summaries, accepted events, and product-safe snapshots. The default server gateway persists accepted artifact notices, events, final statuses, refresh acknowledgements and capability summaries into `worker_control_records`, and quarantined verification failures into `worker_control_rejected_evidence`. Heartbeats return the canonical control acknowledgement; their durable replay evidence and liveness stay with the sequence and NanoHost attempt owners. Restart rebuilds live lease-backed sessions without reading historical heartbeat snapshot rows; those retained bytes are unchanged. It holds no worker command state.
-- `apps/nanocore/src/runtime/worker-control-routes.ts`, registered from `apps/nanocore/src/app.ts`, projects the accepted gateway routes at `/api/worker-control/heartbeat`, `/api/worker-control/artifacts`, `/api/worker-control/events/append`, `/api/worker-control/final-status`, `/api/worker-control/supply-refresh-ack`, and `/api/worker-control/capability-summary`. The retired `/api/worker-control/knowledge-proposal-summary`, `/api/worker-control/commands/poll`, and `/api/worker-control/commands/ack` routes are absent.
-- Tests cover token binding, lineage checks, heartbeat recording, artifact notices, candidate event append, the 64 KiB typed control-envelope cap, the 256 KiB live event append cap, process-local sequence replay handling, durable sequence-fingerprint replay, rejected-evidence quarantine, live lease-backed restart rebuilding, loopback credential minting with digest-only persistence, the closed `resume` pair, the retired interrupt purposes, and the absence of the worker command queue.
-
-The former `knowledge_proposal_summary` envelope, route, gateway projection, persisted control record, and direct pending-Proposal import were deleted without an alias. Worker output may support a proposal only through the explicit MCP/administrator CLI composition and complete S61 proposal contract.
-
-The former App API arbitrary-command issuer, caller-selected `argv` and `cwd` shape, terminal-result route, gateway state, and shared-shim executor are deleted end to end. The worker `interrupt` command, `command_poll`, `command_ack`, their routes, and the `worker_control_commands` rows are deleted as well; private Harness `turn.interrupt` is the only interrupt. The Agent Environment Package declares no worker-control command or command channel.
-
-The active restart slice adds one shared bounded retry loop in the shim, a memory-only worker process key, and exact-next heartbeat adoption through the ordinary heartbeat route. NanoCore binds only the key hash to the lease, and direct terminal closeout reuses accepted final-status, backend-session, lease, checkpoint, and workspace records. Full data-plane evidence promotion remains outside this spec and is owned by the workspace synchronization, worker runtime communication, audit, evidence, and review specs.
-
-The projection remains Partial because the exact-candidate real-host success and restart/reconnect interrupt evidence is pending. Terminal lease release no longer drains command rows, because none exist.
-
-The current production route uses NanoHost, one stock RelayStream pair, Sandbox Integration, and nested standard HTTP/2 for per-Turn worker-control and inference plus the two private Harness paths. NanoHost injects the current Harness binding, NanoCore owns one sequenced operation with exact replay and unknown widening, and raw route credentials exist only at `turn.start` dispatch and the live route. The native runtime's inference and capability calls use the session loopback credentials, not per-Turn tokens in the environment. The resident adapter interface and generic Harness support multiple open AgentSessions, with one active Turn per AgentSession within the admitted `maxActiveTurns` bound, and `packages/worker-shim/src/adapter-registry.ts` registers the resident `codex`, `deepseek`, `opencode`, and `pi` adapters. Earlier Codex, Pi, OpenCode, image-smoke, and A1 results describe the removed implementation, not this candidate. Resident adapter, image-smoke, and exact-candidate runtime acceptance remain pending in their assigned slices. Legacy Cell, SSH lifecycle, Gateway-forward, and sandbox-direct source is deleted.
+Core: [Communication](../core/communication.md), [Runtime Model](../core/runtime-model.md), [AgentSession](../core/agent-session.md), [Work Model](../core/work-model.md), [Mediation](../core/mediation.md), [Evidence](../core/evidence.md), [Contract Evolution](../core/contract-evolution.md).
 
 ## Endpoint
 
-The worker-visible target endpoint is one sandbox-local Integration binding whose route namespace is:
+The worker-visible target endpoint is one sandbox-local Integration binding whose route namespace is `/worker-control/*`. The AEP supplies only the non-secret local binding and worker-control token reference, and Sandbox Integration binds it to the standard HTTP/2 session carried by the sandbox's one stock RelayStream under [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md). The worker never receives a NanoCore address, NanoHost credential, remote Gateway address, SSH target, transport credential, or alternate control endpoint.
 
-```text
-/worker-control/*
-```
+Sandbox Integration maps each worker-visible operation-specific request into `/worker-control/*` without changing its envelope. On NanoCore, the accepted upward routes are `/api/worker-control/heartbeat`, `/api/worker-control/artifacts`, `/api/worker-control/events/append`, `/api/worker-control/final-status`, `/api/worker-control/supply-refresh-ack`, and `/api/worker-control/capability-summary`. For per-Turn requests, NanoHost, RelayStream, Gateway, the HTTP/2 session, and the Integration outer adapter are byte-transparent transport intermediaries that MUST NOT inspect, authorize, synthesize, reorder, retry, reinterpret, or terminalize a message. `/inference/*`, `/capabilities/*`, Gateway forwards, direct NanoCore reachability, and transcript sinks are never control paths.
 
-The AEP supplies only the non-secret local binding and worker-control token reference. Sandbox Integration binds it to the standard HTTP/2 session carried by the sandbox's one stock RelayStream. The worker never receives a NanoCore address, NanoHost credential, remote Gateway address, SSH target, transport credential, or alternate control endpoint.
-
-Sandbox Integration maps each worker-visible operation-specific request into `/worker-control/*` without changing its envelope. For those per-Turn requests the NanoHost, RelayStream, Gateway, HTTP/2 session, and Integration outer adapter are transport intermediaries: they MUST NOT inspect, authorize, synthesize, reorder, retry, reinterpret, or terminalize the message. The two fixed private Harness paths below have only the connection-binding adaptation explicitly assigned to NanoHost and no semantic delegation. `/inference/*`, `/capabilities/*`, a Gateway forward, direct NanoCore reachability, and a transcript sink are not alternate control paths.
-
-Two exact paths inside that namespace are Integration-private Harness carriage rather than worker-visible routes:
+Two exact paths inside `/worker-control/*` are Integration-private Harness carriage rather than worker-visible routes:
 
 ```text
 POST /worker-control/harness/poll
 POST /worker-control/harness/result
 ```
 
-Only the long-lived Sandbox Integration supervisor may issue them. A native Agent child, App API caller, worker-control client, sibling route, or arbitrary path cannot issue a Harness operation. The NanoHost transport owner binds those two requests to the exact current nested H2 connection and Sandbox Integration as specified by `docs/specs/20260802-nanohost_runtime_and_transport.md`; NanoCore selects the exact private Harness Instance for each delivered operation. Worker-control requests that the shim sends may keep a Turn lineage. The native runtime's inference and capability calls use the session loopback credentials, not per-Turn tokens in the environment.
+Only the long-lived Sandbox Integration supervisor may issue them; a native Agent child, App API caller, worker-control client, sibling route, or arbitrary path MUST NOT issue a Harness operation. NanoHost binds those two requests to the current exclusive Integration-client nested HTTP/2 connection and Sandbox Integration as defined by [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md), and NanoCore selects the exact private Harness instance for each delivered operation. A separate bound Harness subscription-login exchange carrier exists under [Vault Secret Injection](20260703-vault_secret_injection.md) without adding a worker-visible route or general control operation.
 
 ## Authentication
 
-Every worker-visible request must authenticate with a worker-control token minted for one AEP snapshot and exact current attempt lineage. It is a 43-character unpadded base64url encoding of an independently generated 32-byte CSPRNG value.
+Every worker-visible `/worker-control/*` request MUST authenticate with a worker-control token minted for one AEP snapshot and exact current attempt lineage. Each route token is a 43-character unpadded base64url encoding of an independently generated 32-byte CSPRNG value.
 
-The two exact Harness-control paths run before or outside a Turn and therefore MUST NOT accept a worker-control, inference, capability, NanoHost, Gateway, Provider, Vault, User, or server-admin bearer credential. Their authentication is the conjunction of the current exclusive Integration-client nested H2 connection, its NanoHost-owned bridge and Sandbox Integration binding, the current authoritative outer NanoHost connection, and NanoCore verification of the exact current private `sandboxIntegrationBindingRef`. Integration sends no `Authorization` header and cannot supply the binding ref or a Harness selector. NanoHost rejects client-supplied `authorization`, `x-openkit-integration-binding`, or `x-openkit-harness-binding`, then adds exactly one `x-openkit-integration-binding` value from its private bridge context on the outer projected request; NanoCore accepts that header only from the authenticated authoritative NanoHost transport and rejects it on synthetic, public, direct, stale, predecessor, wrong-Integration, or ordinary worker-control requests. The ref is opaque non-secret routing metadata, not a credential, AgentSession identity, independent grant, or fallback token. NanoCore places one exact private `harnessInstanceId` in each command response only after matching it to the admitted Integration descriptor set.
+The two private Harness paths (`POST /worker-control/harness/poll` and `POST /worker-control/harness/result`) run before or outside a Turn and MUST NOT accept a worker-control, inference, capability, NanoHost, Gateway, Provider, Vault, User, or server-admin bearer credential. Their authentication is the conjunction of the current exclusive Integration-client nested HTTP/2 connection, its NanoHost-owned bridge and Sandbox Integration binding, the current authoritative outer NanoHost connection, and NanoCore verification of the exact current private `sandboxIntegrationBindingRef`. Integration sends no `Authorization` header and cannot supply the binding reference or a Harness selector. NanoHost rejects client-supplied `authorization`, `x-openkit-integration-binding`, or `x-openkit-harness-binding` headers and injects exactly one `x-openkit-integration-binding` value from its private bridge context on the outer request; NanoCore accepts that header only from the authenticated authoritative NanoHost transport and rejects it on synthetic, public, direct, stale, predecessor, wrong-Integration, or ordinary worker-control requests. The reference is opaque non-secret routing metadata, not a credential, AgentSession identity, independent grant, or fallback token. NanoCore places one exact private `harnessInstanceId` in each command response only after matching it to the admitted Integration descriptor set.
 
-The worker-control token is accepted only by `/worker-control/*`. Two distinct independently generated tokens authenticate `/inference/*` and the exact AEP-enabled `/capabilities/*` routes of the resolved MCP supply respectively; none is derived from or equal to the non-secret `sandboxBindingRef` or another route token. Worker control, inference, and capability MUST each reject the other two token families. Every admitted worker AgentSession has the built-in MCP supply defined by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md); an empty manifest MCP selection does not disable its capability route. Shared RelayStream, HTTP/2, NanoHost transport, process, host placement, or restart MUST NOT create token reuse or shared authority.
+The worker-control token is accepted only by `/worker-control/*`. Two distinct independently generated 43-character tokens authenticate `/inference/*` and the AEP-enabled `/capabilities/*` routes respectively; none is derived from or equal to `sandboxBindingRef` or another route token, and each route family MUST reject the other two token families. Shared RelayStream, HTTP/2, NanoHost transport, process, host placement, or restart MUST NOT create token reuse or shared authority.
 
-The token is scoped to:
+The worker-control token is scoped to Workspace ID, Thread ID when applicable, Turn ID, AgentSession ID, package snapshot ID, backend session ID or redacted backend session binding, and expiration time. NanoCore MUST reject token reuse across lineage.
 
-- workspace id
-- thread id when applicable
-- turn id
-- AgentSession id
-- package snapshot id
-- backend session id or redacted backend session binding
-- expiration time
+Each active Turn's three raw upstream route tokens remain in live memory only in NanoCore, in NanoHost while carrying that exact admitted Turn operation, and at the AgentSession-local `turn.start` route boundary inside Integration. Harness bootstrap, Harness-global argv and environment, Sandbox-wide files, and the native runtime environment contain none of them. `session.open` delivers the two session loopback credentials, whose mint, attribution, drain, and destruction belong to [Worker Agent Capability](20260703-worker_agent_capability.md). Raw upstream tokens MUST NOT enter SQLite, the AEP, the Context Package, retained command or result bytes, native configuration or argv, diagnostics, stdout, stderr, transcripts, evidence, logs, or sibling AgentSession routes; only their lowercase SHA-256 hashes over the 32 decoded bytes persist on the execution attempt, while the two session loopback credentials use the separate 43-encoded-byte SHA-256 domain under [Workspace Synchronization](20260703-workspace_synchronization.md#snapshot-chain). This separation provides conversation-context isolation and route-authority separation, not security isolation from a compromised shared Harness.
 
-NanoCore must reject token reuse across lineage.
+Before the readiness exchange, the shim generates one random 32-byte process key in memory and encodes it as 43 unpadded base64url characters. The sequence-`0` `starting` heartbeat carries the unpadded base64url SHA-256 digest of those key bytes, which NanoCore immutably binds to the attempt before the native worker child starts. Sequence `1` is the first durable proof that post-launch recovery is enabled and child execution has begun; restart recovery never arms a sequence-`0`-only supervisor. The raw process key stays in shim supervisor memory only and may appear on the wire only as the request-only `reconnectKey` on an exact-next recovery heartbeat alongside the existing bearer token and exact lineage.
 
-Each active Turn's three raw upstream route tokens remain live-memory only in NanoCore, in NanoHost while carrying that exact admitted Turn operation, and at the AgentSession-local `turn.start` route boundary inside Integration. Harness bootstrap, Harness-global argv and environment, Sandbox-wide files, and the native environment contain none. `session.open` carries the session loopback credentials. Their mint, attribution, drain, and destruction belong to [Worker Agent Capability](20260703-worker_agent_capability.md). The worker-control token stays with the AgentSession-local Worker Shim control client. Raw upstream tokens never enter SQLite, the AEP, Context Package, retained command/result bytes, native configuration text or argv, diagnostics, stdout, stderr, transcript, evidence, ordinary logs, or a sibling AgentSession route. Only their hashes are durable on the attempt. The session loopback credential is not one of those three attempt-stored hashes. This supplies conversation-context isolation and route-authority separation; it does not claim security and adjudication isolation from a compromised shared Harness.
-
-Before the readiness exchange, the shim generates one random 32-byte process key and encodes it as unpadded base64url. The sequence-zero `starting` heartbeat carries the unpadded base64url SHA-256 digest of those exact key bytes; NanoCore immutably binds that digest to the attempt before the worker Agent child may start. Sequence one is the first durable proof that post-launch recovery is enabled and child execution has begun, so restart recovery never arms a sequence-zero-only supervisor. The raw key remains only in the shim supervisor's memory and is never written to Core, a file, transcript, child environment, evidence record, or log.
-
-The raw process key may appear only as the request-only `reconnectKey` on an exact-next recovery heartbeat. It is an adjunct to the existing sandbox bearer token and exact lineage, not a reusable control credential or a replacement token.
-
-The accepted `schemaVersion` literal is `2` and is the only worker-control contract authorized by this design. This design adds no protocol-version negotiation, accepted-version set, build compatibility registry, legacy adapter, or rollback behavior. Version 1 and every other schema fail closed once this accepted envelope replaces the current implementation.
+The accepted `schemaVersion` literal for worker-control requests, responses, and private Harness outer envelopes is `2` (`openkit-worker-control-v2`), while canonical transcript, event, Artifact, provenance, workspace-change, and inner capability-summary records retain schema version `1` (`packages/worker-protocol/src/index.ts`). No protocol-version negotiation, accepted-version set, build compatibility registry, legacy adapter, or version-1 control-envelope fallback is permitted.
 
 ## Envelope
 
-The canonical control request envelope is:
-
-```text
-schemaVersion
-lineage
-sequence
-operation
-body
-```
-
-`lineage` includes the workspace, thread, turn, AgentSession, package snapshot, backend session binding when applicable, and token scope needed to bind the request to one governed worker execution.
+The canonical control request envelope is `WorkerControlRequestEnvelopeSchema` in `packages/worker-protocol/src/index.ts`. `lineage` includes the workspace, thread, turn, AgentSession, package snapshot, backend session binding when applicable, and token scope needed to bind the request to one governed worker execution.
 
 Every `turn.start` binds a fresh immutable per-Turn Agent Environment Package snapshot and Context Package to the exact Workspace, Thread, Turn, AgentSession, actor, request, Agent, profile, runtime, provider, policy, route credentials, Vault grants, resource limits, observability, and package digest admitted by their owners. A shared Sandbox or Harness MUST NOT receive one Sandbox-wide authorization package or credential that authorizes resident AgentSessions collectively. Static compatibility descriptors are placement evidence only and MUST NOT authorize a Turn, effect, retry, or publication.
 
@@ -166,16 +70,11 @@ The envelope does not duplicate an actor. NanoCore resolves the immutable runtim
 
 Worker-control liveness and terminal records may remain non-authorizing transport evidence after responsible-user authority is lost, but no candidate event, artifact notice, knowledge proposal, capability summary, or collected output may be promoted into canonical Workspace content without the current-authority predicate required by the owning effect. The first worker-control or NanoCore boundary that observes lost authority interrupts the worker, revokes its route authority, terminates the affected sandbox, invalidates the complete Runtime Epoch if the NanoHost cannot prove sandbox deletion completed, and rejects later publication; it adds no control operation, command kind, durable state, quarantine, settlement, or recovery workflow. An already-submitted worker-native external request remains subject to the bounded compromise in the multi-user specification.
 
-`sequence` is monotonic per AgentSession and package snapshot for the relevant control stream. Exact retries with the same sequence and identical canonical payload are idempotent. The same sequence with different content must fail closed. Lower stale sequences must fail closed after a higher event sequence has been accepted.
+`sequence` is monotonic per AgentSession and package snapshot for the relevant control stream. Live append may skip sequence numbers. Exact retries with the same sequence and identical canonical payload are idempotent. The same sequence with different content must fail closed. A lower sequence after a higher accepted sequence fails closed.
 
-The canonical control response envelope is:
+A control envelope is at most 64 KiB (current default). One live event payload is at most 256 KiB (current default). Larger material moves through the data plane as an artifact, evidence bundle, manifest, or collected file reference, with a typed oversized-payload refusal.
 
-```text
-schemaVersion
-accepted
-nextExpectedSequence
-diagnostics
-```
+The canonical control response envelope is `WorkerControlResponseEnvelopeSchema` in `packages/worker-protocol/src/index.ts`.
 
 HTTP route-specific projections may put lineage and payload fields directly in route bodies, but they must preserve the same semantics: bounded payload, bearer token, lineage binding, monotonic sequence where the operation is sequenced, and NanoCore-owned verification.
 
@@ -195,14 +94,7 @@ Runtime provenance readers MUST verify digests over the original stored bytes be
 
 ## Worker-To-NanoCore Messages
 
-Control operation names:
-
-- `heartbeat`
-- `artifact_notice`
-- `event_append`
-- `final_status`
-- `supply_refresh_ack`
-- `capability_summary`
+Control operation names are `WorkerControlOperationSchema` in `packages/worker-protocol/src/index.ts`, listed once under [Canonical Enums](20261021-protocol_identifiers_and_enums.md#canonical-enums).
 
 `heartbeat` reports worker liveness and coarse lifecycle state. It must not carry transcript content.
 
@@ -242,30 +134,11 @@ This specification is the unique protocol owner for those operation meanings and
 
 ### Harness Pull And Result Envelopes
 
-Sandbox Integration uses one serial Harness-control poll loop for all its live Harness instances. It polls only when no command handling or result acknowledgement is in flight. Each poll emits `{ "schemaVersion": 2, "releaseIdentity": { "sourceCommit": "<40 lowercase hex>", "releaseTag": null }, "harnesses": [{ "harnessInstanceId": "...", "nextSequence": 0 }] }`, reporting each live Harness instance's next unreceived sequence without selecting a command. The reader requires version 2 and a known exact Worker build identity, validates present progress entries and rejects duplicates, while ignoring inert additions. Core compares the required identity with its immutable boot identity on every bound private poll, before command selection, material callbacks and either the initial or idle readiness response. Missing, malformed, wholly unknown or unequal identities return typed `409 worker_release_incompatible`; two unknown identities never match. Tagged identities compare both source commit and tag; matching known untagged source builds are valid. The Worker reads an at-most-4096-byte root-owned `/usr/local/lib/openkit/release-identity.json` envelope; runtime environment variables cannot override it. Native immutable-image inspection independently carries the OCI revision/version provenance, checked at the existing post-native-admission barrier before storage attachment or Worker material delivery, including restored resident reuse. Existing capacity/retirement and physical-Epoch authority ordering stays unchanged. This is compatibility admission, not authentication, authority or a negotiated fallback. Unknown image provenance is preserved as unknown and refused, never inferred from a schema version, SDK version, image digest alone or a prior resident. An older shim without the field cannot earn readiness or receive a command. An older Worker may omit `harnesses`; omission provides no delivery proof. The loop advances `nextSequence` only after result acknowledgement. Both response headers and body collection use the remaining original 300-second request outage allowance for poll and result exchanges. A fresh one-second header timer MUST NOT cancel admitted command carriage. Retries consume that same monotonic allowance without renewal; caller cancellation and allowance expiry still abandon the exchange before parsing or execution. This does not extend the Core operation's own allowance or change its uncertain-delivery fence. The reason is recorded in the [Harness carriage deadline decision](../decisions/20261020-harness_carriage_deadline.md). After NanoCore returns no work, polling start-to-start remains at least 250 ms apart. While a Turn is active, the 1000 ms start-to-start maximum applies only between polls while no command handling or result acknowledgement is in flight. An in-flight operation on any Harness delays the next poll up to that operation's existing request allowance. NanoCore returns empty `204` when no operation is available or emits one `200` command with exactly these fields; the command-envelope reader strips inert additions while its effect-bearing body remains exact:
+Sandbox Integration uses one serial Harness-control poll loop for all its live Harness instances. It polls only when no command handling or result acknowledgement is in flight. Each poll emits `{ "schemaVersion": 2, "releaseIdentity": { "sourceCommit": "<40 lowercase hex>", "releaseTag": null }, "harnesses": [{ "harnessInstanceId": "...", "nextSequence": 0 }] }`, reporting each live Harness instance's next unreceived sequence without selecting a command. The reader requires version 2 and a known exact Worker build identity, validates present progress entries and rejects duplicates, while ignoring inert additions. Core compares the required identity with its immutable boot identity on every bound private poll, before command selection, material callbacks and either the initial or idle readiness response. Missing, malformed, wholly unknown or unequal identities return typed `409 worker_release_incompatible`; two unknown identities never match. Tagged identities compare both source commit and tag; matching known untagged source builds are valid. The Worker reads an at-most-4096-byte root-owned `/usr/local/lib/openkit/release-identity.json` envelope; runtime environment variables cannot override it. Native immutable-image inspection independently carries the OCI revision/version provenance, checked at the existing post-native-admission barrier before storage attachment or Worker material delivery, including restored resident reuse. Existing capacity/retirement and physical-Epoch authority ordering stays unchanged. This is compatibility admission, not authentication, authority or a negotiated fallback. Unknown image provenance is preserved as unknown and refused, never inferred from a schema version, SDK version, image digest alone or a prior resident. An older shim without the field cannot earn readiness or receive a command. An older Worker may omit `harnesses`; omission provides no delivery proof. The loop advances `nextSequence` only after result acknowledgement. Both response headers and body collection use the remaining original 300-second request outage allowance for poll and result exchanges. A fresh one-second header timer MUST NOT cancel admitted command carriage. Retries consume that same monotonic allowance without renewal; caller cancellation and allowance expiry still abandon the exchange before parsing or execution. This does not extend the Core operation's own allowance or change its uncertain-delivery fence. The reason is recorded in the [Harness carriage deadline decision](../decisions/20261020-harness_carriage_deadline.md). After NanoCore returns no work, polling start-to-start remains at least 250 ms apart. While a Turn is active, the 1000 ms start-to-start maximum applies only between polls while no command handling or result acknowledgement is in flight. An in-flight operation on any Harness delays the next poll up to that operation's existing request allowance. NanoCore returns empty `204` when no operation is available or emits one `200` command. The command envelope is `HarnessCommandEnvelopeSchema` in `packages/worker-protocol/src/harness-control.ts`, and `HarnessCommandEnvelopeReaderSchema` strips inert additions while its effect-bearing body remains exact. `harnessInstanceId` is the exact NanoCore-selected private Harness identity. `sequence` is that Harness record's next expected non-negative safe integer. `operation` is one `HarnessOperationSchema` literal.
 
-```text
-schemaVersion = 2
-harnessInstanceId = exact NanoCore-selected private Harness identity
-operationId = lowercase 64-hex identity
-sequence = that Harness record's next expected non-negative safe integer
-operation = one of the seven fixed literals
-body = operation-specific core object
-```
+`operationId` is the untagged lowercase SHA-256 of the Harness binding reference, per-Harness operation sequence, operation literal, and canonical redacted body identity. The shared canonical form is owned by [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids). This identity uses the retained Harness serializer instead: it hashes the named object, sorts object keys by UTF-16 code unit and recurses through non-array objects, retains array order including objects inside arrays, and does not treat numeric-index enumeration as object-key sorting, then applies `JSON.stringify`. That retained serializer exception also covers result identity. The stored-byte check hashes the exact retained result bytes. The consumer-facing result fingerprint excludes `consumerContext` and hashes the remaining object with that same serializer. The stored-byte check runs before a stripped view is parsed. A read does not recompute a retained record or replace the encoder. Exact stored-byte native-handle digests and exact UTF-8 steer-input digests stay their own byte-input forms. The decoded route-token hash domain and the encoded loopback hash domain stay separate. The Harness binding reference uniquely identifies the admitted Harness Instance within its Sandbox Integration. The existing NanoCore runtime owner derives this identity. For `turn.start`, the redacted identity contains the three durable route-token hashes rather than any raw token. For `session.open`, the redacted identity contains the durable hashes of both `inferenceLoopbackCredential` and `capabilityLoopbackCredential`, includes the canonical public `nativeEnvironment` identity, and omits raw `runtimeEnvironment` values, rather than any raw credential. NanoHost and Integration cannot select the Harness, id, or sequence. NanoCore permits exactly one queued or dispatched operation per Harness, stores that state with the private `HarnessInstanceRecord`, and advances that Harness sequence only after one exact result settles. Different Harnesses may each have one unsettled operation and progress independently. A queued operation stores only admitted non-secret lineage and body references. At `turn.start` dispatch, one checked transaction mints the three mutually distinct raw route tokens, persists their separate hashes on the exact attempt, derives `operationId`, and marks the command dispatched before returning the one response containing those raw values; a Core crash after that commit loses the private wire bytes and is uncertain delivery, with no regeneration or restart replay. While Core and the same Integration remain live, a subsequent serial poll with the exact Harness identity and `nextSequence == sequence` proves non-receipt and permits redelivery of only the original operation id, sequence and private wire bytes. Core observes every peer reset, including after local write completion. If the command-carrying poll supplied no matching progress, the reset becomes unknown immediately; otherwise Core waits at most 1,250 ms from the reset for that proof, then becomes unknown. A late proof cannot revive a fenced operation or completed Turn. This short bound is independent of the result timer, and a changed Integration, missing private bytes or conflicting progress never authorizes redelivery. Other operation identities are fixed no later than dispatch by the same record transition. This is not the worker `interrupt` queue, a NanoHost effect, an App command, a general command table, or an offline backlog.
 
-`operationId` is the lowercase SHA-256 of the Harness binding reference, per-Harness operation sequence, operation literal, and canonical redacted body identity. The Harness binding reference uniquely identifies the admitted Harness Instance within its Sandbox Integration. The existing NanoCore runtime owner derives this identity. For `turn.start`, the redacted identity contains the three durable route-token hashes rather than any raw token. For `session.open`, the redacted identity contains the durable hashes of both `inferenceLoopbackCredential` and `capabilityLoopbackCredential`, includes the canonical public `nativeEnvironment` identity, and omits raw `runtimeEnvironment` values, rather than any raw credential. NanoHost and Integration cannot select the Harness, id, or sequence. NanoCore permits exactly one queued or dispatched operation per Harness, stores that state with the private `HarnessInstanceRecord`, and advances that Harness sequence only after one exact result settles. Different Harnesses may each have one unsettled operation and progress independently. A queued operation stores only admitted non-secret lineage and body references. At `turn.start` dispatch, one checked transaction mints the three mutually distinct raw route tokens, persists their separate hashes on the exact attempt, derives `operationId`, and marks the command dispatched before returning the one response containing those raw values; a Core crash after that commit loses the private wire bytes and is uncertain delivery, with no regeneration or restart replay. While Core and the same Integration remain live, a subsequent serial poll with the exact Harness identity and `nextSequence == sequence` proves non-receipt and permits redelivery of only the original operation id, sequence and private wire bytes. Core observes every peer reset, including after local write completion. If the command-carrying poll supplied no matching progress, the reset becomes unknown immediately; otherwise Core waits at most 1,250 ms from the reset for that proof, then becomes unknown. A late proof cannot revive a fenced operation or completed Turn. This short bound is independent of the result timer, and a changed Integration, missing private bytes or conflicting progress never authorizes redelivery. Other operation identities are fixed no later than dispatch by the same record transition. This is not the worker `interrupt` queue, a NanoHost effect, an App command, a general command table, or an offline backlog.
-
-The table defines each operation's required and optional core fields. Command bodies instruct effects and MUST refuse unknown fields under Contract Evolution. Unknown operations, invalid core values and unsupported required or authority-bearing semantics fail before any Harness effect.
-
-| Operation | Required and optional command-body core fields |
-| --- | --- |
-| `session.open` | `agentSessionId`, `agentSessionRuntimeBindingId`, `workspaceId`, `threadId`, `adapterId`, `agentSessionCompatibilityKey`, `effectiveSetupGeneration`, optional positive safe-integer `maxActiveTurns`, `resume` where `resume` is `{ locator, digest }` or `null`, `inferenceLoopbackCredential`, `capabilityLoopbackCredential`, the resolved public `nativeEnvironment` where required by the admitted package, and optional private `runtimeEnvironment` |
-| `session.inspect` | `agentSessionId`, `agentSessionRuntimeBindingId` |
-| `turn.start` | `agentSessionId`, `agentSessionRuntimeBindingId`, `workspaceId`, `threadId`, `turnId`, `packageSnapshotId`, `aepRef`, `contextPackageId`, `contextRef`, `leaseId`, `deadline`, `turnSequence`, `workerControlToken`, `inferenceToken`, `capabilityToken` |
-| `turn.interrupt` | `agentSessionId`, `agentSessionRuntimeBindingId`, `turnId`, `leaseId`, `purpose` where `purpose` is exactly `interrupt` |
-| `turn.steer` | `agentSessionId`, `agentSessionRuntimeBindingId`, `workspaceId`, `threadId`, `turnId`, `packageSnapshotId`, `leaseId`, `turnSequence`, `inputItemId`, lowercase 64-hex `inputDigest`, bounded text `input` |
-| `session.close` | `agentSessionId`, `agentSessionRuntimeBindingId` |
-| `harness.drain` | no core fields |
+Command bodies are `HarnessCommandBodySchemas` in `packages/worker-protocol/src/harness-control.ts`. They instruct effects and MUST refuse unknown fields under Contract Evolution. Unknown operations, invalid core values, and unsupported required or authority-bearing semantics fail before any Harness effect. Shared private identity uses `HarnessIdentitySchema`, `HarnessSha256HexSchema`, and `HarnessRouteCredentialSchema` in that module. Those artifacts supply the identity bounds and character rules. Exact command bodies and descriptive result readers stay separate.
 
 The three `turn.start` tokens are mutually distinct 43-character raw values delivered only in that live dispatch response after their hashes and exact Turn lineage are durable. NanoCore's private Harness operation record and durable command identity contain only their hashes; the raw values remain only in the response-producing live scope. NanoHost forwards them without retention; Sandbox Integration binds them only to the named AgentSession and active Turn and clears them at the Turn barrier. Every `*Ref` is an already-materialized fixed sandbox-local reference selected by its owner, not a caller path, URL, credential, or content carrier. Missing required core fields, malformed or oversized core values, sibling or stale lineage, conflicting core values, and unsupported required or authority-bearing semantics fail before a Harness effect.
 
@@ -273,23 +146,13 @@ The three `turn.start` tokens are mutually distinct 43-character raw values deli
 
 The decision and its reason are recorded in [a decision record](../decisions/20260930-native_environment_managed_outside_the_sandbox.md).
 
-`session.open.maxActiveTurns` carries the authored Harness operating bound from [Runtime Scheduling Scale](20260703-runtime_scheduling_scale.md), with an initial default of 20. Omission uses the current Harness declaration; later opens cannot change it while that Harness is resident. The success result must prove the exact admitted bound. The resident-session bound is the greater of its initial default of eight and the active-Turn bound; it must not introduce a lower active-Turn convenience cap. Each Thread and AgentSession still has at most one active Turn. Known `busy` refusals name the actual exhausted bound with the closed `exhaustedBound` value `harness.activeTurns`, `harness.openSessions`, `agentSession.activeTurn`, `harness.draining`, `sandbox.activeTurns`, or `adapter.isolationProof`. Native spawn or dependency failures do not invent CPU or memory exhaustion.
+`session.open.maxActiveTurns` carries the authored Harness operating bound from [Runtime Scheduling Scale](20260703-durable_scheduler_design.md#scale-limits), with an initial default of 20. Omission uses the current Harness declaration; later opens cannot change it while that Harness is resident. The success result must prove the exact admitted bound. The resident-session bound is the greater of its initial default of eight and the active-Turn bound; it must not introduce a lower active-Turn convenience cap. Each Thread and AgentSession still has at most one active Turn. Known `busy` refusals name the actual exhausted bound with `HarnessExhaustedBoundSchema` in `packages/worker-protocol/src/harness-control.ts`. Native spawn or dependency failures do not invent CPU or memory exhaustion.
 
 `session.open` additionally carries the NanoCore-resolved non-secret `nativeEnvironment` string map, whose name/value/aggregate limits are owned by Agent Manifest And AEP Resolution. An absent public map denotes no public settings only for an input whose owning admitted package permits that absence; an environment-aware package cannot silently omit its resolved delivery. The public map's canonical identity participates in the durable operation identity; raw private `runtimeEnvironment` values remain excluded. No other operation accepts an environment mutation. Environment-variable names in this map are consumed settings, not ignorable additive metadata; the manifest owner's open identifier namespace, bounds and protected-name checks apply.
 
 Native environment comes only from the exact current resolved package and binding, not caller-supplied shell text, a worker request or an arbitrary management map sent to the Harness. Before a Turn performs native work, the Harness requires equality with its session-static public projection and independently requires the Vault name set to match that Turn's credential declarations. A conflict refuses; it never patches the active child.
 
-Integration emits one result with exactly `schemaVersion`, `harnessInstanceId`, `operationId`, `sequence`, `disposition`, and `body`. `disposition` is `succeeded`, `refused`, or `unknown`. A refusal body contains `reasonCode` from `missing`, `stale`, `conflict`, `unsupported`, `busy`, `dependency_failed`, or `cleanup_required`. A `turn.start` refusal with `reasonCode="dependency_failed"` may additionally contain the closed `startupFailure` diagnostic. A `session.open` refusal with that same reason code may also contain it for first work-slot initialization, with `startupFailure.stage="workspace_materialization"`. Its stage, reason, and optional Git fetch `explanation` remain owned by [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation) ([decision](../decisions/20260930-closed_core_open_extension.md)). No other refusal admits this diagnostic. An unknown body is exactly `{ "reasonCode": "outcome_unknown" }`. A success body is operation-specific:
-
-| Operation | Emitted success-body fields |
-| --- | --- |
-| `session.open` | `state="open"`, `nativeHandleState="pending"|"ready"`, nullable lowercase 64-hex `nativeHandleDigest`, positive safe integer `maxActiveTurns` equal to the admitted Harness descriptor |
-| `session.inspect` | `state="open"|"active"|"closing"|"closed"|"failed"`, `nativeHandleState="pending"|"ready"|"absent"|"unknown"`, nullable lowercase 64-hex `nativeHandleDigest`, `childState="absent"|"running"|"stopping"|"unknown"`, `cleanupState="clean"|"pending"|"unknown"` |
-| `turn.start` | `state="started"`, `nativeHandleState="pending"|"ready"`, nullable lowercase 64-hex `nativeHandleDigest` |
-| `turn.interrupt` | `state="interrupted"`. `childState` reports host liveness and is not the cancellation proof; a resident shared host may remain `running` |
-| `turn.steer` | `state="accepted"`, `turnId`, `inputItemId`, `inputDigest` matching the exact command |
-| `session.close` | `state="closed"`, `privateState="absent"`. A shared host may remain running for its siblings. A dedicated host may report `childState="absent"` |
-| `harness.drain` | `state="draining"`, non-negative safe integer `openSessions`, non-negative safe integer `activeTurns` |
+Integration emits one result admitted by `HarnessResultEnvelopeSchema` in `packages/worker-protocol/src/harness-control.ts`. Success bodies are `HarnessSuccessBodySchemas`. A refusal uses `HarnessRefusalReasonSchema`. A `turn.start` refusal for dependency failure may additionally contain the closed `startupFailure` diagnostic. A `session.open` refusal with that same reason may also contain it for first work-slot initialization, with `startupFailure.stage="workspace_materialization"`. Its stage, reason, and optional Git fetch `explanation` remain owned by [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation) ([decision](../decisions/20260930-closed_core_open_extension.md)). No other refusal admits this diagnostic. An unknown result uses reason `outcome_unknown`. Host liveness is not cancellation proof, and a shared host may remain running after one session closes. `harness.drain` reports the open-session and active-Turn counts. Descriptive result readers are `HarnessResultEnvelopeReaderSchema`.
 
 `turn.start` settles when the resident binding has accepted the Turn and its Turn-local route bindings are installed inside Integration. It does not wait for a child to exit. A first Turn may return `nativeHandleState="pending"` with a null digest when the runtime creates the conversation with the first prompt, which leaves the next Harness sequence available for `turn.interrupt`. Exact handle proof is required before the binding is reusable: after the first Turn reaches its terminal barrier, `session.inspect` must return `ready` with the same digest before NanoCore marks that binding reusable and idle. Process exit is not that proof. If the first Turn did not reach `completed`, or inspection cannot prove one exact handle, the binding is non-reusable and proceeds to exact `session.close` or the existing wider cleanup fence. The raw upstream `turn.start` tokens are not forwarded into the native environment. NanoCore delivers the session loopback credentials in `session.open`. When a binding reports `nativeHandleState="ready"`, its Harness has stored the adapter's restricted handle in retained Sandbox storage under that binding's `agentSessionId`, outside the disposable control root, and `nativeHandleDigest` is the SHA-256 of exactly those stored bytes. The resume locator is that `agentSessionId`, and the resume digest is that `nativeHandleDigest`. Core records the digest on that AgentSession's record when it accepts the ready proof, as [AgentSession Continuity](20260704-agent_session_continuity.md) defines; the raw reference stays in retained Sandbox storage. `resume: null` starts a new conversation. A `{ locator, digest }` value is the pair recorded for the predecessor AgentSession that this binding succeeds. It starts by resume: the Harness reads only the reference stored under that locator, requires its SHA-256 to equal the carried digest, and validates the native result before any work. A missing or mismatched resume reference fails the open. When the successor's own handle becomes ready, its Harness stores the reference under the successor's `agentSessionId`.
 
@@ -315,7 +178,7 @@ Observable conformance requires AgentSessions for two distinct Threads to open t
 
 ### Live-Steer Operation Boundary
 
-`turn.steer` is the private delivery projection of [Task live steer](20260704-task_mode_worker_delegation.md#live-steer), whose owner holds the public actors, Item, completed receipt, full lifecycle, failures, and acceptance predicates. The [Task Live-Steer Rulings](../decisions/20261008-task_live_steer_rulings.md) record why this operation is separate from interruption. It grants no authority, starts no Turn, changes no setup, and answers no Pending Request. Bounded `input` is typed user content and is never interpreted by the control boundary as an executable instruction or shell command.
+`turn.steer` is the private delivery projection of [Task live steer](20260704-task_mode_worker_delegation.md#live-steer), whose owner holds the public actors, Item, completed receipt, full lifecycle, failures, and acceptance predicates. Live steer is qualified for Codex 0.166.0 and Pi 1.4.0 against the Runtime qualification row in [Task live steer](20260704-task_mode_worker_delegation.md#observable-acceptance). OpenCode 2.2.5 and DeepSeek 0.2.1-rc.5 remain unsupported. The Task owner's public receipt retention and private slot-reuse fence still apply. The [Task Live-Steer Rulings](../decisions/20261008-task_live_steer_rulings.md) record why this operation is separate from interruption. It grants no authority, starts no Turn, changes no setup, and answers no Pending Request. Bounded `input` is typed user content and is never interpreted by the control boundary as an executable instruction or shell command.
 
 Preconditions are the exact current Integration and Harness binding, AgentSession runtime binding, Workspace, Thread, running Turn, package snapshot, execution attempt carried as `leaseId`, and Turn sequence. `inputItemId` names the already durable ordinary user-message Item; `inputDigest` is SHA-256 of its exact UTF-8 text. NanoCore stores its reference in the queued operation and materializes that bounded text only at authenticated dispatch. The Harness requires the digest and exact active native-work correlation before invoking one qualified adapter mapping. Unknown fields, missing or stale lineage, unsupported required semantics, mismatched text identity, or unqualified support cause a typed refusal before native effect.
 
@@ -351,27 +214,9 @@ A future supply refresh command may only be used when the resolved AEP declares 
 
 The shim must send one `final_status` for each Turn. That record is not coextensive with a process lifetime.
 
-Final status includes:
+`final_status` uses `WorkerControlRequestEnvelopeSchema` in `packages/worker-protocol/src/index.ts`. Its producer body is `WorkerCanonicalTerminalEventDataEmissionSchema`. Its receiver body is `WorkerCanonicalTerminalEventDataReaderSchema`. `status` is `WorkerCanonicalTerminalStatusSchema`, listed once under [Canonical Enums](20261021-protocol_identifiers_and_enums.md#canonical-enums). `stopReason` stays a product-safe transport value. The final worker sequence is the control sequence. `evidenceManifestDigests` is an optional descriptive map, open for extension; empty means not reported. The admitted diagnostics contract is the optional `diagnostics` member of the emission artifact. Capability summary ids, audit summary ids, and an error summary are not members of that body. `capability_summary` owns capability summary ids. Audit summaries and error summaries stay with their own owners.
 
-- `status`
-- product-safe `stopReason`
-- final worker sequence
-- optional descriptive `evidenceManifestDigests` map, open for extension; empty means not reported
-- capability summary ids
-- audit summary ids when available
-- error summary when failed
-
-Manifest digests are Worker-reported description, never coverage, proof or acceptance. The two mandatory transcript/artifact digest requirements are retired by the [reserved audit ruling](../decisions/20261031-reserved_audit_question_rulings.md#decision). Implementation projection: `packages/worker-shim/src/control-client.ts` (`WorkerControlClient.recordFinalStatus`) emits the optional map; `apps/nanocore/src/runtime/worker-control-gateway.ts` (`recordFinalStatus`) defaults an omitted map to `{}`. This map contract is implemented; no additional manifest producer is required by this amendment.
-
-Valid `status` values:
-
-- `completed`
-- `interrupted`
-- `cancelled`
-- `failed`
-- `blocked`
-- `degraded`
-- `lost`
+Manifest digests are Worker-reported description, never coverage, proof or acceptance. The two mandatory transcript/artifact digest requirements are retired by the [reserved audit ruling](../decisions/20261031-reserved_audit_question_rulings.md#decision). An omitted evidence-manifest digest map defaults to an empty map. No additional manifest producer is required.
 
 NanoCore derives the canonical Core `StopReason` and Turn status through the Worker Turn Reliability Envelope after evidence collection; it does not rename the wire field or treat the transport value as product-state authority.
 
@@ -438,6 +283,8 @@ Sequence gaps do not block live event append by default. NanoCore accepts higher
 
 Every Core-mediated worker-control, inference, and capability route validates its exact attempt, credential family, current policy, explicit revocation, and absolute submit-time deadline. The [NanoHost adapter liveness rule](20260629-worker_runtime_communication_model.md#nanohost-adapter-liveness) additionally retains startup and heartbeat refusal, stale needs-evidence exclusion, exact duplicate non-renewal, and route refusal until exact process-key adoption. That rule is adapter policy, not generic scheduler liveness authority.
 
+A product-safe active-AgentSession control summary resolves through the exact persisted AEP snapshot and complete current lineage. Absent live state or incomplete lineage yields no summary. The read borrows neither an older package nor an AgentSession-only lookup. The projection is not a new state owner, and a general gateway helper stays available to consumers that can use it.
+
 Worker-control state MUST survive NanoCore restart. Process-local gateway state is a bootstrapping projection only; the durable contract is:
 
 - Token bindings are resolved through the durable execution attempt records owned by `docs/specs/20260703-durable_scheduler_design.md`. That existing owner stores exactly three nullable lowercase SHA-256 projections, one each for the worker-control, inference, and capability tokens, and never a raw value. A family authenticator hashes the presented token and compares it to the exact current open attempt/lineage binding; adapter-stale or fenced lineage, and closed lineage outside exact accepted `final_status` replay, fails authentication and revokes all three through the existing attempt status owner. A `closing` lineage admits only [the cancellation-only first final](#cancellation-only-first-final-on-closing-lineage) or exact accepted `final_status` replay; refusal of an ordinary append solely for that cancellation-closing state must not revoke the final binding. This discharges restart durability through the scheduler's records instead of a parallel credential store.
@@ -498,73 +345,6 @@ The data plane moves:
 
 The control plane only announces readiness, digests, and collection hints.
 
-## Resolved Decisions
-
-- Command delivery is pull-only in the first implementation. Backend push is future work.
-- Control does not carry large payloads. V2 numeric payload limits are accepted below, and oversized payload rejection is mandatory before broad remote deployment.
-- Sequence gaps are allowed during live append; stale lower sequences and same-sequence conflicting payloads fail closed.
-- `final_status` can be accepted before data-plane evidence collection, but it cannot close the canonical turn by itself.
-- `event_append` is the only default item-visible progress path; every other control message family remains a control record unless NanoCore imports it.
-- The canonical worker-visible contract is one AEP-resolved sandbox-local `/worker-control/*` Integration binding with typed operation envelopes and a worker-control-only token reference.
-- The Harness adapter accepts only the seven fixed typed operations above; no public or worker-visible route can select arbitrary executable instructions, and every `turn.start` carries a fresh per-Turn AEP and Context Package rather than Sandbox-wide authority.
-- Harness delivery is an Integration-initiated private pull under `/worker-control/*`, with one poll path and one result path, authenticated by current nested-connection plus authoritative-NanoHost carriage and an injected non-secret `sandboxIntegrationBindingRef`; it accepts no bearer token or client Harness selector, carries at most one sequenced operation per NanoCore-selected Harness, retains no general queue, and is distinct from the fixed NanoHost effects. Private `turn.interrupt` is the only interrupt.
-- Interrupt delivery has one owner: private Harness `turn.interrupt` with purpose exactly `interrupt`. The existing Turn and attempt terminal compare-and-set remains the single race owner. There is no second delivery path and no fallback. Process-group kill of a resident shared server is not the cancel proof. Cancellation does not close the AgentSession. A pending approval or user-input request is owned by [Pending Requests](20260930-pending_requests.md).
-- Worker-control, inference, and capability token-binding state is durable by contract: three separate lowercase SHA-256 projections resolve through scheduler attempt records, event high-watermarks remain their existing durable rows, and restart rebuilds serving state from those owners while raw tokens stay only with the surviving live path. No raw credential, shared token, or `sandboxBindingRef` derivation is durable.
-- Restart reconnection uses the ordinary heartbeat route, one current schema, a per-process memory-only random key whose hash is bound at sequence zero, exact-next heartbeat adoption, and the existing durable control ledger, after a transport loss or a NanoCore restart. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively. It adds no challenge protocol, recovery listener, alternate token, negotiated version, or compatibility path.
-- Previously open questions are resolved by accepted V2 defaults: control envelopes are capped at 64 KiB, individual live event payloads are capped at 256 KiB, and any larger material must move through the data plane as an artifact, evidence bundle, manifest, or collected file reference with typed oversized-payload diagnostics.
-
-Current implementation projection: `apps/nanocore/src/runtime/nanohost-attempt-records.ts` stores and restores distinct lowercase SHA-256 worker-control, inference, and capability token bindings on the scheduler execution attempt, verifies Workspace/Thread/Turn/AgentSession/package-snapshot lineage, and rejects stale, `closing`, `closed`, shared-token, wrong-family, or `sandboxBindingRef` authentication. Raw tokens remain only on the live path, and no route family reuses another family's authentication. An execution attempt has the phases `open`, `closing` and `closed`; no lease or `releasing` state exists, because the queue and private attempt replace lease-based coordination under [the execution backend decision](../decisions/20261006-execution_backend_port_in_nanocore.md). The scheduler dispatch helper derives the package snapshot id from the selected Turn and reserved AgentSession, keeping attempt lineage aligned with AEP resolution. `apps/nanocore/src/runtime/worker-control-gateway.ts` registers the scheduler-owned binding, enforces the durable resolver, records supply refresh acknowledgements and capability summaries, enforces replay and sequence rules across every sequenced stream, and invokes the accepted-terminal hook. Server-scope sequence fingerprints preserve same-sequence conflict rejection across gateway instances. The App routes enforce the typed 64 KiB control-envelope and 256 KiB event limits, map accepted final status into canonical terminal evidence, retain future refresh acknowledgements without making them a V1 renewal requirement, store lineage-bearing verification rejections, including authentication failures that still need exclusion under Canonical Verification, and hold the matching attempt in `closing` until the existing terminal owners finish. No worker command enqueue exists, and governed launches use scheduler-owned attempt lineage. The worker shim reaches these routes through Sandbox Integration over the stock bridge and nested HTTP/2; fixed unary bootstrap/response monitoring and the final-status, process-group-absence, Exit, and clean-response export barrier are implemented. The deleted Knowledge proposal-summary path remains absent. The implemented path uses one Sandbox Integration binding, compatibility-keyed Harness Instances, and independent per-Harness operation sequences. Each AgentSession admits at most one active Turn, and each Harness enforces its admitted `maxActiveTurns` bound. The accepted design replaces the final-status process-group-absence export barrier: a resident host is still running at Turn end. [Runtime Scheduling And Scale](20260703-runtime_scheduling_scale.md) owns scheduler admission and aggregate capacity; this protocol does not impose a separate one-Turn Harness limit. Both the public worker-control and private Harness envelope families carry `schemaVersion: 2`. Live supply refresh and backend push remain separately gated future designs.
-
-The product-safe active-AgentSession projection resolves live worker-control state through the exact persisted Agent Environment Package snapshot. If that snapshot is not live or lineage is incomplete, the projection returns no control summary; it never borrows state from an older package or an AgentSession-only lookup. Private Harness `turn.interrupt` is the only interrupt, and no worker command enqueue exists.
-
-## Deferred / Future Work
-
-- Define explicit maximum payload size and rejection diagnostics for any future non-envelope control route before exposing it.
-- Add backend push command delivery only after the pull protocol is stable.
-- Define `shutdown`, `collect-and-stop`, and `health-check` command schemas if they are still needed.
-- Define the source and target snapshot schema, runtime and shim support negotiation, atomic attempt and token rebinding, idempotency, rollback, and audit evidence before issuing any live supply refresh request.
-- Define a workspace-change notice only if workspace synchronization cannot be represented by artifact notices, manifests, and data-plane collection.
-
-Deferred work is non-authorizing and creates no current schema, state, compatibility, implementation, runner, harness, or test requirement.
-
-## Testing Strategy
-
-- L1-L2 cover envelope bounds, distinct token and lineage rejection, three hash-only durable bindings, raw-token and process-key secrecy, exact-next adoption without token reissuance or relaunch after a transport loss or a NanoCore restart, final-status ordering, one clean monitor Exit only when the Harness ends, and the rule that Sandbox Integration suggestions are not product truth. A per-Turn export does not wait for process-group absence.
-- L1-L3 security coverage MUST prove that no App API, NanoCore route, gateway method, or Sandbox Integration interface accepts or executes a caller-supplied arbitrary worker command, `argv`, `cwd`, environment, or executable shell text.
-- L1-L3 Harness coverage MUST prove the seven-operation closed set, exact AgentSession and Turn targeting, per-Turn package and route separation as conversation-context isolation, read-only inspection, drain refusal, idempotent exact replay only, and wider fencing when local cleanup is unprovable; it MUST NOT infer security and adjudication isolation from those route checks.
-- L1-L3 live-steer coverage consumes [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) and proves exact lineage and input identity, qualified native acceptance, refusal and unknown, one invocation, only the Harness envelope's proved non-receipt redelivery without effect re-execution, public result retention before private slot reuse, bounded settlement, and unchanged interrupt delivery.
-- L1-L3 interrupt coverage MUST prove one private `turn.interrupt`, no duplicate delivery, no direct product terminalization by the operation result, rejection of a missing or unknown purpose before any signal, an ordinary interrupt remaining interrupted or aborted, and cancellation that does not close the binding. There is no second fallback. Process-group kill of a resident shared server is not the cancel proof.
-- L1-L3 cadence coverage MUST prove that the private Harness interrupt poll meets the 1000 ms start-to-start maximum only between polls while no command handling or result acknowledgement is in flight, including under saturating permitted inference load during an active Turn. An in-flight operation on any Harness delays the next poll up to that operation's existing request allowance. Coverage also proves that empty Harness polls wait at least 250 ms, retryable outage consumes only the existing shared budget, and end-to-end interrupt observation satisfies the NanoHost envelope within that cadence coverage.
-- L1-L3 Harness carriage coverage MUST prove the two exact paths, no Authorization header or client Harness selector, rejection of client-supplied Integration or Harness binding, authoritative NanoHost Integration-binding injection, NanoCore-selected admitted `harnessInstanceId`, exact per-Harness sequence and operation identity, at most one unsettled operation per Harness, independent sibling progress, exact live serial non-receipt-proof redelivery with a short reset bound and no effect re-execution, exact result replay, changed replay rejection, pre-AgentSession admission, and boundary-correct unknown-outcome widening without a Harness-specific NanoHost effect or worker command.
-- L1-L3 Harness coverage MUST prove at least two compatibility-distinct Harnesses and two distinct Threads with independent AgentSession-private control roots and handles plus separately addressed Thread-retained native data roots in one Sandbox, rejection of a second current AgentSession binding for one Thread, first `turn.start` settlement with a pending handle while `turn.interrupt` remains deliverable, terminal collection plus `session.inspect` handle establishment before reuse, a later Turn on the same resident binding without a relaunch, a successor AgentSession resuming the retained reference, sibling-handle rejection, one active Turn per AgentSession within the admitted Harness bound, and exact close of one AgentSession or drain of one Harness without disturbing compatible siblings. Concurrent admission across distinct AgentSessions remains governed by the scale specification.
-- Retry coverage proves one logical request is not re-executed within the bounded live-process outage budget; it need not enumerate every network error and instruction boundary.
-- L3 reuses the scheduler's one deterministic NanoCore kill/restart scenario to prove that a transport loss while NanoCore keeps running adopts the same worker and sequence or uses the interrupted fallback, and that a NanoCore restart adopts the same worker and sequence under that proof or, when proof fails, closes or fences the binding and a successor resumes natively. Worker control does not own another restart runner.
-- Real local or A1 acceptance reuses the existing stock OpenShell path only when transport integration cannot be proved below L5.
-- No tests are required for backend push, general offline command delivery, replacement workers, multi-target failover, or other deferred command families.
-
-## Risks & Mitigations
-
-- Risk: Control becomes a backdoor shell. Mitigation: keep private Harness `turn.interrupt` as the sole interrupt and require a separately accepted typed design before adding another command family.
-- Risk: Temporary NanoCore failure kills useful remote work. Mitigation: keep the resident host alive within the route-owned outage budget and require the successor NanoHost connection, exact memory-only process key, durable lineage, and next sequence before ordinary control resumes, after a transport loss or a NanoCore restart. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively.
-- Risk: A transport observer races the original worker because V2 has no server-fresh application challenge. Mitigation: require the authenticated confidential NanoHost transport plus predecessor fencing, keep the raw process key and all three route tokens out of durable state and logs, retain only three family-specific hashes in the exact attempt owner, and fail closed on any connection, key, token family, lineage, sequence, or deadline mismatch.
-- Risk: Recovery replay duplicates an external effect. Mitigation: use one logical identity and digest per heartbeat, private Harness result, and final status; exact replay succeeds and any conflict fails closed.
-- Risk: Sandbox Integration becomes a second Core. Mitigation: Sandbox Integration emits suggestions and evidence; NanoCore verifies and commits.
-- Risk: Remote and local containers diverge. Mitigation: keep the same worker-visible endpoint and envelope for both placements.
-
-## Links
-
-- `docs/specs/20260703-durable_scheduler_design.md`
-- `docs/specs/20260704-nanocore_bootstrap_readiness.md`
-- `docs/specs/20260629-worker_runtime_communication_model.md`
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/core/communication.md`
-- `docs/core/runtime-model.md`
-- `docs/core/agent-session.md`
-- `docs/specs/20260703-worker_agent_capability.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
-- `docs/specs/20260702-knowledge_store_governance_rules.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
-
 ## Incremental Work Observations
 
 Native content uses the single `native-content-v1` codec. It fixes RFC 8785 interpretation for canonical JSON content without converting native transcript or log bytes into JSON. `native-transcript` and `runtime-log` are truthful fact kinds, not additional coverage families; actual log source classes are `stderr` and `stdout-log`, never protocol/RPC stdout. Native bodies admit `application/octet-stream` as well as the existing text and JSON media. Source facts retain actual harness and separately authored/measured version identities, admitted image/source, pre-launch watermark, source/Turn association, native ranges, measured observed and retained counts, nullable unknown omissions and observed end/coverage. Existing origin/source/sequence and byte identity members are reused; transport chunk offsets do not become native source offsets. Unknown codec/core values or inconsistent ranges/counts fail closed. Metadata alone never proves native collection or completion.
@@ -585,8 +365,34 @@ For native expected content, the existing `content.boundary` member is exactly `
 | `sourceEnded` | Whether this source's end was actually observed; it does not prove Turn completion, remote stop or complete retention. |
 | `logSource` | Required only for `runtime-log`: exactly `stderr` or `stdout-log`. It is absent for `native-transcript`; protocol/RPC stdout is not a log source. |
 
-Core cites the selected bound through its existing AEP association reference (`kind: aep-snapshot` until the separately queued reference rename, same authenticated snapshot ID and Workspace). The Worker supplies no new budget reference or grant. An admitted AEP contains the selected numeric `observability.evidence.nativeLogMaxBytes`; source facts cite that immutable record, never duplicate its authority.
+Core cites the selected bound through its existing AEP association reference (`kind: aep-snapshot`, same authenticated snapshot ID and Workspace). The Worker supplies no new budget reference or grant. An admitted AEP contains the selected numeric `observability.evidence.nativeLogMaxBytes`; source facts cite that immutable record, never duplicate its authority.
 
 `policy.workDataCapture.nativeLogMaxBytes` is a positive safe integer with a combined 16 MiB per-Turn default for native logs. NanoCore selects it once into `observability.evidence.nativeLogMaxBytes` when admitting the AEP. Native log admission reads the exact authenticated named snapshot and existing retained source/publication facts; it does not reread live policy, add a Turn budget or duplicate that value in `captureCoverage`. Missing or invalid historical native authority refuses native content rather than guessing a bound. All sources and packages in the Turn share the same allowance; exact replay cannot recharge it and another package cannot renew it. Transcripts are not charged to the log budget. OFF retains required structure without bytes, and absent source, silence, collector failure and truncation stay distinct. The receiver preserves current byte limits, publication/receipt boundaries and anchored gaps, without a counter table, new writer or cross-domain atomicity. This prerequisite enables no native producer, runtime capability or default; existing ON/OFF bindings and defaults remain unchanged.
 
 The existing canonical event append accepts strict observation.recorded metadata and observation.content.chunk records under its existing outer lineage, revocation, sequence and replay checks. AEP projects the admitted Turn capture binding. Metadata is an observation-family fact, never an Item or child execution command. Chunks are canonical base64 with a maximum 48 KiB decoded length and validated index/offset; complete body length and digest are verified before publication. Metadata declares expected content first; each chunk ACK proves restricted staging, and a separate publication observation follows durable complete-body adoption. An unavailability record for already-declared content carries its exact expected observation identity; Core validates the earlier expected record within the same authenticated package and resolves that identity to the observation parent. A call reference alone is not an anchor because arguments, results and multiple events may share it. Receipt/fingerprint state contains only safe descriptors and digests, never content bytes. The acceptance/replay path must reconcile an interrupted publication before reporting its success. Full body admission, exclusions and failures follow 20260921-work_data_retention_format.md; there is no second transport, execution high-watermark or child-management API.
+
+## Acceptance
+
+Cadence qualification runs under saturating permitted inference load during an active Turn and includes the existing end-to-end interrupt bound. One Sandbox holds at least two compatibility-distinct Harnesses, each with an independent private control handle and a Thread-retained root. Transport-loss adoption and Core-restart adoption and fencing both reuse the scheduler's deterministic NanoCore kill and restart scenario. No second recovery runner is added.
+
+## Implementation
+
+- `apps/nanocore/src/runtime/`
+- `packages/worker-protocol/`
+- `packages/worker-shim/`
+
+## Implementation Gaps
+
+None.
+
+## Decisions
+
+- [Turn interrupt is abandon](../decisions/20260921-turn_interrupt_is_abandon.md)
+- [First accepted base by baseline scan](../decisions/20260930-first_accepted_base_by_baseline_scan.md)
+- [Native environment managed outside the Sandbox](../decisions/20260930-native_environment_managed_outside_the_sandbox.md)
+- [Closed core, open extension](../decisions/20260930-closed_core_open_extension.md)
+- [Earlier-version data](../decisions/20260930-earlier_version_data_not_carried.md)
+- [Transcript item exact-value guard](../decisions/20261005-transcript_item_exact_value_guard.md)
+- [Task live-steer rulings](../decisions/20261008-task_live_steer_rulings.md)
+- [Worker failure final and chat call rulings](../decisions/20261015-worker_failure_final_and_chat_call_rulings.md)
+- [Reserved audit question rulings](../decisions/20261031-reserved_audit_question_rulings.md)

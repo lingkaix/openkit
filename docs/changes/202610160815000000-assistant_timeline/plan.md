@@ -11,7 +11,7 @@ The engineer assigned lane L-AK the P19, P20 and P26 packages on 2026-10-16, in 
 ## Accepted Owners
 
 - [Chat Mode And Core Assistant](../../specs/20260704-chat_mode_assistant.md).
-- [Personal Workspace](../../specs/20260709-quick_chat_workspace.md).
+- [Personal Workspace](../../specs/20260715-multi_user_workspace_system.md#personal-workspace).
 - [Thread Visibility And Sharing](../../specs/20260909-thread_visibility_and_sharing.md).
 - [Internal Durable Rolling Context](../../specs/20260902-agent_runtime_context_compaction.md#internal-durable-rolling-context).
 - [Unified Conversation Composer](../../specs/20260831-unified_conversation_composer.md).

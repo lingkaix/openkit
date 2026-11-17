@@ -37,4 +37,4 @@ Revisit if an accepted allocating owner does not supply a proposed derivation, i
 - [Core Protocol](../core/protocol.md)
 - [Config And Identity Contract](../specs/20260628-nanocore_config_identity_contract.md)
 - [Storage Layout And Record Ownership](../specs/20260703-storage_layout_record_ownership.md)
-- [Capability Usage Gateway Foundation](../specs/20260704-capability_usage_gateway_foundation.md)
+- [Capability Usage Gateway Foundation](../specs/20260703-audit_usage_evidence_records.md#capability-usage)

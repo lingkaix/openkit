@@ -2,58 +2,27 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
-date: 2026-09-02
-updated: "2026-10-17"
 aspect: work-model
 ---
 # Agent Runtime Context Management And Compaction
 
-## Owns
+This specification owns logical-model compaction policy, the two internal context strategies, their shared summary Item, and one compaction authority per Worker Turn.
 
-This specification owns the Server-scoped active-context policy for logical models, the OpenKit automatic runtime-compaction lifecycle, the Responses-compatible `context_management` control, the OpenKit compaction item, the two internal context strategies and their shared durable summary Item format, the choice of exactly one compaction authority per Worker Turn, and the quality, observability, failure, retry, and recovery requirements shared by those paths.
+## Scope
 
-## Applicability
+Owns the Server policy, the Responses control contract, the OpenKit compactor lifecycle, rolling context, Knowledge Manager in-run compaction, and the shared summary Item.
 
-Core Assistant and Goal/Workflow Coordinator default to [rolling context](#internal-durable-rolling-context). Knowledge Manager uses [bounded-run compaction](#knowledge-manager-compaction) under the [engineer's decision](../decisions/20261017-bounded_knowledge_maintenance_and_shared_summaries.md). A future Evaluator defaults to compaction only after its role is admitted. Both strategies use the existing [source-bound summary Item](#source-bound-summary-items). Worker-native compaction, physical model limits and Gateway routing retain their existing owners. The Responses control below is a Gateway wire contract. The existing context-summary Item owns canonical internal summaries; rolling context has no Gateway-compactor prerequisite.
+Does not own the product Context compact. [Work Model](../core/work-model.md) owns that record.
 
-## Does Not Own
+Does not own the Internal Agent Loop. [Internal Agent Runtime](20260813-internal_agent_runtime.md) owns it.
 
-- `docs/core/work-model.md` owns the canonical Context Compaction workflow mechanism and its traceability requirement.
-- `docs/core/work-model.md` owns the distinction between a product-visible Context compact, reusable Knowledge, and runtime continuity.
-- `docs/core/agent-session.md` owns Worker AgentSession identity, native conversation continuity, replacement, and restart behavior.
-- `docs/specs/20260813-internal_agent_runtime.md` owns the role-agnostic Internal Agent Loop, its transient transcript, Tools, fuses, and typed exits.
-- `docs/specs/20260526-llm_gateway_responses_api.md` owns Gateway authentication, logical-model routing, endpoint compatibility, fallback, streaming, and public error transport.
-- `docs/specs/20260616-agent_environment_package.md` owns the strict immutable Worker package envelope and any future Worker projection of the resolved context policy.
-- Runtime-specific Worker adapter specifications own translation into Codex, Pi, OpenCode, or another Harness's native configuration, checkpoint, and continuation representation.
-- This specification does not create a Gateway conversation store, durable provider transcript, second Thread history, new AgentSession for internal roles, Knowledge mutation, Context Package replacement, public compaction registry, pluggable strategy framework, or per-role and per-user threshold override matrix.
+Does not own Gateway routing or public error transport. [LLM Gateway](20260526-llm_gateway_responses_api.md) owns them.
 
-## Core References
+Does not own the Worker package envelope. [Agent Environment Package](20260616-agent_environment_package.md) owns it.
 
-- `docs/core/work-model.md`
-- `docs/core/agent-session.md`
-- `docs/core/mediation.md`
-- `docs/core/doctrine.md`
-- `docs/core/evidence.md`
+Does not own native adapter algorithms. Each worker adapter owns its own.
 
-## Related Docs
-
-- `docs/specs/20260813-internal_agent_runtime.md`
-- `docs/specs/20260704-chat_mode_assistant.md`
-- `docs/specs/20260709-quick_chat_workspace.md`
-- `docs/specs/20260526-llm_gateway_responses_api.md`
-- `docs/specs/20260531-worker_turn_reliability_envelope.md`
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260716-codex_worker_adapter.md`
-- `docs/specs/20260716-pi_worker_adapter.md`
-- `docs/specs/20260716-opencode_worker_adapter.md`
-- `docs/specs/20260708-pi_ai_unified_llm_backend.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
-
-## Summary
-
-Every NanoCore internal model-using role uses the shared Internal Agent Loop. Knowledge Manager starts each maintenance run with fresh bounded context and uses compaction only near its in-run budget. Assistant and Goal/Workflow Coordinator default to rolling context. Both strategies retain the same source-bound summary Item under existing Thread/Item owners. Their pinned strategy and producing model remain distinguishable for evaluation; no per-call window record is required in v0.1.0.
-
-The remaining Gateway/Worker paths standardize one centrally authored compaction threshold and normalized control contract. A Worker with trustworthy native compaction keeps that implementation subject to its immutable setup contract; a future compatible Worker may round-trip the OpenKit Compaction Item. Each such execution selects one compaction authority so native and OpenKit compaction do not compete. These paths do not block internal-role rolling context.
+Core: [Work Model](../core/work-model.md), [AgentSession](../core/agent-session.md), [Mediation](../core/mediation.md), [Evidence](../core/evidence.md).
 
 ## Definitions And Exclusions
 
@@ -70,20 +39,6 @@ The remaining Gateway/Worker paths standardize one centrally authored compaction
 `Compaction Authority` is the sole component allowed to decide the cut point, produce the summary, replace the active context, and govern compaction retry for one admitted execution. Its only V1 values are `openkit` and `runtime-native` in trusted resolved projections; this discriminator is not part of the public Responses request.
 
 This mechanism is not the initial Context Package budget used to select material for a Worker, not a product-visible Context compact used for handoff or workflow continuation, not Knowledge extraction, not provider prompt caching, and not truncation by silently dropping the oldest items. Those concerns retain their current owners.
-
-## External Evidence And Deliberate Compatibility Boundary
-
-The following first-party evidence was checked on 2026-09-02 against then-pinned Pi `0.80.7` and OpenCode `1.18.1`. The Pi row was re-checked on 2026-09-05 against then-current worker pin `0.85.0` at exact tag `v0.85.0` commit `107d79f11072bbc8a3a757ed7fd69596bee7d68c`, and again on 2026-09-06 against the then-current worker pin `0.85.1` at exact tag `v0.85.1` commit `d981de1229ef899957bbe968bc8dcda02a21f477`. External projects inform this design but do not own it.
-
-| System | Trigger and control | Continuation representation | OpenKit consequence |
-| --- | --- | --- | --- |
-| OpenAI Responses | `context_management: [{ type: "compaction", compact_threshold }]` enables automatic server compaction, a final `compaction_trigger` input item requests Provider-side compaction, and `POST /responses/compact` is a separate explicit operation. | An opaque `{ type: "compaction", id, encrypted_content }` item is round-tripped with later Responses input. | Reuse the automatic request control shape and checkpoint ordering, reject the separate Provider-native trigger in V1, and do not claim OpenAI ciphertext compatibility. |
-| Pi Coding Agent `0.85.1` | Native automatic compaction triggers from `contextWindow - reserveTokens`; manual `/compact` and an extension-supplied complete result also exist. | A plaintext summary plus retained-tail boundary is stored in Pi's native session tree. | Preserve Pi-native compaction when its adapter can project the central threshold; translating an OpenKit result requires an explicit Pi adapter. |
-| OpenCode `1.18.1` | Native automatic compaction uses its configured buffer and session overflow calculation. | A synthetic compaction part, ordinary assistant summary, and `tail_start_id` rebuild the native session context. | Preserve OpenCode-native compaction when its adapter can project the central threshold; its current hook and Responses parser cannot round-trip a generic item. |
-
-The current OpenAI documentation is [Compaction](https://developers.openai.com/api/docs/guides/compaction), [Create a model response](https://developers.openai.com/api/reference/resources/responses/methods/create), and [Compact a response](https://developers.openai.com/api/reference/resources/responses/methods/compact). The historical Pi worker pin examined above is release [`v0.85.1`](https://github.com/earendil-works/pi/tree/d981de1229ef899957bbe968bc8dcda02a21f477), and the historical OpenCode baseline is release [`v1.18.1`](https://github.com/anomalyco/opencode/tree/99f638d8293f6985726ba509da602296c4963497); deployment pins are recorded in `containers/worker-runtimes/versions.json`.
-
-The shared denominator is a threshold, a summary, a retained continuation boundary, and one owner that replaces context. There is no evidenced cross-runtime checkpoint format. OpenKit therefore normalizes policy, lifecycle outcomes, and measurements while allowing each selected authority to retain its native representation and algorithm.
 
 ## Central Logical-Model Policy
 
@@ -109,13 +64,13 @@ The shared denominator is a threshold, a summary, a retained continuation bounda
 }
 ```
 
-Configuration uses repository-standard camel case, while the HTTP request uses OpenAI-compatible snake case. The array shape is retained because it matches Responses and permits a later separately accepted context-management entry type without replacing the field, but V1 requires exactly one entry and accepts only `type: "compaction"` with a positive integer `compactThreshold`.
+Configuration uses repository-standard camel case, while the HTTP request uses OpenAI-compatible snake case. The array shape is retained because it matches Responses and permits a later separately accepted context-management entry type without replacing the field, but this contract requires exactly one entry and accepts only `type: "compaction"` with a positive integer `compactThreshold`.
 
-The example keeps the catalog-derived Physical Context Window at 1,000,000 tokens and sets the managed Compaction Threshold to 400,000 tokens. OpenKit MUST NOT rewrite `model_context_window`, model catalog data, or Provider metadata to pretend that the physical model is a 400,000-token model.
+A configured threshold does not change the catalog physical window. OpenKit MUST NOT rewrite `model_context_window`, model catalog data, or Provider metadata to pretend that the physical model is smaller.
 
 The logical-model resolver uses each route's required context limit and optional maximum-output limit from the Gateway-owned effective Provider model metadata. For every authored route member with resolvable metadata, including an unavailable member whose limits remain known, it requires `compactThreshold` not to exceed that window, and additionally requires `compactThreshold + maximumOutputTokens` not to exceed it when the output limit is known. Missing effective context in a configured Provider model rejects configuration under the Gateway owner. An absent Provider profile or delisted route model is instead an unavailable member under [Gateway routing](20260526-llm_gateway_responses_api.md#unavailable-members), without fabricated limits; restored supply must pass threshold validation before selection. Missing output metadata remains unknown and does not prevent admission; the configuration does not claim its threshold is proven to fit an unknown output reserve. Adapter operating defaults do not become verified physical limits. A non-positive threshold, duplicate context-management entries, an unknown entry type, or a known route limit that cannot honor the threshold rejects the snapshot before the logical model becomes eligible. An actual upstream context-overflow error remains explicit and follows the existing failure path rather than silently substituting a model or inventing a physical limit.
 
-There are no Server-global numeric fallback, Provider-route override, Agent override, internal-role override, Workspace override, User override, percentage mode, summary-model selection, retained-tail knob, or prompt override in V1. Models have different physical limits, so the policy belongs to each logical model; every Gateway/Worker execution using compaction for that logical model receives the same value. The Knowledge Manager uses this compaction threshold. Assistant and Goal/Workflow Coordinator use the rolling-window budget rather than this threshold by default.
+There is no Server-global numeric fallback, Provider-route override, Agent override, internal-role override, Workspace override, User override, percentage mode, summary-model selection, retained-tail knob, or prompt override. Models have different physical limits, so the policy belongs to each logical model; every Gateway/Worker execution using compaction for that logical model receives the same value. The Knowledge Manager uses this compaction threshold. Assistant and Goal/Workflow Coordinator use the rolling-window budget rather than this threshold by default.
 
 A successful configuration reload applies a changed threshold only to newly admitted compaction-managed Gateway requests and newly resolved Worker packages. An active managed execution remains pinned to its accepted policy, and an active Worker Turn remains pinned to its immutable package. Rollback selects the prior value for later executions and never rewrites completed history or a native session checkpoint.
 
@@ -240,7 +195,7 @@ The shared source-bound summary contract below preserves source digests, retriev
 
 A context-summary Item is an existing durable Item, not a new store, Item kind, transcript or checkpoint owner. Restart abandons the model run and virtual editing filesystem. A new bounded run reconstructs current notebook/run inputs and needed authorized records without replaying inference or Tool effects. A failed or invalid summary accepts no replacement and returns the existing explicit failure; it never silently truncates history.
 
-Acceptance requires bounded fresh-context admission, compaction only inside a run, exact summary-range reconstruction, retained history and decisions, and no cross-run model resumption. Parallel queries preserve audience isolation. [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md#query-and-maintenance-execution) owns maintenance and query admission, daily enablement, learning inputs and visible outcomes.
+A Server-owned Knowledge Manager Turn uses this same strategy and Item. Its Thread and Item owner is the Server, with no Workspace anchor. Reconstruction and exact range reads stay inside the current run. Acceptance requires bounded fresh-context admission, compaction only inside a run, exact summary-range reconstruction, retained history and decisions, and no cross-run model resumption. Parallel queries preserve audience isolation. The run uses the shared Internal Agent Loop. It does not wait for a Gateway wire compactor. [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md#query-and-maintenance-execution) owns maintenance and query admission, daily enablement, learning inputs and visible outcomes.
 
 ## Internal Durable Rolling Context
 
@@ -272,9 +227,9 @@ Acceptance covers reconstruction by two distinct durable role owners into the sa
 
 ### Source-Bound Summary Items
 
-Both internal strategies use the existing `context-summary` Item under the Thread and Item owners. The Item has completed status, bounded untrusted continuation text, an environment digest, strategy `rolling | compaction`, the producing logical model and one exact source range. The range records its first and last Item references, count, ordered canonical source digest, and dependent retrieval-evidence digest. It is derived context, not Memory, an authorization decision, executable Tool output, a second transcript, or a Provider checkpoint. No new Item kind or checkpoint store is introduced. Unknown Item kinds remain invalid; readers ignore descriptive additive fields without changing these required semantics.
+Both internal strategies use the existing `context-summary` Item under the Thread and Item owners. The Item has completed status, nonempty continuation text of at most 65,536 UTF-8 bytes, an environment digest, strategy `rolling | compaction`, the producing logical model and one exact source range. The producer also refuses a non-text result, a Tool request, a truncated result, a sentinel, and a redaction change. An optional `previousSummary` of `{itemId, digest}` names the exact previous summary. Rolling validation rejects a missing predecessor, a digest mismatch, a cycle, and a predecessor that does not advance. The range records its first and last Item references, count, ordered canonical source digest, and dependent retrieval-evidence digest. It is derived context, not Memory, an authorization decision, executable Tool output, a second transcript, or a Provider checkpoint. No new Item kind or checkpoint store is introduced. Unknown Item kinds remain invalid; readers ignore descriptive additive fields without changing these required semantics.
 
-The summary Item uses the shared Item UUIDv5 generator with the exact JCS name `{ "kind": "internal-context-summary", "turnId": admittedTurnId, "environmentDigest": environmentDigest, "sourceRange": sourceRange }`. These values are the exact canonical producing Turn and accepted proof fields; no text, clock or random input changes retry identity. This identity grants no summary validity or source authority.
+The summary Item uses the shared Item UUIDv5 generator. Its name bytes are the canonical form of `{ "kind": "internal-context-summary", "turnId": admittedTurnId, "environmentDigest": environmentDigest, "sourceRange": sourceRange }`. The environment digest, the source digest, and the predecessor digest are a different form: SHA-256 over insertion-order `JSON.stringify` of the current value, not RFC 8785. The compaction source tuple is `{version:1, sources:items}`. The rolling source tuple also binds the current Turn outcomes. [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md) owns the shared RFC 8785 form. These retained proofs are exceptions. The identity fields are the exact canonical producing Turn and accepted proof fields; no text, clock or random input changes retry identity. This identity grants no summary validity or source authority.
 
 The existing role owner creates a summary only under an admitted Turn and current source and output-audience authority. Its range is an ordered prefix of eligible committed Items before the summary, including complete Items from the producing Turn. Rolling may cover admitted continuity history; compaction covers only the current bounded run. It excludes hidden reasoning, credentials, previous summaries and unaccepted transient output. Exact Items stay retained under their original owners. The model sees the covered range and can read exact source Items on demand through the existing history Tool. Web and CLI Item projections show the covered range and continuation text.
 
@@ -284,11 +239,13 @@ Summary production uses the ordinary selected Provider path, capture, usage, aud
 
 Before accepting or reusing a summary, assembly verifies its full source range, current canonical source digests, current dependent retrieval evidence, role environment and audience. The environment binds the admitted strategy, model and applicable policy. Within that admitted history, reconstruction uses the latest valid summary and later canonical Items in order. A missing, changed, revoked or contradictory source invalidates it. An invalid summary cannot justify truncation; if complete current eligible history cannot fit, return the safe capacity failure. A failed producer accepts no new summary and exposes its typed cause through the existing Turn failure path. Previously accepted batches remain canonical; do not claim cross-call rollback. Restart derives the last valid window from Items and source evidence without replaying any Tool or inference effect.
 
-Existing execution records pin strategy `rolling | compaction` beside role, logical model and applicable threshold. Summary Items retain their producing model and strategy so evaluation can distinguish the methods despite their shared storage shape. V0.1.0 adds no per-call window record or strategy registry.
+Existing execution records pin strategy `rolling | compaction` beside role, logical model and applicable threshold. Summary Items retain their producing model and strategy so evaluation can distinguish the methods despite their shared storage shape. This contract adds no per-call window record or strategy registry.
 
 Acceptance includes both strategies using this same Item shape, exact range display, model/strategy attribution, bounded reconstruction within the proper continuity boundary, exact history retrieval, complete source validation, revocation, failed production without boundary advancement, shared budget exhaustion and reuse by distinct role owners. No new store, runner or checkpoint owner is introduced.
 
 ## Worker Runtime Policy
+
+The shared denominator is a threshold, a summary, a retained continuation boundary, and one owner that replaces context. There is no evidenced cross-runtime checkpoint format.
 
 Worker native implementations remain valuable because they understand their own session tree, reasoning state, Tool representation, overflow recovery, and retained-tail semantics. OpenKit therefore does not translate Pi summaries into OpenCode checkpoints, feed a Codex opaque Provider item to another route, or require every Harness to use the OpenKit summarization prompt.
 
@@ -296,9 +253,7 @@ The central threshold and normalized evidence remain mandatory. For `runtime-nat
 
 For `openkit`, the adapter preserves the exact OpenKit Compaction Item in its private active context and submits it on the next Gateway request. It disables native automatic compaction for the same execution. An adapter that cannot preserve the item losslessly cannot claim this authority.
 
-The historical Pi and OpenCode pins examined under External Evidence And Deliberate Compatibility Boundary had usable native compaction but no first-class generic Responses compaction-item path. Pi's full-result extension makes a future translation adapter feasible; OpenCode requires a new native adapter or protocol path. The internal-loop slice runs inside NanoCore and does not depend on whether a worker runtime is resident, so neither the Pi nor the OpenCode worker adapter is an implementation blocker for that slice.
-
-The historical Codex `0.153.4` fixture evidence proves only a native `compaction` request classification, not a configurable exact threshold. OpenKit does not yet project the central threshold or normalized compaction evidence. Its first conformance task must verify from the pinned runtime whether the exact threshold can be controlled: retain Codex as `runtime-native` only if that proof passes, otherwise implement and prove the OpenKit-item path before admitting a context-managed Worker package.
+Historical adapter fixtures are not current pins and do not prove a controllable threshold. The current package version has no context-management field. No adapter consumes one central threshold. A context-managed Worker package is admitted only after the selected pin proves exact native threshold control, or after the OpenKit-item path is proved. The internal-loop slice does not depend on a resident worker runtime.
 
 ## Large Source Projection
 
@@ -318,54 +273,10 @@ The OpenKit prompt, tail policy, or implementation may be optimized behind the s
 
 Rolling context, retained summaries and compaction MUST preserve the sticky external-influence bit. This applies to sessionless Assistant, Coordinator and other internal-agent contexts as well as Workers. The receiving Turn or AgentSession inherits known influence before generation or effect checks; absent ancestry counts as influenced. Model output MUST NOT reset the bit. [Runtime Security](20261109-runtime_security.md) E9 owns the influence sources and risk points; [Protocol](../core/protocol.md) and [AgentSession](../core/agent-session.md) own its durable facts.
 
-## Current Implementation Projection
-
-`packages/config-schema/src/gateway.ts` requires one authored logical-model `contextManagement` entry; `apps/nanocore/src/llm/logical-models.ts` validates its threshold against effective context and output limits and projects the policy without changing model identity. Missing policy must reject the configuration snapshot; shipped configuration must supply the required field. Existing deployments must update their configuration before that snapshot becomes eligible, under the existing last-known-good configuration owner.
-
-The Gateway exposes `POST /v1/responses`, but the pinned pi-ai Responses abstraction does not admit `context_management` or parse a compaction output item. The Gateway has no `context_management` validation, injection or compactor and no `invalid_context_management` error yet. The Codex worker hint carries the validated native request kind for the pre-output failure mapping above; a `compact` subagent classification alone is not phase evidence. This classification does not implement central compaction policy.
-
-Internal roles use the shared loop. Assistant and Coordinator use rolling context; bounded Knowledge Manager runs use in-run compaction. Both strategies persist `context-summary` Items with strategy and producing logical-model metadata. Scheduled maintenance starts fresh bounded runs rather than resuming prior model state. The Gateway Responses item remains a separate wire projection; it is not the canonical Thread summary. Rolling roles do not acquire a Gateway-compactor dependency.
-
-The current AEP version 4 has no resolved context-management field, and the Codex, Pi, OpenCode and DeepSeek adapters do not consume one central threshold. Existing Harness-native defaults therefore remain implementation fact, not conformance with this design.
-
-## Implementation Order
-
-1. Add and validate the required logical-model `contextManagement` policy, derive physical limits from the shared effective Provider metadata resolver, and expose the resolved policy without changing model identity.
-2. Add the OpenKit compactor and strict Responses control and item mapping behind the existing `POST /v1/responses`; do not add a standalone route.
-3. Reuse the existing context-summary Item for both internal strategies, retain producing model and strategy, and pin strategy beside role/model/threshold in existing execution records. Add bounded Knowledge Manager in-run compaction through the shared loop; preserve rolling defaults and canonical history owners.
-4. Update `docs/specs/20260703-audit_usage_evidence_records.md` and its existing record producers with the normalized audit, usage, and failure projection, add the fixed evaluation evidence, then roll out the threshold only for newly admitted Gateway/Worker executions.
-5. Version the AEP and add one adapter at a time, beginning by verifying whether pinned Codex exposes an exact native threshold control; do not admit that policy into a Worker package or mark a runtime conformant until its focused proof passes.
-
-## Alternatives Considered
-
-### Force One Summary Algorithm Into Every Harness
-
-Rejected because the current runtimes have materially different session trees, retained-tail rules, replay behavior, extension boundaries, and failure handling. An adapter that discards those strengths would add conversion risk without improving central control.
-
-### Keep Every Harness Policy Independent
-
-Rejected because the same logical model could then consume different working sets depending on role or runtime, configuration changes would require editing several unrelated files, and operators could not explain or compare behavior from one Server policy.
-
-### Copy OpenAI `encrypted_content` With Plaintext Data
-
-Rejected because the name would assert confidentiality that does not exist. Actual authenticated encryption requires a key, scope, rotation, invalidation, and recovery design; no current consumer needs that machinery.
-
-### Add `POST /v1/responses/compact` Immediately
-
-Rejected for the remaining Gateway/Worker path because automatic `context_management` supports that adapter contract. Knowledge Manager uses bounded-run compaction and the common internal summary Item; rolling roles do not require this wire operation. A standalone operation becomes justified only when a real caller needs manual compaction or a canonical compacted-output array independent of ordinary inference.
-
-### Store Gateway Conversations Or Compaction Records
-
-Rejected because the caller, Internal Agent Loop, workflow owner, or AgentSession already owns the relevant continuity. Stateless input and output items provide the required channel without a second transcript authority.
-
-### Pretend The Physical Model Window Is The Desired Working Set
-
-Rejected because rewriting a one-million-token model as 400,000 tokens corrupts capability facts and can break routing, output headroom, and native Harness behavior. The configured threshold is a separate policy.
-
 ## Acceptance Predicates
 
 - Every logical model has one validated Server-authored compaction threshold distinct from physical context and output limits; each configured model requires a known positive context limit from catalog inheritance or authored Provider metadata while output limits remain optional. Every authored route's known physical window bounds the threshold, including the output reserve when known; known unavailable-sibling limits still constrain it. An absent profile or delisted model stays unavailable, and restored supply must pass validation before selection.
-- A one-million-token model configured with `compactThreshold: 400000` remains physically identified as one million tokens while all new executions resolving that logical model receive the 400,000-token policy.
+- A configured threshold does not change the model's physical context size. New executions receive the configured policy. The numbers in examples are not current model defaults.
 - `POST /v1/responses` accepts or injects exactly one `{ type: "compaction", compact_threshold }` control for OpenKit authority and rejects a mismatch before Provider dispatch.
 - The OpenKit compactor emits `{ type: "compaction", id, summary }`, applies it as low-authority continuation context, and never labels plaintext as `encrypted_content`.
 - The Gateway stores no conversation or compaction record, and a stateless caller can continue by retaining the latest compaction item and later output.
@@ -379,18 +290,20 @@ Rejected because rewriting a one-million-token model as 400,000 tokens corrupts 
 - Private evidence preserves source traceability, threshold, token, version, usage, and terminal outcome without copying summary text or Provider-private data into public or durable diagnostic surfaces.
 - Codex, Pi, and OpenCode retain their native algorithms until an accepted adapter proves central threshold projection or exact OpenKit-item translation; no native checkpoint is treated as portable across runtimes.
 
-## Deferred Work
 
-- A public or internal `POST /v1/responses/compact` route.
-- Provider-native `compaction_trigger` input and any delegation of compaction authority to a Provider-native Responses mechanism.
-- Authenticated encryption and an `encrypted_content`-style opaque OpenKit capsule.
-- Cross-deployment, cross-account, cross-logical-model, or cross-runtime compaction-item portability.
-- Per-role, per-Agent, per-Workspace, per-User, per-request, percentage, adaptive, or cost-based threshold overrides.
-- A separate compaction model, configurable compaction prompt, configurable retained-tail target, strategy registry, plugin hook, or learned optimizer.
-- Manual editing of canonical summary Items or raw Gateway/Worker summary inspection beyond existing authorized Item projections.
+## Implementation
 
-## Open Questions
+- `apps/nanocore/src/internal-agents/`
+- `apps/nanocore/src/llm/`
+- `packages/config-schema/src/`
+- `packages/protocol/src/`
 
-None.
+## Implementation Gaps
 
-Server-owned Knowledge Manager Turns use this same compaction strategy and `context-summary` Item format. Their Thread and Item owner is the Server, with no Workspace anchor. Reconstruction and exact range reads remain limited to the current run. The pinned role, model, threshold and strategy, canonical source bytes, shared model evidence and usage retain their existing owners.
+- One context-management field on the Worker package and one consumed central threshold - version 4 of the package has no such field, and no adapter consumes one - #413
+- Gateway `context_management` validation, injection, compaction item, automatic compactor, and the one overflow retry of the same request - no producer; the native pre-output 503 mapping is a separate existing seam - #778
+
+## Decisions
+
+- [Private Assistant timeline and rolling context](../decisions/20261015-private_assistant_timeline_and_rolling_context.md)
+- [Bounded Knowledge maintenance and shared summaries](../decisions/20261017-bounded_knowledge_maintenance_and_shared_summaries.md)

@@ -2,11 +2,30 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-date: 2026-09-09
-updated: 2026-09-30
 aspect: architecture
 ---
+
 # Internal Agent Resource Integration
+
+This specification owns trusted assembly of selected Skills, internal MCP bindings, and native Kernel and UI Tools for the internal Assistant.
+
+## Scope
+
+Owns:
+
+- Assistant resource admission, the ordered native Kernel and UI set, bounded `skill.read`, and the private internal MCP caller boundary.
+
+Does not own:
+
+- The role-neutral loop. [Internal Agent Runtime](20260813-internal_agent_runtime.md) owns it.
+- Conversation entries and outcomes. [Chat Mode Assistant](20260704-chat_mode_assistant.md) owns them.
+- Skill and MCP catalog versions. Their catalog specifications own them.
+- Kernel, UI, and notebook payloads. Their owners keep them.
+- Worker routes and Sandbox execution. [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns that caller.
+
+Core:
+
+- [Mediation](../core/mediation.md), [Architecture](../core/architecture.md), [Generative apps](../core/generative-apps.md), [Policy](../core/policy.md), [Knowledge](../core/knowledge.md), and [Storage](../core/storage.md).
 
 ## Owned Worker Environment Management
 
@@ -14,30 +33,9 @@ Only the private administration entry acting under the current user's usable adm
 
 ## Delegated Git-Read Maintenance
 
-Only the private administration entry may expose the finite `administration.configuration.dispatch` projection owned by [Delegated Worker Policy Maintenance](20260922-delegated_worker_policy_maintenance.md#first-registered-target-and-action). It consumes the command request identity, exact immutable candidate reference, and current responsible-administrator delegation. Its sole mutation scope is a registered Worker network-policy Git-read correction inside the existing ceiling. Ordinary conversation, Skill text, MCP metadata, and model prose cannot admit another target or widen this Tool ([D06 ruling](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md)).
+Only the private administration entry may expose the finite `administration.configuration.dispatch` projection owned by [Delegated Worker Policy Maintenance](20260922-delegated_worker_policy_maintenance.md#first-registered-target-and-action). It consumes the command request identity, exact immutable candidate reference, and current responsible-administrator delegation. Its sole mutation scope is a registered Worker network-policy Git-read correction inside the existing ceiling. Ordinary conversation, Skill text, MCP metadata, and model prose cannot admit another target or widen this Tool ([cleanup and delegated-apply rulings](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md)).
 
 Derive the Tool from the same operation definition and invoke the same revision-protected command as its other public projections. Per-call authority, candidate/base identity, Policy, source/output audience, expiry, revocation, receipt, persistence, reload, and unknown-outcome inspection retain those owners. No generic apply, host shell, service recovery, or new grant/record store is admitted. Other configuration application stays human-confirmed. The [executable Policy-assignment dependency](20260922-delegated_worker_policy_maintenance.md#executable-policy-assignment-dependency) must be satisfied before any delegated execution; administrator status cannot replace it.
-
-## Owns
-
-This specification owns trusted assembly of selected Skills, internal-capability MCP bindings and native Kernel/UI Tools for NanoCore's internal Assistant: selection/configuration, immutable per-run admission, internal capability lineage, bounded Skill reads, MCP approval/cancellation integration and the caller's publication handoff. It is the implementation seam between existing owners, not a second Agent Runtime, catalog, Plugin loader, Tool registry or effect runner.
-
-## Does Not Own
-
-`20260813-internal_agent_runtime.md` owns the role-neutral transient loop and private message/Tool types. `20260704-chat_mode_assistant.md` owns the ordinary and administration entries and conversation outcomes. Existing Skill, MCP and Plugin catalogs own packages, versions, enablement and bindings. The Kernel, Generative UI, Memory, Policy, Vault, Human Attention, command and Item owners retain their payloads, authority, retention, replay and failure semantics. Worker AEP, AgentSession, Sandbox and Harness mechanisms are not internal-role execution prerequisites.
-
-## Core References
-
-- `docs/core/mediation.md`
-- `docs/core/architecture.md`
-- `docs/core/generative-apps.md`
-- `docs/core/policy.md`
-- `docs/core/knowledge.md`
-- `docs/core/storage.md`
-
-## Summary
-
-Keep one OpenKit-owned minimal loop and pi-ai transport. Trusted caller assembly supplies a finite Core Tool set, a progressive Skill index, and the selected Gateway vendor repository read tools admitted by Chat Mode Assistant. MCP implementations of Core capabilities require a separately owned internal capability; selected vendor repository reads do not create a Core capability or Git-specific adapter. The model decides how to use admitted operations; existing owners decide which exact reads, effects and publications may occur. A Light App's schema/data, Agent reasoning and UI remain separate cooperating responsibilities.
 
 ## Operation Invocation
 
@@ -45,15 +43,15 @@ Until a resource family is cut over, the finite reviewed code table, the trusted
 
 When that resource family is cut over, the accepted target applies. Internal Tools are derived from the definitions and execute through invocation. [Operation Definition](20261002-operation_definition.md) owns that mechanism. This specification does not restate it. Trusted entry assembly keeps capability admission and the immutable per-run selection. Actor, execution lineage, entry scope, the private Turn, and command identities an owner derives come from the invocation context. Model-facing schemas omit those bound fields. A conflicting argument is rejected before any effect. Administration Tools move their per-call administrator check into that invocation. This specification keeps revocation and provenance. Revoked authority cannot execute under an old grant. The call still records the responsible user and the existing capability and audit evidence. The ordered Tool set, Skill assembly, and the refusal to enlarge the Tool array stay here.
 
-## First Resource Family (#144)
+## First Resource Family
 
 The first resource family delivered by #144 is selected Skills and progressive `skill.read`, integrated on command-initiated Assistant Turns admitted by `conversation.submit` ([accepted scope clarification](../decisions/20261015-selected_skills_first_resource_family.md)). Deliver Workspace selection, reference validation, trusted assembly and operation invocation/wiring together. Separate Pending Requests Assistant continuation contracts remain unchanged; if the selected family reaches such a continuation, its existing continuation and failure requirements apply.
 
-Acceptance of #144 cuts over selected Skills and progressive `skill.read` to Operation Invocation. Invocation admission of `conversation.submit` does not alone satisfy this cutover. Each `skill.read` call uses the internal-only definition and native invocation binding owned by Operation Definition. Trusted assembly retains the exact P05 read closure as the handler implementation; a direct model Tool call to that closure is not the accepted execution path. This cutover does not migrate another resource family or broaden Assistant admission.
+Acceptance of #144 cuts over selected Skills and progressive `skill.read` to Operation Invocation. Invocation admission of `conversation.submit` does not alone satisfy this cutover. Each `skill.read` call uses the internal-only definition and native invocation binding owned by Operation Definition. Trusted assembly retains the exact read closure as the handler implementation; a direct model Tool call to that closure is not the accepted execution path. This cutover does not migrate another resource family or broaden Assistant admission.
 
 The reason is recorded in [Skill Read Operation Invocation](../decisions/20261015-skill_read_operation_invocation.md).
 
-Family acceptance must prove exact authority, immutable selected versions/digests, bounded reads, current access and output-audience checks, cancellation and correct Turn evidence through the required invocation path. Captured-effect approval and unknown external-effect non-replay are not applicable to these Skill reads because they read admitted retained text without an external effect. This does not waive another Tool's requirements. Report passed family predicates and remaining specification work separately. Wider cross-role loop, internal MCP/adapter/isolation/approval/effect-settlement, native Kernel/UI and other resource-integration predicates remain; this family does not complete the specification.
+Family acceptance must prove exact authority, immutable selected versions/digests, bounded reads, current access and output-audience checks, cancellation and correct Turn evidence through the required invocation path. Captured-effect approval and unknown external-effect non-replay are not applicable to these Skill reads because they read admitted retained text without an external effect. This does not waive another Tool's requirements.
 
 The former standalone entry is superseded by [Retire Stateless Quick Chat](../decisions/20261016-retire_stateless_quick_chat.md). All ordinary Assistant entry uses `conversation.submit` on the private Timeline. The first-family scope remains selected Skills; retirement adds no wider resource-family completion claim and grants no exception to the shared-loop requirement.
 
@@ -71,7 +69,7 @@ The model sees the entry's Core-owned semantic Tools and the separately selected
 
 An MCP adapter may fill a capability only after that owner's contract accepts the concrete integration. The reviewed adapter owns the exact upstream Tool name and argument/result translation and carries an immutable `adapterDigest` covering its accepted implementation and Core boundary schemas; the existing catalog owns the selected server configuration, schema evidence, enablement and credentials. A future authored binding selects `{capabilityId,serverId}`, at most one per capability in a Workspace, and never embeds translation rules or upstream Tool names. Its strict configuration field is added with the first accepted adapter consumer, not as an empty extension bag in this slice. Missing or mismatched adapter/schema/binding rejects admission; deployment activation and ordinary `tool.use` permission cannot grant internal-role eligibility.
 
-The first implementation enables the Core Tools enumerated by the Assistant and native Kernel/UI table below plus progressive Skill reads. It enables no arbitrary third-party MCP Tool and defines no production MCP adapter profile here; the separately admitted vendor repository-read target does not establish that its production integration is implemented. The MCP lifecycle/approval contract below is ready for a bounded internal capability to use, and is verified with a code-owned test capability before such an adapter is enabled; this is infrastructure conformance, not a claim of a user-facing channel integration. Native Kernel/UI work does not wait for such an integration. New capabilities require a direct entry-owner amendment; adding a server to a catalog cannot silently widen the entry.
+The first implementation enables the Core Tools enumerated by the Assistant and native Kernel/UI table below plus progressive Skill reads. It enables no arbitrary third-party MCP Tool and defines no production MCP adapter profile here; the separately admitted vendor repository-read target does not establish that its production integration is implemented. The MCP lifecycle/approval contract below is ready for a bounded internal capability to use, and is verified with a code-owned test capability before such an adapter is enabled; this is infrastructure conformance, not a claim of a user-facing channel integration. Native Kernel/UI work does not wait for such an integration. New capabilities require a direct entry-owner amendment; adding a server to a catalog cannot silently widen the entry. Deterministic non-model routing stays with its existing owner. Do not add a package or generic adapter interface merely to wrap one caller. The Worker Gateway is not this internal caller.
 
 ### Internal Tool Dispatch Evidence
 
@@ -94,7 +92,7 @@ These name supported architectural directions, not extra enabled Tools or a prom
 ## Assembly Order And Model Boundary
 
 1. Resolve the authenticated user, entry, Workspace, Thread/Turn, read scope, output audience, logical model/context policy and existing limits. Validate the entry's composition and current configuration before model dispatch.
-2. Resolve selected Skill metadata and exact retained versions/digests. For an owner-admitted MCP adapter, also resolve its exact existing catalog binding and schema snapshot. Metadata discovery uses the existing bounded Gateway/catalog path and is an infrastructure observation, not a business Tool call. No Skill body, business records, personal Memory or external business data is read at assembly.
+2. Resolve selected Skill metadata and exact retained versions/digests. Assembly also adds the fresh bounded Knowledge overview that [Knowledge Manager](20260704-knowledge_manager_internal_agent_runtime.md) owns. Each admitted scope root is at most 4,096 UTF-8 bytes. User Memory stays excluded. That navigation is not a business-record read and it is not a Skill body. For an owner-admitted MCP adapter, also resolve its exact existing catalog binding and schema snapshot. Metadata discovery uses the existing bounded Gateway/catalog path and is an infrastructure observation, not a business Tool call. No Skill body, business records, personal Memory or external business data is read at assembly.
 3. Build the entry's fixed Core Tools in its specified order; an admitted MCP implementation cannot add, rename or reorder those operations. Build a separate ordered Skill index by Skill ID, exposing only authorized name, description, opaque ID and exact version/digest. Retain exact source/configuration evidence through existing Turn/capability evidence; no separately persisted array or prompt is authoritative.
 
    For the #144 selected-Skills family, the existing Turn evidence is Core's canonical `env.bound.payload.assistantSkillAdmission`, as defined by Work Data Retention Format. Trusted assembly produces its minimal identity tuple from the same immutable selection used by the index and `skill.read` closure. The model-capture boundary commits it with the complete environment before model dispatch. Neither the model-facing index nor the prompt is a second authoritative record. Re-entry keeps the original admission; current access and resource checks remain mandatory. Imported admission values are historical source metadata under Work Observation Portability and never authorize execution.
@@ -108,9 +106,9 @@ Model-facing descriptions and schemas come from the owned Core capability, never
 
 ## Progressive Skill Use
 
-`skill.read` accepts `{skillId,versionId,contentDigest,path}`. `path` defaults to `SKILL.md` and may name only a bounded relative UTF-8 text file inside that selected immutable Skill snapshot. IDs/version/digest must exactly match the admitted index; the closure rechecks current catalog eligibility and source/audience restrictions before reading. Return `{skillId,versionId,path,fileDigest,text}` as bounded model-visible content with provenance, never the underlying absolute path.
+`AssistantSkillReadInputSchema` and `AssistantSkillReadOutputSchema` in `apps/nanocore/src/internal-agents/assistant-skill-resources.ts` are the private `skill.read` request and response. `ASSISTANT_SKILL_OPERATION_DEFINITIONS` in that file is the private definition. [Operation Definition](20261002-operation_definition.md) owns invocation. The admitted identity and digest must exactly match the admitted index. `path` defaults to `SKILL.md` and may name only a bounded relative UTF-8 text file inside that selected immutable Skill snapshot. The closure rechecks current catalog eligibility and source/audience restrictions before reading. The response is bounded model-visible content with provenance and never includes the underlying absolute path.
 
-Reuse Skill catalog path containment and digest verification. Reject traversal, absolute paths, symlink escape, missing or changed bytes, binary/invalid text and unselected versions. Apply the catalog's existing resource limits and a 64 KiB UTF-8 response ceiling per read; an oversized file returns a bounded size error without truncating instructions into misleading partial guidance. Referenced supporting files remain separate on-demand reads, not recursive directory expansion. A read attempt consumes an ordinary Tool touch; no Skill-specific loop budget is introduced.
+Reuse Skill catalog path containment and digest verification. Reject traversal, absolute paths, symlink escape, missing or changed bytes, binary/invalid text and unselected versions. Authority is closure input, never a model field. The complete metadata index is also bounded to 64 KiB. An oversized index fails family admission. It is not trimmed into a different selected set. Apply the catalog's existing resource limits and a 64 KiB UTF-8 response ceiling per read; an oversized file returns a bounded size error without truncating instructions into misleading partial guidance. Referenced supporting files remain separate on-demand reads, not recursive directory expansion. A read attempt consumes an ordinary Tool touch; no Skill-specific loop budget is introduced.
 
 Loading a Skill does not execute a CLI, shell script, install hook, code asset or MCP operation. Skill instructions may guide use of already admitted Tools. Procedures needing host filesystem writes, arbitrary code, heavy computation or CLI execution use explicit Task/Goal handoff and existing Worker resources. A Knowledge maintenance entry may follow Skill instructions using its already-admitted virtual notebook editor; loading a Skill grants no additional command or filesystem access. The internal model may request catalog changes only through separately admitted owner operations; it cannot self-install or change its current resources by writing a Skill.
 
@@ -136,7 +134,7 @@ Until this resource family is cut over, reuse strict owner request/response sche
 
 The Agent first discovers exact Light App schema and meaning, then uses expressive owner-bounded queries and mutations. No bespoke Tool is needed per app/table/business action and no direct SQLite handle or SQL/CLI executor is exposed. Ordinary Workspace membership is the current resource-access basis; existing Policy and sensitive-operation previews/confirmations still apply. This integration creates no blanket new confirmation for ordinary permitted CRUD and no exception to a required confirmation. Model prose cannot satisfy a human decision.
 
-Headless data calls do not force UI. `generative-ui.publish` delegates to the UI owner's native A2UI source/admission/publication contract; accepted content is rendered through its existing Item/resource path, never through loop streaming callbacks. The UI owner specifies how current generated text and completed MCP observations become sources. Tools return safe operation outcomes and exact admitted references to the model; renderer payload may stay in private `details` and is released only through current audience admission. An action invokes its existing Core owner, not a hidden continuation of this run. Saved views, HTML delegates and structured MCP-result data bindings remain their separately scoped UI extensions.
+Headless data calls do not force UI. `generative-ui.publish` delegates to the UI owner's native A2UI source/admission/publication contract; accepted content is rendered through its existing Item/resource path, never through loop streaming callbacks. The UI owner specifies how current generated text and completed MCP observations become sources. Tools return safe operation outcomes and exact admitted references to the model; renderer payload may stay in private `details` and is released only through current audience admission. An action invokes its existing Core owner, not a hidden continuation of this run. Saved views, HTML delegates and structured MCP-result data bindings remain their separately scoped UI extensions. Native A2UI and MCP Apps UI resource semantics remain with the Generative UI owner. This integration adds no AG-UI state store and no loop event bus.
 
 ## Internal MCP Invocation
 
@@ -170,12 +168,10 @@ A timeout, cancellation, process crash or lost result after contact is not evide
 
 Selection errors fail before model projection; per-call denial/stale/schema failure returns bounded correction evidence; an approval-required call returns its pending result and does not exit the run through a Gate; provider/deadline failures map through existing Assistant failure semantics. A final Assistant answer is not proof that every Tool succeeded, and conversation replay never redispatches accepted Tool effects. Restart reconstructs from durable Items, command/capability evidence, current catalogs and current authority; it does not restore an internal session, Tool array or incomplete MCP call.
 
-Initial implementation proceeds through the existing NanoCore `internal-agents` assembly, Gateway, Assistant mode service and exact resource command owners. The direct `callQuickChatProvider` bypass is removed and the shared loop is in place; keep deterministic non-model routing where already owned. Existing selected-Worker MCP and native Kernel/UI code are foundations, not implementation of this internal caller. Do not add a package or generic adapter interface merely to wrap one caller. The fixed native Kernel/UI family is implemented through that existing entry, loop and operation invocation path. This partial slice does not claim completion of the other selected-resource and external MCP acceptance predicates below.
-
 ## Acceptance Predicates
 
 - Distinct internal roles use one product-agnostic loop; none imports Pi Agent Core runtime/session/harness. Text/image/call ordering, three fuses, four exits and safe projection pass the runtime owner's checks.
-- Same entry configuration yields identical ordered Tools for a general question and a resource task; the general question reads only bounded configuration/schema/Skill metadata beyond its admitted Thread, with zero business/Skill-body/Memory/external-data reads.
+- Same entry configuration yields identical ordered Tools for a general question and a resource task. The general question reads only bounded configuration, schema, and Skill metadata beyond its admitted Thread, plus the Knowledge overview navigation above. It reads no business record, Skill body, User Memory, or external business data.
 - Every Core Tool has a Core semantic ID/schema even when MCP-backed; its upstream names remain dispatch/audit evidence. A separately selected vendor repository read retains its vendor schema and Gateway identity without becoming a Core repository operation. A configured shell, filesystem or generic browser/harness MCP cannot become reachable; an unknown capability or mismatched adapter schema fails before provider dispatch.
 - Selected Skill metadata is visible before reading; exact admitted text is loaded on demand; traversal, symlinks, changed digest, oversize, removed version and instructions to install/execute code cannot widen access.
 - A private Assistant discovers a Light App schema, performs an authorized record mutation and publishes a native UI with the actual owner receipt. Stale schema/revision and revoked membership cause no new write; headless use remains possible.
@@ -185,22 +181,20 @@ Initial implementation proceeds through the existing NanoCore `internal-agents` 
 - Cancellation during a contacted MCP call returns within the loop bound, records the owner outcome or unknown, cleans up under bounded supervision and cannot silently resubmit or append late output. A failure between effect and conversation result retains the effect evidence and returns honest replay or recovery-required behavior.
 - Private Memory remains private; save/update/delete map to their exact owner rules, inferred changes follow explicit notebook maintenance authority or required Review, human Review is absent from the model Tool set, and ordinary resources cannot expose administration Tools.
 
-## Related Docs
+## Implementation
 
-- `docs/specs/20260813-internal_agent_runtime.md`
-- `docs/specs/20261002-operation_definition.md`
-- `docs/specs/20260704-chat_mode_assistant.md`
-- `docs/specs/20260704-worker_mcp_tool_supply.md`
-- `docs/specs/20260907-mcp_catalog_management.md`
-- `docs/specs/20260711-skill_catalog_versioning_pinning.md`
-- `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`
-- `docs/specs/20260908-generative_kernel_data_operations.md`
-- `docs/specs/20260908-generative_ui_interaction.md`
-- `docs/specs/20260909-personal_memory_and_knowledge_learning.md`
-- `docs/specs/20260531-human_attention_intervention_model.md`
-- `docs/specs/20260703-storage_layout_record_ownership.md`
-- `docs/specs/20260704-workspace_backup_export_import.md`
+- `apps/nanocore/src/internal-agents/`
+- `apps/nanocore/src/generative-ui/`
+- `apps/nanocore/src/runtime/`
+- `apps/nanocore/src/catalog/`
 
-## Community Design Reference
+## Implementation Gaps
 
-Pi's [progressive Skill index](https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/src/harness/system-prompt.ts#L3) supplies the useful metadata-first pattern. The current MCP Tools specification, including its 2026-07-28 stateless era, supplies exact server Tool names, JSON Schema and result blocks; it does not supply OpenKit authorization, private-session isolation, durable business settlement or Skill execution authority. Native A2UI and MCP Apps UI resource semantics remain with the Generative UI owner, without an additional AG-UI state store or loop event bus.
+- The Assistant supplies the selected vendor repository-read Tool - On main, production assembly supplies only the fixed Skill, Kernel, and UI set, and no internal caller supplies that Tool - #743
+
+## Decisions
+
+- [Selected Skills are the first resource family](../decisions/20261015-selected_skills_first_resource_family.md)
+- [Skill read operation invocation](../decisions/20261015-skill_read_operation_invocation.md)
+- [Retire stateless quick chat](../decisions/20261016-retire_stateless_quick_chat.md)
+- [Cleanup, pinning, and delegated apply](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md)

@@ -1,45 +1,43 @@
 ---
 status: Accepted
-implementation: Partial
+implementation: Implemented
 kind: topology
-updated: 2026-11-08
 aspect: sandbox
 ---
 # Worker Execution Environment Images
+
+This specification owns the common Worker execution-environment baseline, the published common base, and the shared image build.
+
+## Scope
+
+Owns:
+
+- The common execution-environment baseline for supported Worker Agent images.
+- The published `worker-common` base and what an extension does and does not confer.
+- The shared multi-target Docker build, declared-runtime-set conformance, and image verification.
+- The empty image-private package-config root and the fixed helper destination.
+- The separation between installed image capabilities and runtime authorization, and the pre-activation boundary for the internal dogfood image.
+
+Does not own:
+
+- Worker Agent behavior, adapter translation, scheduler placement, Runtime Epoch lifecycle, provider routing, and credential resolution — their runtime and adapter owners. AgentManifest and AEP schema, including copy-on-init development grants — [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md).
+- OpenShell implementation internals — [OpenShell Mechanism Internalization](20260703-openshell_mechanism_internalization.md). The internal `test-env` image — [Toolchain](../toolchain.md).
+- Attempt-image content and lifecycle — [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) and [Agent Environment Package](20260616-agent_environment_package.md). This specification states only the published-catalog boundary.
+- A workload that requires a container runtime. mise does not provide one, and no specification in this baseline owns that workload.
+- Product release composition — [Release Management](20260829-release_management.md). Catalog publishing rules — [Container Image Packaging](20260708-container_image_packaging.md).
+
+Core:
+
+- [Architecture](../core/architecture.md)
+- [Work Model](../core/work-model.md)
+- [Sandbox](../core/sandbox.md)
+- [Agent Supply](../core/agent-supply.md)
 
 ## Inherited Volume Layout
 
 [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns generic retained-volume admission and replacement. The common base declares `/workspace`, `/sandbox` and `/openkit/threads` through OCI `Config.Volumes`, pins numeric sandbox UID/GID `1000:1000`, sets OCI `WorkingDir` to `/tmp/openkit-bootstrap` so the mount does not mask that directory, and makes `/openkit` a real directory outside retained home whose `/openkit/threads` child is retained under [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) while its other children stay ephemeral. Derived images inherit these declarations and may add validated volume targets; no file-type manifest is required. An image layout label is descriptive evidence, never permission to select another storageRef or broaden mounts/credentials.
 
 The Dockerfile must declare persistent `/workspace`, `/sandbox` and `/openkit/threads` targets and create `/openkit` as an independent directory; `containers/workers/Dockerfile` implements those declarations. Image-level declarations and Docker preservation checks do not prove the complete NanoHost attachment/restart path; that acceptance remains with the volume owner. Fixed immutable executables, non-root containment, current AEP authority, declared runtimes, image verification and build egress rules continue unchanged. Initial volume content is seeded only from the exact selected image; later images must not overwrite existing home data to refresh software.
-
-## Owns
-
-This specification owns the common execution-environment baseline for the supported Worker Agent images, the published common base artifact and what extending it does and does not confer, the shared multi-target Docker build shape, the empty image-private package-config root and fixed helper destination, the exact separation between installed image capabilities and runtime authorization, declared-runtime-set conformance for published worker images, the image-level verification required before the deployment image is treated as a complete supported worker environment, and the pre-activation backlog boundary for the internal dogfood image.
-
-## Does Not Own
-
-This specification does not own Worker Agent behavior, native adapter command or result translation, scheduler placement, Runtime Epoch lifecycle or transport, provider routing, credential resolution, generic AgentManifest or AEP schema semantics, the copy-on-init built-in development grant table owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`, OpenShell implementation internals, arbitrary internet access, deployment credentials, browser automation, additional language ecosystems, or the internal `test-env` sibling owned by `docs/toolchain.md`.
-
-It does not own the content, tool baseline, verification, or release lifecycle of a non-published attempt image. It owns only the boundary statement below: that such images exist outside the current published catalog, and exactly what it does and does not guarantee about them. The accepted deployment image is the multi-runtime artifact. Its costs, a coupled release cadence, a larger supply surface, and a shared failure domain, are accepted, and DeepSeek is included. Further catalog growth remains a reviewed specification and catalog change.
-
-## Core References
-
-- `docs/core/architecture.md`
-- `docs/core/work-model.md`
-- `docs/core/sandbox.md`
-- `docs/core/agent-supply.md`
-
-## Related Docs
-
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260629-worker_runtime_communication_model.md`
-- `docs/specs/20260703-agent_manifest_aep_resolution.md`
-- `docs/specs/20260708-container_image_packaging.md`
-- `docs/specs/20260709-worker_sandbox_freedom_policy.md`
-- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
-- `docs/toolchain.md`
 
 ## Thesis
 
@@ -98,13 +96,13 @@ The decision and its reason are recorded in [a decision record](../decisions/202
 
 ## Common Development Environment
 
-The current image baseline is:
+The current image baseline is below. Version pins in this table are current defaults.
 
 | Capability | Pinned baseline | Installation authority |
 | --- | --- | --- |
 | OS and Node.js | `node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68` | Official multi-architecture Node.js image |
 | npm | Version bundled with the pinned Node.js image | Official Node.js image |
-| Corepack | `0.36.0` | npm global install; Node.js 25 and later no longer bundle Corepack |
+| Corepack | `0.36.0` (current default) | Independent install of the pinned Corepack. The Node image does not supply it. |
 | pnpm | `10.33.3` | Corepack, aligned with the repository `packageManager` field |
 | Python | CPython `3.14.6` | Installed by pinned uv into an immutable image path |
 | uv and uvx | `0.11.30`, source image `ghcr.io/astral-sh/uv:0.11.30@sha256:93b61e21202b1dab861092748e46bbd6e0e41dd84f59b9174efd2353186e1b47` | Official uv multi-architecture image |
@@ -116,7 +114,7 @@ The current image baseline is:
 | DeepSeek | Established by the DeepSeek adapter slice, not guessed here | Deployment image only |
 | Pi SDK host and native MCP/tool-search closure | Workspace-patched SDK and exact versions owned by Pi Worker Adapter; no community MCP adapter | Deployment image only |
 
-Examined versions are evidence for those slices and are not deployment pins: Codex `0.159.0` commit `687a119f0fcaace47e1f1abcc77cec6c813fd6da`, Pi published `0.87.1` commit `f07218c4d4bbc12bef056a7058c3dd49dfe41abe`, OpenCode V2 `2.0.19` commit `1fd016ef32286de9489b7b24f1029f52c49a27b3`, DeepSeek harness commit `639ed015397290b3745d163aafe02ffee4aa3f84` with package `@deepseek-ai/dsh-acp@0.2.0-rc.2`, and `pi-mcp-adapter` git `b33382ac057d033b0368c4dfdf10dbb3c634d7dc`. Historical leaf pins remain in Current Implementation Projection. The examined pi-mcp-adapter revision is historical evidence, not a deployment requirement; the accepted Pi slice uses its own specification's workspace-patched native SDK closure.
+Current default runtime pins are the version manifest under `containers/worker-runtimes/`. Versions examined before those pins are historical inputs, not missing deployment pins. The repository deployment image does not install `pi-mcp-adapter`. The accepted Pi slice uses its own specification's workspace-patched native SDK closure.
 
 The common OS tool set is `bash`, `build-essential`, `ca-certificates`, `curl`, `dnsutils`, `fd-find`, `file`, `git`, `iproute2`, `iputils-ping`, `jq`, `lsof`, `nano`, `net-tools`, `netcat-openbsd`, `openssh-client`, `pkg-config`, `procps`, `ripgrep`, `tar`, `tini`, `traceroute`, `unzip`, `vim`, and `xz-utils`. The image must expose the Debian `fdfind` binary through the conventional `fd` command.
 
@@ -124,7 +122,7 @@ The common language surface must expose `node`, `npm`, `npx`, `corepack`, `pnpm`
 
 The common stage also exposes `mise` on `PATH` as the workspace-local toolchain provisioner. It is installed at an exact pinned version from an integrity-verified upstream release, as a root-owned immutable binary under the same rule as every other image-level supply, and its exact pin is the mise row in the baseline table above. Everything it provisions is written under the writable non-root home, so a provision is a workspace-local effect that leaves the image-level supply unmutated: the pinned Node.js, Python, uv, and package managers above remain what the image guarantees, and a task repository declaring a different Node in its own `.mise.toml` receives it beside them rather than in place of them. This exists so a task repository whose toolchain the baseline does not carry can be served without a derived image and without a rebuilt sandbox.
 
-Installing mise grants no network authority, exactly as installing `curl` or `git` grants none. Every host a provision would fetch from — a language distribution server, a release archive host, a registry mirror — is denied until an authored AgentManifest names it as an exact grant, and the copy-on-init built-in development grants owned by `docs/specs/20260703-agent_manifest_aep_resolution.md` do not name any of them. A provision against an ungranted host therefore fails as a denied network operation rather than silently succeeding, and the correct response is an authored grant for a real workload, never a hidden backend default. mise consequently does not make an arbitrary task repository buildable inside a sandbox; it makes a declared toolchain provisionable once its supply hosts are granted.
+Installing mise grants no network authority, exactly as installing `curl` or `git` grants none. mise does not provide a container runtime. A workload that needs a container runtime is outside this specification. Every host a provision would fetch from — a language distribution server, a release archive host, a registry mirror — is denied until an authored AgentManifest names it as an exact grant, and the copy-on-init built-in development grants owned by `docs/specs/20260703-agent_manifest_aep_resolution.md` do not name any of them. A provision against an ungranted host therefore fails as a denied network operation rather than silently succeeding, and the correct response is an authored grant for a real workload, never a hidden backend default. mise consequently does not make an arbitrary task repository buildable inside a sandbox; it makes a declared toolchain provisionable once its supply hosts are granted.
 
 The image must create writable `/sandbox`, `/workspace`, an empty `/openkit/sessions`, an empty `/openkit/threads`, `/openkit/artifacts`, and normal user cache/config directories before switching to `sandbox`. `/openkit/sessions` holds disposable AgentSession inputs; `/openkit/threads` holds retained Thread/runtime native data and exact Turn captures under [Worker Runtime Sub-Agent Provenance](20260711-worker_runtime_subagent_provenance.md#2-runtime-provenance-capture). No attempt package is baked into `/openkit/sessions`. System runtime directories, the shared shim deployment, the immutable Python installation, and native Agent runtime installations remain owned by root and are not writable by the worker.
 
@@ -132,13 +130,17 @@ The image must create writable `/sandbox`, `/workspace`, an empty `/openkit/sess
 
 ## Deployment Image
 
-The deployment image inherits the common environment and adds the four pinned native Agent runtimes, the shim, the four adapters, and Pi's dedicated SDK host with the workspace-patched production dependency closure required by Pi Worker Adapter. Pi uses that pin's native MCP and native tool search; the repository deployment image does not install pi-mcp-adapter. worker-common contains none of the four native runtimes, the Pi SDK host or the community MCP adapter. The image installs the fixed absolute `/usr/local/bin/openkit-worker-shim` bootstrap target and shared sanitized launcher. The OpenShell driver replaces image `ENTRYPOINT` and `CMD` with its inert sandbox command, so NanoHost starts the governed worker only through the runtime owner's fixed timeout-zero unary `ExecSandbox` request for `/usr/local/bin/openkit-worker-shim` with no arguments and ignored stdin in `/workspace`; image metadata, package content, configuration, and caller input cannot select that command or carry a Turn credential.
+The deployment image inherits the common environment and adds the four pinned native Agent runtimes, the shim, the four adapters, and Pi's dedicated SDK host with the workspace-patched production dependency closure required by Pi Worker Adapter. Pi uses that pin's native MCP and native tool search; the repository deployment image does not install pi-mcp-adapter. worker-common contains none of the four native runtimes, the Pi SDK host or the community MCP adapter. The image installs the fixed absolute `/usr/local/bin/openkit-worker-shim` bootstrap target and shared sanitized launcher. The OpenShell driver replaces image `ENTRYPOINT` and `CMD` with its inert sandbox command, so NanoHost starts the governed worker only through the runtime owner's fixed timeout-zero unary `ExecSandbox` request for `/usr/local/bin/openkit-worker-shim` with no arguments and ignored stdin in `/workspace`; image metadata, package content, configuration, and caller input cannot select that command or carry a Turn credential. A zero bootstrap request timeout is not a zero overall control or liveness deadline.
 
 Pi discovery behavior belongs to Pi Worker Adapter: the host loads native tool search with additive activation, retains native MCP ownership and direct managed-server exposure, and does not load native codemode script composition at the current pin. Packaging must preserve the built host's patched dependency closure and private loader/transport imports. A plain global Pi CLI installation, a community adapter, or a successful CLI version command is not equivalent to the SDK host. Search-only operation requires no codemode worker execution; do not strip transitive package assets from the supported production closure merely because that feature is not active.
 
 The decision and its reason are recorded in [a decision record](../decisions/20260930-pi_native_mcp_discovery.md).
 
-The fixed image helper preserves the ten existing sandbox file-import identities and adds one separate AgentSession-private input: only `reference.import` with literal identity `package-config` and the closed relative path `<agent-session-id>/config/package.json` may create `/openkit/sessions/<agent-session-id>/config/package.json`. It uses the existing no-follow, no-overwrite, mode-`0600`, fsync, atomic-placement, clean-zero-exit, and fixed value-free failure boundary. Adjacent identity or path, export, another config destination, caller or image-metadata selection, a baked package, and a generic configuration-file surface are prohibited.
+Worker image builds embed the same immutable release identity as the App and label the OCI revision/version from those build arguments. The envelope lives in a root-owned file outside writable/retained volumes, with no runtime environment override. Release candidate construction supplies exact `OPENKIT_SOURCE_COMMIT` and `OPENKIT_RELEASE_TAG` to both App and Worker builds. An untagged local build supplies its exact source commit and omits the tag; an unknown build is not compatible. NanoHost’s existing immutable `image.inspect` returns that label provenance, and Core checks it against its known boot identity before Worker storage attachment/material delivery, including resident reuse. The bound private poll must independently carry the matching image-file identity before Core returns readiness or any command. These are release-coupled compatibility checks under [Worker Control Protocol](20260703-worker_control_protocol.md), not new authority, a retained AEP field, or an SDK/schema-version compatibility fallback.
+
+Public image preparation and activation report a trusted release incompatibility as `worker_release_incompatible` with status 409 and a fixed safe message. A primary incompatibility before material delivery retains that code in the governed Turn’s existing terminal error field. Cancellation and unknown cleanup retain their existing precedence; an arbitrary peer-supplied error code is not a trusted incompatibility.
+
+The fixed image helper preserves the ten existing sandbox file-import identities and adds one separate AgentSession-private input. It also has constrained `worker-supply` and `runtime-credential` namespaces. Those ten slots plus package-config are not the whole helper namespace set. Executable imports and replace behavior stay purpose-restricted. Exact credential and supply semantics stay with their runtime and supply owners. The package-config rule is: only `reference.import` with literal identity `package-config` and the closed relative path `<agent-session-id>/config/package.json` may create `/openkit/sessions/<agent-session-id>/config/package.json`. It uses the existing no-follow, no-overwrite, mode-`0600`, fsync, atomic-placement, clean-zero-exit, and fixed value-free failure boundary. Adjacent identity or path, export, another config destination, caller or image-metadata selection, a baked package, and a generic configuration-file surface are prohibited.
 
 The fixed zero-argument bootstrap Start environment contains only the bounded trusted bootstrap environment and no AgentSession, Turn, package, or raw route credential; its unary stdin is empty and reaches EOF before execution. The launcher starts only the shared Sandbox Integration supervisor. Upstream inference and capability tokens stay inside Integration. The native child receives two session-local loopback credentials minted at `session.open`, one for inference and one for capability, and never holds `OPENKIT_WORKER_INFERENCE_TOKEN` or `OPENKIT_WORKER_CAPABILITY_TOKEN`. Worker control remains inside the Worker Shim control client. Private `turn.start` route-token delivery remains runtime-owned rather than image-owned ([resident request attribution](../decisions/20260930-resident_request_attribution.md)). The sanitized launcher retains its bounded bootstrap environment and `env -i`; arbitrary image or user native settings cannot alter its fixed executable/interpreter or control bindings. Verified Config.Env supplies only digest-bound read-only defaults to NanoCore's native environment resolution. The native child receives the admitted public map through `session.open`, not by package-specific launcher allowlists, host-environment inheritance or an editable OpenShell environment store. Installing or setting a variable grants no endpoint, credential, filesystem, model or external-tool authority. The image has no `/usr/local/lib/openkit/allow-anthropic-api-key` carrier. Runtime-env credentials follow [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#manifest-shape); the bootstrap launcher does not inherit `ANTHROPIC_API_KEY`.
 
@@ -162,7 +164,7 @@ Trusted NanoCore inference is a provider-route constraint, not a claim that the 
 
 ## Built-In Development Grants
 
-This specification does not own the out-of-box development grant table. `docs/specs/20260703-agent_manifest_aep_resolution.md` owns those five grants as copy-on-init built-in AgentManifest template content. Installed tools confer no authority. No mise supply host is granted. Existing manifests are unchanged by later template edits, and a missing grant fails denied.
+This specification does not own the out-of-box development grant table. `docs/specs/20260703-agent_manifest_aep_resolution.md` owns the copy-on-init built-in AgentManifest development grants. Installed tools confer no authority. No mise supply host is granted. Existing manifests are unchanged by later template edits, and a missing grant fails denied.
 
 The installed Node package tools must support scoped and unscoped npm metadata and archive downloads when the selected manifest declares the npm grant, including its encoded-slash authorization, from the grant owner. The setting is supplied by the immutable package and enforced by the backend; it is not baked into the image or inferred from an installed package manager. Updating an image or template does not opt an existing authored manifest in.
 
@@ -189,15 +191,15 @@ An attempt image is not published. That does not freeze the published catalog at
 
 ## Internal Dogfood Image
 
-After the first GHCR publication of `worker-common`, one internal `release: false` `kind: test` dogfood image may derive that published digest, share the exact CI development-toolchain standard, and bundle Codex plus Pi but not OpenCode. That image is design and backlog only in this change: no Dockerfile, no catalog entry, and no shared installer. It is not a published product image, it is not `test-env`, and it is not the deployment image `worker-runtimes`.
+One internal `release: false` `kind: test` dogfood image may derive the published `worker-common` digest, share the exact CI development-toolchain standard, and bundle Codex plus Pi but not OpenCode. The image is not activated. It has no Dockerfile, no catalog entry, and no shared installer. It is not a published product image, it is not `test-env`, and it is not the deployment image `worker-runtimes`. Publication of `worker-common` does not activate this image and does not qualify changed image bytes.
 
 Before activation there is no dogfood image lifecycle, durable state, retry, recovery, or dependency-failure behavior because no artifact exists. The future activating change must first accept an owner that settles all five decision classes required by root `AGENTS.md`: exact definition and exclusions; unique authority and projection boundary; creation, update, termination, retry, and recovery lifecycle; conflict, missing, stale, restart, and dependency-failure semantics; and externally observable acceptance predicates.
 
-Future activation gates must prove declared-set conformance, two AEP-selected dry runs, and that a Codex-selected session receives no `ANTHROPIC_API_KEY` even though the Pi carrier marker exists. If the carrier remains, the same proof applies to a Codex-selected session on the shared deployment image. The image must not include NanoCore, NanoHost, Docker CLI or socket, nested containers, built-in image policy, or test-executor markers. Sandbox scope is compile and build, unit tests, and headless-browser tests. Full integration stays on external project-owned systems. There is no SSH product contract.
+Future activation gates must prove declared-set conformance, two AEP-selected dry runs, and that a Codex-selected session receives no unintended provider credential, including no Anthropic key merely because Pi is installed. Shared-image selection does not confer credential authority. The image must not include NanoCore, NanoHost, Docker CLI or socket, nested containers, built-in image policy, or test-executor markers. Sandbox scope is compile and build, unit tests, and headless-browser tests. Full integration stays on external project-owned systems. There is no SSH product contract.
 
 ## Version And Maintenance Lifecycle
 
-Direct release inputs use exact versions and integrity verification. The Node and uv multi-architecture source images are digest-pinned, GitHub CLI archives and the mise binary are verified with the upstream per-architecture SHA-256 values, and the four Agent runtime versions remain explicit build arguments once the adapter slices record them. This specification does not guess those pins. Their defaults then match `containers/images.json`, the built-in manifests, and static tests.
+Direct release inputs use exact versions and integrity verification. The Node and uv multi-architecture source images are digest-pinned, GitHub CLI archives and the mise binary are verified with the upstream per-architecture SHA-256 values, and the four Agent runtime versions are explicit pins in the runtime version manifest. This specification does not guess a pin the manifest does not record. The pins match `containers/images.json`, the built-in manifests, and static tests.
 
 An environment refresh is one reviewed maintenance change that updates source versions or digests, updates this baseline table and the image catalog, adds or adjusts version assertions first, builds both supported architectures through release CI, smokes the base image and the deployment image, and repeats stock OpenShell create, AEP upload, shim dry-run, and delete verification. A changed apt package set is accepted only through a rebuilt final image digest and the same verification; no running sandbox updates its image-level supply in place.
 
@@ -217,30 +219,6 @@ Each adapter qualifies supported loading and precedence against its selected pin
 
 Every image-time install, including runtime CLI supply, MUST use a committed lock file or integrity hash. Installs MUST be frozen, with scripts disabled except for independently reviewed allowlisted packages. Downloads MUST verify against committed checksums. Worker image-platform SBOMs MUST accompany releases under `SHA256SUMS`; the App sibling embeds its own SBOM for offline inventory. [Development Security](20261109-development_security.md) owns the shared controls and release provenance.
 
-## Current Implementation Projection
-
-The Dockerfile also creates writable `/openkit/instructions`, which the session-layout planner uses as its instruction root.
-
-The current strict version 4 AEP selects exactly one reference or bounded build image form. The four built-in templates select the deployment image `worker-runtimes` through the authored reference and pull policy owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`, with one distinct adapter per manifest. Selecting the published empty-set base instead fails the launch precondition closed, because it declares no runtime. A build produces one non-published attempt image: NanoHost validates and executes the bounded build, admits the verified OCI result to its Image Store, imports the exact digest into the current Runtime Epoch, and returns digest evidence without creating a published artifact. The exclusions above remain current for that attempt image. Copy-on-init on a new data root is a first write of the accepted templates. This version does not read a data root written by an earlier version.
-
-The repository builds `worker-common` and `worker-runtimes` from `containers/workers/Dockerfile`, passes the required manifest target through the local build helper and both release-CI build steps, and owns deployment smoke under `containers/worker-runtimes/`. The old leaf targets, entries, and directories are removed without aliases. The deployment contains Codex `0.166.0` ([runtime upgrade decision](../decisions/20261031-worker_runtimes_upgrade_to_latest.md)), the Pi SDK host with workspace-patched `1.4.0` production dependencies, OpenCode CLI/client `2.2.5`, and DeepSeek `@deepseek-ai/dsh@0.2.1-rc.5` with ACP client SDK `2.2.0`. `containers/worker-runtimes/versions.json` records the package pins and Pi patch/module digests and is installed at `/usr/local/lib/openkit/worker-runtimes-versions.json`. The Pi host deploys independently; OpenCode and DeepSeek resolve from the shim module graph. The common image contains none of that native-runtime supply. The published common stage installs the accepted tool baseline including pinned mise `2026.8.14` at root-owned `/usr/local/bin/mise`, deploys one shared worker shim and sanitized zero-argument Harness launcher, creates the writable non-root layout and empty `/openkit/sessions`, seeds the Python virtual environment, labels and smokes itself as `worker-common`, finishes as `USER sandbox`, and leaves no root-owned build state beneath `/sandbox` or `/workspace`. The deployment target regains `USER root` only to install its declared runtime supply and smoke command, then returns to numeric sandbox user `1000:1000`. The helper preserves the ten workspace import identities and accepts only the exact import-only `package-config/<agent-session-id>/config/package.json` specialization at `/openkit/sessions/<agent-session-id>/config/package.json`. The NanoHost fixed unary bootstrap/response monitor, authenticated Integration-ready latch, private `turn.start` route-token delivery, and mandatory process-group-absence barrier are implemented but remain runtime-owned rather than image-owned. The installed resident Harness supplies session-local loopback bindings to the selected adapter. Deployed proof that upstream tokens remain inside Integration stays with the runtime owner and the A2 live test; image smoke does not establish that boundary.
-
-The four built-in AgentManifest templates select `worker-runtimes` with distinct Codex, Pi, OpenCode, and DeepSeek adapter ids and declare the complete common binary paths and five development grants owned as copy-on-init templates by `docs/specs/20260703-agent_manifest_aep_resolution.md`. The new DeepSeek template declares `dsh`; Pi declares its dedicated host. Pi and DeepSeek remain disabled pending live bounded Gateway inference proof. Template edits do not mutate existing authored configuration. Config-schema accepts bounded exact `GET` or `POST` REST rules, NanoCore preserves those authored rules through resolved setup and AEP creation, trusted worker inference permits unrelated authored development grants while still rejecting direct provider credentials, and OpenShell materialization renders the exact Git wildcard rules without a hidden endpoint or `git-receive-pack`. Worker inference authority is limited to the AEP-selected adapter; image contents confer no adapter or credential authority.
-
-On 2026-07-21, the then-current arm64 development host built and smoked all three final targets natively, then cross-built and smoked the same targets as `linux/amd64`. Those images carried Codex `0.144.1`, OpenCode `1.18.1`, and Pi `0.80.7`. Every smoke ran as the non-root `sandbox` user and covered exact versions, command inventory, declared-set conformance, writable and immutable path checks, absence of baked policy, absence of root-owned writable state, and generic shim dry-run.
-
-On 2026-08-01, historical A1 verification used stock OpenShell and Gateway `0.0.80` to create one disposable sandbox from each then-refreshed Codex, OpenCode, and Pi image, upload a representative AEP with exactly the five common development grants and no additional host, complete the generic shim dry run, and return zero residual containers and sandboxes through legacy whole-Cell cleanup after every case. This completes image-content acceptance only for those previous image contents; it does not prove the target NanoHost lifecycle, stock RelayStream, nested standard HTTP/2 behavior, or route-token separation.
-
-On 2026-09-05 this worktree built and smoked unique local tags `openkit/worker-codex:codex-pi-refresh-20260905` (id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d`, `codex-cli 0.153.4`) and `openkit/worker-pi:codex-pi-refresh-20260905` (id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745`, Pi `0.85.0`) on Docker Engine 29.5.2 linux/aarch64. That Pi unique-tag proof is historical for the previous `0.85.0` pin. OpenCode was not rebuilt in this checkout. Shared `:dev` tags were not written. Stock OpenShell, amd64 cross-build, real-provider, worker-control, heartbeat, interruption, reconnect, and recovery gates for these image bytes remain unobserved.
-
-On 2026-09-06 this worktree built and smoked unique local tag `openkit/worker-pi:pi-0.85.1-refresh-20260906` (id `sha256:6cd46bcc208092417082152cf022a1818674f21bdcc921b02d6424c8e60662de`, Pi `0.85.1`, build exit 0, smoke exit 0) on Docker Engine 29.5.2 linux/arm64. Codex and OpenCode were not rebuilt for this patch pin. Shared `:dev` tags were not written.
-
-On 2026-09-06, final Worker source `6bf9bfbc01eb4d8903dc71a45fb51e63646f5fb6` passed all eight catalog build and smoke combinations: common, Codex `0.153.4`, OpenCode, and Pi `0.85.1` on `linux/amd64` and `linux/arm64`, including the common-derived image proof. The exact three arm64 leaf images then passed stock OpenShell `0.0.99` create, AEP upload, generic shim dry-run, and delete on A2. This is historical image-content acceptance of those leaf bytes. This version does not read a data root written by that earlier tree. The adapter owners retain their separate runtime and selectability requirements.
-
-The current strict-version-4, NanoHost, config-schema, worker-shim, App API, Core Client, migration, build, lint, OpenAPI, and Rust package-exit checks pass. This projection records that package state only and does not claim a new stock OpenShell packaging gate is implemented.
-
-`containers/images.json` carries two worker entries on one Dockerfile. `worker-runtimes` declares the ordered `runtimes` array `codex`, `pi`, `opencode`, `deepseek`, and its OCI label is `org.openkit.worker.runtimes=codex,pi,opencode,deepseek`. CI projects that same value; release preflight rejects retired ids, singular metadata, empty or malformed arrays, and duplicate runtime entries. `worker-common` is `release: true` with `baseImage` and `target` and without `runtimes` or `workerContract`, which is the empty declared runtime set identified structurally by absent runtime metadata. Local smoke of that base is `containers/workers/openkit-worker-common-base-smoke.sh`, which reuses `smoke-common.sh` for baseline, mise version, and ownership, then proves no first-party Agent CLI is present. `scripts/docker/smoke-image.sh` additionally builds one network-free throwaway image `FROM` the local base, regains `USER root`, adds one tiny executable, returns to `USER sandbox`, proves the inherited common baseline plus that executable, and deletes the temporary image. `test-env` is not that derived proof. First GHCR publication of `worker-common` remains a later version-tag release event; this repository change does not publish. The internal Codex-plus-Pi dogfood image remains design and backlog only and is not the deployment image.
-
 ## Verification
 
 L0/L1 static and contract checks must prove:
@@ -252,15 +230,15 @@ L0/L1 static and contract checks must prove:
 - the fixed helper accepts exactly one image-private package import at `package-config/<agent-session-id>/config/package.json`, creates only `/openkit/sessions/<agent-session-id>/config/package.json` with the accepted atomic file boundary, rejects adjacent identity, path, destination, export, existing target, and baked package content, and leaves all ten workspace identities unchanged;
 - The deployment image contains exactly the four selected runtimes, the shim and four adapters, plus Pi's built SDK host with the exact patched native MCP/tool-search production closure; pi-mcp-adapter is absent from that repository artifact, and the empty-set base contains none of the native runtime or Pi-host supply.
 - repository build helpers and release CI pass the manifest target to Docker;
-- Every built-in AgentManifest declares the common tool binary paths and the five exact development grants owned by [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#built-in-development-grant-templates), including explicit encoded-slash authorization on the npm grant only.
+- Every built-in AgentManifest declares the common tool binary paths and the development grants owned by [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#built-in-development-grant-templates), including explicit encoded-slash authorization on the npm grant only.
 - trusted-relay AEP validation accepts unrelated manifest-authored grants while still rejecting direct Provider credentials, concrete Provider routes, and malformed relay rules;
 - OpenShell policy rendering preserves Git Smart HTTP wildcard paths and `GET`/`POST` methods without adding `git-receive-pack` or any undeclared endpoint.
 
-Image smoke checks must run as `sandbox` and prove the exact Node.js, Python, uv, mise, GitHub CLI, pnpm, and, once the slices record them, the four native Agent versions; every required command; writable workspace, session, artifact, cache, and worker-created virtual-environment paths; non-writable immutable runtime paths; absence of a baked OpenShell policy; absence of `/etc/opencode` or the proved equivalent; generic shim dry-run; Pi SDK host and patched native MCP/tool-search closure present and loadable, with pi-mcp-adapter absent; the zero-argument launcher; and declared-set conformance, including mutual absence of undeclared first-party Agent CLIs. The empty-set base runs the same smoke minus native-Agent assertions, and additionally proves that none of the Codex, OpenCode, Pi, or DeepSeek CLIs is present. The deployment smoke proves the declared set of four. The three old mutual-absence leaf smokes are not a second contract. Pi image smoke validates the actual deployed package/patch identity and host dependency resolution, including the required connection-state hook and native search factory. It does not infer the search/call or resume behavior from those imports; the adapter's real-host fixture owns that proof. Image-content smoke remains distinct from a live inference Turn and deployed Sandbox acceptance.
+Image smoke checks must run as `sandbox` and prove the exact Node.js, Python, uv, mise, GitHub CLI, pnpm, and the four native Agent versions; every required command; writable workspace, session, artifact, cache, and worker-created virtual-environment paths; non-writable immutable runtime paths; absence of a baked OpenShell policy; absence of `/etc/opencode` or the proved equivalent; generic shim dry-run; Pi SDK host and patched native MCP/tool-search closure present and loadable, with pi-mcp-adapter absent; the zero-argument launcher; and declared-set conformance, including mutual absence of undeclared first-party Agent CLIs. The empty-set base runs the same smoke minus native-Agent assertions, and additionally proves that none of the Codex, OpenCode, Pi, or DeepSeek CLIs is present. The deployment smoke proves the declared set of four. The three old mutual-absence leaf smokes are not a second contract. Pi image smoke validates the actual deployed package/patch identity and host dependency resolution, including the required connection-state hook and native search factory. It does not infer the search/call or resume behavior from those imports; the adapter's real-host fixture owns that proof. Image-content smoke remains distinct from a live inference Turn and deployed Sandbox acceptance.
 
 One check must build a throwaway derived image that starts `FROM` the local base, regains `USER root`, adds one tool, returns to `USER sandbox`, and proves that the added tool and the complete inherited baseline are both present. That check lives in `scripts/docker/smoke-image.sh`. It is not `test-env`.
 
-Release evidence for each supported architecture must build and smoke the base image and the deployment image. A stock OpenShell image-compatibility check must create one disposable sandbox from the deployment image, upload a representative AEP containing the common grants, complete the generic shim dry run, and delete the sandbox. That isolated packaging check does not make direct CLI sandbox creation the product execution path and does not prove NanoHost lifecycle, RelayStream, nested HTTP/2, real-provider turns, route credentials, worker-control behavior, or arbitrary task success. The combined-image acceptance row is exact pins once recorded, four adapter selections, and these probe commands. Live deployed checks stay with their owning change.
+Release evidence for each supported architecture must build and smoke the base image and the deployment image. A stock OpenShell image-compatibility check must create one disposable sandbox from the deployment image, upload a representative AEP containing the common grants, complete the generic shim dry run, and delete the sandbox. That isolated packaging check does not make direct CLI sandbox creation the product execution path and does not prove NanoHost lifecycle, RelayStream, nested HTTP/2, real-provider turns, route credentials, worker-control behavior, or arbitrary task success. Image smoke does not establish deployed upstream-token containment. A local or static pass is not current-release stock qualification. The combined-image acceptance row is exact pins once recorded, four adapter selections, and these probe commands. Live deployed checks stay with their owning change.
 
 ## Acceptance Predicates
 
@@ -279,50 +257,27 @@ The exact deployment image can run the Pi adapter's search-only SDK fixture with
 - Removing an AgentManifest grant removes the corresponding generated OpenShell network policy without rebuilding the image.
 - Adding an executable to an image does not authorize that executable for any external endpoint.
 - The deployment image releases as one artifact. `worker-common` can still be published as the base. The four runtimes do not release as independent leaf images.
-- Two independent implementers can derive the same Docker targets, tool inventory, writable paths, authority layering, failure behavior, and required checks from this specification, and they obtain the five development grants from `docs/specs/20260703-agent_manifest_aep_resolution.md`.
+- Two independent implementers can derive the same Docker targets, tool inventory, writable paths, authority layering, failure behavior, and required checks from this specification, and they obtain the development grants from `docs/specs/20260703-agent_manifest_aep_resolution.md`.
 - Every image exposes the same fixed absolute zero-argument Harness target without using `ENTRYPOINT`, `CMD`, an environment variable, image label, or package field as a bootstrap selector.
 - Every image begins with an empty `/openkit/sessions`, accepts exactly one canonical package import per admitted Turn after exact AgentSession admission and before Context imports and native `turn.start`, and exposes no generic config root, package selector, alternate destination, or export path.
 
-## Alternatives Considered
+## Implementation
 
-### Three Fully Duplicated Dockerfiles
+- `containers/workers/` — shared worker Dockerfile, launcher, and common-stage smoke
+- `containers/worker-runtimes/` — deployment smoke and runtime version manifest
+- `containers/` — image catalog
+- `scripts/docker/` — catalog-driven build and derived-image smoke
 
-Rejected because the current images already repeat the shim build, user layout, launcher, base packages, and runtime contract, while the requested complete development environment would multiply the same maintenance and verification work three times.
+## Implementation Gaps
 
-### Fourth Published OpenKit Worker Base Image — Superseded 2026-08-12
+None.
 
-Originally rejected because no deployment or AgentManifest selected such an artifact, so an internal multi-stage build boundary removed repetition without adding a release artifact, compatibility promise, vulnerability-scanning unit, or user choice.
+## Decisions
 
-That rejection is superseded because its single stated premise is now false rather than merely outweighed. Users and secondary developers select the artifact directly as the public extension base. The costs named in the original rejection were correctly identified and are now accepted rather than disputed — the release artifact, the compatibility surface, the vulnerability-scanning unit, and the user-visible choice all become real, and Version And Maintenance Lifecycle above states what that obliges. The repository `test-env` image is not that consumer. The alternative that remains rejected is the one this entry was actually protecting against: publishing a base with no consumer.
-
-### Repository Development Image As A Fifth Target Here
-
-Not selected. `test-env` is an internal sibling with its own Dockerfile and is not a target in this product Dockerfile. Mixing a repository-operation artifact into this specification's release matrix would still be a coupling cost. The published catalog may grow through a reviewed specification and catalog change; there is no no-fifth-image prohibition. The later internal dogfood image is a `kind: test` non-published class, not a fifth published product image.
-
-### Bake mise Toolchain Supply Hosts Into The Built-In Development Grants
-
-Rejected because it would make the baseline authorize language distribution servers, release archive hosts, and registry mirrors for every worker, whether or not that worker provisions anything. That is the hidden shared allowlist `docs/specs/20260703-agent_manifest_aep_resolution.md` already forbids. A workload that provisions a toolchain declares its supply hosts as exact grants in its own authored manifest.
-
-### One Universal Image Containing All Agents
-
-The costs of combining runtimes, a coupled release cadence and a larger supply surface, were identified and are accepted. The deployment image contains Codex, OpenCode, Pi, and DeepSeek. Catalog, CI, preflight, and OCI-label consumers change together in the same reviewed change. Further catalog growth still requires a reviewed specification and catalog change. There is no platform rule that an image contain exactly one runtime, and there is no rule that freezes this catalog against a later reviewed growth.
-
-### Bake The Upstream OpenShell Policy Into Every Image
-
-Rejected because that policy contains wider agent and endpoint authority than OpenKit declares, and image-owned authorization would conflict with the immutable AgentManifest-to-AEP boundary.
-
-### Allow Arbitrary Internet Access For Development Convenience
-
-Rejected because installed diagnostic and package tools do not justify an unbounded exfiltration and supply-chain channel. Exact present-use grants preserve a useful default while keeping network authority inspectable and removable.
-
-## Consequences
-
-Maintenance of the deployment image is coupled: one common-stage update and one deployment artifact. `worker-common` can still be published as the base. Every supported Worker Agent receives the same predictable development environment. Some dependency installers will still fail when their packages fetch undeclared secondary hosts; the correct response is an explicit narrow manifest grant for a real workload, not a hidden backend default or unrestricted curl policy.
-
-Publishing the base adds one release artifact, one vulnerability-scanning unit, one more two-architecture build, and a user-visible choice that did not exist before. In exchange the external extension path is named and smoked by the throwaway derived-image check. The narrower consequence to expect is a support question this specification now invites and previously did not, namely what a derived image may assume about its base; Version And Maintenance Lifecycle answers it in one direction only, that a refresh may not silently reduce the baseline.
-
-mise makes a declared toolchain provisionable without a new image, and it does not make an arbitrary repository buildable. A task whose toolchain supply hosts are not granted fails at the network boundary, which is the designed outcome rather than a gap, and a task requiring a container runtime is not served by mise at all. That second case remains unowned by any specification.
-
-Worker image builds embed the same immutable release identity as the App and label the OCI revision/version from those build arguments. The envelope lives in a root-owned file outside writable/retained volumes, with no runtime environment override. Release candidate construction supplies exact `OPENKIT_SOURCE_COMMIT` and `OPENKIT_RELEASE_TAG` to both App and Worker builds. An untagged local build supplies its exact source commit and omits the tag; an unknown build is not compatible. NanoHost’s existing immutable `image.inspect` returns that label provenance, and Core checks it against its known boot identity before Worker storage attachment/material delivery, including resident reuse. The bound private poll must independently carry the matching image-file identity before Core returns readiness or any command. These are release-coupled compatibility checks under [Worker Control Protocol](20260703-worker_control_protocol.md), not new authority, a retained AEP field, or an SDK/schema-version compatibility fallback.
-
-Public image preparation and activation report a trusted release incompatibility as `worker_release_incompatible` with status 409 and a fixed safe message. A primary incompatibility before material delivery retains that code in the governed Turn’s existing terminal error field. Cancellation and unknown cleanup retain their existing precedence; an arbitrary peer-supplied error code is not a trusted incompatibility.
+- [Earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)
+- [Adapters honor native configuration](../decisions/20260930-adapters_honor_native_configuration.md)
+- [Pi native MCP discovery](../decisions/20260930-pi_native_mcp_discovery.md)
+- [Resident request attribution](../decisions/20260930-resident_request_attribution.md)
+- [Native environment managed outside the sandbox](../decisions/20260930-native_environment_managed_outside_the_sandbox.md)
+- [Encoded-slash authority](../decisions/20261008-encoded_slash_authority_and_release_hold.md)
+- [Large files and model context](../decisions/20261015-large_files_and_model_context.md)

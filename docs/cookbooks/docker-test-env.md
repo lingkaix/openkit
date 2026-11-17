@@ -28,7 +28,7 @@ The image embeds that full build-input digest. When `scripts/test-env.sh any` is
 
 ## Contents
 
-Node 26.13.0 from `node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68`, the same digest as the worker-common stage, pnpm 10.33.3 through Corepack, Git, jq for deployment OCI index parsing, Python 3 for the supervisor release-metadata lookup, the exact NanoHost-scoped Rust toolchain (`ENV RUST_VERSION`, mirrored from `apps/nanohost/mise.toml` via rustup minimal profile with cargo, rustc, clippy, and rustfmt on `PATH`), the C/C++ build tools NanoHost Cargo compilation requires (`gcc`, `g++`, `make`, `cmake`, `pkg-config`, `libc6-dev`), the checksum-pinned security tools (zizmor, osv-scanner and cargo-auditable), the pinned native clients (Docker CLI, OpenSSH client, AWS CLI and kubectl), and a Playwright Chromium install at `PLAYWRIGHT_BROWSERS_PATH` are the image contents. Xvfb is not installed because no gate uses it. Rust is present so ordinary root `pnpm build`, `pnpm test`, `pnpm lint`, and `pnpm fmt` (each `turbo run …` inside this image) can execute `@openkit/nanohost` Cargo scripts without a parallel command surface.
+Image contents come from `containers/test-env/Dockerfile`, the root tool declarations, `scripts/security-tools.json`, and `containers/test-env/smoke.sh`. The [toolchain guide](../toolchain.md) owns version maintenance. A mismatch between this image and those declarations is a refusal, not a second pin. The image carries the tools the ordinary gates execute, including the scoped Rust toolchain those gates need. It does not carry a worker runtime. Host-placed real-runtime gates stay outside the image.
 
 This image is an internal sibling of `worker-common` and is not built `FROM worker-common`. There is no publication dependency. A Node digest that does not equal the worker common stage is a mirror failure: update this `FROM` line in the same change as the worker baseline, which changes `OPENKIT_TEST_IMAGE_BUILD_INPUT_DIGEST` and forces a rebuild.
 
@@ -57,7 +57,7 @@ This is the supported way in: it resolves the tag, builds if needed, and applies
 scripts/docker/smoke-image.sh test-env
 ```
 
-It reports Node, pnpm, zizmor, osv-scanner, Git, the Docker CLI, the AWS CLI, kubectl, ssh, OpenSSL, jq, Python 3, rustc, cargo, cargo-auditable, clippy, rustfmt, and the installed Chromium, checks that `ssh-add` and `ssh-agent` exist, and fails if Xvfb is installed. Every entry is required; there are no optional tools, because a tool no gate executes does not belong in the image.
+`containers/test-env/smoke.sh` is the smoke. It checks its declared required tools and explicit forbidden-tool checks. The [toolchain guide](../toolchain.md#security-tool-provisioning) owns native security-tool supply.
 
 ## Reclaim Disk
 

@@ -9,7 +9,7 @@ This non-authorizing record holds the runtime-model group of round 2 of the [ind
 
 - Group base SHA: `3cd345759782795e388abd73974a8f2aa8ea7ec0` (`main` on 2026-11-15). Issue #440 releases this group.
 - Core document: `docs/core/runtime-model.md` (RM).
-- Specifications: `20260802-nanohost_runtime_and_transport.md` (NRT), `20260703-durable_scheduler_design.md` (DSD), `20260703-runtime_scheduling_scale.md` (RSS), `20260531-worker_turn_reliability_envelope.md` (WTR), and `20260711-worker_runtime_subagent_provenance.md` (WRSP).
+- Specifications: `20260802-nanohost_runtime_and_transport.md` (NRT), `20260703-durable_scheduler_design.md` (DSD), `20260703-durable_scheduler_design.md#scale-limits` (RSS), `20260531-worker_turn_reliability_envelope.md` (WTR), and `20260711-worker_runtime_subagent_provenance.md` (WRSP).
 - Cited decisions read: `20261019-durable_execution_and_control_store.md`, `20261016-retire_stateless_quick_chat.md`, and `20261114-pre_release_sql_baselines.md`.
 - G3 inspection: eight read-only inspector contexts (NRT in four line ranges, DSD, RSS, WTR, WRSP). They read code only and ran no tests. The auditor verified each kept finding against the code at the base SHA.
 

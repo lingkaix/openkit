@@ -38,7 +38,7 @@ Revisit if an accepted producer needs different immutable inputs, another family
 - [Knowledge Store](../specs/20260703-knowledge_store_implementation.md)
 - [Worker Agent Capability](../specs/20260703-worker_agent_capability.md)
 - [Worker Turn Reliability](../specs/20260531-worker_turn_reliability_envelope.md)
-- [Capability Usage](../specs/20260704-capability_usage_gateway_foundation.md)
+- [Capability Usage](../specs/20260703-audit_usage_evidence_records.md#capability-usage)
 - [Pending Requests](../specs/20260930-pending_requests.md)
 - [Workspace Backup, Export And Import](../specs/20260704-workspace_backup_export_import.md)
 - [Vault Secret Injection](../specs/20260703-vault_secret_injection.md)

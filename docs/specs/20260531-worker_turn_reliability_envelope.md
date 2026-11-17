@@ -2,78 +2,33 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: "2026-10-15"
 aspect: runtime-model
 ---
 # Worker Turn Reliability Envelope
 
-## Owns
+This specification owns the reliability envelope for internal-role Provider calls and worker-turn execution. It owns stop reasons, terminal closeout, item-to-model projection proof, runtime checkpoints, delivery of an accepted worker request, and restart-safe terminal handoff.
 
-This spec owns the implementation-facing reliability envelope for internal-role Provider calls and worker-turn execution, including stop reasons, terminal stream behavior, item-to-LLM projection, runtime checkpoints, delivery of an already accepted worker request, and restart-safe terminal handoff after exact same-worker adoption following a transport loss or a NanoCore restart. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively.
+## Scope
 
-## Does Not Own
+This specification owns stop-reason closeout, the raw-output Budget, checkpoint stages, failed-start closeout, interrupted retry, and the Git fetch explanation.
 
-This spec does not own stable core workflow vocabulary, user-facing work labels, worker selection, semantic worker-request composition, user-input delivery semantics, worker-control wire commands or reconnect authorization, workspace synchronization, runtime execution-attempt adoption, agent manifest resolution, Agent Environment Package schemas, context-management policy or compaction algorithms, or UI recovery layouts. S15 owns worker selection, semantic request composition, and [Task live steer](20260704-task_mode_worker_delegation.md#live-steer); [Pending Requests](20260930-pending_requests.md) owns worker user-input requests and outcome delivery, [Goal](20261002-goal.md) owns Goal intent and card edits, and `docs/specs/20260902-agent_runtime_context_compaction.md` owns context-management policy and compaction authority.
+It does not own the `StopReason` enum list. [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md) owns that list.
 
-## Core References
+It does not own scheduling scale or containment procedure. [Runtime Scheduling Scale](20260703-durable_scheduler_design.md#scale-limits) and [Runtime Security](20261109-runtime_security.md) own them.
 
-- `docs/core/work-model.md`
-- `docs/core/protocol.md`
-- `docs/core/communication.md`
-- `docs/core/runtime-model.md`
-- `docs/core/agent-session.md`
-- `docs/core/knowledge.md`
+It does not own context-package materialization or compaction. [Worker Context Package](20260703-worker_context_package.md) and [Agent Runtime Context Compaction](20260902-agent_runtime_context_compaction.md) own them.
 
-## Summary
+It does not own pending input, Goal wake, or live steer. [Pending Requests](20260930-pending_requests.md), [Goal](20261002-goal.md), and [Task Mode Worker Delegation](20260704-task_mode_worker_delegation.md) own them.
 
-OpenKit should harden worker execution and internal-role Provider calls without growing a second agent runtime.
+It does not own transport adoption proof. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns that proof.
 
-Quick Chat uses the shared Internal Agent Loop owned by `docs/specs/20260813-internal_agent_runtime.md`, while this specification preserves its bounded timeout, cancellation, schema-validation, redacted-error, and no-private-workflow-state reliability requirements. Worker turns retain stable stop reasons, explicit item-to-LLM projection, exact accepted-request delivery, and runtime checkpoints; context compaction follows its separate accepted owner.
-
-The first implementation should stay app-local in `apps/nanocore`, except for the stable stop-reason enum and terminal stream contract, which should be promoted into `packages/protocol` and `docs/core/protocol.md`.
-
-This spec refines the earlier lightweight-agent and Sustained Mode specs by defining the minimum runtime primitives needed before long-running delegation can be reliable.
-
-## Goals / Non-goals
-
-Goals:
-
-- Preserve the stable `Workspace -> Thread -> Turn -> Item[]` Core model.
-- Keep Quick Chat bounded through the shared Internal Agent Loop while preserving its concrete role contract.
-- Define stable stop reasons for provider, worker, and gateway streams.
-- Introduce a `convertToLlm` boundary so durable item history and provider-visible context are separate.
-- Add only the worker-turn reliability primitives required to deliver one accepted Coordinator request, observe one bounded execution, checkpoint it, and recover its terminal handoff.
-- Preserve one reliability boundary while delegating context-management policy and compaction execution to its accepted owner.
-
-Non-goals:
-
-- Do not introduce `AgentRun`, `TaskRun`, or a task graph as stable Core concepts.
-- Do not introduce a second internal-agent runner, registry, private event vocabulary, hook framework, tool allowlist, or unused streaming surface beside the accepted shared Internal Agent Loop.
-- Do not expose NanoCore Internal Core Role implementation details as protocol records.
-- Do not require low-level provider clients to never throw.
-- Do not force every stream failure to appear as assistant prose.
-- Do not implement context compaction or autonomous Knowledge Store editing inside this reliability envelope.
-- Do not add new Internal Core Roles as part of the envelope.
-
-## Background
-
-OpenKit already has the right foundation: the protocol remains a work log of workspaces, threads, turns, and items, while NanoCore can own app-local runtime state.
-
-The original implementation slice needed only a direct non-streaming Quick Chat Provider call, while Workflow Coordinator was deterministic. The later accepted Internal Agent Runtime now owns one shared bounded loop for every model-using internal role, including Quick Chat; this reliability specification neither creates a competing loop nor preserves the direct call as design authority.
-
-## Decision
-
-OpenKit will introduce a worker-turn reliability envelope with app-local runtime pieces and a small protocol promotion.
-
-The protocol promotion is limited to a stable `StopReason` enum and a rule that once a stream has started, failures must be encoded as terminal events or terminal items rather than escaping as transport errors.
-
-All other pieces begin in `apps/nanocore`: the shared Internal Agent Loop's Provider-call reliability, runtime checkpoints, context package projection, accepted-request delivery, and worker-turn stop policy.
+Core: [Protocol](../core/protocol.md), [Runtime Model](../core/runtime-model.md), [Communication](../core/communication.md), [AgentSession](../core/agent-session.md), [Work Model](../core/work-model.md).
 
 Implementation may break app-local shapes where that gives a cleaner design. Retained records follow the first-stable-release continuity boundary in [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before `v0.1.0`, an explicit deployment reset may replace carry-forward. Reset permission never proves an interrupted external effect absent or authorizes its replay. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
 
 ### Reliability Posture
 
-This envelope is designed for the V1 scheduling profile and counts defined in `docs/specs/20260703-runtime_scheduling_scale.md`, including that specification's one configured `RuntimeTarget` boundary. Its strict guarantees protect authorization, durable authority, exact lineage, non-duplication of accepted external effects, and truthful terminal projection; they do not promise distributed-system availability or transparent repair of every interrupted write.
+This envelope uses the scheduling profile and the one configured RuntimeTarget in [Runtime Scheduling Scale](20260703-durable_scheduler_design.md#scale-limits). Its strict guarantees protect authorization, durable authority, exact lineage, non-duplication of accepted external effects, and truthful terminal projection; they do not promise distributed-system availability or transparent repair of every interrupted write.
 
 When the existing owners cannot prove whether an external effect occurred or cannot derive one unambiguous closeout tuple, `recovery_required`, an explicit interrupted or uncertain outcome, inspection, and a fresh authorized attempt are accepted fallbacks. NanoCore MUST NOT infer success, launch a compatible replacement, synthesize missing authority, or add a settlement workflow merely to hide that interruption.
 
@@ -95,7 +50,7 @@ The design has three ownership layers.
 
 `apps/nanocore` owns concrete Internal Core Role services, worker-turn checkpoints, context packages, and worker adapter orchestration.
 
-Worker adapters own runtime-native details such as Codex session ids, OpenCode session ids, provider request ids, tool-call ids, sandbox commands, and process handles.
+Worker adapters own runtime-native details such as Codex session ids, OpenCode session ids, provider request ids, tool-call ids, sandbox commands, and process handles. OpenCode uses this same envelope. This specification does not claim a separate real-host qualification.
 
 ## Durable Git Fetch Failure Explanation
 
@@ -111,44 +66,9 @@ An HTTP refusal alone MUST NOT become `sandbox_network_denied`, a Vault failure 
 
 Recovery guidance for HTTP refusal states that the source is not established and asks an authorized operator to inspect sandbox network policy and upstream access separately. Host repository readiness proves only the local checkout. Preserve the failed Turn and retained/incomplete slot; a new Task requires current authorization and existing cleanup/storage admission. Do not disable TLS, inject credentials into credential-free materialization, automatically widen grants or replay the failed operation.
 
-## Current Implementation Projection
-
-The [checkpoint-owned failed-start alternative](#failed-start-before-worker-submission) is implemented with proof in `worker-recovery.ts` (ordered Item comparison and earlier busy-sibling ordering), conversation and direct Task closeout in `mode-entry-routes.ts`, the adapter-owned cleaned-unused-anchor predicate in `nanohost-attempt-recovery.ts`, and regressions in `worker-checkpoint-failed-start.test.ts`; native maintenance still excludes checkpoints, as recorded in [the decision](../decisions/20261009-checkpoint_owned_failed_start_closeout_and_release_hold.md).
-
-Ordinary post-listener scheduler maintenance classifies checkpoint-free terminal failed-start leases from their exact durable owners and invokes `terminalizeGovernedWorkerTurn` to finish failure, AgentSession retirement, and terminal event publication. Pending outcome delivery remains unknown without resubmission; subsequent passes finish partial publication without replacing an authoritative failure. Live leases, checkpoints, accepted final statuses, and unproved runtime ownership retain their existing owners.
-
-The public recovery operation is declared as `recovery.checkpoint-retry` in `packages/app-api-schemas/src/recovery-operations.ts` and joined in `runtime/worker-recovery-operations.ts`. The existing stored command identity remains `worker.recovery.retry`. The public rename neither rewrites retained command receipts nor adds a call alias. The stable result, exact replay, eligibility and cleanup semantics below remain unchanged.
-
-The shared `StopReason` protocol and initial worker-turn envelope are implemented, but this specification remains Partial. The active restart slice reuses the existing checkpoint and terminal handoff for the surviving worker rather than adding a recovery workflow. Terminal `turn.completed` events carry `stopReason` on the event envelope, not on the durable `Turn` record.
-
-NanoCore has deleted the former generic internal-agent runner, registry, event loop, hooks, tool allowlists, diagnostics ledger, and unused private streaming path. The stateless `chat.quick` operation is removed. Ordinary Assistant entry uses `conversation.submit` through the shared Internal Agent Loop and Tools. The former direct Provider call is not the current path.
-
-The removed direct-call boundary mapped Provider rate limits, other typed Provider errors, role timeout, caller abort, invalid content, and unexpected executor failure to the exact redacted codes and statuses below. That mapping is historical. Focused tests prove the exact message projection, a timeout against a Provider that ignores cancellation, caller abort, invalid content, redaction, usage lineage, cache scope, credential resolution, and replay without reviving the deleted runtime. This closes the C03 generic-runtime defect, while immutable Context Package delivery proof and broader recovery remain independently incomplete.
-
-NanoCore also has the first app-local worker-turn envelope through `runWorkerTurnLoop()`, worker checkpoint tables, `prepareNextTurnContext()`, interrupted-worker read-model materialization, terminal checkpoint cleanup, and interrupted-checkpoint retry-to-ready recovery. Goal and direct Task closeout share one StopReason classifier over the exact checkpoint, Turn, AgentSession, agent, lease, event, evidence, and command lineage. An AEP-backed envelope additionally requires its exact accepted worker-control final status, backend-session cleanup, and workspace handoff; the bounded in-process fallback is permitted only when that AgentSession has no AEP snapshot, backend-session owner, or worker-control owner. Online and restart AEP closeout share the canonical mapping for accepted non-Gate `completed`, `length`, `budget_exhausted`, `aborted`, and `error` outcomes rather than converting every non-completed status to `error`. Historical Gate closeout retained the exact request and decision evidence and closed the old envelope without resuming its adapter. That closeout is not current. A pending request does not pause or close the Turn that raised it. The S31 `repo.push` policy Gate is historical and its product path is removed; it is not a current worker Gate path. Boot now performs scheduler and worker-control fencing before scanning every uncleared checkpoint through the same Task or Goal classifier used online; complete tuples close, live or reconnecting attempts remain untouched, and incomplete or contradictory tuples retain their checkpoint and degrade scheduler readiness to `recovery_required`. Accepted worker final status refuses removed `ask_user` evidence. A worker request is a pending request, as [Pending Requests](20260930-pending_requests.md) and [Task Mode Worker Delegation](20260704-task_mode_worker_delegation.md) define. A Goal-dispatched Task uses this ordinary worker envelope. Goal steering and a Goal task record are not inputs. The implemented [Goal](20261002-goal.md#coordinator-role) owner admits ordinary Tasks under the active Plan through their existing admission path. Exact S39 Context Package delivery proof is implemented over existing owners; broader recovery discovery remains incomplete, so this specification remains Partial.
-
-The former generic pending-user-turn table, module, queue drain, worker-context injection, recovery actions, import/export family, public deterministic recovery seed, first-party client methods, removal-only MCP tools, and dedicated recovery story remain deleted because they lacked exact Goal and active-Turn lineage, a terminal claim, and immutable delivery proof. A Goal-dispatched Task checkpoint is an ordinary Task checkpoint. The Goal implementation closes or drops Goal-affiliated checkpoints. The legacy Goal step and test-supervise routes are removed; Goal admission uses ordinary Tasks under the active Plan. Broader recovery discovery keeps this specification Partial. Caller-selected `record_terminal`, its public route, schemas, projections, legacy MCP tool, and positive tests remain removed; internal checkpoint cleanup is callable only from existing mode-owned closeout paths. Product recovery may expose inspection, retry after authoritative interruption, partial-Artifact review, or guidance through their existing owners, but it does not let a caller assert worker terminal state, invent a generic abort, or request adapter-native resume.
-
-The active restart slice keeps the checkpoint nonterminal while the exact lease is `awaiting-reconnect`, then continues terminal observation for the same Turn after process-key adoption or projects an anchored cleanup as an interrupted Turn and AgentSession after timeout. Interrupted-worker rows and Action Center retry now require the exact terminal lease, product interruption, checkpoint, and continuation predicate below; `awaiting-reconnect`, live or adopted leases, incomplete cleanup, ordinary checkpoints, and contradictory Goal lineage cannot expose or execute retry.
-
-NanoCore implements authenticated NanoHost transport through `auth/nanohost-transport-session.ts` and the configured runtime target in `runtime/nanohost-runtime-target.ts`. `runtime/nanohost-attempt-recovery.ts` classifies native survivors and cleanup, while `runtime/worker-recovery.ts` retains checkpoint recovery. These source paths do not establish real-host qualification. Under the accepted recovery contract, a transport loss or a NanoCore restart leaves the healthy NanoHost, sandbox, Sandbox Integration, and resident host running; a successor authoritative NanoHost session fences its predecessor and resumes the exact same execution attempt, backend session, package snapshot, process key, and next sequence. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively. This version starts from a new data root and does not read earlier-version data, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md). NanoHost, effect-capable member, or execution-server failure instead leaves each attached Turn independently with the truthful result its lifecycle owner determined, and each attached AgentSession independently interrupted or unknown, never completed or automatically replaced. Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen.
-
-The current context-package implementation is a first projection slice: item-to-LLM conversion records deterministic context package digests, included item ids, excluded item decisions, and attachable records, while full file-backed worker package materialization and replay remain owned by `docs/specs/20260703-worker_context_package.md`.
-
-The first real governed worker path is the OpenShell/Codex worker-governance path. OpenCode can conform through the same worker-turn envelope later, but runtime checkpoints are a NanoCore worker-loop responsibility rather than an adapter-specific contract.
-
 ### Stop Reason Contract
 
-The stable stop reason enum should be shared by provider streams, worker adapter streams, and gateway streams.
-
-```ts
-type StopReason =
-  | 'completed'
-  | 'error'
-  | 'aborted'
-  | 'length'
-  | 'budget_exhausted';
-```
+Provider streams, worker adapter streams, and gateway streams share the protocol `StopReason` set. `StopReasonSchema` in [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#canonical-enums) is that inventory. A terminal `turn.completed` event carries `stopReason`. The durable Turn record does not.
 
 `completed` means the turn reached a normal terminal state; it does not establish achievement of the user's objective. Explicit native output or context limit evidence MUST NOT become `completed` success.
 
@@ -174,9 +94,9 @@ NanoCore's LLM Gateway wraps Chat Completions and Responses SSE streams at the r
 
 ### Worker Raw-Output Accounting
 
-The [large-file decision](../decisions/20261015-large_files_and_model_context.md) separates raw model output from file and context capacity. The current Worker ceiling is 16,777,216 bytes per Turn. Count UTF-8 bytes of emitted content fields: intermediate/final text, generated tool-call argument text, and stored exposed reasoning. Exclude transport framing, escaping overhead, duplicate final snapshots, tool results, uploads, and program-produced file bytes. Do not acquire hidden reasoning for metering.
+The [large-file decision](../decisions/20261015-large_files_and_model_context.md) separates raw model output from file and context capacity. The current default bound is 16,777,216 bytes per Turn. The aggregate is exhausted only when it crosses that bound. An equal aggregate remains admitted. Count UTF-8 bytes of emitted content fields: intermediate/final text, generated tool-call argument text, and stored exposed reasoning. Exclude transport framing, escaping overhead, duplicate final snapshots, tool results, uploads, and program-produced file bytes. Do not acquire hidden reasoning for metering.
 
-Raw accounting uses a private canonical namespace on each existing Worker inference CapabilityCall. Trusted provider-attempt and content-part byte positions deduplicate prefix/final replay; identical text from a new attempt or child still counts. One immediate SQLite transaction validates all Worker inference components for the Turn, advances the observed source watermark, and evaluates their sum before acknowledgement. No checkpoint, separate ledger or per-call allowance owns this bound. Checkpoint cleanup and outcome-delivery Turns preserve the same proof. Canonical ledger export retains the private namespace without exposing it in live protocol projections.  Retained calls without proof remain unknown.
+The measuring producer is the native content observer. It keeps one Turn aggregate. The private extension `openkit.worker/rawOutput` on each Worker inference CapabilityCall holds byte length, coverage of `pending`, `complete`, or `unavailable`, and hashed per-source positions. The admitted private contract owns that retained shape. Trusted provider-attempt and content-part byte positions deduplicate prefix and final replay. Identical text from a new attempt or child still counts. Acknowledged source watermarks, per-call sums, and coverage survive restart in the canonical call extension. The aggregate is reread from those records. It is not a retained checkpoint counter. In-memory coalescing and provisional totals are not restart authority. Forwarding waits for immutable covering acknowledgements. A crossing forces every active call cover before the stop request. This contract does not require a commit of every transient callback. A missing, corrupt, or oversize proof is unavailable coverage and recovery, not numeric exhaustion. No checkpoint, separate ledger, or per-call allowance owns this bound. Checkpoint cleanup and outcome-delivery Turns preserve the same proof. Canonical ledger export retains the private namespace and does not expose it in live protocol projections. Retained calls without proof remain unknown.
 
 Native observation runs before stock parsing, conversion and retry discard. Public response completion does not prove source settlement. A call can seal complete coverage only after every reached native source settles and supplies the required pre-conversion hook. If cancellation or failure returns earlier, persist unavailable coverage before public terminalization; late fields or terminal snapshots cannot repair it. Running inference delays a first final. Unknown, missing, corrupt or unavailable coverage refuses a completed final and new substantive inference. Missing proof does not create a zero counter or a budget-exhausted claim.
 
@@ -187,7 +107,7 @@ Meter before truncation or conversion to a file. A generated file body in argume
 
 One atomic aggregate covers the primary, concurrent children, and all observed provider attempts in this Turn. Deduplicate only by trusted attempt, emission/content-part identity, and stream position. Identical text in a new attempt counts again. Observe failed-attempt output before Gateway retry buffering can discard it. Unobserved billed generation belongs to cost accounting.
 
-Persist aggregate and deduplication evidence through the existing Turn execution/recovery authority before acknowledging accounted progress. Adoption, reconnect, retry, and restart cannot reset the counter or count replay twice. Missing or contradictory recovery evidence fails closed under the existing recovery rules. This adds no separate accounting lifecycle or repair runner.
+Persist aggregate and deduplication evidence through the existing Turn execution/recovery authority before acknowledging accounted progress. Adoption, reconnect, retry, and restart cannot reset acknowledged proof or count a replay twice. Missing or contradictory recovery evidence fails closed under the existing recovery rules. This adds no separate accounting lifecycle or repair runner.
 
 At exhaustion, prevent further substantive work and execution of incomplete over-limit tool arguments. After proved stop, use existing `budget_exhausted`, not native `length` or successful completion. Uncertain stop retains existing failure/fencing rules. Preserve files already accepted by their own publication barriers. File storage, capture, parser, transport, context, and time limits remain independent.
 
@@ -197,7 +117,7 @@ Qualification must observe every supported inference and child route, concurrent
 
 A provider-backed Internal Core Role call MUST be owned by one concrete role assembly over the shared bounded internal Agent runtime rather than a second runner or registry. The role assembly owns its fixed system instruction, bounded input projection, output schema, Tool set, and timeout.
 
-The caller MUST resolve one authorized logical-model contract before invocation. Quick Chat and the Assistant branch use an explicit admitted logical-model preference when their owning public contract supplies one, then applicable User, Workspace, Internal Role Execution Profile, and Gateway defaults. They never accept a Provider profile, provider-native model, account slot, or private route as public input. The selected logical model MUST be currently dispatchable and satisfy the role's required capabilities within the [Gateway-derived coherent logical contract](20260526-llm_gateway_responses_api.md#logical-model-catalog-and-ordered-routing) before any adapter call. A mixed-family contract retains its pinned null family rather than adding a same-family admission requirement. The role assembly MUST reuse the shared internal Agent runtime and Gateway dispatcher, propagate caller cancellation, add the bounded role timeout, validate the returned content, and return or throw without creating private durable state.
+The caller MUST resolve one authorized logical-model contract before invocation. The Assistant uses an explicit admitted logical-model preference when its owning public contract supplies one, then applicable User, Workspace, Internal Role Execution Profile, and Gateway defaults. The Assistant never accepts a Provider profile, provider-native model, account slot, or private route as public input. The selected logical model MUST be currently dispatchable and satisfy the role's required capabilities within the [Gateway-derived coherent logical contract](20260526-llm_gateway_responses_api.md#logical-model-catalog-and-ordered-routing) before any adapter call. A mixed-family contract retains its pinned null family rather than adding a same-family admission requirement. The role assembly MUST reuse the shared internal Agent runtime and Gateway dispatcher, propagate caller cancellation, add the bounded role timeout, validate the returned content, and return or throw without creating private durable state.
 
 The stateless Quick Chat operation is removed. The Assistant uses the shared Internal Agent Loop and Tools. Workflow Coordinator remains a deterministic Core service and MUST NOT be registered or diagnosed as a Provider-backed runner.
 
@@ -217,7 +137,7 @@ OpenKit's durable history is an item log.
 
 Provider-visible context is a projection of that log, not the log itself.
 
-NanoCore should introduce a `convertToLlm` boundary.
+The context-package owner records the item-to-model projection. The trace is a workspace file with a digest and a manifest. A database row may index that trace and MUST NOT be its only copy. An exact trace is delivery proof. A missing trace fails closed.
 
 ```ts
 function convertToLlm(
@@ -242,7 +162,7 @@ The projection should not mutate the item log.
 
 The worker-turn envelope is the app-local execution state machine shared by bounded Task delegation, including a Goal-dispatched Task.
 
-The accepted V1 checkpoint stages are exactly:
+The accepted checkpoint stages are exactly:
 
 ```text
 preparing
@@ -305,6 +225,8 @@ NanoCore is the sole canonicalization owner. Closeout based on an accepted Worke
 | `cancelled` or `interrupted` | `aborted` |
 | `failed`, `degraded`, or `lost` | `error` |
 
+The exact durable attempt cause overrides an accepted native cancellation. `turn-cancelled` maps to `aborted`. `raw-output-exhausted` maps to `budget_exhausted`. `raw-output-unavailable` maps to `error`. A user cancellation that won the compare-and-set stays `aborted`. An unproved stop stays fenced and uncertain. The numeric sum alone does not authorize that final mapping.
+
 An unknown or incompatible pair is retained for inspection and produces `recovery_required`; NanoCore does not guess from Turn status, collapse all non-completed results to `error`, or treat adapter-private text as a new Core reason. The [adapter normalization boundary](20260629-worker_runtime_communication_model.md#adapter-normalized-stop-outcomes) carries a proved native output or context limit through existing worker-control `blocked` with `stopReason=length`. The table above then yields a `completed` Turn and checkpoint with StopReason `length` and a blocked Task, never Task success. A native interrupt yields `aborted` only with the exact OpenKit request required by [Stop Reason Contract](#stop-reason-contract); a runtime self-stop yields `failed/error`. Native crashes, process exits, errors, and malformed or missing terminal evidence retain their existing failure, uncertainty, and fencing rules. Cancellation that already won in the authoritative attempt retains its existing precedence over a late native result; diagnostics do not establish cancellation authority.
 
 Human requests do not pause worker execution, suspend the source AgentSession, or introduce a waiting checkpoint stage. A Task worker's approval or user-input request is a pending request: the Turn stays running, and the response is delivered by the next Turn, as [Pending Requests](20260930-pending_requests.md) and [Task Mode Worker Delegation](20260704-task_mode_worker_delegation.md) define. A Goal-dispatched Task is an ordinary worker Turn, as [Goal](20261002-goal.md) defines. An unknown or contradictory terminal tuple stays `recovery_required`. None of these paths restarts a stopped worker, synthesizes a receipt, or creates a settlement workflow. Later work requires a new command and Turn.
@@ -317,9 +239,9 @@ There is no separate `prepareNextTurn` semantic authority. The owning Task servi
 
 Runtime-owned system steering such as a budget wrap-up or recovery constraint is input to the owning mode service's next Coordinator decision; the envelope must not inject it behind that decision. User input has no generic follow-up queue in this contract. Pending Request outcomes arrive on later Turns under [Pending Requests](20260930-pending_requests.md); unsolicited live input uses only [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) and the private Harness contract. Goal-owned steering is not an input on this envelope. [Goal](20261002-goal.md#wake-marker) intent and card edits cause a later Coordinator read and do not steer a running worker.
 
-NanoCore's app-local `runWorkerTurnLoop()` is the first worker-turn envelope shell. It receives the mode-owned request identity and prepared worker inputs, atomically invokes the mode's exact Turn reservation, records its allowed launch PermissionDecision, writes the request-bound `preparing` checkpoint, performs the first scheduler admission, starts exactly that worker with exactly that request, observes the terminal worker stop reason, records terminal checkpoint evidence, and evaluates `shouldStopAfterTurn()`. It MUST NOT invent another Turn or checkpoint when the mode-owned launch fence is missing or contradictory. Until S16's immutable Context Package trace exists, a restart or handled failure after the `preparing` fence but before the exact Turn-owned request is durable fails closed as `recovery_required`; this bounded compromise is safer than reconstructing request bytes from Coordinator, checkpoint diagnostics, or current context.
+NanoCore's app-local `runWorkerTurnLoop()` is the first worker-turn envelope shell. It receives the mode-owned request identity and prepared worker inputs, atomically invokes the mode's exact Turn reservation, records its allowed launch PermissionDecision, writes the request-bound `preparing` checkpoint, performs the first scheduler admission, starts exactly that worker with exactly that request, observes the terminal worker stop reason, records terminal checkpoint evidence, and evaluates `shouldStopAfterTurn()`. It MUST NOT invent another Turn or checkpoint when the mode-owned launch fence is missing or contradictory. When the immutable Context Package trace is missing, a restart or a handled failure after the `preparing` fence but before the exact Turn-owned request is durable fails closed as `recovery_required`. It does not reconstruct request bytes from Coordinator output, checkpoint diagnostics, or current context.
 
-When the NanoHost adapter observes the same open attempt as `awaiting-reconnect`, after a transport loss or a NanoCore restart, the envelope keeps the existing checkpoint nonterminal and must not start another worker, create another checkpoint, recreate the sandbox, or enqueue a replacement continuation. After predecessor-fenced NanoHost reconnect and exact process-key, lineage, backend-session, package-snapshot, and next-sequence adoption of that same attempt, the envelope resumes terminal observation and handoff for the same turn. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively. Failure of the restart scan's durable eligibility checks enters existing cleanup before a reconnect window is armed, while an invalid reconnect request is merely rejected and leaves an already armed window intact; only deadline ownership followed by definite sandbox cleanup or NanoHost-owned epoch invalidation may enter interrupted-checkpoint recovery.
+When the NanoHost adapter observes the same open attempt as `awaiting-reconnect`, after a transport loss or a NanoCore restart, the envelope keeps the existing checkpoint nonterminal and must not start another worker, create another checkpoint, recreate the sandbox, or enqueue a replacement continuation. After predecessor-fenced NanoHost reconnect and exact process-key, lineage, backend-session, package-snapshot, and next-sequence adoption of that same attempt, the envelope resumes terminal observation and handoff for the same turn. This deployment starts from a new data root and does not read earlier-version data ([decision](../decisions/20260930-earlier_version_data_not_carried.md)). Interruption does not prove that an external effect did not happen. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively. Failure of the restart scan's durable eligibility checks enters existing cleanup before a reconnect window is armed, while an invalid reconnect request is merely rejected and leaves an already armed window intact; only deadline ownership followed by definite sandbox cleanup or NanoHost-owned epoch invalidation may enter interrupted-checkpoint recovery.
 
 An interrupted-worker retry is available only after the scheduler and worker-control owners have durably rejected exact adoption, the NanoHost has proved definite sandbox cleanup or completed fresh-epoch recovery after invalidation, the exact attempt fence and handoff permit exclusion release, and the original execution is projected as interrupted. A timeout classification from adapter-owned `awaiting-reconnect` to `needs-evidence` transfers the same attempt to closing/cleanup but does not authorize retry or release exclusion. A wrong reconnect key, lineage, sequence, predecessor connection, or expired request is rejected without ending the original reconnect window; only successful exact adoption or the scheduler's deadline compare-and-set may win that race.
 
@@ -361,31 +283,7 @@ A Goal-dispatched Task is an ordinary worker Turn on this envelope. This envelop
 
 ### Runtime Checkpoint
 
-NanoCore should persist a runtime checkpoint before non-idempotent or long-running boundaries.
-
-The first checkpoint shape should be app-local.
-
-```ts
-interface WorkerCheckpointRecord {
-  checkpointId: string;
-  workspaceId: string;
-  threadId: string;
-  turnId: string;
-  goalId: string | null;
-  taskId: string | null;
-  requestId: string;
-  requestInputHash: string;
-  stage: WorkerTurnStage;
-  iteration: number;
-  workerSessionId: string | null;
-  contextDigest: string | null;
-  stopReason: StopReason | null;
-  diagnosticsSummary: string | null;
-  replayInstruction: false;
-  createdAt: string;
-  updatedAt: string;
-}
-```
+NanoCore persists an app-local runtime checkpoint before a non-idempotent or long-running boundary. The retained record is `WorkerCheckpointRecord` in `apps/nanocore/src/runtime/worker-checkpoints.ts`. The accepted stages remain the five stages named above. That artifact also admits `waiting_for_user`. Linking the artifact does not add that stage to this contract. The extra stored value remains [#726](https://github.com/lingkaix/openkit/issues/726).
 
 `requestId` and `requestInputHash` are required on every checkpoint because this envelope is limited to accepted worker commands, including a Goal-dispatched Task. `goalId` may name the Goal that authorized that Task and may be absent. `taskId` stays absent because a Task has no separate task record. A non-null `taskId` is not this contract. A missing Goal removed by the accepted deletion is known absence, not `recovery_required`. A contradictory non-Goal owner still returns `recovery_required`. Any future checkpointed system operation requires its own accepted design and must not reuse this envelope through nullable command identity. These fields bind partial-failure inspection to the original command without storing the prompt or full request.
 
@@ -395,7 +293,7 @@ It is a recovery record that tells NanoCore where the turn stopped and what can 
 
 After a transport loss or a NanoCore restart, a checkpoint whose exact open attempt has adapter-owned `awaiting-reconnect` remains at `running_worker`. Exact adoption continues the same checkpoint, AgentSession, Turn, and worker; verification failure, timeout, cancellation, or cleanup fencing materializes the existing interrupted Item or state update into the Thread. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively.
 
-Only after the interrupted path is selected may the user or Coordinator choose the exact recovery actions authorized here: start an ordinary new Task request, review partial Artifacts, or request guidance. No retry or replacement is offered while the bounded exact-adoption window remains open, and this specification adds no generic abort action. User-facing recovery has no user-operated native-resume control. Successor resume is runtime behavior.
+The interrupted-worker read model carries the checkpoint id, Turn id, stage, context digest, stop reason when known, and redacted diagnostics. Only after the interrupted path is selected may the user or Coordinator choose the exact recovery actions authorized here: inspect, start an ordinary new Task request, review partial Artifacts, or request guidance. No retry or replacement is offered while the bounded exact-adoption window remains open, and this specification adds no generic abort action. User-facing recovery has no user-operated native-resume control. Successor resume is runtime behavior.
 
 An accepted final status after adoption drives the existing checkpoint, terminal evidence, product Turn, AgentSession, workspace-reconciliation, backend cleanup and execution-attempt owners directly. Task Mode may clear its checkpoint only after the terminal Turn, stop reason, evidence, required Artifact or Workspace review and handoff records, command receipt when applicable, AgentSession when assigned, backend handoff/fence, and execution-attempt closeout are durable, with final-status, fencing, handoff, and execution-generated runtime-provenance applicability qualified only by [Failed start before Worker submission](#failed-start-before-worker-submission). A Goal-dispatched Task uses that same Task closeout tuple. A Goal task record and a Goal Review transition are not this contract. The one-way cutover removes that legacy tuple. A user-input or approval request does not hold the checkpoint at a waiting stage. It is a pending request, as [Pending Requests](20260930-pending_requests.md) defines. Read models, serialized responses, and events are rebuildable projections and are never checkpoint-clear authority. A caller-supplied terminal label is not evidence and cannot clear or overwrite a checkpoint. No settlement coordinator or parallel domain record exists.
 
@@ -403,7 +301,7 @@ Durable checkpoint, terminal, evidence, and business-owner writes replay exactly
 
 The terminal-checkpoint runtime CapabilityCall derives `cap` UUIDv5 from exact JSON name `["runtime", checkpointId]`. Use the exact durable checkpoint identity and literal runtime purpose. Admit it only at existing terminal accounting. Preserve its attribution, timestamp and result across exact replay and reopen ([accepted allocation decision](../decisions/20261016-identifier_derivation_and_import_allocations.md)). Worker launch, terminal acceptance, closeout and retention remain unchanged. Missing or contradictory checkpoint authority retains the existing failure.
 
-Its `sandbox_sessions` measurement uses the [Capability Usage recorder](20260704-capability_usage_gateway_foundation.md#call-and-usage-identity)'s independent `use` UUIDv7 default and full equivalence lookup. Reuse the stored measurement ID for the same call, category `runtime`, unit `sandbox_sessions`, quantity 1 and source `worker-checkpoint-terminal`. Preserve the existing model, provider and `sourceIds` attribution. No usage derivation is declared. The call ID cannot replace attribution checks or prove an unknown effect. Retention and lifecycle stay with the checkpoint, call and usage owners. Acceptance requires one retained call and equivalent measurement under terminal replay and reopen, without another launch or synthesized completion.
+Its `sandbox_sessions` measurement uses the [Capability Usage recorder](20260703-audit_usage_evidence_records.md#call-and-usage-identity)'s independent `use` UUIDv7 default and full equivalence lookup. Reuse the stored measurement ID for the same call, category `runtime`, unit `sandbox_sessions`, quantity 1 and source `worker-checkpoint-terminal`. Preserve the existing model, provider and `sourceIds` attribution. No usage derivation is declared. The call ID cannot replace attribution checks or prove an unknown effect. Retention and lifecycle stay with the checkpoint, call and usage owners. Acceptance requires one retained call and equivalent measurement under terminal replay and reopen, without another launch or synthesized completion.
 
 ### Pending User Turn
 
@@ -423,96 +321,43 @@ A Goal-dispatched Task is an ordinary worker Turn. This envelope adds no separat
 
 This reliability contract does not authorize or prohibit context compaction. `docs/specs/20260902-agent_runtime_context_compaction.md` separately owns its exact source, output, provenance, failure, replay, restart, user visibility, and selection of one compaction authority per execution.
 
-## Data And Protocol Changes
 
-Protocol changes:
+## Acceptance
 
-- Maintain `StopReason` in `packages/protocol`.
-- Maintain stop reasons and terminal stream behavior in `docs/core/protocol.md`.
-- Maintain generated JSON Schema and protocol tests for the enum.
-- Ensure terminal SSE events continue to carry the stop reason consistently.
+Use the lowest layer that can prove each distinct risk. L1 owns input, projection, timeout, cancellation, provider-error, content-validation, redaction, retry, `StopReason`, and schema behavior. L2 owns accepted worker input, terminal stream records, owner-tuple classification, reconnect fencing, retry eligibility, and rejection of caller-selected terminal state.
 
-NanoCore app-local changes:
-
-- Route Quick Chat through the shared Internal Agent Loop while keeping its role service stateless and preserving the existing Provider resolver and dispatcher boundaries.
-- Keep the former unused registry, private event loop, hook framework, global tool allowlists, streaming facade, and diagnostics branch deleted; the accepted shared loop adds none of them.
-- Add app-local checkpoint storage for worker turns.
-- Reuse the app-local runtime checkpoint and terminal evidence records directly for restart adoption and terminal handoff; add no restart coordinator or closeout workflow.
-- Add context package projection records for worker turns.
-- Keep one app-local `runWorkerTurnLoop()` shell that accepts a mode-owned Coordinator request and composes validation, delivery, checkpointing, worker start, terminal outcome recording, and stop-after-turn policy without another selection or context-composition stage.
-- Normalize Gateway streaming read failures into terminal SSE error payloads with stable stop reasons.
-
-## Alternatives Considered
-
-Alternative: retain the former generic internal-agent runner, registry, event loop, hooks, and private streaming facade beside the accepted shared Internal Agent Loop. Rejected because they duplicate provider/runtime responsibilities and authorize a second execution framework.
-
-Alternative: require low-level provider stream functions to never throw.
-
-This is too strict for HTTP clients and SDK boundaries; the practical contract belongs at the adapter boundary after the stream starts.
-
-Alternative: encode every error as a final assistant message.
-
-This is too narrow for OpenKit because the thread log has authoritative items and terminal events that do not need to pretend to be assistant prose.
-
-Alternative: define autonomous context compaction inside this reliability envelope.
-
-Rejected because context management now has a separately accepted owner that defines its authority, lifecycle, and quality gates without mixing runtime continuity with Knowledge Store policy.
-
-## Consequences
-
-Quick Chat retains bounded provider invocation, validation, timeout, cancellation, usage attribution, and redacted failure behavior through the shared Internal Agent Loop without a separate runtime or diagnostics ledger.
-
-Worker and provider terminal semantics remain consistent through the shared stop-reason contract rather than a shared execution framework.
-
-The Web UI can render small truthful runtime states before OpenKit has a larger task graph.
-
-No second internal-role runtime boundary is introduced.
-
-## Testing Strategy
-
-Use the lowest layer that can prove each distinct risk. L1 owns Quick Chat input, projection, timeout, cancellation, provider-error, content-validation, redaction, retry, `StopReason`, and schema behavior. L2 owns accepted worker input, terminal stream records, owner-tuple classification, reconnect fencing, retry eligibility, and rejection of caller-selected terminal state.
-
-Stop-classification acceptance proves that correlated OpenCode idle success with assistant finish `length`, Pi native `length` without an OpenKit interrupt request, and DeepSeek `max_tokens` each produce worker-control `blocked/length`, a `completed` Turn with terminal StopReason `length`, a `completed` checkpoint eligible for cleanup only after the existing complete closeout proof, and a blocked Task. Native self-interruption without an OpenKit request produces `failed/error` with a bounded actor-neutral diagnostic; a correlated native interrupt after that request preserves `aborted`. DeepSeek `max_turn_requests` and `refusal`, ambiguous Codex limits, malformed or missing terminal evidence, cancellation races, and unknown cleanup retain their documented failure or uncertainty results. These paths launch zero automatic successor Turns and preserve unknown external effects for inspection. Adapter-local proof and the shared Harness-to-Core closeout proof are separate obligations.
+Stop-classification acceptance proves that correlated OpenCode idle success with assistant finish `length`, Pi native `length` without an OpenKit interrupt request, and DeepSeek `max_tokens` each produce worker-control `blocked/length`, a `completed` Turn with terminal StopReason `length`, a `completed` checkpoint eligible for cleanup only after the existing complete closeout proof, and a blocked Task. Native self-interruption without an OpenKit request produces `failed/error` with a bounded actor-neutral diagnostic. A correlated native interrupt after that request preserves `aborted`. DeepSeek `max_turn_requests` and `refusal`, ambiguous Codex limits, malformed or missing terminal evidence, cancellation races, and unknown cleanup retain their documented failure or uncertainty results. These paths launch zero automatic successor Turns and preserve unknown external effects for inspection. Adapter-local proof and the shared Harness-to-Core closeout proof are separate obligations.
 
 L3 retains one deterministic NanoCore kill/restart scenario covering `awaiting-reconnect` after a transport loss or a NanoCore restart, predecessor-fenced exact same-worker and same-sandbox adoption in either case, and, when proof fails, a binding that is closed or fenced with a successor resuming natively, accepted final status through existing owners, no duplicate worker or checkpoint, exact next sequence, and checkpoint clearing. Terminal-checkpoint closeout, timeout cleanup, partial-tuple `recovery_required`, and retry fences remain deterministic L1-L2 concerns and MUST NOT create another restart runner, A1 harness, or cross-product suite.
 
 No test is required for deferred multi-process, multi-target, fairness, hot-failover, snapshot, replacement-worker, settlement, generic internal-agent event, registry, hook, streaming, or diagnostics behavior because those surfaces are outside this accepted design.
 
-## Risks & Mitigations
+## Implementation
 
-Risk: stop reasons are too coarse for debugging.
+- `apps/nanocore/src/runtime/`
+- `apps/nanocore/src/internal-agents/`
+- `apps/nanocore/src/llm/`
+- `apps/nanocore/src/storage/`
+- `packages/protocol/src/`
+- `packages/worker-protocol/src/`
+- `packages/worker-shim/src/`
+- `packages/app-api-schemas/src/`
 
-Mitigation: pair the stable enum with app-local redacted error codes and diagnostics.
+## Implementation Gaps
 
-Risk: context projection hides important information from the model.
+- Original context-package recovery - Recovery does not restore the original package - #132
+- Interrupted-worker guidance and disabled-resume projection - Those recovery actions are not projected - #733
+- Worker package policy summaries and Knowledge descriptors - Those package contents are absent - #565
+- Checkpoint stages are exactly the five accepted stages - The stored schema still admits unproduced `waiting_for_user` - #726
 
-Mitigation: record excluded item ids and exclusion reasons in the context package.
+## Decisions
 
-Risk: checkpoints create duplicate side effects after restart.
-
-Mitigation: an awaiting-reconnect checkpoint cannot launch or retry work; only exact scheduler and worker-control adoption after a transport loss or a NanoCore restart may continue the same worker, a binding that cannot be proved exactly is closed or fenced and a successor resumes natively, and all terminal owners remain idempotent on their existing lineage.
-
-Risk: a future streaming request recreates a private generic event runtime before a public consumer exists.
-
-Mitigation: require an accepted public contract and reuse the owning provider or App API stream boundary instead of adding a private event vocabulary.
-
-## Resolved Decisions
-
-- `StopReason` belongs on the terminal `turn.completed` event envelope, not on the durable `Turn` record.
-- Context package traces are file-system-first workspace records with digests and manifests; SQLite or read-model rows may index or attach them but must not become the only source of truth.
-- Every model-using internal role uses the shared Internal Agent Loop, while a role that remains deterministic does not invoke the loop unnecessarily. The [stateless Quick Chat retirement](../decisions/20261016-retire_stateless_quick_chat.md) removed the former direct Provider function and its `quick_chat_not_configured` and `quick_chat_failed` error codes.
-- The minimum interrupted-worker recovery surface is an Item-backed or App API read-model row with checkpoint id, Turn id, stage, context digest, stop reason when known, redacted diagnostics, and only inspect, request-bound retry-after-interruption, review-partial-Artifacts, or request-guidance actions defined by existing owners. Adapter-native resume and a generic recovery abort are not user actions. Exact surviving-worker adoption remains automatic under its scheduler and worker-control owners after a transport loss or a NanoCore restart. Successor resume is runtime behavior, not a user control.
-- Runtime checkpoints belong to the NanoCore worker-turn loop first; the OpenShell/Codex worker-governance path is the first exercised governed backend, and OpenCode should conform through the same envelope later.
-- Restart adoption, after a transport loss or a NanoCore restart, reuses the existing runtime checkpoint and terminal-handoff owners directly, never replays worker launch, and never creates a replacement session while exact reconnect remains pending. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively. It adds no settlement row.
-
-## Deferred Work
-
-- Define the full file-backed worker context package materialization and replay flow in `docs/specs/20260703-worker_context_package.md`.
-- Project the accepted central context-management policy into Worker packages and adapters under `docs/specs/20260902-agent_runtime_context_compaction.md`; this reliability envelope adds no parallel compaction design.
-
-## Links
-
-- [Communication Model](../core/communication.md)
-- [Core Protocol](../core/protocol.md)
-- [NanoHost Runtime And Transport](./20260802-nanohost_runtime_and_transport.md)
-- [Agent Runtime Context Management And Compaction](./20260902-agent_runtime_context_compaction.md)
+- [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md)
+- [Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md)
+- [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md)
+- [Checkpoint-Owned Failed Start](../decisions/20261009-checkpoint_owned_failed_start_closeout_and_release_hold.md)
+- [Identifier Derivation And Import Allocations](../decisions/20261016-identifier_derivation_and_import_allocations.md)
+- [Terminal Failed-Start Turn Recovery](../decisions/20261003-terminal_failed_start_turn_recovery.md)
+- [Execution Backend Port](../decisions/20261006-execution_backend_port_in_nanocore.md)
+- [Retire Stateless Quick Chat](../decisions/20261016-retire_stateless_quick_chat.md)
+- [Earlier Version Data Not Carried](../decisions/20260930-earlier_version_data_not_carried.md)

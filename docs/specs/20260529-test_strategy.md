@@ -1,66 +1,32 @@
 ---
 status: Accepted
-implementation: Partial
 kind: process
+implementation: Partial
 aspect: process
 ---
 # OpenKit Test Strategy
 
-## Owns
+This specification owns OpenKit's L0-L6 testing layer model, test responsibility boundaries, test authority and lifecycle including test retirement, deterministic gate policy, test data and fixture hygiene, smoke and artifact health posture, real-provider opt-in rules, and the relationship between AI-assisted story tests and lower-level regression coverage.
 
-This spec owns OpenKit's L0-L6 testing layer model, test responsibility boundaries, test authority and lifecycle including test retirement, deterministic gate policy, test data and fixture hygiene, smoke and artifact health posture, real-provider opt-in rules, and the relationship between AI-assisted story tests and lower-level regression coverage.
+## Scope
 
-## Does Not Own
+Owns the L0-L6 layer taxonomy and responsibility matrix, test authority and retirement lifecycle, deterministic CI and release gate composition, test data and environment isolation rules, and real-provider opt-in failure-evidence invariants.
 
-This spec does not own what makes a verdict believable: oracle classification, harness admission, the effect-domain and observation-channel rules, and the execution-environment rules including the container rule and the real-use host manifest belong to `docs/verification-instruments.md`. This spec decides which layer proves which invariant; that document decides whether the instrument deciding it can be believed, and states its own application scope.
+Does not own:
 
-This spec does not own individual test implementation files, CI workflow syntax, release management policy owned by `docs/specs/20260829-release_management.md`, story file content, browser UI design, provider credentials, or package-specific test commands beyond the layer contract.
+- What makes a verdict believable: oracle classification, harness admission, the effect-domain and observation-channel rules, and the execution-environment rules including the container rule and the real-use host manifest belong to `docs/verification-instruments.md`.
+- Individual test implementation files, package-specific test commands beyond the layer contract, browser UI design, or provider credentials (their owning packages and specifications own them).
+- Release management policy and exact-commit CI reuse mechanics (`docs/specs/20260829-release_management.md` owns them).
+- L6 story file content, execution, evidence packages, and defect-reduction mechanics (`docs/specs/20260529-l6_story_acceptance.md` owns them).
+- Verification calibration and fault-injection detection measurement (`docs/specs/20260719-verification_calibration.md` owns them).
 
-## Core References
-
-- `docs/core/architecture.md`
-- `docs/core/protocol.md`
-- `docs/core/communication.md`
-- `docs/core/work-model.md`
-- `docs/core/evidence.md`
-
-## Summary
-
-OpenKit needs a layered automated testing system that proves package-local behavior, cross-package contracts, NanoCore server behavior, Web UI behavior, release artifact health, and realistic product workflows.
-
-The repository already has package unit tests, NanoCore black-box e2e tests, Web Playwright e2e tests, Docker-focused tests, a root `verify:release` tag gate, and a root `verify:full` explicit local gate.
-
-This spec makes those layers explicit, defines the responsibilities and boundaries for each layer, and adds an agentic story testing model for AI-assisted product acceptance.
-
-The testing system should be deterministic by default, evidence-rich at the browser and process boundaries, and strict about reducing discovered failures into lower-level regression tests.
-
-Test-first is the strong default for a known feature or defect, not a universal ordering rule. When the failure, environment, or deciding oracle is unknown, a focused probe may establish the fact before a regression is written; once the behavior is understood, the lowest-sufficient lasting proof remains required.
-
-## Goals
-
-- Give every app and package a clear local test responsibility.
-- Keep protocol, App API, NanoCore, core-client, and Web behavior structurally aligned through contract and conformance tests.
-- Treat NanoCore server e2e as a black-box process/API/SSE/storage suite.
-- Treat Web UI e2e as real browser operation through visible user-facing flows.
-- Add smoke tests that quickly prove built packages, staging bundles, and containers can boot and serve key health paths.
-- Add AI-assisted story tests that simulate realistic human workflows without replacing deterministic tests.
-- Make CI and release gates understandable, fast enough for normal development, and strong enough for release confidence.
-- Keep real provider, real subscription, and quota-consuming tests opt-in unless a release owner explicitly enables them.
-
-## Non-goals
-
-- Do not preserve historical compatibility behavior only for tests.
-- Do not turn AI story tests into the primary regression mechanism.
-- Do not make every pull request run every expensive browser, container, provider, or agentic workflow.
-- Do not require local persisted state, local user credentials, or host-specific secrets for the normal deterministic gate.
-- Do not let Web e2e bypass the UI for assertions that should be visible to users.
-- Do not let NanoCore e2e import `src/` implementation modules instead of driving the built app boundary.
+Core: `docs/core/architecture.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/work-model.md`, `docs/core/evidence.md`.
 
 ## Principles
 
 Tests should sit at the lowest layer that can prove the behavior.
 
-Choose test order according to what is known. Name and observe the intended red result before production implementation when a contract already defines the failure. Probe first when a test would otherwise encode an unverified premise or exercise an unadmitted instrument. Neither path permits shipping changed behavior without durable evidence.
+Test-first is the strong default for a known feature or defect, not a universal ordering rule. Choose test order according to what is known: name and observe the intended red result before production implementation when a contract already defines the failure, and probe first when a test would otherwise encode an unverified premise or exercise an unadmitted instrument. Once the behavior is understood, the lowest-sufficient lasting proof remains required, and neither path permits shipping changed behavior without durable evidence.
 
 L0-L6 is a taxonomy of available proof boundaries, not a checklist for every feature, bug, command, or state transition. One invariant should normally have one primary regression at the lowest sufficient layer and at most one higher-layer check for a distinct integration risk.
 
@@ -119,7 +85,7 @@ The root fast verification command is `pnpm -w verify`.
 
 The root tag release gate is `pnpm -w verify:release`.
 
-`verify:release` currently runs L0-L2 verification, NanoCore black-box e2e, and built-artifact smoke tests.
+`verify:release` runs L0-L2 verification, NanoCore black-box e2e, and built-artifact smoke tests.
 
 The root explicit full local gate is `pnpm -w verify:full`.
 
@@ -154,7 +120,7 @@ Real Codex and real subscription smoke tests must stay opt-in through explicit e
 
 L0 should fail before any expensive runtime test when formatting, linting, typechecking, generated output, or repository structure is invalid.
 
-The current root scripts already include `check:repo`, `lint`, `typecheck`, `build`, and commit-message checks.
+The root scripts include `check:repo`, `lint`, `typecheck`, `build`, and commit-message checks.
 
 Generated protocol or schema artifacts should have drift tests that fail if source schemas changed without regenerating committed outputs.
 
@@ -273,13 +239,13 @@ If a smoke test needs more than a minimal boot path, that behavior belongs in Na
 
 ## L6 Agentic Story Acceptance Tests
 
-L6 is the agent-first, opt-in product-intent layer. `docs/specs/20260529-l6_story_acceptance.md` owns its admission, story, execution, evidence, and failure contracts.
+L6 is the agent-first, opt-in product-intent layer and is never the primary regression mechanism. `docs/specs/20260529-l6_story_acceptance.md` owns its admission, story, execution, evidence, and failure contracts.
 
 A fixed mechanical proof belongs at L3 when it drives NanoCore or another public process boundary, or at L4 when it drives the browser. L6 Story Acceptance owns how a confirmed defect leaves L6, including a recorded reason when the defect is not reduced.
 
 ## Test Data And Environment Policy
 
-Tests should use disposable data roots, temporary workspaces, and deterministic fixtures by default.
+Tests should use disposable data roots, temporary workspaces, and deterministic fixtures by default, without requiring local persisted state, local user credentials, or host-specific secrets for the normal deterministic gate.
 
 Fixtures that contain secrets must use fake secret markers that are safe to commit.
 
@@ -299,25 +265,25 @@ The test placement rule and its admitted exceptions, the platform-divergence rul
 
 ## CI And Release Gates
 
-Pull requests should run the lightweight repository check and the isolated NanoHost installer fixed-path gate by default. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns the installer proof.
+Pull requests run the lightweight repository check and the isolated NanoHost installer fixed-path gate by default, without running every expensive browser, container, provider, or agentic workflow. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns the installer proof.
 
-Every push to `main` MUST run the complete deterministic release gate, including L4 Web e2e. Main pushes share one concurrency group: a newer pending head replaces an older pending head, but an in-progress main run is not cancelled. Other ordinary branch pushes do not run CI by default.
+Every push to `main` MUST run the complete deterministic release gate, including L4 Web e2e and the nonpublishing Worker-image and stopped-server recovery smokes. Main pushes share one concurrency group: a newer pending head replaces an older pending head, but an in-progress main run is not cancelled. Other ordinary branch pushes do not run CI by default.
 
-A lowercase version tag that builds release artifacts and matches `v*.*.*` should run the release gate as separate jobs for L0-L2, L3 NanoCore e2e, and L5 smoke. Under [Release Management](20260829-release_management.md#candidate-ci-and-tag-reuse), the complete-suite L0-L2 shards and NanoCore e2e tag job each first seek a completed main-push release-gate run or qualifying `workflow_dispatch` run of the same workflow on exactly the tagged commit where that same job succeeded in its latest attempt. Each records the qualifying run and skips its tests when found, or runs its tests as before when absent. L0-L2 requires the complete successful shard aggregate and execution-file inventory under that owner. Main-push shards may reuse exact-P dispatch evidence under the same rules. The candidate gate uses a main-push release-gate run or selects `release-gate` or `full` on exactly the publishing commit; reuse never crosses commits. On a tag that builds release artifacts, L5 and every other tag job still run, including preflight and `main` membership, portability, the installer, NanoHost build and qualification, packaging, promotion of the proved exact-P candidate index and platform digests, anonymous `worker-common` inspection, GitHub Release creation and upload, and download verification. Prerelease image build and per-platform exact-digest smoke run once in candidate CI and are admitted on the tag under Release Management; all existing publication predicates remain required. A stable promotion tag builds nothing. It runs promotion of the already-published digests, the release pointers, GitHub Release creation, and published-release verification.
+A lowercase prerelease version tag that builds release artifacts (`v*.*.*-*` in the CI workflow) runs the release gate as separate jobs for L0-L2, L3 NanoCore e2e, and L5 smoke; publication jobs remain tag-only, and stable promotion is owned by [Release Management](20260829-release_management.md#candidate-ci-and-tag-reuse). Under that owner, the complete-suite L0-L2 shards and NanoCore e2e tag job each first seek a completed main-push release-gate run or qualifying `workflow_dispatch` run of the same workflow on exactly the tagged commit where that same job succeeded in its latest attempt. Each records the qualifying run and skips its tests when found, or runs its tests as before when absent. L0-L2 requires the complete successful shard aggregate and execution-file inventory under that owner. Main-push shards may reuse exact-P dispatch evidence under the same rules. The candidate gate uses a main-push release-gate run or selects `release-gate` or `full` on exactly the publishing commit; reuse never crosses commits. On a tag that builds release artifacts, L5 and every other tag job still run, including preflight and `main` membership, portability, the installer, NanoHost build and qualification, packaging, promotion of the proved exact-P candidate index and platform digests, anonymous `worker-common` inspection, GitHub Release creation and upload, and download verification. Prerelease image build and per-platform exact-digest smoke run once in candidate CI and are admitted on the tag under Release Management; all existing publication predicates remain required. A stable promotion tag builds nothing. It runs promotion of the already-published digests, the release pointers, GitHub Release creation, and published-release verification.
 
-Manual workflow dispatch should expose the lightweight repository check, L0-L2, L3 NanoCore e2e, L4 Web e2e, L5 smoke, the complete release gate, and the registry-observation refresh owned by [Release Management](20260829-release_management.md#prerelease-candidate-images). Workflow identifiers belong in the implementation projection.
+Manual workflow dispatch exposes the lightweight repository check, L0-L2, L3 NanoCore e2e, L4 Web e2e, L5 smoke, the complete release gate, and the registry-observation refresh owned by [Release Management](20260829-release_management.md#prerelease-candidate-images).
 
-The release gate should cover the L0-L2, L3 NanoCore e2e and L5 smoke composition projected by `verify:release`, through its admitted shards. The additional jobs and exact-commit reuse rules remain owned by Release Management.
+The release gate covers the L0-L2, L3 NanoCore e2e, and L5 smoke composition projected by `verify:release`, through its admitted shards. The additional jobs and exact-commit reuse rules remain owned by Release Management.
 
-The overlapping deterministic Vitest unit and coverage suites execute once with coverage enabled. Substitution requires equal collected test inventories, propagated injected failure, and preserved skip enforcement. Repeat that admission proof when suite-selection or command inputs change. Routine execution reuses the admitted recipe instead of collecting both inventories again. Root JavaScript tests, native Cargo tests, schema/catalog validation, builds, and artifact gates remain distinct required executions. A missing suite, changed inventory, collection failure, undeclared skip, or failed command fails the gate. Coverage executes on every exact P; cycle-only coverage is insufficient. Disjoint file partitions may execute a large package in parallel. Each partition must prove equal unit and coverage case collection and exact executed-case cardinality; the complete union must equal the unpartitioned file inventory. Duplicate case names retain their multiplicity. Merge the actual coverage blobs and apply the original whole-package thresholds before the aggregate passes. Per-partition threshold deferral is allowed only with that required merge; it cannot admit an incomplete, failing or skipped partition. [Release cadence](../decisions/20261014-release_cadence.md) records this decision.
+The overlapping deterministic Vitest unit and coverage suites execute once with coverage enabled. Substitution requires equal collected test inventories, propagated injected failure, and preserved skip enforcement. Repeat that admission proof when suite-selection or command inputs change. Routine execution reuses the admitted recipe instead of collecting both inventories again. Root JavaScript tests, native Cargo tests, schema/catalog validation, builds, and artifact gates remain distinct required executions. Container-subject script tests retain exactly one full host lane; the root shard file list and complete aggregate prove selection without duplication. Every distinct non-Vitest package test command uses the same command-failure and undeclared-skip guard as Vitest coverage and root tests. A missing suite, changed inventory, collection failure, undeclared skip, or failed command fails the gate. Coverage executes on every exact P; cycle-only coverage is insufficient. Disjoint file partitions may execute a large package in parallel. Each partition must prove equal unit and coverage case collection and exact executed-case cardinality; the complete union must equal the unpartitioned file inventory. Duplicate case names retain their multiplicity. Merge the actual coverage blobs and apply the original whole-package thresholds before the aggregate passes. Per-partition threshold deferral is allowed only with that required merge; it cannot admit an incomplete, failing, or skipped partition. [Release cadence](../decisions/20261014-release_cadence.md) records this decision.
 
-Release candidates may additionally run staging smoke tests and packaged-route browser tests through explicit manual workflows.
+Release candidates may additionally run staging smoke tests and packaged-route browser tests through explicit manual workflows. Beyond the nonpublishing Worker-image and stopped-server recovery smokes already promoted by Release Management, no additional staging or Docker smoke check is mandatory until a concrete deployment target or release-candidate policy promotes a stable, cheap proof.
 
-L4 Web e2e and L6 story acceptance should stay out of automatic PR and tag gates unless a later release policy explicitly promotes a subset. L4 also runs on every main push and the manual `release-gate` and `full` selections; L6 remains manual.
+L4 Web e2e and L6 story acceptance stay out of automatic PR and tag gates unless a later release policy explicitly promotes a subset. L4 also runs on every main push and the manual `release-gate` and `full` selections; L6 remains manual.
 
-Real provider and real subscription tests should run only under explicit environment-variable opt-in and should be reported separately from the deterministic gate.
+Real provider and real subscription tests run only under explicit environment-variable opt-in and are reported separately from the deterministic gate.
 
-Failed release gates should publish enough artifacts to identify the layer that failed without requiring a local rerun.
+Failed release gates must publish enough artifacts to identify the layer that failed without requiring a local rerun.
 
 ## Naming And Placement
 
@@ -378,65 +344,20 @@ High-risk areas include protocol parsers, SSE replay, auth/session boundaries, r
 
 For worker scheduling, high-risk coverage means launch authorization, exact worker identity, no concurrent duplicate launch, secret-safe control, and the documented restart fallback. It does not mean testing hypothetical fairness, multi-target placement, every legal state permutation, or every crash instruction boundary under the current single-target baseline.
 
-## Current Implementation Projection
+## Implementation
 
-The repository implements the established layer gates and deterministic test placement:
+- Root verification scripts and CI workflow: `../../package.json`, `../../.github/workflows/ci.yml`, `scripts/release-ci-reuse.mjs`.
+- NanoCore unit, black-box e2e, and opt-in real-provider/worker suites: `apps/nanocore/src/`, `apps/nanocore/e2e/`.
+- Web unit and Playwright browser e2e suites: `apps/web/src/`, `apps/web/e2e/`.
+- Protocol, schema, and client conformance suites: `packages/protocol/`, `packages/app-api-schemas/`, `packages/core-client/`, `packages/config-schema/`.
+- Smoke, Docker, host-qualification, and repository-contract suites: `tests/smoke/`, `scripts/docker/`, `tests/support/`, `tests/`.
 
-- Root scripts expose the accepted deterministic gates: `verify`, `verify:l0-l2`, `verify:release`, `verify:full`, `test:e2e:nano`, `test:e2e:web`, and `test:smoke`, plus explicitly gated real-provider and real-worker L3 commands.
-- Every main push triggers the nonpublishing release gate. `test:ci` projects the complete coverage-owner shards and retains native suites, the root Node inventory and recursive script Node tests under Release Management. Container-subject script tests retain exactly one full host lane; the root shard file list and complete aggregate prove selection without duplication. Every distinct non-Vitest package test command uses the same command-failure and undeclared-skip guard as Vitest coverage and root tests. The existing `.github/workflows/ci.yml` implements lightweight PR checks, main-push and tag-triggered release gate jobs for L0-L2, NanoCore e2e, and smoke, plus manual workflow dispatch for `pr-check`, `l0-l2`, `nano-core-e2e`, `web-e2e`, `smoke`, `release-gate`, `full`, and `registry-admission`. The complete L0-L2 shards and the `nano-core-e2e` tag job use `scripts/release-ci-reuse.mjs` to implement the exact-commit reuse contract above, with the host aggregate requiring the complete shard set. The helper admits both workflow-dispatch and main-push evidence, per job and exact commit. Main pushes also run the manual release gate's nonpublishing Worker-image and stopped-server recovery smoke; L4 runs on main and the manual release/full gates; publication jobs remain tag-only.
-- Unit, contract, NanoCore e2e, Web e2e, and smoke entrypoints exist in the repository-owned locations named by this spec. The Web staging e2e script `e2e:staging` and `apps/web/e2e/staging/` do not exist, although `scripts/docker/e2e-app.sh` still calls the script (#516).
-- `apps/web/e2e/openkit-local-self-check.spec.ts` is the C01 L4 entrypoint under `pnpm -w test:e2e:web`. The C02-C04 L3 entrypoints are `apps/nanocore/e2e/pi-ai-real-provider-runner.mjs`, `apps/nanocore/e2e/task-mode-real-worker-runner.mjs`, and `apps/nanocore/e2e/provider-subscription-real-lifecycle-runner.mjs`, behind `pnpm -w test:e2e:real-provider`, `pnpm -w test:e2e:real-task-mode`, and `pnpm -w test:e2e:real-subscription` respectively. Two further opt-in L3 entrypoints exist: `pnpm -w test:e2e:real-codex`, which runs `apps/nanocore/vitest.e2e.real-codex.config.ts`, and `apps/nanocore/e2e/worker-responses-relay-real-provider-runner.mjs`, which has no root script and is described in `apps/nanocore/README.md`.
-- L6 story artifacts remain outside the deterministic gate and follow `docs/specs/20260529-l6_story_acceptance.md`.
+## Implementation Gaps
 
-Remaining L6 work is owned by `docs/specs/20260529-l6_story_acceptance.md`.
+- Web staging browser e2e entrypoint and directory - `pnpm --filter @openkit/web e2e:staging` and `apps/web/e2e/staging/` do not exist, although `scripts/docker/e2e-app.sh` still calls `e2e:staging` - #516
 
-## Risks And Mitigations
+## Decisions
 
-Risk: Browser e2e becomes slow and flaky.
-
-Mitigation: Keep selectors accessible, isolate data roots, use dynamic ports, avoid sleeps, collect traces, and move non-UI assertions down to L1 or L2.
-
-Risk: NanoCore e2e accidentally depends on local host state.
-
-Mitigation: Use temporary data roots, fake providers, deterministic workers, and explicit opt-in flags for real Codex or real provider tests.
-
-Risk: AI story tests become non-reproducible.
-
-Mitigation: Apply the L6 acceptance contract, including its reduction rule.
-
-Risk: Contract drift appears first in Web e2e.
-
-Mitigation: Add schema and core-client tests before browser tests, and keep route payload builders validated against shared schemas.
-
-Risk: Smoke tests grow into slow e2e suites.
-
-Mitigation: Limit smoke tests to boot, health, route availability, and minimal render checks.
-
-Risk: The suite pins implementation, so correct refactors fail many tests and builders bend production to satisfy them.
-
-Mitigation: Apply Test Authority And Lifecycle: behavior-constraining assertions, setup through owners and shared builders, retirement by an independent test author, and the reported test-to-production ratio.
-
-Risk: Release gates become too expensive for normal development.
-
-Mitigation: Keep PR gates to the lightweight repository check and isolated installer gate, require L0-L3 evidence plus fresh L5 on main pushes, version tags, or explicit manual release-gate dispatch, allowing exact-commit reuse for tag L0-L3 where the release owner permits it, and include L4 in main and complete manual release gates, and reserve L6, staging, real-provider, and real-subscription tests for explicit manual workflows.
-
-## Resolved Decisions
-
-- Stable, fixed browser workflows belong at L4; stable, fixed NanoCore or public process workflows belong at L3.
-- No additional staging or Docker smoke check is mandatory beyond the current built-artifact smoke job until a concrete deployment target or release-candidate policy promotes it.
-
-## Deferred Work
-
-- Promote only stable and cheap mechanical proofs into L3, L4, or explicit release-candidate manual gates.
-- Revisit mandatory staging or Docker smoke gates only when a concrete packaged deployment path becomes release-critical.
-
-## Related Docs
-
-- `README.md`
-- `docs/verification-instruments.md`
-- `docs/change-execution.md`
-- `docs/app-api.md`
-- `docs/specs/20260529-l6_story_acceptance.md`
-- `docs/specs/20260528-core_client_boundary.md`
-- `apps/nanocore/README.md`
-- `apps/web/README.md`
+- [Test Authority, Behavior-Constraining Checks, And Retirement](../decisions/20261022-test_authority_and_retirement.md)
+- [L2 Proves Boundary Behavior With Real Producers And Consumers](../decisions/20260923-l2_includes_composition_tests.md)
+- [Release Cadence, Tag Reuse, And Single-Pass Coverage](../decisions/20261014-release_cadence.md)

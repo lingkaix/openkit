@@ -61,7 +61,7 @@ Initial self-review inspected the actual Core/bootstrap diff and document bytes,
 
 ## SQLite Scale And Lifetime Ruling
 
-The engineer accepted the [write/space budget](../../specs/20261019-durable_execution_and_control_store.md#write-and-space-budget) and [deferred Thread cold tier](../../specs/20261019-durable_execution_and_control_store.md#deferred-thread-cold-tier). First-release creation/deletion/Thread-partitioning rules make later archive support additive; Light App databases are included in OpenKit's SQLite settings, opaque MCP databases are not. Load measurements select limits, not this documentation. Thread-database partitioning remains an unbuilt escape hatch; archive implementation remains after `v0.1.0`, estimated at 3–5 engineer-days. The replacement inventory is unchanged. This ruling adds no implementation or measured performance claim.
+The engineer accepted the [write/space budget](../../specs/20261019-durable_execution_and_control_store.md#write-and-space-budget) and deferred Thread cold tier (issue #380). First-release creation/deletion/Thread-partitioning rules make later archive support additive; Light App databases are included in OpenKit's SQLite settings, opaque MCP databases are not. Load measurements select limits, not this documentation. Thread-database partitioning remains an unbuilt escape hatch; archive implementation remains after `v0.1.0`, estimated at 3–5 engineer-days. The replacement inventory is unchanged. This ruling adds no implementation or measured performance claim.
 
 ## Review Correction And Compression Transfer
 

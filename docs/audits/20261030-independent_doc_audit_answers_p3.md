@@ -127,13 +127,13 @@ None. Q-198 is DOC: the absent operations are additive and follow v0.1.0 under [
 [NBE]: ../specs/20260909-knowledge_notebook_editing.md
 [RTK]: ../specs/20261014-retrieval_kernel.md
 [WCP]: ../specs/20260703-worker_context_package.md
-[SIE]: ../specs/20260710-self_improvement_evaluation_loop.md
+[SIE]: ../specs/20260909-personal_memory_and_knowledge_learning.md#reflection-and-improvement
 [GKD]: ../specs/20260908-generative_kernel_data_operations.md
 [GUI]: ../specs/20260908-generative_ui_interaction.md
 [TST]: ../specs/20260529-test_strategy.md
 [L6]: ../specs/20260529-l6_story_acceptance.md
 [VCA]: ../specs/20260719-verification_calibration.md
-[ERM]: ../specs/20260811-execution_residue_measurement.md
+[ERM]: ../specs/20260719-verification_calibration.md#execution-residue
 [DFC]: ../documentation-model.md#fields
 [REL]: ../specs/20260829-release_management.md
 [PDA]: ../specs/20260909-persistent_deployment_acceptance.md

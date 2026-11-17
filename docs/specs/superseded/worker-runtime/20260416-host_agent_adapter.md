@@ -2,8 +2,8 @@
 status: Superseded
 implementation: N/A
 status-changed: 2026-07-03
-current-guidance: "`docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`"
-decision-evidence: "`docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`"
+current-guidance: "`docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-durable_scheduler_design.md#scale-limits`, `docs/specs/20260703-agent_manifest_aep_resolution.md`"
+decision-evidence: "`docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-durable_scheduler_design.md#scale-limits`, `docs/specs/20260703-agent_manifest_aep_resolution.md`"
 ---
 # Host Agent Adapter For NanoCore
 

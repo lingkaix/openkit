@@ -2,102 +2,21 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: "2026-10-08"
 aspect: work-model
 ---
 # Human Attention And Intervention Model
 
-## Owns
-
-This spec owns the implementation-facing model for human attention in OpenKit workflows, including approval gates, elicitation gates, review and acceptance, Action Center projections, artifact review, recovery choices, and budget choices.
-
-## Does Not Own
-
-This spec does not own the stable core definitions for work, protocol records, communication routing, worker runtime execution, policy enforcement, vault secret handling, UI component layout, or database schemas. It does not own the Goal, Goal completion, or a Goal steering queue. `docs/specs/20261002-goal.md` owns the Goal. Pending Requests owns Plan approval and completion acceptance.
-
-## Core References
-
-- `docs/core/work-model.md`
-- `docs/core/communication.md`
-- `docs/core/protocol.md`
-- `docs/core/policy.md`
-- `docs/core/vault.md`
-- `docs/core/evidence.md`
-
-## Summary
-
-OpenKit needs a clear human-in-the-loop model that covers more than approval prompts.
-
-The product should treat human involvement as `human attention` first, then route each concrete interaction through the smallest stable primitive that fits: approval gates, elicitation gates, steering input, or review and acceptance.
-
-The core protocol should stay small.
-
-It should keep approval and user-input requests as pending requests that never pause a Turn, with blocking derived from Thread state as [Pending Requests](20260930-pending_requests.md) defines, keep the request kind as the branch point between approval and question UI, refuse ordinary input with `409 thread_busy` while a Turn is non-terminal except through the explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) operation, and keep review, redo, and refinement attached to their exact owning records and ordinary Turns.
-
-The app layer may expose a richer Action Center that combines pending approvals, including Plan approval and completion acceptance, questions, blocked work, artifact reviews, authorized budget decisions, and recovery choices into one product surface.
-
-Those Action Center rows are projections over existing protocol records, app-local runtime records, and future review or checkpoint records.
-
-## Current Implementation Projection
-
-The V1 NanoCore implementation exposes the main app-local surfaces through unified Action Center rows, version-owned Artifact Reviews, pending Workspace Sync Reviews, knowledge proposal projections, and interrupted-worker recovery choices through product-facing read models. Interrupted-worker rows derive from the exact terminal scheduler, Turn, AgentSession, backend-cleanup, capacity-release, checkpoint, and mode-owner predicate; only eligible rows expose retry. A missing Goal removed by the accepted deletion is known absence and does not by itself remove an otherwise eligible Task retry. Contradictory non-Goal lineage still exposes inspection and guidance without an executable action. A version-owned Artifact Review is the decision owner for an ordinary exact Artifact version, while a durable Workspace Sync Review owns only its staged workspace changes and passes exactly `accepted`, `needs_refinement`, `rejected`, or `blocked`. Action Center keeps the generic Artifact Review projection inspect-only until the Stage 5 client dispatcher lands; direct decisions already use only the versioned owner route. An exact Artifact related to both owner families remains one inspect-only `recovery_required` risk row, and both direct decision routes fail closed. The generic unversioned Artifact Review route and generic Core Artifact metadata mutation route remain absent.
-
-Goal completion is the responsible person's acceptance of one exact completion candidate through a Pending Request. A worker completion or a review verdict does not terminalize the Goal. Action Center shows that request with the other pending approvals. It does not own a Goal Review record, and the last Task does not close the Goal. The replacement Goal implementation has landed and the legacy Goal Review route is removed.
-
-The core protocol still stays small. Pending approval and user-input requests, ordinary steering input, and review turns remain the stable mapping. Action Center rows remain App API projections until dogfooding proves which fields should become long-term contracts.
-
-Current implementation gaps include budget decisions, vault grants, adapter-native checkpoint resume, the Stage 5 Artifact Review client dispatcher, and broader cross-channel review semantics.
-
-## Goals / Non-goals
-
-Goals:
-
-- Define the common human attention and intervention modes for OpenKit.
-- Preserve the `Workspace -> Thread -> Turn -> Item[]` backbone.
-- Keep `ApprovalRequest` focused on permission, safety, budget, credential, irreversible, and external side-effect decisions.
-- Keep agent questions, Plan Mode questions, and elicitation flows separate from approvals.
-- Keep steering as user input during active work, not as a separate core object.
-- Refuse ordinary input submitted while a Turn is non-terminal with `409 thread_busy` before writes, except the exact [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) contract. A Goal work-intent edit is recorded on the Goal and does not by itself change a running worker.
-- Define how artifact review, result acceptance, redo, and refinement map to existing product concepts without authorizing a generic reviewer loop.
-- List typical product scenarios so implementation work can test against realistic user flows.
-- Establish which concepts belong in core protocol, which belong in NanoCore app-local runtime state, and which belong in Web read models.
-
-Non-goals:
-
-- Do not introduce `HumanAttention`, `TaskRun`, `AgentRun`, or a new execution graph as stable core objects.
-- Do not add a new turn status such as `awaiting_approval`, `awaiting_question`, `needs_review`, or `blocked_by_review`.
-- Do not make UI clients implement queueing, safe-point selection, retry promotion, or active-turn routing.
-- Do not require every non-blocking user message to pause the worker.
-- Do not promote the app-local Action Center, review flow, queue storage, or sustained-mode loop into stable core protocol objects.
-- Do not promote app-local worker envelope state into `packages/protocol` until dogfooding proves the stable shape.
-
-## Background
-
-The current core model already has the right foundation.
-
-`docs/core/work-model.md` defines steering as user input during active work, not a separate core object.
-
-`docs/core/communication.md` says there is no separate Core concept for steer messages and that clients never own routing, pending delivery, retry promotion, or safe-point rules. Core applies those mechanics only where an owning specification authorizes them.
-
-`docs/core/protocol.md` defines approval and user-input requests as item-backed pending requests that do not change the status of the Turn that raised them; clients branch by the request kind and item type.
-
-`docs/specs/superseded/human-attention/20260515-codex_user_input_bridge.md` records the original separate `user-input-request` and `user-input-response` item types for Codex app-server questions.
-
-`docs/specs/20260531-worker_turn_reliability_envelope.md` records the existing worker checkpoint and stop primitives and identifies its generic user or runtime follow-up queues as implementation divergence. This specification does not own a Goal steering queue.
-
-The missing product layer is a unified vocabulary for when and why a human should intervene.
-
-Without that vocabulary, approval, question, steer, queue, review, blocked, retry, and budget decisions can become overlapping UI concepts even when the core protocol is clean.
+This specification owns the four human-attention kinds and the Action Center projection of actionable work.
 
 ## Decision
 
-`docs/core/work-model.md` owns the four human-attention modes and their stable product meanings. This specification maps those modes to concrete protocol, persistence, Action Center, delivery, and recovery behavior.
+`docs/core/work-model.md` owns the four human-attention kinds and their stable product meanings. This specification maps those kinds to concrete protocol, persistence, Action Center, delivery, and recovery behavior.
 
 For example, a Task or checkpoint owner may produce an elicitation gate for a missing choice; a selected path may require an approval gate for additional cost or side effects; a later worker Turn may then produce an Artifact Review through its existing owner.
 
 Composition is expected.
 
-The four modes are product semantics, not four new core protocol objects.
+The four human-attention kinds are product semantics, not four new core protocol objects.
 
 Core protocol keeps these stable rules:
 
@@ -106,9 +25,9 @@ Core protocol keeps these stable rules:
 - An elicitation request uses a `user-input-request` item.
 - Active-turn steering is submitted as ordinary input and recorded as normal user-message or equivalent item history.
 - Review, redo, and refinement use the exact Review owner and create ordinary traceable Turns where its specification authorizes follow-up work; this rule does not authorize a generic review loop.
-- UI clients and adapters submit ordinary input and render authoritative Items and Turn events. They do not invent a delivery queue. Ordinary busy input while a Turn is non-terminal returns `409 thread_busy` before writes; explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) uses its exact-target contract.
+- UI clients and adapters submit ordinary input and render authoritative Items and Turn events. They do not invent a delivery queue. Ordinary busy input while a Turn is non-terminal returns `409 thread_busy` before writes; explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) uses its exact-target contract. The protocol does not add `HumanAttention`, `TaskRun`, `AgentRun`, or a Turn status `awaiting_approval`, `awaiting_question`, `needs_review`, or `blocked_by_review`.
 
-The app layer may expose an `Action Center` read model that groups pending human attention across those modes.
+The app layer may expose an `Action Center` read model that groups pending human attention across those kinds.
 
 ## Terminology
 
@@ -152,7 +71,7 @@ Approval means authorize or deny.
 
 Questions such as "which branch should I use?", "should I keep trying?", "which artifact should be accepted?", or "which reviewer should inspect this?" are elicitations, not approvals.
 
-This distinction keeps audit semantics clean and avoids approval fatigue.
+This distinction keeps audit semantics clean and avoids approval fatigue. Prefer accepted defaults, policy, and request-scoped constraints for a low-risk case. Reserve a blocking gate for a decision that materially affects outcome, safety, cost, or correctness. This preference adds no Policy grant, automatic answer, deadline, or steering mechanism.
 
 ### Make Review Ownership Visible
 
@@ -160,7 +79,7 @@ The user should see the reviewed output, exact owning Review record, decision, r
 
 ### Allow Composed Human Flows
 
-Many real interactions combine modes.
+Many real interactions combine kinds.
 
 A review failure can produce an elicitation.
 
@@ -198,7 +117,7 @@ Core records an `approval-decision` item.
 
 The response is recorded in the pending request at once. For an approval that governs a call, the gateway re-evaluates and executes the captured call inside the response command and records its disposition. A later Turn on the same Thread delivers the decision and the disposition to the requesting agent. Grant and denial never close the requesting AgentSession and never terminalize the raising Turn. An unproved or contradictory request is inspect-only `recovery_required` and accepts no approval response; the approval record alone never resumes an AgentSession.
 
-The internal Assistant MCP branch is owned by `20260909-internal_agent_resource_integration.md` and its conversation outcome by `20260704-chat_mode_assistant.md`. It has no Worker AgentSession, AEP, Harness interrupt, or waiting checkpoint. A pending request is actionable from the durable request, captured binding, request Item, no-contact denied CapabilityCall, and current authority in [Pending Requests](20260930-pending_requests.md); it does not require a stopped invocation or an `approval-required` `conversation.submit` receipt. A command that exists keeps its own receipt and immutable replay, and a completed receipt is not rewritten. Missing or contradictory evidence is inspect-only `recovery_required`. This branch is not implemented. When it is, an approval-required call returns a pending result immediately, the Assistant run may continue and complete with its ordinary result, a grant executes the captured operation once through the pending owner's single synchronous re-evaluation, grant, and claim inside the response command, and the outcome is delivered on a later Assistant Turn; the decision itself invokes no provider, and the model never re-issues the call. A Chat clarification is a pending user-input request whose answer is recorded by `user_input.answer` and starts a later Assistant Turn.
+The internal Assistant MCP branch is owned by `20260909-internal_agent_resource_integration.md` and its conversation outcome by `20260704-chat_mode_assistant.md`. It has no Worker AgentSession, AEP, Harness interrupt, or waiting checkpoint. A pending request is actionable from the durable request, captured binding, request Item, no-contact denied CapabilityCall, and current authority in [Pending Requests](20260930-pending_requests.md); it does not require a stopped invocation or an `approval-required` `conversation.submit` receipt. A command that exists keeps its own receipt and immutable replay, and a completed receipt is not rewritten. Missing or contradictory evidence is inspect-only `recovery_required`. [Internal Agent Resource Integration](20260909-internal_agent_resource_integration.md) tracks that missing branch. An approval-required call on that branch returns a pending result immediately, the Assistant run may continue and complete with its ordinary result, a grant executes the captured operation once through the pending owner's single synchronous re-evaluation, grant, and claim inside the response command, and the outcome is delivered on a later Assistant Turn; the decision itself invokes no provider, and the model never re-issues the call. A Chat clarification is a pending user-input request whose answer is recorded by `user_input.answer` and starts a later Assistant Turn.
 
 ### Product Requirements
 
@@ -220,7 +139,7 @@ Additional choices such as grant once, grant for this turn, grant for this works
 - The worker lacks required business context.
 - The task has ambiguous scope or conflicting goals.
 - The agent needs a user answer before later work can use it, and records that need as a pending user-input request without pausing the Turn.
-- A checkpoint recovery path needs the user to inspect, use the request-bound retry-after-interruption command, review partial Artifacts, or request guidance.
+- A checkpoint recovery path needs the user to inspect the thread, or to use the eligible retry command when its Task continuation predicate holds.
 - A provider, agent, or config problem needs the user to choose a fallback.
 - An automation produced a draft that needs a human choice before follow-up.
 - A knowledge proposal needs accept, reject, or defer; changed candidate bytes require a new proposal.
@@ -243,7 +162,7 @@ Plan Mode should use elicitation gates when the agent needs structured user inpu
 
 The agent should emit bounded question schema rather than arbitrary UI.
 
-The current question shape supports `id`, `header`, `question`, `options`, `isOther`, and `isSecret`.
+`UserInputQuestionSchema` and `UserInputQuestionOptionSchema` in `packages/protocol/src/models/item.ts` own the question shape.
 
 No additional response mode, recommendation, default, validation, file-selection, or multi-select field is authorized by this specification. A demonstrated product need requires an accepted schema update with ownership, persistence, replay, redaction, and client fallback rules before implementation.
 
@@ -337,7 +256,7 @@ Decision values are local to their owning record rather than members of one reus
 
 For a Workspace Sync Review, `WorkspaceSyncReviewItem.artifactId` is the immutable relationship to its backing Artifact presentation and evidence snapshot. That Artifact is not a generic Artifact Review owner, and its availability or immutable snapshot status cannot replace the durable Workspace Sync Review. Action Center and routes MUST classify the relationship from the stored Workspace Sync Review lineage, never an Artifact id prefix or a verdict inferred from parsed Artifact content.
 
-A `workspace_review` action MUST submit `accepted`, `needs_refinement`, `rejected`, or `blocked` directly to the S49 workspace-sync review decision route. It MUST NOT submit `accept`, `reject`, `defer`, `deferred`, or `redo`, use the generic Artifact Review route, or translate between the two vocabularies. Only `accepted` may authorize S49 apply; the other three values record no workspace mutation.
+A `workspace_review` action MUST submit `accepted`, `needs_refinement`, `rejected`, or `blocked` directly to the S49 workspace-sync review decision route. It MUST NOT submit `accept`, `reject`, `defer`, `deferred`, or `redo`, use the generic Artifact Review route, or translate between the two vocabularies. Only `accepted` may authorize S49 apply; the other three values record no workspace mutation. The exact durable `artifactId` relationship excludes that backing Artifact from generic Artifact Review. No id prefix, artifact-only fallback, or verdict translation selects or mutates Workspace Sync Review authority. The Core Client exposes no generic unversioned Artifact Review method or cross-owner alias. A Workspace Sync Review decision remains available when its backing Artifact is unavailable. No Artifact route decides or applies that review. Action Center keeps a generic Artifact Review projection inspect-only. Direct decisions use the versioned owner route. An exact Artifact related to both an Artifact Review and a Workspace Sync Review remains one inspect-only `recovery_required` row, and both direct decision routes fail closed.
 
 S16 now owns Material proposal and writeback vocabulary on one exact version-owned Artifact Review. An accepted non-null proposal applies through the existing Material owners and one Workspace SQLite transaction, while refinement and redo reserve the exact follow-up Turn; Workspace Sync Review defines no alias, apply semantics, verdict translation, or fallback for that path.
 
@@ -359,7 +278,7 @@ Escalation triggers create human attention from runtime, quality, budget, policy
 
 They do not define new core protocol objects.
 
-They route into one or more of the four interaction modes.
+They route into one or more of the four human-attention kinds. `require_escalation` remains a durable permission-decision outcome. Goal-scoped refusal can wake the Coordinator. No distinct higher-authority Action Center kind is added.
 
 ### Budget Threshold Or Exhaustion
 
@@ -385,7 +304,7 @@ After restart or crash, Core may know that a turn stopped at a checkpoint.
 
 The Action Center shows an interrupted-worker recovery row only after the exact Turn, execution attempt, exact backend cleanup/fencing, worker-control revocation, and exclusion-release predicate in `docs/specs/20260531-worker_turn_reliability_envelope.md` is complete. A checkpoint alone, a live worker, `awaiting-reconnect`, or cleanup-owned `needs-evidence` state produces no interrupted-worker row.
 
-The row may expose only actions already authorized by the checkpoint and mode owners. Adapter resume requires a replay-safe resume contract. `worker.recovery.retry` appears only when its stricter Task continuation predicate also holds, and it closes the authoritatively interrupted checkpoint without rewriting the old Turn. A later Task command owns replacement execution. A missing Goal removed by the accepted deletion is known absence and does not by itself hide an otherwise eligible Task retry. Contradictory non-Goal lineage remains inspection and guidance only. The row otherwise offers inspect, review partial Artifacts, request guidance, or a terminal action only where an owning command exists.
+The row may expose only actions already authorized by the checkpoint and mode owners. There is no replacement compatibility path for the removed `ask_user` fallback, and this projection adds no interruption producer. Adapter resume requires a replay-safe resume contract. Retry stays unavailable while the scheduler lease is `awaiting-reconnect` or retains `needs-evidence`. Complete exact closeout tuples close once. An incomplete or contradictory tuple stays `recovery_required`. Caller-selected terminal cleanup cannot replace final-status and complete closeout proof. `worker.recovery.retry` appears only when its stricter Task continuation predicate also holds, and it closes the authoritatively interrupted checkpoint without rewriting the old Turn. A later Task command owns replacement execution. A missing Goal removed by the accepted deletion is known absence and does not by itself hide an otherwise eligible Task retry. Contradictory non-Goal lineage remains inspection only. The produced row offers thread inspection and eligible `worker.recovery.retry`. It does not project request guidance or a disabled native resume.
 
 This is primarily an elicitation gate or Action Center recovery action.
 
@@ -393,9 +312,9 @@ This is primarily an elicitation gate or Action Center recovery action.
 
 Ordinary input submitted while a Thread has a non-terminal Turn returns `409 thread_busy` before an Item or command write. Explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) has its own admitted Item and result; neither path creates queued follow-up input.
 
-The direct-Turn path must not present the rejected input as queued or recoverable.
+The direct-Turn path must not present the rejected input as queued or recoverable. No generic pending-user-turn record and no generic mutation or recovery projection is added.
 
-Action Center shows pending approvals and questions. It does not show a Goal steering row.
+Action Center shows pending approvals and questions. Queued scheduler admission projects `pending_input`. That row is not a Goal steering record. A denied admission may expose retry. A queued or denied admission may expose cancellation. Action Center does not show a Goal steering row.
 
 Goal adds no steering owner or terminal follow-up conversion; linked workers use [Task live steer](20260704-task_mode_worker_delegation.md#live-steer).
 
@@ -409,7 +328,7 @@ User choices may include refresh readiness, switch agent, reload config, fix set
 
 A completed task does not trigger an implicit Knowledge Manager hook. Reusable knowledge enters review only through an explicit governed proposal command with source references and the existing Knowledge Proposal owner.
 
-Knowledge proposals should be reviewable, source-traceable, rejectable, and deferable; changed candidate bytes require a new proposal.
+Knowledge proposals should be reviewable, source-traceable, rejectable, and deferable; changed candidate bytes require a new proposal. There is no `edited` decision and no mutation of a pending proposal. An accepted Claim may guide only the ordinary complete `knowledge.proposal-draft` command.
 
 This is review and acceptance, not approval, unless storing the knowledge affects a sensitive policy boundary.
 
@@ -431,7 +350,7 @@ If the user sends a correction unprompted while work is active, it is steering.
 
 The following scenarios should guide implementation, tests, and product review.
 
-| Scenario | Trigger | Primary mode | Secondary mode | Expected handling |
+| Scenario | Trigger | Primary kind | Secondary kind | Expected handling |
 | --- | --- | --- | --- | --- |
 | Approve shell command outside policy | Worker requests command escalation | Approval Gate | None | Create a pending approval with the captured command; the worker continues; after a grant the effect is re-evaluated and executed once, and a later Turn delivers the outcome. |
 | Confirm destructive file deletion | Worker plans irreversible delete | Approval Gate | Review And Acceptance | Show affected paths and reason, deny should stop or reroute safely. |
@@ -462,52 +381,14 @@ The following scenarios should guide implementation, tests, and product review.
 
 The Action Center should be a unified attention list.
 
-It should not collapse every row into approval semantics.
+It should not collapse every row into approval semantics. Every actionable row links to its owning thread, turn, item, artifact, checkpoint, or agent-readiness context.
 
-Candidate row kinds:
+`packages/app-api-schemas/src/action-center.ts` names `HumanAttentionKind`. Current producers emit `approval`, `question`, `artifact_review`, `workspace_review`, `blocked_turn`, `checkpoint_recovery`, `pending_input`, and `knowledge_review`. `pending_input` is queued scheduler admission. It is not a Goal steering record. `agent_readiness`, `review_cap`, `external_side_effect`, and `budget` are not current produced kinds. `refresh_agent_readiness` and `switch_agent` are not live Action Center effects. The budget path below stays the accepted rule. Projection sources are the pending approval or user-input Item, a queued or denied scheduler admission, a worker checkpoint, a version-owned Artifact Review, a durable Workspace Sync Review, an explicit Knowledge proposal, a Workspace recovery blocker, a rejected worker-control request, and an unresolved scheduler execution attempt.
 
-```ts
-type HumanAttentionKind =
-  | 'approval'
-  | 'question'
-  | 'artifact_review'
-  | 'workspace_review'
-  | 'blocked_turn'
-  | 'review_cap'
-  | 'budget'
-  | 'checkpoint_recovery'
-  | 'pending_input'
-  | 'agent_readiness'
-  | 'knowledge_review'
-  | 'external_side_effect';
-```
+The same artifact names `HumanAttentionRow`. Its members include `reviewId`, `artifactVersion`, `origin`, `questionSummary`, `ageSeconds`, `turnsSince`, and `blocking`, plus the identity, text, severity, source, and action members. `origin` is the nullable derived attribution object admitted by `HumanAttentionRowSchema`. It is derived from the exact source Turn. Its initiating actor comes from that Turn's `triggerActor`. Missing, oversize, or foreign attribution becomes null. Viewer relationships stay nullable. A question row can carry `questionSummary`: the ordered question text of the canonical `user-input-request` Item, at most 1,024 serialized UTF-8 bytes, with a `truncated` flag. NanoCore sets it only when all of these are true: the pending request record and its request Item do not contradict; no question is secret; the viewer can currently read the exact source Thread. In every other case the value is null. A row carries no prompt, option label, answer value, other Item text, Material bytes, claim field or receipt body. The field does not change whether the row is actionable. `ageSeconds`, `turnsSince`, and `blocking` are derived. They are not a stored deadline. Encoded JSON string bounds are title 512, summary 1,024, recommended action 512, action label 128, and reason 256. Origin actor JSON is at most 512. A truncated summary is not the exact approval effect. Four declared actions have no row builder: `open_turn`, `run_follow_up`, `request_refinement`, and `resume_from_checkpoint`. They are not current row actions.
+
 
 The explicit V1 self-improvement loop reuses `knowledge_review` for its existing pending Knowledge Proposal. It does not add an `improvement_proposal` attention kind, Harness evidence prerequisite, or parallel approval lifecycle. Proposal reversal remains an owner-local Knowledge operation rather than an Action Center decision kind.
-
-Candidate row fields:
-
-```ts
-interface HumanAttentionRow {
-  id: string;
-  kind: HumanAttentionKind;
-  workspaceId: string;
-  threadId?: string;
-  turnId?: string;
-  itemId?: string;
-  artifactId?: string;
-  goalId?: string;
-  taskId?: string;
-  title: string;
-  summary: string;
-  severity: 'info' | 'needs_input' | 'blocked' | 'risk';
-  createdAt: string;
-  recommendedAction?: string;
-  source: HumanAttentionSource;
-  actions: HumanAttentionAction[];
-}
-```
-
-This should begin as `@openkit/app-api-schemas` and NanoCore read-model work.
 
 Only rows backed by stable product concepts should expose their product-visible Core IDs. AgentSession identity is excluded from this ordinary App API projection.
 
@@ -516,30 +397,6 @@ An approval row is actionable only when its pending request is `pending`, its re
 Rows backed by app-local runtime state should expose opaque app-local IDs until the shape stabilizes.
 
 Decision cards identify the recorded actor and matching request, distinguish a human decision from a repository-policy grant, and expose the recorded time with its provenance. A request whose raising Turn ended stays pending. An incomplete current-version record stays inspect-only `recovery_required` and is not repaired into a decision. Missing human reasons and client/channel evidence remain explicitly unrecorded; the current browser session cannot supply historical attribution. These are read-only Item projections under the protocol and audit owners, not a new decision ledger.
-
-## Implementation Mapping
-
-The first implementation is tracked as an App API and product read-model slice, not a core protocol expansion.
-
-`packages/app-api-schemas/src/action-center.ts` owns the runtime-neutral `HumanAttentionKind`, `HumanAttentionSeverity`, `HumanAttentionActionKind`, `HumanAttentionAction`, `HumanAttentionSource`, `HumanAttentionRow`, `ListHumanAttentionResponse`. Plan approval and completion acceptance use the pending-request projection. The legacy Goal Review decision schema is not current guidance and leaves with the new Goal implementation. `packages/app-api-schemas/src/workspace-sync.ts` owns the separate durable Workspace Sync Review decision vocabulary.
-
-The canonical target row kind for reusable knowledge proposal review is `knowledge_review`.
-
-`packages/core-client/src/operations.ts` exposes `client.operations['attention.list']({ workspaceId })` against `POST /api/app/operations/attention.list`.
-
-`packages/core-client/src/operations.ts` exposes version-owned Artifact Review listing and decisions through `client.operations['artifact.review-list']({ workspaceId, artifactId })` and `client.operations['artifact.review.decide']({ workspaceId, artifactId, artifactVersion, ...input })`, each taking one selector object. The former `client.app.listArtifactReviews` and `client.app.submitArtifactReviewDecision` methods are absent. `packages/core-client/src/operations.ts` exposes durable Workspace Sync Review decisions through `client.operations['sync.review-decide']({ workspaceId, reviewId, ...input })`. Plan approval and completion acceptance use the pending-request commands. The Core Client exposes no generic unversioned Artifact Review method or cross-owner alias.
-
-`apps/nanocore/src/action-center.ts` owns the unified projection over protocol approval/user-input items, scheduler admissions, worker checkpoints, version-owned Artifact Reviews, durable Workspace Sync Reviews, failed/offline agent readiness, explicit knowledge proposal records, Workspace recovery blockers (source `workspace_recovery`), rejected worker-control requests (source `worker_control_rejection`), and unresolved scheduler execution attempts (source `execution_attempt`). A pending-input row is not current guidance. Ordinary busy input returns `409 thread_busy` before writes; [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) owns its separate Item/result projection. The legacy pending-input projection leaves with the new Goal implementation. The projection contains no Item text, Material bytes or tuple, claim fields, receipt body, or independently mutable status.
-
-A Goal steering operation or queue is not current guidance; linked running workers use [Task live steer](20260704-task_mode_worker_delegation.md#live-steer). The deleted generic queue, delivery engine, recovery routes, import/export family, runner, and former user-facing stdio MCP facade remain absent. That absence does not prohibit the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md), and it does not restore those deleted queues or engines. Ordinary busy input returns `409 thread_busy` before writes and does not mutate a live worker. Explicit live steer follows only the Task owner.
-
-`require_escalation` remains a durable permission-decision outcome, but no current enforcement point produces an escalation workflow or higher-authority Action Center row. Generic pending-request approvals remain governed elsewhere in this specification and by [Pending Requests](20260930-pending_requests.md).
-
-The shared operation dispatcher in `apps/nanocore/src/app.ts` serves these operations through their owners (`attention.list` in `apps/nanocore/src/conversation-operation-implementations.ts`, the Artifact Review operations in `apps/nanocore/src/artifact-operations.ts`, and `sync.review-decide` in `apps/nanocore/src/runtime/workspace-sync-operations.ts`): it serves the unified Action Center endpoint, lists version-owned Artifact Reviews under `POST /api/app/operations/artifact.review-list`, records their exact decisions under `POST /api/app/operations/artifact.review.decide`, records durable Workspace Sync Review decisions under `POST /api/app/operations/sync.review-decide`, and resolves knowledge proposal decisions. A legacy Goal Review route is not current guidance and leaves with the new Goal implementation. The generic unversioned Artifact Review route, Artifact-to-Workspace Review fallback, and verdict translation remain deleted.
-
-The Web `/attention` route (`apps/web/src/app/routes.tsx`) renders a first-class Action Center page, keeps inline thread approval/question cards for local context, links human attention to the Action Center, and dispatches enabled approval, agent-readiness, and durable Workspace Sync Review actions through `@openkit/core-client`. Plan approval and completion acceptance are pending requests.
-
-Knowledge proposal accept, reject, and defer decisions are the accepted Action Center projection. Changing a proposal title, summary, or content requires a new proposal; there is no `edited` decision and no mutation of a pending proposal. Claim-promotion and worker-control proposal-summary producers remain absent, and accepted Claims may guide only the ordinary complete `knowledge.proposal-draft` command. Durable Workspace Sync Review rows expose executable `accepted`, `needs_refinement`, `rejected`, and `blocked` decisions through App API, `@openkit/core-client`, and OpenAPI even when the backing Artifact is unavailable; no Artifact route can decide or apply them. Goal Review rows are not current guidance. Completion acceptance is a Pending Request. Direct Task Gate response closeout, exact replay, and boot checkpoint classification use the existing Item, Turn, AgentSession, checkpoint, mode, backend, lease, capacity, and receipt owners; complete exact tuples close once, while incomplete or contradictory tuples remain `recovery_required`. If an AEP worker reports accepted `blocked` plus `ask_user` without a transport that names an exact Core Gate, NanoCore preserves that worker outcome, completes backend cleanup, marks the Product Turn and AgentSession `interrupted` with `worker_human_gate_unavailable`, and returns `recovery_required`; it does not synthesize a Gate or Action Center row. The mode checkpoint stays `preparing` with null `stopReason` and `workerSessionId`, so boot leaves it discoverable as `recovery_required` instead of claiming `waiting_for_user`. Capacity is released with `needs-evidence` only when that exact interruption, accepted final status, cleaned backend session, and releasing lease lineage agree, and restart uses the same bounded interruption projection. Interrupted-worker checkpoint rows expose inspection, request-human guidance, and retry-to-ready, while caller-selected terminal checkpoint cleanup remains absent because caller input cannot replace final-status and complete closeout proof. Retry remains unavailable while the scheduler lease is `awaiting-reconnect` or retains `needs-evidence`. Adapter-native in-flight AgentSession resume remains disabled because the checkpoint read model is not a replay instruction. Generic pending-user-turn persistence and every generic mutation or recovery projection remain absent. Goal pending-input, its delivery projection, and terminal follow-up are not current guidance. Scheduler admission rows expose retry for denied admissions and cancellation for queued or denied admissions through the same public surfaces. Known non-goals for this implementation are checkpoint AgentSession resume execution and Agent switching execution from the Action Center; those actions remain disabled with explicit reasons when projected. The agent communication redesign replaces Task Gate closeout with pending requests and removes the old `ask_user` fallback and `waiting_for_user` checkpoint without a compatibility path. Plan approval and completion acceptance are pending requests. The old Goal execution path is not current guidance and leaves with the new Goal implementation. [Goal](20261002-goal.md) owns that path.
 
 ## Layer Ownership
 
@@ -572,7 +429,6 @@ NanoCore owns app-local runtime behavior:
 - Runtime-owned system steering input to the next Coordinator decision.
 - No Goal pending-input record. Ordinary busy input returns `409 thread_busy` before writes; live-steer delivery follows [Task live steer](20260704-task_mode_worker_delegation.md#live-steer).
 - Runtime checkpoints.
-- Review cap detection.
 - Budget stop handling.
 - Action Center read-model projection.
 
@@ -588,78 +444,26 @@ Web owns product rendering:
 - Action Center list and filters.
 - Checkpoint and recovery projections authorized by their owning specifications.
 
-## Implementation Guidance
+## Scope
 
-## Deferred / Future Work
+- Pending Request lifecycle and Discord responses belong to [Pending Requests](20260930-pending_requests.md).
+- Live worker delivery belongs to [Task mode](20260704-task_mode_worker_delegation.md).
+- Review verdict vocabularies belong to storage layout, Workspace sync, and Knowledge governance.
+- Goal lifecycle belongs to [Goal](20261002-goal.md).
+- Vault secret transport belongs to [Vault](../core/vault.md).
 
-- Adapter-safe in-flight checkpoint session resume remains disabled until checkpoint rows carry an explicit replay-safe resume contract.
-- Agent switching from Action Center rows remains disabled until agent replacement policy, session compatibility, and worker package refresh semantics are explicit.
-- A worker-reviewer iteration loop, review cap, reviewer-specific `needs_attention` or `block` verdicts, and cap-recovery UI or L6 stories are non-authorizing until one accepted specification defines their authority, lifecycle, replay, and stop predicates.
+## Implementation
 
-## Testing Strategy
+- `apps/nanocore/src/`
+- `apps/web/src/`
+- `packages/app-api-schemas/src/`
+- `packages/core-client/src/`
 
-Protocol tests should assert that no Turn status pauses for a request, that a request stays decidable after its raising Turn ends, and that approval and user-input requests stay distinct.
+## Implementation Gaps
 
-NanoCore unit tests prove ordinary busy-input rejection before writes, consume [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) acceptance for explicit live input, and prove checkpoint recovery projection and Workspace-scoped Action Center filtering. They do not require a Goal pending-input row. Every deleted generic route, queue, and recovery action remains absent.
+- A budget threshold recomputes one request-scoped constraint for the next Coordinator decision - On main, no attention producer builds that path - #784
+- A visible secret question states the future Vault reason and stays disabled - On main, the row uses a shorter disabled reason - #733
 
-Workspace-review tests MUST prove that `workspace_review` actions submit only `accepted`, `needs_refinement`, `rejected`, or `blocked` to the exact S49 route; only `accepted` enters apply; the exact durable `artifactId` relationship excludes its backing Artifact from generic Artifact Review; and no id prefix, artifact-only fallback, or verdict translation selects or mutates Workspace Sync Review authority.
+## Decisions
 
-NanoCore black-box tests cover ordinary submission to a busy Thread returning `thread_busy` before writes and explicit [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) with its distinct delivery results. They do not require a Goal worker to accept queued input.
-
-Web component tests should cover distinct rendering for approval, question, artifact review, existing recovery, and authorized budget rows. Pending-input rendering is not required.
-
-Web e2e tests should cover a realistic flow where ordinary busy input is refused with `thread_busy`, explicit Task live steer displays native acceptance separately from consumption, a Goal card edit does not change the running worker, the user answers a question, approves a sensitive action, reviews an artifact, and requests refinement in the same thread.
-
-## Risks & Mitigations
-
-Risk: every human attention row becomes an approval prompt.
-
-Mitigation: keep approval for authorization only and use elicitation or review for ordinary choices.
-
-Risk: UI clients accidentally implement queueing semantics.
-
-Mitigation: keep delivery policy as command intent and make Core/NanoCore emit authoritative item and state updates.
-
-Risk: steering input disappears during crashes.
-
-Mitigation: ordinary busy input is rejected before writes; admitted [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) preserves its Item and result or explicit uncertainty under the Task owner. There is no pending steering row. A Goal work-intent edit is durable on the Goal.
-
-Risk: review verdicts become a premature protocol object.
-
-Mitigation: keep each verdict app-local to its existing Artifact, Workspace, or Knowledge Proposal owner until repeated real use proves product-independent semantics worth promoting.
-
-Risk: Action Center hides thread narrative.
-
-Mitigation: every actionable row should link back to thread, turn, item, artifact, checkpoint, or agent readiness context.
-
-Risk: users are asked too many questions.
-
-Mitigation: prefer accepted defaults, policy, and request-scoped mode constraints for low-risk cases; reserve blocking gates for decisions that materially affect outcome, safety, cost, or correctness.
-
-## Resolved Decisions
-
-- Steering has no Goal safe-point owner or generic queue. [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) owns exact running-worker delivery; ordinary busy input returns `409 thread_busy` before writes.
-- Artifact review should produce durable app-local verdict or decision records before any item-backed or protocol-level review object is introduced.
-- The current dogfooding Action Center row kinds are approval, question, artifact review, workspace review, blocked turn, authorized budget choice, checkpoint recovery, agent readiness, knowledge review, and external side effect. Pending input is not a row kind. Plan approval and completion acceptance are approvals.
-- Plan Mode controls beyond the current bounded question schema require an accepted App API or app-local schema first; multi-select, recommended options, validation hints, file selection, and secret-answer affordances are not currently authorized, while core protocol keeps only the stable user-input gate semantics.
-- Secret elicitation must use a vault-backed or explicitly safe app-local path. Normal item payloads, prompts, diagnostics, Knowledge Store records, and context packages must not carry secret answers.
-- Budget handling is elicitation when the user chooses scope, priority, a permitted model downgrade, wrap-up, or an owner-supported pause; it becomes approval when the decision authorizes spending quota, cost, risk, credentials, or external side effects.
-- There is no pending-steering queue surface. Ordinary busy input is refused before writes; [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) projects accepted, refused, or unknown delivery.
-
-## Deferred Work
-
-- Define structured secret-answer transport only with the Vault model, not through ordinary user-input item payloads.
-- Promote review verdicts to item-backed protocol records only after app-local artifact review and workspace review prove a stable shape.
-- Keep the accepted S16 version-keyed Artifact Review vocabulary owner-local; do not promote it into protocol records or inherit Workspace Sync Review decisions without a separately accepted contract.
-
-## Links
-
-- [Core Work Model](../core/work-model.md)
-- [Core Communication Model](../core/communication.md)
-- [Core Protocol](../core/protocol.md)
-- [Codex User Input Bridge](./superseded/human-attention/20260515-codex_user_input_bridge.md)
-- [Codex Approval Bridge](./superseded/human-attention/20260515-codex_approval_bridge.md)
-- [NanoCore Lightweight Agents](./superseded/agent-workflow/20260526-nano_core_lightweight_agents.md)
-- [Sustained Mode](./superseded/agent-workflow/20260525-sustained_mode_long_running_agent.md)
-- [Worker Turn Reliability Envelope](./20260531-worker_turn_reliability_envelope.md)
-- [Self-Improvement Evaluation Loop](./20260710-self_improvement_evaluation_loop.md)
+- [Earlier-version data](../decisions/20260930-earlier_version_data_not_carried.md) is not read by this projection.

@@ -278,8 +278,8 @@ The primary derived these details inside the accepted decisions. A fresh Pi Cons
 **Owners added by the review:**
 - [Git write workflow](../../specs/retired/20260704-git_write_workflow.md);
 - [internal agent resource integration](../../specs/20260909-internal_agent_resource_integration.md), with human attention's internal branch;
-- [worker credential access declarations](../../specs/20260709-worker_credential_access_declarations.md);
-- [runtime scheduling scale](../../specs/20260703-runtime_scheduling_scale.md), for concurrent active Turns across distinct AgentSessions, which it already accepts but which is not implemented;
+- [worker credential access declarations](../../specs/20260703-vault_secret_injection.md#credential-access-declarations);
+- [runtime scheduling scale](../../specs/20260703-durable_scheduler_design.md#scale-limits), for concurrent active Turns across distinct AgentSessions, which it already accepts but which is not implemented;
 - the [pending-requests specification](../../specs/20260930-pending_requests.md), which supersedes the [historical Delayed User Input Draft](../../specs/superseded/20260921-delayed_user_input.md).
 
 **Handoff acceptance inventory.** For each of Codex, Pi, OpenCode V2, and DeepSeek Harness, the code-level evidence covers the items below. The proofs use the real runtime distributions against synthetic local providers, never a synthetic runtime:

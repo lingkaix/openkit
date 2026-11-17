@@ -19,7 +19,7 @@ This non-authorizing record documents the development team's review of the third
 
 The amendment corrects an implementation observation. It adds no requirement and needs no new design decision.
 
-- [Generative Kernel Data Operations](../specs/20260908-generative_kernel_data_operations.md#current-implementation-projection): replace `As of 2026-10-16, NanoCore implements` with `NanoCore implements`. The expanded inventory includes operations first added in commit `883bde287` on 2026-10-17. Removing the earlier date makes the projection accurate.
+- [Generative Kernel Data Operations](../specs/20260908-generative_kernel_data_operations.md#public-and-agent-projections): replace `As of 2026-10-16, NanoCore implements` with `NanoCore implements`. The expanded inventory includes operations first added in commit `883bde287` on 2026-10-17. Removing the earlier date makes the projection accurate.
 
 The 11 rename-only hunks contain 12 exact `Permissions` to `Policy` substitutions. Their link targets and other text are unchanged. The specifications guide adds 19 existing targets, joins eight whitespace-only hunks, and corrects three lifecycle-field hunks under the [Field Contract](../documentation-model.md#fields).
 
@@ -32,7 +32,7 @@ The audit records stay unchanged as dated history. No post-base staleness was fo
 
 ## Open Contradictions
 
-The unchanged [Generative Kernel initial delivery boundary](../specs/20260908-generative_kernel_data_operations.md#initial-delivery-boundary) still requires Workspace export/import coverage. The [online Workspace snapshots and recovery decision](../decisions/20261027-online_workspace_snapshots_and_recovery.md) removes ordinary Workspace import while preserving separate Knowledge Package and Light App interchange. The held [Workspace backup specification](../specs/20260704-workspace_backup_export_import.md) marks its old import criteria as retiring implementation.
+The unchanged [Generative Kernel initial delivery boundary](../specs/20260908-generative_kernel_data_operations.md#retirement-missing-dependencies-and-recovery) still requires Workspace export/import coverage. The [online Workspace snapshots and recovery decision](../decisions/20261027-online_workspace_snapshots_and_recovery.md) removes ordinary Workspace import while preserving separate Knowledge Package and Light App interchange. The held [Workspace backup specification](../specs/20260704-workspace_backup_export_import.md) marks its old import criteria as retiring implementation.
 
 At the reviewed baseline, the import route and helper still existed in `apps/nanocore/src/storage/workspace-transfer-routes.ts`. Their presence supports an implementation observation, not continued contract authority. The contradiction remains with the owning work; this landing does not resolve it or restore ordinary import.
 

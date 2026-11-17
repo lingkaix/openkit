@@ -26,7 +26,7 @@ Source: the engineer's additional instruction during this task on 2026-09-05. Pe
 - `docs/change-execution.md` owns delegated coordination and evidence retention.
 - `docs/documentation-model.md` owns document authority, lifecycle, and reading.
 - `docs/verification-instruments.md` owns deciding evidence and harness admission.
-- `docs/specs/20260719-verification_calibration.md` and `docs/specs/20260811-execution_residue_measurement.md` own independent measurement.
+- `docs/specs/20260719-verification_calibration.md` and `docs/specs/20260719-verification_calibration.md#execution-residue` own independent measurement.
 - `.codex/agents/` and `.codex/config.toml` project the registered execution capabilities; local test and document guides own their workflows.
 
 ## Working Checkpoint

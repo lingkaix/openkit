@@ -81,7 +81,7 @@ User-scoped VaultReference metadata already uses Core: `apps/nanocore/src/vault/
 [CV]: ../core/vault.md
 [SI]: ../specs/20260703-vault_secret_injection.md
 [VB]: ../specs/20260704-vault_backend_implementation.md
-[CAD]: ../specs/20260709-worker_credential_access_declarations.md
+[CAD]: ../specs/20260703-vault_secret_injection.md#credential-access-declarations
 [NIC]: ../specs/20260628-nanocore_config_identity_contract.md
 [MAR]: ../specs/20260703-agent_manifest_aep_resolution.md
 [DSC]: ../specs/20260704-workspace_data_source_catalog.md

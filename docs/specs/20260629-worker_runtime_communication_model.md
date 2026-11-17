@@ -1,761 +1,234 @@
 ---
 status: Accepted
-implementation: Partial
 kind: boundary
-updated: "2026-10-06"
+implementation: Partial
 aspect: sandbox
 ---
 # Worker Runtime Communication Model
 
-## Retained Files And Adapter Closure
+This specification owns the shared communication boundary, four-plane projection, Sandbox Integration role, internal execution backend port, and resident runtime adapter base contract between NanoCore and governed container Workers.
 
-[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns opaque data retention across environment replacement. Adapter close releases active native-handle authority and proves writer absence; it no longer removes retained native data. Per-Turn transport and control cleanup remains separate from retained native data. This changes filesystem lifetime, not the normalization and acceptance boundary. The accepted design replaces the five-operation per-Turn launch contract and bounded-turn result parsing with one resident adapter contract.
+## Scope
 
-## Summary
+Owns:
 
-OpenKit removes host execution as a real Worker Agent runtime and standardizes real Worker Agent execution on governed container runtimes.
+- The shared container communication model, topology-hiding Worker contract, and projection of Worker communication onto the four Core planes (Control, Workspace, Artifact, and Capability).
+- The division of carriage, sandbox-local normalization, and NanoCore canonical acceptance, plus the shared resident runtime adapter base contract and static extensibility boundary.
+- The internal NanoCore execution backend port (`submit`, `inspect`, `cancel`, `release`), NanoHost adapter liveness, and schema-versus-adapter package dependency direction.
+- The shared exact injected-value comparison rule across Worker Artifact submissions, transcript Item admission, and outside workspace scans.
 
-NanoCore owns product state, policy, review, audit, verification, and validated record import.
+Does not own:
 
-Every real Worker Agent runs inside a governed container runtime and communicates only through sandbox-local Sandbox Integration interfaces, regardless of whether NanoCore and the NanoHost are co-located or remote.
+- Concrete worker-control envelopes, route schemas, sequences, and private Harness operation wire shapes: [Worker Control Protocol](20260703-worker_control_protocol.md) owns them.
+- Capability route schemas, session loopback credential minting and lifecycle, MCP tool supply, Skill catalog pinning, and Knowledge governance: [Worker Agent Capability](20260703-worker_agent_capability.md), [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md), [Skill Catalog Versioning And Pinning](20260711-skill_catalog_versioning_pinning.md), and [Knowledge Store Governance Rules](20260702-knowledge_store_governance_rules.md) own them.
+- AEP field schemas, manifest resolution, durable scheduling, and workspace staging, review, and apply records: [Agent Environment Package](20260616-agent_environment_package.md), [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md), [Durable Scheduler Design](20260703-durable_scheduler_design.md), and [Workspace Synchronization](20260703-workspace_synchronization.md) own them.
+- NanoHost transport, Runtime Epoch lifecycle, stock OpenShell supervision, RelayStream carriage, workspace data transfer, and sub-agent provenance: [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md), [NanoHost Workspace Data Boundary](20260801-nanohost_workspace_data_boundary.md), and [Worker Runtime Subagent Provenance](20260711-worker_runtime_subagent_provenance.md) own them.
+- Policy evaluation, Vault secret storage and injection, audit and usage storage, and public operator surfaces: [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md), [Vault Secret Injection](20260703-vault_secret_injection.md), [Audit, Usage, And Evidence Records](20260703-audit_usage_evidence_records.md), [Remote MCP Interface](20261002-remote_mcp_interface.md), and [Agent Operator Skill](20260910-agent_operator_skill.md) own them.
 
-Runtime-native differences belong inside the worker container behind Sandbox Integration and its runtime adapter.
+Core: [Runtime Model](../core/runtime-model.md), [Communication](../core/communication.md), [AgentSession](../core/agent-session.md), [Mediation](../core/mediation.md), [Agent Supply](../core/agent-supply.md), [Sandbox](../core/sandbox.md), [Storage](../core/storage.md), [Architecture](../core/architecture.md), [Work Model](../core/work-model.md), [Protocol](../core/protocol.md), [Knowledge](../core/knowledge.md), [Evidence](../core/evidence.md).
 
-NanoCore receives schema-conformant candidate OpenKit worker records, verifies lineage, schema, sequence, policy, digest, and workspace boundaries, and commits accepted records into the `Workspace -> Thread -> Turn -> Item[]` product model.
+Governed container execution is the only product-selectable Worker Agent runtime. Host execution is removed from product selection. NanoCore alone owns product state, policy, review, audit, verification, and canonical record import. Core mode is the fixed two-value contract set `local | server` and is independent of deployment topology. Public App API, remote MCP, Web UI, deployment docs, and status summaries expose only Core mode (`local | server`), Worker runtime (`container`), and one configured NanoHost over stock OpenShell owned privately by NanoHost. No real-host fallback, public host selector, container-placement selector, backend selector, SSH lifecycle target, Gateway origin, or direct sandbox endpoint is exposed. OpenShell policy YAML, sandbox IDs, Gateway internals, raw environment variables, process handles, and Provider secrets MUST NOT become public OpenKit protocol. Remote MCP and the administrator CLI use definition-derived public projections over NanoCore APIs. They MUST NOT expose Worker-side MCP supply or backend-private sandbox controls.
 
-## Execution Backend Port
+Within NanoCore, the execution backend boundary owns canonical AEP import bytes, staged-export validation, policy projection, and eligible output-path admission. [Workspace Synchronization](20260703-workspace_synchronization.md) owns filesystem snapshot, staging, review, and apply records without a second owner. Workspace, Artifact, image, and model byte transfers stay outside the control HTTP/2 session under [NanoHost Workspace Data Boundary](20260801-nanohost_workspace_data_boundary.md) and [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md). Topology-specific data transfer MUST NOT create a second lifecycle channel, a second control path, or public semantic drift. Restart recovery uses the existing control, synchronization, evidence, and scheduling owners without a separate recovery coordinator.
 
-The execution backend port is an internal NanoCore module boundary with exactly `submit`, `inspect`, `cancel`, and `release`. It is neither a public provider API nor a native-runtime Harness. Each backend adapter runs inside the NanoCore process. The NanoHost adapter owns Sandbox, Harness, and binding residency in its own tables behind this port; NanoHost Rust retains its existing epoch and process ownership. The [decision record](../decisions/20261006-execution_backend_port_in_nanocore.md) explains why adaptation stays in NanoCore. Native normalization remains in the sandbox-local runtime adapter and canonical acceptance remains Core's alone.
+Any future Core-command consumer on the internal execution backend port MUST define its own consumer contract under [Durable Scheduler Design](20260703-durable_scheduler_design.md) and [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md). It MUST NOT fabricate a Worker or coerce a Core invocation into a Worker launch package. The `containment` consumer is an explicitly admitted deterministic Core consumer outside notification Turns, never a Worker or a separate backend. [Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) owns its observation-first activation, fixed suspect-only grant, static and cumulative impact and time caps, and exclusions (human identities, shared service principals, and recovery resources). Every new containment effect MUST recheck current authority and caps. Missing, stale, or ambiguous containment scope fails closed.
 
-[Durable Scheduler Design](20260703-durable_scheduler_design.md) owns the unique durable admission and attempt grant. This port creates no separate product state, capacity grant, outcome journal, registry, or recovery lifecycle. Configuration selects the existing backend id; every operation and observation uses that same id with the attempt, immutable input, exact binding when present, and outstanding-operation identity. A reference is opaque correlation evidence, never a parsed physical-capacity key or reusable authorization.
+`packages/worker-protocol` owns canonical worker lineage, schema version, event, transcript, workspace-change, capability-summary, control-envelope, and error schemas. `packages/worker-shim` owns the shared Harness, the static adapter registry, and the resident runtime adapters. NanoCore may import canonical schemas from `packages/worker-protocol` and MUST NOT import runtime-native adapter modules. Container images may import both packages. Codex-native provenance capture is a separate optional verified extension governed by [Worker Runtime Subagent Provenance](20260711-worker_runtime_subagent_provenance.md). It is not a shared adapter operation and creates no provenance requirement for OpenCode, Pi, DeepSeek, or future runtime adapters.
 
-The submission preconditions below are specific to Worker execution today. A future Core-command consumer MUST define its own consumer contract under this port and the existing scheduler and [durable-execution](20261019-durable_execution_and_control_store.md) owners. It MUST NOT fabricate a Worker or coerce a Core invocation into a Worker launch package.
+## Parties
 
-| Operation | Preconditions and postconditions |
-| --- | --- |
-| `submit` | Core has persisted the attempt and immutable launch package, accepted the Workspace baseline, bound one AgentSession, rechecked current authority, and fixed the absolute deadline. The adapter validates its readiness, exact compatibility, and physical bounds before native submission. It returns `not_accepted`, `accepted`, or `unknown`, tied to that exact operation. |
-| `inspect` | Reads the original recorded identity without create, resume, submission, or replay. Returns correlated definite non-acceptance, pending/running/terminal/unknown observations and retained outcome or fencing evidence; resource readiness and native execution readiness remain distinct. |
-| `cancel` | Core has persisted cancellation for the same attempt and revoked new authority. The adapter serializes it against preparation/submission for that identity, prevents a later start when cancellation wins, or stops/fences already accepted work. A stop acknowledgement is not cleanup proof. |
-| `release` | Core supplies the existing required terminal handoff, output, evidence, outside collection, drain, and route-revocation proof. Returns pending, exact proved safe-resident/quiescence or cleanup fence, or unknown. It preserves retained files, native resume evidence, and compatible idle bindings. |
+Every real Worker Agent runs inside a governed container and communicates only through sandbox-local Sandbox Integration interfaces. Runtime-native differences stay inside the worker container behind Sandbox Integration and its runtime adapter regardless of whether NanoCore and NanoHost are co-located or remote. Every supported deployment shares the same Worker records and contract through one configured NanoHost, Runtime Epoch ownership, Sandbox Integration, one stock OpenShell RelayStream, and one standard HTTP/2 session carrying the three sandbox-local route families (`/worker-control/*`, `/inference/*`, and `/capabilities/*`) under [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md). The fixed native HTTP/1 projection at `127.0.0.1:17892` serves authenticated inference and selected MCP requests, and every Worker managed-MCP binding is callable only under active Turn authority.
 
-Before any effect-capable operation, Core records its identity and possible acceptance on the attempt. `not_accepted` proves that submit reserved no resource or work and no outstanding effect of that operation can arrive later; busy qualifies only under that proof. Existing safe resident resources remain owned by the adapter. Accepted preparation or work still pending is `accepted`, never busy. Lost response, timeout, disconnected dependency, missing resource, or ambiguous result is `unknown` until exact inspection proves otherwise. Inspect the original; never resubmit an effect whose response was lost. Conditional ownership rejects stale or conflicting results and keeps exclusion until definite non-acceptance or an exact proved fence. Late results can refine only their original attempt and cannot undo cancellation or reopen closed execution.
+Worker communication projects onto the four fixed Core planes: Control, Workspace, Artifact, and Capability. Inference is a specialization of the Capability plane rather than a fifth plane. Audit and evidence are cross-cutting projections over the four planes rather than additional planes, retaining the existing Policy, CapabilityCall ledger, usage, audit, and Vault owners. The Workspace plane supplies workspace inputs and the Artifact plane returns generated outputs and collected changes over backend data transport rather than the control channel. NanoCore normalizes collected data into canonical `WorkspaceInputSnapshot`, `WorkspaceMaterializationRecord`, `WorkspaceChangeSet`, `StagedWorkspaceReview`, `WorkspaceApplyResult`, `Artifact`, `Evidence`, and Action Center records under [Workspace Synchronization](20260703-workspace_synchronization.md) and [Work Resource Interaction Model](20260713-work_resource_interaction_model.md). The control channel carries only bounded readiness and artifact notices and MUST NOT carry full patches, bundles, artifact files, or raw logs.
 
-Preparation uses the persisted attempt and existing supply and Workspace interfaces inside the adapter before submit; it is not another port verb. Core never infers old cleanup from a new ready report. Restart classifies without effects before listening, then inspects original operations and continues owned cancellation/release through ordinary maintenance. Port termination means attempt closure through its scheduler owner; module/process termination itself proves no execution fence. No separate port-instance creation, durable registration, or retry lifecycle applies.
-
-Acceptance requires one configured id throughout, submit after all durability/baseline/authority gates, definite busy with nothing reserved, lost-response inspection with no duplicate native start, unknown/closing exclusion, exact cancellation races, and release only after the complete barriers and fence. Missing, stale, conflicting, revoked, or unavailable required facts fail closed; backend outcome is never Core product completion.
-
-### Containment Consumer
-
-`containment` is an explicitly admitted deterministic Core consumer outside notification Turns, not a Worker or a new backend. [Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) owns its observation-first activation, fixed suspect-only grant, impact/time/cumulative caps, static bounds and exclusions. Human identities, shared service principals and recovery resources are ineligible. Current authority and caps are mandatory before each new effect. Missing, stale or ambiguous scope fails closed.
-
-Its durable outcome owner is the existing Server control journal under the release-authored `containment` definition. Existing work/input references retain the trusted sensor AuditEvent and exact target; existing permitting-decision/authority references retain the approved template and current decision. Existing operation/invocation and output references bind each effect to its native receipt. [Control-store containment](20261019-durable_execution_and_control_store.md#containment-consumer) owns those tuples. Current Policy is the sole authority for the committed quarantine; native operation receipts remain effect truth. The journal records progress, not a second outcome authority.
-
-The consumer may call only exact Policy quarantine installation, suspect run-credential revocation, Turn interruption/cancellation and exclusively suspect Sandbox drain/route revocation/stop through their existing owners. For backend work it may use `inspect`, `cancel` and `release` against the actual suspect's existing attempt/binding; `submit`, Worker launch, arbitrary commands and fabricated AgentSessions are forbidden. Preserve original backend identity, operation correlation, current checks and cleanup/fence barriers. A stop acknowledgement never proves cleanup. Shared Sandbox/epoch impact requires human A2.
-
-Before contact, the journal commits bounded intent and event/operation correlation. Before the deny, a crash recovers by checking current Policy; absence of a committed deny permits only fresh current-authorized admission. After deny/before stop, keep quarantine and inspect each recorded operation; only a proved never-invoked operation may proceed under current authority/caps. After stop/incomplete acknowledgement, inspect the original native receipt or backend operation; unknown effects never replay blindly. Timeout, delegation loss or monitoring off stops new consumer effects, not quarantine. Independently authorized mandatory cleanup keeps its existing owner. Notice drain remains separate and publication-only.
-
-The mandatory review/escalation deadline uses existing `control.deadlineUnixNano` on a non-effect `human-wait` journal step, linked to the sensor/quarantine. Quarantine Policy omits `notAfter` and `uses`. Missing or late review handling may delay an alarm, never release Policy; the review step extends no action deadline or grant.
-
-No new port verb, queue, record, field or step kind is added; `containment` is the single new retained consumer-definition value. Acceptance includes all three crash boundaries, missing/conflicting receipts, duplicate sensors, deadlines, authority loss, cumulative impact and recovery/alarm progress under flood.
-
-### NanoHost Adapter Liveness
-
-Liveness belongs to the NanoHost backend adapter and is additional to the generic absolute deadline and explicit revocation. Preserve today's heartbeat interval (current default 1 second), heartbeat deadline (current default 30 seconds after the last newly accepted heartbeat), and startup deadline before the first heartbeat (current default 25 minutes after attempt acquisition). These are current defaults, not fixed wire values. Exact duplicate replay is acknowledged under existing fingerprints and never renews liveness; only a new accepted sequence can advance the heartbeat deadline. A runtime cannot extend or pause any deadline to absorb an outage.
-
-Before the first heartbeat the startup deadline applies; afterwards the heartbeat deadline applies. Stale classification refuses new worker-control, inference, and capability routes and holds the attempt's exclusion as needs-evidence until the existing cleanup/fence proof settles. It does not prove cessation, success, failure, or absence of prior effects. The generic absolute deadline remains a separate mandatory refusal predicate on every Core-mediated route.
-
-The existing bounded reconnect window remains (current default five minutes, capped by the attempt's absolute deadline). Core holds the worker process-key hash and refuses routes while awaiting exact process adoption even if the grant is unexpired. Adoption requires the exact process key, product/backend/binding/package lineage, next sequence, deadline, conditional attempt ownership, and predecessor-fenced authoritative NanoHost connection. A wrong reconnect request does not shorten an already armed window; successful exact adoption or its deadline owner alone wins. Reconnect restores the same worker and attempt and never resubmits native work.
-
-The adapter reuses current transport, Integration, and NanoHost lifecycle behavior; it adds no NanoHost Rust stop timer. Core disconnect makes new mediated effects unavailable but is not physical fencing of already accepted work or separately admitted local effects. The heartbeat gate remains equally strict.
-
-## Carriage, Normalization, And Acceptance
-
-Turning worker activity into product records is three distinct jobs with three distinct owners. Conflating any two of them is how either the substrate acquires product authority or the sandbox acquires acceptance authority, so this specification names them separately and assigns each exactly once. The Core rule they realize is the substrate doctrine in `docs/core/runtime-model.md`.
+Turning worker activity into product records is three distinct jobs with three distinct owners:
 
 | Job | Owner | Boundary |
 | --- | --- | --- |
-| **Carriage** — moving well-formed envelopes with their sequence and lineage | Sandbox Integration as the client, the execution runtime as byte-transparent transport | Neither may inspect, authorize, synthesize, retry, reorder, reinterpret, or terminalize a message. The runtime moves bytes and adds no meaning. |
-| **Normalization** — mapping runtime-native activity into OpenKit record shapes | The sandbox-local runtime adapter behind Sandbox Integration | It produces candidates only. It decides no item boundary that NanoCore has not defined, and it MUST NOT be relied on as the integrity boundary. |
-| **Acceptance and storage** — verifying candidates and committing canonical truth | NanoCore alone | Acceptance is a separate act from normalization and may reject any candidate. No other participant may accept, publish, or store canonical product truth. |
+| **Carriage** — moving well-formed envelopes with sequence and lineage | Sandbox Integration as client, execution runtime as byte-transparent transport | Neither may inspect, authorize, synthesize, retry, reorder, reinterpret, or terminalize a message. |
+| **Normalization** — mapping runtime-native activity into OpenKit record shapes | The sandbox-local runtime adapter behind Sandbox Integration | Produces untrusted candidates only, follows Core Item boundaries, and is never an integrity boundary. |
+| **Acceptance and storage** — verifying candidates and committing canonical truth | NanoCore alone | May reject any candidate; no other participant may accept, publish, or store canonical product truth. |
 
-### Normalization Happens In The Least-Trusted Place
+Normalization runs inside the worker sandbox so voluminous, runtime-specific native event streams never cross the control transport. Because the component shaping candidate records runs in the least-trusted environment, a compromised or malfunctioning worker can emit arbitrary well-formed candidates; sandbox-local normalization is never an integrity boundary. Only NanoCore validates candidate lineage, schema, sequence, policy, digest, and workspace boundaries and commits canonical `Workspace -> Thread -> Turn -> Item[]` truth. Sandbox Integration may emit normalized candidate audit and transcript records, and the backend may collect native logs and transport evidence. NanoCore alone verifies and stores product-safe summaries and evidence references. Public App API, remote MCP, and Web UI surfaces expose OpenKit IDs, summaries, digests, Artifact IDs, Review IDs, and suggested actions rather than backend-private internals.
 
-Normalization deliberately runs inside the worker sandbox, because it needs the runtime-native event stream, and that stream is voluminous and runtime-specific. Lifting it out would put raw native events on the control transport, which would exceed the accepted transport bounds and move bytes that are not truth across a boundary whose purpose is to carry only truth-bearing candidates. Keeping it in the sandbox is the correct trade.
+Sandbox Integration owns only outer transport adaptation, injection of resolved local bindings, and runtime-neutral worker supervision inside the container. "Harness" names only the in-Sandbox `openkit-worker-shim` component. Neither Sandbox Integration nor the Harness is a capability gateway, scheduler, policy owner, Provider selector, usage owner, audit owner, or second Core. The selected runtime adapter owns native translation.
 
-The cost of that trade MUST be stated rather than assumed: the component doing the shaping is the least-trusted component in the system. A compromised or malfunctioning worker can emit arbitrary well-formed candidates. Sandbox-side normalization is therefore not an integrity boundary, and NanoCore's verification is the only one.
+### Execution Backend Port
 
-Accordingly, NanoCore MUST verify every candidate against authority it already holds rather than against anything the candidate asserts about itself: exact lineage, monotonic sequence for the sequenced operations, schema conformance, declared digests, workspace boundaries, and the exact adapter identity the resolved launch authority named. A candidate whose adapter identity does not match the one the package snapshot selected is rejected, because a record shaped by an adapter the launch never authorized has unknown provenance regardless of how well-formed it is.
+Inside NanoCore, the execution backend port is an internal module boundary with the four fixed contract verbs `submit`, `inspect`, `cancel`, and `release` ([Execution Backend Port In NanoCore](../decisions/20261006-execution_backend_port_in_nanocore.md)). It is neither a public provider API nor a native-runtime Harness. Each backend adapter runs inside the NanoCore process. The NanoHost backend adapter owns Sandbox, Harness, and binding residency in NanoCore-process tables behind this port, while NanoHost Rust retains Runtime Epoch, stock OpenShell, and process ownership. For the deterministic `containment` consumer, the existing Server control journal under the release-authored `containment` definition in [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md#containment-consumer) retains the trusted sensor AuditEvent, exact target, approved template, current permitting decision, and native operation receipt correlation. Current Policy is the sole authority for the committed quarantine and native operation receipts remain effect truth, while the journal records progress only.
 
-Rejection is truthful and terminal for that candidate. NanoCore MUST NOT repair, coerce, partially accept, or infer a corrected shape, and a rejected candidate MUST NOT be retried into acceptance by resubmission under a different shape. A proved ordinary file-submission refusal is a separate command failure: a corrected new request may capture a new file during the same active Turn without reinterpreting the rejected candidate.
+## Adapter Base Contract
 
-This document is the release-neutral overview for worker runtime communication. Concrete worker-control operations are owned by `docs/specs/20260703-worker_control_protocol.md`. Concrete capability-plane routes are owned by `docs/specs/20260703-worker_agent_capability.md`. Concrete workspace staging and synchronization are owned by `docs/specs/20260703-workspace_synchronization.md`.
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns opaque Thread-private native data retention beneath `/openkit/threads/<threadId>/<harness>/native/` across environment replacement. One resident adapter contract replaces the historical five-operation per-Turn launch contract and has no per-Turn native-launch alternative. Closing a binding (`session.close`) revokes active native-handle authority and proves writer absence while preserving the complete opaque Thread-private native home, including unknown runtime-created files. Per-Turn transport and disposable control-slot cleanup remain separate from retained native data.
 
-## Owns
+[Durable Scheduler Design](20260703-durable_scheduler_design.md) owns durable admission and the execution-attempt grant. The internal execution backend port creates no separate product state, capacity grant, outcome journal, registry, or recovery lifecycle. Configuration selects the existing backend ID. Every port call and observation correlates that backend ID with the attempt, immutable input, binding when present, and outstanding operation ID. Each reference is opaque correlation evidence and grants no physical-capacity key or reusable authority.
 
-- The high-level worker runtime communication model for governed container workers.
-- The projection of worker communication onto Core's closed Control, Workspace, Artifact, and Capability planes.
-- The worker-facing container contract that hides NanoHost deployment topology from Worker Agents.
-- The Sandbox Integration responsibility boundary between worker-runtime adaptation and NanoCore-owned product verification.
-- The Sandbox Integration outer-adapter boundary that projects separate worker-control, inference, and capability protocols onto sandbox-local interfaces.
-- The rule that host execution is not a product Worker Agent runtime.
-- The release-neutral packaging direction for worker protocol schemas, Sandbox Integration, and runtime adapters.
+Every real worker container uses the generic `openkit-worker-shim` entrypoint plus a statically registered runtime adapter; removed runtime-specific and sidecar launch entrypoints stay absent. Runtime-native command and argv construction, event parsing, isolated state-root selection, and lightweight transcript normalization live in worker-side packages. NanoCore retains policy resolution, AEP snapshot creation, canonical verification, durable state, Action Center rows, evidence, and review gates. The static adapter registry lives in `packages/worker-shim` (`codex`, `deepseek`, `opencode`, and `pi`). Production command text is not overridden through environment, the AEP, the image, or a test setting. A test may inject only the private runner or a static adapter. NanoCore knows no native command. Adding a further Worker Agent runtime requires one authored `AgentManifest`, one static worker-side adapter registry entry, and adapter-owned modules or packages (such as a dedicated SDK host package) inside the one multi-runtime Sandbox image ([One Multi-Runtime Worker Image](../decisions/20260930-one_multi_runtime_worker_image.md)). `worker-common` remains the public base image, and a new runtime does not add a deployment leaf image or extend the shared Harness contract. One authored `AgentManifest` supplies the opaque adapter ID, image reference, pull policy, runtime binary IDs and worker-local executable paths, logical-model admission, Sandbox resource limits, Provider and credential requirements, capabilities, and supply compatibility. Nested manifest profiles remain behavior selections rather than runtime records. NanoCore loads and projects these fields generically through `ResolvedAgentSetup` into the immutable AEP. `control.adapter.targetRuntime` alone selects the adapter; runtime kind, image name, environment, deployment, transport, and topology MUST NOT select or infer one. An `AgentManifest` declares no `mode`, `deployment`, or `transport`. Server configuration owns NanoHost identity and deployment, and Worker fields carry no Gateway origin, SSH target, direct NanoCore endpoint, or transport credentials. The one multi-runtime deployment image installs the four registered native runtimes, the generic worker shim, the static adapters, and declared smoke checks, and the runtime is chosen per AgentSession. Concrete native deltas live in [Codex Worker Adapter](20260716-codex_worker_adapter.md), [OpenCode Worker Adapter](20260716-opencode_worker_adapter.md), [Pi Worker Adapter](20260716-pi_worker_adapter.md), and [DeepSeek Worker Adapter](20260930-deepseek_worker_adapter.md).
 
-## Does Not Own
+The release label set is the keys of `WORKER_ADAPTERS` in `packages/worker-shim/src/adapter-registry.ts`. An authored runtime kind string is not that closed set. Where a pin treats a correlated successful empty assistant text as no candidate, the adapter does not fabricate text. Pi and DeepSeek use a native off codec: canonical `none` maps to native `off`, and `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` keep those names, with that same inverse when a native selection is reported. The seven-level enum stays with [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#canonical-enums) and [Agent Environment Package](20260616-agent_environment_package.md). Codex delivers the canonical spelling unchanged, including `none` ([Codex Worker Adapter](20260716-codex_worker_adapter.md#reasoning-effort-delivery)). OpenCode uses its declared `reasoningEffort` variants ([OpenCode Worker Adapter](20260716-opencode_worker_adapter.md#reasoning-effort-delivery)). [Pi Worker Adapter](20260716-pi_worker_adapter.md#reasoning-effort-delivery) and [DeepSeek Worker Adapter](20260930-deepseek_worker_adapter.md#reasoning-effort-delivery) follow the off codec. A native home is initialized only when it is absent, from image defaults, and a populated home is preserved. Unsafe or stale staging refuses. A setup overlay does not prevent a later user plugin from rewriting a protected binding. That later rewrite is outside supported qualification. An unproved native stop is not a clean refusal or a success. A failed close is memoized, and admission, capacity, and Thread fences stay. Native compaction is kept only when it is observed, and exact resume does not duplicate canonical messages.
 
-- Concrete worker-control operation schemas, route semantics, and persistence rules.
-- Concrete worker capability route schemas, metering, and gateway records.
-- AEP schema fields or manifest resolution.
-- Runtime scheduling, warm pools, queueing, capacity, or placement decisions.
-- Workspace synchronization record schemas, staging review, and apply semantics.
-- Permission policy semantics, vault storage, audit storage, usage storage, or Knowledge Store governance.
-- Release plans, environment-specific rollout steps, or change-record lifecycle tracking.
-- NanoHost identity or transport, Runtime Epoch lifecycle, OpenShell supervision, RelayStream feasibility, or route-family wire schemas. The loopback credential lifecycle belongs to [Worker Agent Capability](20260703-worker_agent_capability.md).
+Inside its container, every Worker sees the same local contract:
 
-## Core References
+- `/openkit/sessions/<agent-session-id>/config/package.json`
+- `/openkit/threads/<threadId>/<harness>/capture/<turnId>/events.jsonl`
+- `/openkit/threads/<threadId>/<harness>/capture/<turnId>/items.jsonl`
+- AEP-resolved sandbox-local `/worker-control/*`, `/inference/*`, and `/capabilities/*` bindings and non-secret token references
+- Declared workspace roots and declared output roots
 
-- `docs/core/runtime-model.md`
-- `docs/core/communication.md`
-- `docs/core/agent-session.md`
-- `docs/core/mediation.md`
-- `docs/core/agent-supply.md`
-- `docs/core/sandbox.md`
-- `docs/core/storage.md`
-- `docs/core/architecture.md`
-- `docs/core/work-model.md`
-- `docs/core/protocol.md`
-- `docs/core/knowledge.md`
+The public AEP, Context Package, and trusted-relay upstream-route projection never carry remote topology, raw NanoCore host or data-root paths, OpenShell or Gateway internals, backend upload or download handles, Runtime Epoch identity, or raw secrets. Session-static private runtime-environment delivery remains with [Vault Secret Injection](20260703-vault_secret_injection.md). Host-Managed Subscription Login remains with [Codex Worker Adapter](20260716-codex_worker_adapter.md#host-managed-subscription-login). Neither link authorizes a new secret-delivery path. NanoCore resolves and materializes the immutable AEP snapshot before launch as pre-launch setup rather than a fifth communication plane. The AEP binds lineage, selected runtime, workspace inputs, generated files, Skill references, selected worker-safe MCP references, one preferred logical-model ID, one exact non-empty allowed logical-model set, non-secret local Integration bindings and token references, capability declarations, policy summaries, and backend capability requirements. The AEP supply projection carries stable IDs, versions, digests, allowed runtime families, allowed tools, policy annotations, materialization hints, and secret references without secret values. Every Worker inference request names one member of the immutable allowed model set. NanoCore verifies membership before Gateway dispatch and refuses a missing or disallowed model with typed `worker_logical_model_not_allowed` before any Provider effect, without fallback to another model.
 
-## Goals
+The Harness reads the immutable AEP, materializes only runtime-neutral Skill files and inert MCP metadata, and allocates one private AgentSession control binding with fresh disposable per-Turn output slots. It passes only the preferred logical model, exact allowed logical-model set, Gateway token placeholder, and sandbox-local worker-control and inference bindings to the selected adapter without Provider identity or concrete Provider schema translation. Each adapter MUST prove that its pinned runtime represents the logical-model IDs, local inference endpoint, credential placeholder, and wire protocol without Provider identity; an unsupported runtime or logical-model-catalog pairing fails closed before host admission. Admitted public native environment values are AEP inputs under [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md). Declared private runtime-environment values (`session.open.runtimeEnvironment`) are session-static inside the resident binding under [Vault Secret Injection](20260703-vault_secret_injection.md) and [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md). The adapter derives only runtime-native argv, fixed loopback bindings, protected environment bindings, and state-root paths, and returns no config-artifact files to the shared Harness. Only Codex's secret-free model patch descriptor and Pi's credential-free SDK model descriptor ([Pi Native MCP Discovery](../decisions/20260930-pi_native_mcp_discovery.md)) are permitted adapter-owned exceptions under their adapter specs. Per-Turn route tokens and generated secret-bearing files are forbidden in the native environment. Native configuration keeps the admitted private-home and workspace precedence of [Persistent Worker Volumes](20260910-persistent_worker_volumes.md#native-defaults-and-private-home-placement), while current AEP model, Gateway, MCP, session, credential, and control bindings always win and user-authored files remain intact. Native resources load only inside admitted roots. A collision emits a credential-free warning. Structural capture runs with content off or on. Bodies are admitted only when content is on. Abandoning a stalled finalization keeps accepted observations and does not treat an entered sink call as if it had not happened. Structural sink preparation is bounded before prompt admission. A proved interruption releases settlement within the remaining cleanup allowance even when structural finalization stalls. A native text and image codec projects only its supported subset, records an omission diagnostic, and refuses when text is absent. Any new generated native file-envelope setup requires an explicit specification amendment. When the AEP records a reasoning-effort selection, the adapter delivers that recorded value on its admitted native route before the prompt, following the canonical closed enum, explicit `none` handling, effective-level reporting, omission, retention, and failure rules owned by [Agent Environment Package](20260616-agent_environment_package.md).
 
-- Remove host execution as a product runtime, deployment mode, and communication path.
-- Keep deterministic test fixtures available without treating them as real Worker runtimes.
-- Define one Worker-facing communication contract for every governed container.
-- Keep NanoHost deployment topology outside the Worker Agent behind the NanoHost and Sandbox Integration projection.
-- Require Sandbox Integration in every real worker container.
-- Preserve an already launched worker through a transport loss or a NanoCore restart, and exact end-to-end worker-control reconnect, without creating an alternate control path, replacement worker, replacement sandbox, or replacement session. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively.
-- Move runtime-native command construction, output parsing, isolated state-root selection, and lightweight transcript normalization into worker-side packages.
-- Keep NanoCore focused on policy resolution, Agent Environment Package snapshot creation, canonical record verification, durable state, Action Center, evidence, and review gates.
-- Preserve backend portability for OpenShell first and later Docker, VM, Kubernetes, managed sandbox, or custom worker runtimes.
-- Prepare the design for controlled NanoCore-managed Skill, MCP, Knowledge Store, context, and tool supply without allowing Worker Agents to modify NanoCore-managed supply authority.
-- Keep all worker-produced repository changes behind NanoCore-owned staged review and apply gates.
-- Prove a stable runtime extension boundary for Codex, OpenCode, Pi, and DeepSeek so a further Worker Agent adds only one authored `AgentManifest`, one worker-side adapter registry entry with adapter-owned modules and packages, inside the one multi-runtime Sandbox image. `worker-common` remains the public base. A new runtime does not add a deployment leaf image.
+The resident native runtime host is not relaunched for every Turn. Native runtimes, plugins, extensions, and tool execution run outside the long-lived Integration and Harness process in a dedicated supervised host per binding until shared-host capability and state isolation are proved for that adapter. The shared Harness understands no runtime-native event schema and accepts only adapter-owned continuity proof and adapter-normalized results. Process identity is private execution state and never substitutes for AgentSession identity or native-conversation proof. One Harness may hold multiple resident AgentSession bindings across distinct Threads up to `max(8, maxActiveTurns)` open bindings (with 8 as the current default minimum floor). The Harness admits concurrent active Turns across bindings up to the authored positive safe integer `maxActiveTurns` bound (current default 20) owned by [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations) and [Durable Scheduler Design](20260703-durable_scheduler_design.md), returning a typed `exhaustedBound` refusal when either bound is reached. Each Thread and AgentSession binding retains at most one active Turn and at most one resident current binding. The historical one-active-Turn-per-Harness restriction is ended.
 
-## Primary Extensibility Criterion
+In the resident adapter contract, `session.open` carries `resume: { locator, digest } | null` and resumes only the exact authorized retained reference whose stored digest matches. Adapters MUST NOT fall back to latest-session lookup, directory discovery, title matching, working-directory matching, sibling-Thread state, transcript replay, or a fresh session. Retained native bytes alone grant no continuation or external authority. A new binding may return `pending` only when the pinned native protocol creates its conversation with the first prompt or when the accepted adapter owner explicitly defers native creation until first-Turn setup and route authority arrive. `pending` is never permission for native work requiring an active Turn and is never a fallback for failed resume. The first successful Turn and subsequent exact inspection MUST establish one restricted `ready` handle before the binding becomes reusable. A runtime pin is supported only when its adapter owner and image prove resident multi-Turn context, exact native resume, read-only inspection, session-local state isolation, and persistence-preserving close; native resume failure is explicit. Adapter-normalized lifecycle outcomes carry optional independent local native evidence fields (`nativeTerminal`, `processExited`, `pipesDrained`, `persistencePreservingClose`) where `undefined` means unreported, `false` means evaluated and unproved, and `true` means proved, and none implies another. Inside the admitted Sandbox, residual native permission requests receive the pinned runtime's shortest-lived allow or default confirmation without interrupting the Turn while preserving explicit user-authored native deny rules, with no OpenKit approval or question round trip ([Full Permission Inside The Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md), [Sandbox Full Capability Rulings](../decisions/20261001-sandbox_full_capability_rulings.md)).
 
-> The real outcome is not three adapters. A further Worker Agent must require only one authored `AgentManifest`, one worker-side adapter registry entry with adapter-owned modules and packages, inside the one multi-runtime image. Opaque runtime ids remain. NanoCore gains no runtime-name branch, command builder, native output parser, or image-selection branch for that addition. The accepted lifecycle and Gateway boundaries are part of this contract.
+Raw Turn model output (current default 16,777,216 bytes under [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#worker-raw-output-accounting)), canonical file storage and streaming transfer, and [bounded Context Package model projections](20260703-worker_context_package.md#bounded-model-projection) are three separate accounting domains ([Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md)). Each adapter enforces a 16 MiB (current default) ordinary native stdout, observation, and final-result parser guard and fails closed on overflow. Each adapter retains at most a 16 KiB (current default) redacted diagnostic prefix from each ordinary stdout and stderr stream for the addressed Turn only. The optional Codex provenance stream under [Worker Runtime Subagent Provenance](20260711-worker_runtime_subagent_provenance.md) is separately bounded and is not double-buffered here. Native stdout, final-result, ACP-update, parser, tool-result, and transport guards are resource controls and never debit raw LLM output capacity.
 
-Runtime ids are opaque to NanoCore. A new runtime must not require a NanoCore enum member, runtime-name branch, command builder, native output parser, provider special case, image-selection branch, canonical schema variant, or governance rule.
+## Turn Lifecycle On The Wire
 
-The fourth-runtime test is architectural acceptance, not a later optimization. If a new adapter requires a NanoCore product or governance edit, this boundary has failed even when the worker can execute successfully.
+The production `openkit-worker-shim` binary runs as a zero-argument supervisor that keeps one Integration client alive within the bounded outage budget across multiple resident AgentSession bindings. It has no package-argument or one-shot CLI compatibility entrypoint. The NanoHost execution path reuses a compatible Sandbox and Harness across independent AgentSessions and opens each binding with the Thread's exact resume reference and fresh session loopback credentials. It reuses a resident binding across Turns only after terminal `session.inspect` proves the exact surviving native host and conversation read-only without starting work. It materializes fresh per-Turn AEP and Context Package inputs and refuses unknown adapter IDs at the Harness registry.
 
-The registry and image-catalog entries are static bookkeeping in existing owners. Dynamic adapter discovery, package loading, or a plugin framework is neither required nor permitted by this criterion.
+Every worker-control request carries `/worker-control/*` family-specific token authentication (never accepted on `/inference/*` or `/capabilities/*`) plus Workspace, Thread, Turn, AgentSession, package snapshot, and request lineage when available. Every ordered worker-emitted control record carries a monotonic worker sequence number within its package snapshot and channel. NanoCore deduplicates exact semantic retries, returns idempotency conflicts when a repeated sequence or request ID carries different content, and rejects stale sequence numbers. Sandbox Integration converts adapter-normalized results into schema-conformant candidate records and writes `events.jsonl` and `items.jsonl` below `/openkit/threads/<threadId>/<harness>/capture/<turnId>/`, where `<harness>` is the stable runtime adapter ID (`codex`, `pi`, `opencode`, `deepseek`) rather than a Harness instance ID. Workers submit Artifacts only through built-in work MCP rather than transcript declarations.
 
-## Non-goals
+Live candidate event append uses `WorkerCanonicalEventTypeSchema` in `packages/worker-protocol/src/index.ts`, listed once under [Canonical Enums](20261021-protocol_identifiers_and_enums.md#canonical-enums), and [Worker Control Protocol](20260703-worker_control_protocol.md). NanoCore assigns or validates canonical product IDs; worker-supplied IDs are untrusted candidates unless the schema marks them as stable package-scoped IDs. NanoCore retains rejected-record diagnostics outside product history. Live event append and Turn-end transcript import deduplicate already accepted canonical Items instead of creating duplicates. Under [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#artifact-and-item-lineage), synchronous `work_artifact_submit` derives Artifact identity from the authenticated package, Turn, and submission request ID without a server ordinal or transcript sequence. Exact request and metadata replay returns the complete original Artifact, reference Item, Review, and receipt tuple before another export, changed input conflicts, a modified file or new version requires a new request ID, and Turn closeout neither discovers nor repeats submitted Artifacts.
 
-- Do not keep a host fallback for real Worker execution.
-- Do not expose host execution through product config, the end-user remote MCP interface, Web UI, deployment docs, capability flags, or status summaries.
-- Do not make OpenShell policy YAML, sandbox ids, gateway internals, raw environment variables, process handles, or provider secrets public OpenKit protocol.
-- Do not let a Worker Agent add or replace NanoCore-managed supply or obtain external authority from arbitrary sources. Worker-owned tools and MCP configuration inside the admitted Sandbox are unrestricted by OpenKit; storage and network containment still apply. External traffic follows [Sandbox](../core/sandbox.md) and [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md): Gateway-required integrations remain mediated, while admitted public non-LLM grants and separately authorized non-LLM REST grants retain their respective network and credential contracts. Neither direct route creates NanoCore-managed MCP supply or an upward control route. Approval and audit apply to external systems reached through the Gateway.
-- Do not let a Worker Agent write long-term knowledge, notes, or Knowledge Store records directly.
-- Do not make Sandbox Integration a second NanoCore, a product state owner, a review decision engine, or a generic shell daemon.
-- Do not mix the end-user remote MCP interface with worker-side MCP capability supply.
-- Platform-managed external hosting calls use selected Gateway MCP and its current authorization, configured per-tool approval and audit. Local Git is worker-local work. Native Git push may be explicitly admitted user-space configuration; other external effects retain their own owners.
-- Do not keep historical host runtime configuration shapes as supported product behavior.
+### Adapter Normalized Stop Outcomes
 
-## Runtime Model
+The shared Harness maps the private adapter-normalized stop outcome onto candidate worker-control status and StopReason pairs ([Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md)):
 
-OpenKit separates Core mode from NanoHost deployment topology.
+| Adapter-normalized outcome | Candidate `status` | Candidate `stopReason` | Rule |
+| --- | --- | --- | --- |
+| Positively proved native output or context limit | `blocked` | `length` | Never treated as success because assistant text exists or the host is idle. |
+| Correlated normal completion | `completed` | `completed` | Requires correlated native terminal completion proof. |
+| Correlated OpenKit-requested interruption | `interrupted` | `aborted` | Requires an OpenKit interrupt or cancellation request for the addressed Turn. |
+| Unsolicited runtime self-interruption | `failed` | `error` | Includes native interrupted, cancelled, or aborted results without an OpenKit request, with a bounded product-safe diagnostic. |
 
-Core mode remains:
+Malformed, missing, crashed, or unproved terminal evidence follows the failure and fencing rules in [Errors And Failure](#errors-and-failure). NanoCore alone canonicalizes candidate stop outcomes under [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#worker-turn-envelope). Per-runtime terminal discriminants and caveats live in [Codex](20260716-codex_worker_adapter.md#native-output-mapping), [OpenCode](20260716-opencode_worker_adapter.md#native-output-mapping), [Pi](20260716-pi_worker_adapter.md#native-output-mapping), and [DeepSeek](20260930-deepseek_worker_adapter.md#native-output-mapping).
 
-```text
-local | server
-```
+The shim seals its local transcript and provenance before sending `final_status`. Both `session.close` and Turn cleanup MUST prove native settlement and persistence. Workspace-change capture belongs to NanoHost's outside read-only snapshot scan under [Workspace Synchronization](20260703-workspace_synchronization.md), never in-Sandbox publication at native exit, and Turn-end `file.export` does not wait for process-group absence. Each work-slot snapshot chain starts from Core's accepted base for that slot, returning `recovery_required` when the base is unknown or mismatched. A durable accepted `final_status` closes through the existing backend, worker-Turn checkpoint, Workspace, Turn, execution attempt, and residency owners without a separate settlement coordinator. The next Turn waits until Turn-end collection completes. When exact reconnect adoption succeeds, those same existing checkpoint, AgentSession, and Workspace synchronization records continue terminal observation, evidence collection, review, and cleanup for the same Turn.
 
-The real Worker runtime model is:
+## Control Operations
 
-```text
-Worker runtime: container
-Runtime target: one configured NanoHost
-Container backend: stock OpenShell owned privately by NanoHost
-```
+On the internal NanoCore execution backend port, `submit` and `inspect` obey these contracts (while `cancel` and `release` follow [Errors And Failure](#errors-and-failure)):
 
-NanoCore exposes no worker-runtime, container-placement, backend, SSH lifecycle, Gateway, or sandbox-direct endpoint selector. Internal durable records may retain scheduler placement and backend facts, but those facts are not deployment configuration or caller authority.
+| Operation | Contract |
+| --- | --- |
+| `submit` | Core has persisted the attempt and immutable AEP, accepted the Workspace baseline, bound one AgentSession, rechecked current authority, and fixed the absolute deadline. The backend adapter validates readiness, compatibility, and physical bounds before native dispatch and returns `not_accepted`, `accepted`, or `unknown` bound to that exact operation. |
+| `inspect` | Reads the original recorded operation or binding identity read-only without creating, resuming, submitting, or replaying work. Returns correlated definite non-acceptance, pending/running/terminal/unknown state, and retained outcome or fencing evidence while keeping resource readiness distinct from native execution readiness. |
 
-An AgentManifest owns runtime supply but no `mode`, `deployment`, or `transport`; configured NanoHost identity and deployment remain server configuration. Gateway origin, SSH lifecycle target, direct NanoCore endpoint, and transport credentials are not target manifest or Worker fields.
+### Containment Consumer
 
-Host execution may exist only as deterministic test doubles, fixture executors, or in-process harnesses that cannot be selected through product configuration, the end-user remote MCP interface, Web UI, deployment docs, status summaries, or public capability flags.
+Under [Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12), the deterministic Core `containment` consumer may invoke only exact Policy quarantine installation, suspect run-credential revocation, Turn interruption and cancellation, and exclusively suspect Sandbox drain, route revocation, and stop through their existing owners. For backend work it may call only `inspect`, `cancel`, and `release` against the suspect's actual existing attempt and binding while preserving original backend identity, operation correlation, current authority checks, and cleanup barriers. `submit`, Worker launch, arbitrary commands, and fabricated AgentSessions are forbidden. A stop acknowledgement never proves cleanup, and shared Sandbox or Runtime Epoch impact requires human approval.
 
-## Worker-Facing Contract
+[Worker Control Protocol](20260703-worker_control_protocol.md) owns the worker-control envelope, routes, and event contract. The worker-visible endpoint is the AEP-resolved sandbox-local `/worker-control/*` binding. Sandbox Integration carries `/worker-control/*` over one byte-transparent standard HTTP/2 session inside one stock OpenShell RelayStream, and the worker-control client inside Sandbox Integration alone applies the protocol's retry rules. The control plane is restricted to session lifecycle and bounded control messages and MUST NOT become a generic capability RPC, arbitrary shell, file-transfer channel, or product-state mutation API. Upward worker-to-NanoCore control operations cover heartbeat, artifact notice, candidate event append, final status, supply-refresh acknowledgement, and capability-call notification summaries as defined by [Worker Control Protocol](20260703-worker_control_protocol.md#worker-to-nanocore-messages).
 
-Every real Worker Agent sees the same contract inside its container:
+Downward private Harness control uses `HarnessOperationSchema` in `packages/worker-protocol/src/harness-control.ts`, listed once under [Canonical Enums](20261021-protocol_identifiers_and_enums.md#canonical-enums), and [Worker Control Protocol](20260703-worker_control_protocol.md#harness-control-operations), ending the historical six-operation list and interrupt-only mitigation ([Task Live Steer Rulings](../decisions/20261008-task_live_steer_rulings.md)). Private Harness polling, operation sequencing, and result replay follow [Worker Control Protocol](20260703-worker_control_protocol.md#harness-pull-and-result-envelopes): a received Harness effect is never blindly re-executed, and an unacknowledged command may be re-served or reset only under that owner's exact same-live-owner non-receipt proof and original-wire-slot rules. A separate bound Harness subscription-login exchange carrier exists under [Vault Secret Injection](20260703-vault_secret_injection.md) and [Codex Worker Adapter](20260716-codex_worker_adapter.md) without adding an eighth Harness operation, a worker-selected route, or a second control plane.
 
-```text
-/openkit/sessions/<agent-session-id>/config/package.json
-/openkit/threads/<threadId>/<harness>/capture/<turnId>/events.jsonl
-/openkit/threads/<threadId>/<harness>/capture/<turnId>/items.jsonl
-<AEP-resolved sandbox-local /worker-control/* Integration binding>
-<AEP-resolved sandbox-local /inference/* Integration binding>
-<AEP-resolved sandbox-local /capabilities/* Integration binding when enabled>
-declared workspace roots
-declared output roots
-```
+A later Turn starts on the resident binding via `turn.start`, and a successor AgentSession resumes the exact retained reference via `session.open`. `turn.interrupt` carries purpose `interrupt`, reports the actual addressed native cancellation outcome, and leaves the AgentSession open. Human input requests use [Pending Requests](20260930-pending_requests.md) rather than interrupt mappings, free-text purpose inference is forbidden, and killing a shared native server process group is never a valid shared cancellation proof. `session.close` proves native settlement and persistence without deleting retained native data. `harness.drain` is a Harness admission fence rather than a native drain RPC. Optional resident `turn.steer` follows [Task Mode Worker Delegation](20260704-task_mode_worker_delegation.md#live-steer) and [Worker Control Protocol](20260703-worker_control_protocol.md#live-steer-operation-boundary). An adapter without a qualified native steer mapping omits the handler and the Harness refuses before native contact. When implemented, the adapter returns a three-way `accepted` (repeating the exact Turn, user Item, and SHA-256 digest), `refused` (closed reason), or `unknown` outcome without substituting a new Turn, custom inbox, blind resend, or cancel-then-prompt. Follow-up, arbitrary adapter operations, and capability inference remain absent. Idle credential refusal, Turn-barrier drain, and `session.close` credential destruction belong to [Worker Agent Capability](20260703-worker_agent_capability.md), and sibling-binding credentials are refused.
 
-The Worker Agent should not know whether the container is local or remote.
-
-The Worker Agent should not know raw NanoCore host paths, raw remote gateway URLs, raw OpenShell gateway internals, raw backend upload/download handles, raw secrets, or private data-root paths.
-
-The Worker Agent receives an Agent Environment Package snapshot, local files generated from that snapshot, non-secret sandbox-local route bindings and token references, declared workspace roots, and declared output roots. It never receives a NanoHost credential, raw route token, remote NanoCore or Gateway address, SSH target, Gateway forward, Runtime Epoch identity, upstream MCP topology, or direct sandbox-to-NanoCore endpoint. Every worker AEP enables exactly the three governed MCP operations through `/capabilities/*`, because its resolved MCP supply always includes the built-in servers that [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) supplies without manifest selection; an empty manifest MCP selection does not disable the capability plane.
-
-## Communication Planes
+## Capability And Tool Calls
 
 ### Static Supply Projection
 
-NanoCore resolves agent setup into an Agent Environment Package snapshot before launch.
+NanoCore controls managed Skill and MCP supply by resolving workspace-scoped catalog entries under `packages/app-api-schemas/src/resource-catalog.ts`, [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md), and [Skill Catalog Versioning And Pinning](20260711-skill_catalog_versioning_pinning.md) into the immutable AEP. Workers and Sandbox Integration MUST NOT discover or install NanoCore-managed supply from arbitrary sources at runtime, broaden authority, or project upstream MCP server commands, endpoints, credential references, or secret material into the container. Static supply metadata alone grants no callable tool route. Every managed MCP call requires the active package, selected supply membership, the `/capabilities/*` family credential, and NanoCore Policy evaluation, while public remote MCP and the administrator CLI remain separate paths. Every Worker AEP appends the built-in `openkit-generative` and `openkit-work` MCP supply even when the authored manifest MCP selection is empty. Every Worker package therefore enables `/capabilities/*` and the three fixed governed MCP operations (`mcp.list-servers`, `mcp.list-tools`, and `mcp.call-tool`) without reaching a disabled capability-plane mode. The current selected Skills and MCP are projected separately from independently authored local resources. An empty managed selection does not erase those local resources. NanoCore owns capability routing, policy checks, Vault resolution, redaction, metering, CapabilityCall ledger state, audit summaries, and upstream error normalization.
 
-Static supply is a pre-launch setup projection, not an additional communication plane.
+Sandbox Integration MUST NOT own product records, make final authorization decisions, bypass NanoCore policy checks, read NanoCore private storage directly, install arbitrary packages or credentials, trigger unapproved external side effects, or act as a generic interactive shell. Worker-owned local tools and in-Sandbox MCP configuration remain unrestricted local execution inside Sandbox storage and network containment ([Sandbox](../core/sandbox.md)). That local execution grants no upward control route, unrestricted external download, or modification of NanoCore-managed supply. External traffic follows [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md): Gateway-required integrations remain mediated with per-tool approval and audit, and admitted public or REST non-LLM network grants authorize only their declared endpoint and executable-and-descendant scope without becoming Provider or MCP supply authority. Collected Workspace output grants no hosted-repository mutation authority; platform-managed hosted effects use their Gateway MCP owner, while native Git push remains optional user-space configuration requiring a user-injected credential and admitted `git-receive-pack` egress.
 
-The AEP snapshot carries lineage, selected runtime, workspace inputs, generated files, Skill refs, worker-safe selected MCP supply refs, a preferred logical-model ID, an exact allowed logical-model set, non-secret local Integration bindings and token references, an exact capability declaration, policy summaries, and backend capability requirements. Every admitted worker AEP enables exactly `mcp.list-servers`, `mcp.list-tools`, and `mcp.call-tool` for its resolved MCP supply, which includes the built-ins independently of manifest selection. Every worker inference request names one member of the immutable model set; NanoCore validates membership at the worker inference boundary before Gateway dispatch. A missing or disallowed logical model returns the typed `worker_logical_model_not_allowed` failure without Provider effects, and neither Sandbox Integration nor the runtime adapter sees or selects a concrete route.
+Under [Worker Agent Capability](20260703-worker_agent_capability.md), `session.open` delivers two distinct 43-character session loopback credentials (one for `/inference/*` and one for `/capabilities/*`), and `turn.start` delivers three distinct 43-character per-Turn upstream route tokens (`/worker-control/*`, `/inference/*`, and `/capabilities/*`). The native runtime host receives only the fixed loopback URLs (`http://127.0.0.1:17892/inference/v1` and `http://127.0.0.1:17892/capabilities`) and its two session loopback credentials, never the three upstream Turn tokens or worker-control credentials. Worker inference uses only the trusted logical Gateway relay. Inference authentication, model and Provider scope, bounds, failure semantics, usage, and audit remain independent from control and capability traffic. On that trusted-relay contract the native host receives no upstream Turn token, no worker-control credential, no Provider credential, no Provider endpoint, and no generic direct-Provider fallback, and it gains no broader worker-selected credential access. Host-Managed Subscription Login stays the Codex owner's admitted exception.
 
-The backend materializes the AEP snapshot into the container.
+Sandbox Integration serves the loopback-only HTTP/1 native listener at `127.0.0.1:17892` separately from the stock Supervisor HTTP/2 bridge at `127.0.0.1:17891`. Only after the outer HTTP/2 session is ready may the native listener admit traffic. It accepts only authenticated `POST /inference/*`, `POST /capabilities/mcp/*`, and the narrowly scoped `POST /worker-control/credential-helper` route owned by [Vault Secret Injection](20260703-vault_secret_injection.md) and [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md). It rejects unrelated worker-control paths, absolute-form URIs, unauthenticated calls, and non-`POST` requests locally before opening an outer stream. Local inference requests are bounded to 16 MiB (current default), outer carriage enforces the 2 MiB family in-flight ceiling and 64 KiB maximum HTTP/2 write (current defaults owned by [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md)), and response bodies (including SSE) stream with backpressure and cancellation without local retry or a second bridge. Raw RelayStream carriage stays byte-transparent. At the native HTTP/1 inference boundary, an adapter-registered runtime-hint handler under [Worker Runtime Subagent Provenance](20260711-worker_runtime_subagent_provenance.md) strips caller-supplied `openkit_runtime_hint`, consumes declared native fields or headers, may decode Zstd and reserialize JSON with normalized hint metadata, and updates content headers before forwarding.
 
-The selected worker adapter configures a resident first-party host from resolved AEP inputs, including admitted public native environment values, and derives only protected environment bindings. Argv launch of a one-shot CLI is not the target for Codex, Pi, or OpenCode. Pi discovery follows [Pi Worker Adapter](20260716-pi_worker_adapter.md); the rationale is recorded in [Pi Native MCP Discovery](../decisions/20260930-pi_native_mcp_discovery.md). Each adapter must prove that its pinned runtime can represent the logical-model IDs, local inference endpoint, credential placeholder, and wire protocol without receiving Provider identity. An unsupported runtime or logical-model-catalog pairing fails closed before the host is admitted rather than being normalized, inferred, or replaced.
+Workers intentionally submit one finished file per call through `work_artifact_submit` on the built-in work MCP supply ([Synchronous Submission Of Worker Files](../decisions/20261005-worker_file_synchronous_submission.md)). The call supplies `requestId`, existing Artifact `kind`, non-empty `title`, one canonical absolute POSIX `path`, declared `mediaType`, and at most one `materialProposal` tuple `{ materialId, baseRevisionId, baseContentDigest }`. NanoCore derives producing lineage, physical target, admitted output slot, relative path, capture identity, and byte bound from authenticated context. Each call captures one file via `file.export` during the active Turn without terminal inspection. Success guarantees the exact verified copy captured during that call under [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#file-admission-publication-and-download), and a committed Artifact remains immutable across later edits, Turn failure, or cancellation. Each file transfer enforces the 1,000,000,000-byte per-file admission bound (current default) plus at most one sentinel byte for overflow detection and the source owner's storage reserve, without debiting the 16,777,216-byte (current default) Turn raw-output meter or keeping a SQLite transaction open during capture.
 
-The adapter contract has no adapter-returned config-artifact field. There is one downward standard, the common runtime contract, carried as the Harness operations `session.open`, `session.inspect`, `turn.start`, `turn.interrupt`, `session.close`, and `harness.drain` owned by [Worker Control Protocol](20260703-worker_control_protocol.md). The resident adapter contract is the sole supported path; it has no per-Turn native-launch alternative. The shared Harness materializes only runtime-neutral AEP files and rejects any attempt to introduce adapter-authored files through a launch plan. One adapter receives a private AgentSession control binding plus fresh Turn-local output slots. Native continuation authority is valid until `session.close` and is resumed by a successor. Per-Turn credential slots in the native environment are not part of the contract. Runtime-owned data lives separately in the admitted retained volume and survives close. Any generated file that contains a credential value stays forbidden. These limits grant no config-artifact field or shared native schema and do not let retained configuration override protected current launch bindings. Native defaults and retained placement follow [Persistent Worker Volumes](20260910-persistent_worker_volumes.md#native-defaults-and-private-home-placement), with per-pin loading and precedence owned by the selected adapter. Any additional generated native setup requires an amendment rather than an unowned Harness file envelope. For NanoCore-managed MCP supply, upstream MCP commands, endpoints, credential references, and upstream credentials always remain absent from the worker; worker-owned in-Sandbox configuration and independently admitted public endpoints follow their own owners. For every admitted worker AgentSession, the native host receives that family's session loopback credential and the fixed loopback server URLs, and it does not receive the upstream capability token. Mint and delivery of that credential belong to [Worker Agent Capability](20260703-worker_agent_capability.md).
+Governed `knowledge.ask` and `knowledge.tell` already dispatch through the built-in work MCP supply under [Worker Agent Capability](20260703-worker_agent_capability.md) and [Knowledge Manager Internal Agent Runtime](20260704-knowledge_manager_internal_agent_runtime.md). Any additional dedicated capability family requires its own accepted owner and adds no second control path. Turn initialization may inject selected Knowledge material through the Context Package. Runtime retrieval produces an auditable capability-call summary and a product-visible Item when it affects the conversation or result. Workers MUST NOT write Knowledge Store, note, or knowledge-base storage directly; Knowledge contributions, maintenance delegation, and Action Center review requirements follow [Knowledge Manager Internal Agent Runtime](20260704-knowledge_manager_internal_agent_runtime.md) and [Knowledge Notebook Editing](20260909-knowledge_notebook_editing.md).
 
-Worker inference uses only the trusted logical Gateway relay. Mint and delivery of the session loopback credentials belong to [Worker Agent Capability](20260703-worker_agent_capability.md). The native host does not receive the upstream per-Turn inference token, concrete Provider credentials, Provider endpoints, account identities, or direct Provider egress. Direct-provider worker inference is not part of this target. Separately declared non-LLM tool and service egress remains ordinary AEP Sandbox policy: an exact grant may authorize only its declared endpoint and executable-and-descendant scope under [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md#manifest-shape) and does not become Provider authority or an inference-relay exception. Declared runtime-env credentials are session-static inside the resident binding, as [Worker Credential Access Declarations](20260709-worker_credential_access_declarations.md) states.
+## Errors And Failure
 
-Dynamic supply changes create a new AEP snapshot.
+On the internal NanoCore execution backend port, `cancel` and `release` and all port error states obey these contracts:
 
-NanoCore may deliver a safe-point supply refresh command only when the resolved AEP explicitly declares refresh support proved by the selected image and Sandbox Integration.
+| Operation | Contract |
+| --- | --- |
+| `cancel` | Core has persisted cancellation for the same attempt and revoked new authority. The backend adapter serializes cancellation against preparation and submission for that identity, prevents a later start when cancellation wins, or stops and fences already accepted work; a stop acknowledgement is not cleanup proof. |
+| `release` | Core supplies the required terminal handoff, output, evidence, outside collection, drain, and route-revocation barriers. The adapter returns `pending`, exact proved safe-residency/quiescence or cleanup fence, or `unknown`, while preserving retained native files, native resume evidence, and compatible idle bindings. |
 
-Each adapter declares whether its runtime lists tools again at Turn start, and its slice establishes the answer by probe; this specification does not invent that answer. If the adapter declares that the runtime lists tools again at Turn start, the next Turn on the same binding sees the new supply. If the adapter declares that it does not, or the declaration is absent or uncertain, the current Turn settles and a successor AgentSession resumes the native conversation with the new supply. Narrowing and revocation still apply at the next call. A supply change is never visible mid-Turn.
+Before any effect-capable backend operation, Core records the operation identity and possible acceptance on the attempt. `not_accepted` proves that `submit` reserved no resource or work and no outstanding effect can arrive later; definite busy qualifies only under that proof, while accepted preparation or pending work is `accepted`, never busy. Any lost response, timeout, disconnected dependency, missing resource, or ambiguous result is `unknown` until exact inspection proves otherwise. Core MUST inspect the original operation identity and MUST NOT resubmit an effect whose response was lost. Conditional attempt ownership rejects stale or conflicting backend results and retains exclusion until definite non-acceptance or an exact proved fence. Late results refine only their original attempt and cannot undo cancellation or reopen closed execution. Preparation inside the adapter before `submit` is not a fifth port verb, and a new ready report never implies prior cleanup. Boot classifies durable state without effects before listening and then resumes original `inspect`, `cancel`, and `release` through ordinary maintenance. Process or module termination proves no execution fence.
 
-### Control Plane
+Under [Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) and [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md#containment-consumer), the `containment` consumer commits bounded intent and event-to-operation correlation to the Server control journal before contact. Across a crash before the Policy deny, recovery checks current Policy and permits only fresh authorized admission when no deny was committed. Across a crash after the deny and before stop effects complete, recovery retains quarantine and inspects each recorded operation so only a proved never-invoked operation may proceed under current authority and caps. Across a crash after stop or incomplete acknowledgement, recovery inspects the original native receipt or backend operation and never replays an unknown effect blindly. Timeout, delegation loss, or disabled monitoring stops new consumer effects without releasing quarantine or halting independently owned mandatory cleanup. The mandatory review and escalation deadline uses existing `control.deadlineUnixNano` on a non-effect `human-wait` journal step linked to the sensor and quarantine. Quarantine Policy rules omit `notAfter` and `uses`, and late or missing review handling never releases Policy or extends action authority.
 
-[Worker Control Protocol](20260703-worker_control_protocol.md) owns the control envelope version, operations, and event contract.
+Native open, request, and stop allowances are one monotonic inner phase budget. Current defaults are 60000 ms for open, 8000 ms for a request, and 10000 ms for stop, with a 4000 ms cleanup tail reserved on stop. Each awaited setup or request uses that remaining budget. Idle does not spend the next phase. A joining caller uses its own remainder and does not restart the original stop. There is no inference-silence timeout. These inner allowances are distinct from the outer adapter-open deadline, which remains the recorded gap under [Implementation Gaps](#implementation-gaps).
 
-The worker-visible endpoint is the AEP-resolved sandbox-local `/worker-control/*` Integration binding. Sandbox Integration is the outer adapter, not a capability gateway or Core participant. Its outer carriage adapter carries the unchanged protocol through one standard HTTP/2 session inside one stock OpenShell RelayStream; it does not authorize, inspect, retry, reorder, or reinterpret worker-control messages. The worker-control client inside Sandbox Integration applies only the retry semantics owned by the worker-control protocol.
+### NanoHost Adapter Liveness
 
-The control plane is for session lifecycle and small control messages only.
+In addition to the generic submit-time absolute attempt deadline and explicit revocation, the NanoHost backend adapter enforces liveness ([Execution Backend Port In NanoCore](../decisions/20261006-execution_backend_port_in_nanocore.md)): a 1-second heartbeat interval (current default), a 30-second heartbeat deadline after the last newly accepted heartbeat (current default), and a 25-minute (1,500,000 ms, current default) startup deadline from attempt acquisition before the first heartbeat. Exact duplicate heartbeat replay is acknowledged under existing fingerprints and never renews liveness. A runtime cannot pause or extend any deadline. The startup deadline applies before the first accepted heartbeat and the heartbeat deadline applies afterward. Stale classification refuses new worker-control, inference, and capability calls and holds the attempt in `needs-evidence` exclusion until cleanup or fencing settles, without proving cessation, success, failure, or absence of prior effects. The absolute attempt deadline remains an independent refusal predicate on every mediated route. The adapter adds no NanoHost Rust stop timer, and a Core disconnect removes mediated routes without physically fencing already accepted work or separately admitted local effects.
 
-It must not become a generic capability RPC, arbitrary shell, file transfer channel, or product-state mutation API.
+Sandbox tokens and raw worker process keys stay in memory only and are not persisted as reusable secret material. Sequence `0` binds the worker process-key SHA-256 hash to the execution attempt, and sequence `1` proves that post-launch retry is active and the resident host has begun the Turn. Within the NanoHost adapter's bounded 5-minute (300,000 ms, current default) reconnect window capped by the absolute attempt deadline, Core refuses mediated routes until exact process adoption proves the original process-key hash, product/backend/binding/package lineage, exact next sequence, unexpired deadline, conditional attempt ownership, and predecessor-fenced authoritative NanoHost connection. Reconnect adoption and ordinary heartbeat advancement commit in one database transaction while timeout cleanup uses an exact-row compare-and-swap so only one side can win. A wrong reconnect request does not shorten an armed window. Successful adoption continues the same worker and attempt without native resubmission or Sandbox creation, and failed proof or expiry closes or fences the binding before any native successor resumes the retained conversation.
 
-Current worker-control families are:
+NanoCore verifies every candidate against held authority (exact lineage, monotonic sequence, schema conformance, declared digests, workspace boundaries, and the AEP-selected adapter identity) and rejects violations fail-closed with redacted diagnostics. Candidate rejection is terminal for that candidate without repair, coercion, partial acceptance, or reshaped retry. A proved ordinary file-submission refusal is a separate command failure that allows a corrected new request during the same healthy Turn. On a closing lineage, NanoCore admits only exact accepted-final replay or the [cancellation-only first-final exception](20260703-worker_control_protocol.md#cancellation-only-first-final-on-closing-lineage) when Core already holds exact cancellation and binding/token authority ([Worker Failure Final And Chat Call Rulings](../decisions/20261015-worker_failure_final_and_chat_call_rulings.md)). An ordinary append refusal does not consume that one final opportunity, and no new ordinary output or success is admitted.
 
-- heartbeat
-- artifact notice
-
-Private Harness `turn.interrupt` delivers interruption under that protocol owner.
-
-Current worker-to-NanoCore record families also include:
-
-- schema-conformant candidate event append
-- final status reporting
-- supply refresh notice
-- capability call notification summaries
-
-Every control request must carry its worker-control token authentication and lineage. That token is accepted only by `/worker-control/*` and is never reused for `/inference/*` or `/capabilities/*`.
-
-Lineage includes Workspace id, Thread id, Turn id, AgentSession id, package snapshot id, and request id when available.
-
-Every ordered worker-emitted record must carry a monotonic worker sequence number.
-
-NanoCore must reject token, lineage, sequence, idempotency, policy, digest, workspace path, and schema violations fail-closed with redacted diagnostics.
-
-A closing lineage has only the [cancellation-only first-final exception](20260703-worker_control_protocol.md#cancellation-only-first-final-on-closing-lineage) and exact accepted-final replay. Core must already hold the exact cancellation and binding/token authority. An ordinary append refusal does not erase that one final opportunity. This permits no new ordinary output or success on closing lineage; sealing, monotonic sequence checks, fingerprint conflicts, revocation, and restart replay remain unchanged ([#179 ruling](../decisions/20261015-worker_failure_final_and_chat_call_rulings.md)).
+For `work_artifact_submit`, the submitted path MUST be a strict canonical child of exactly one AEP output root with `registerAsArtifacts=true` and `retention=sync-on-turn-end`. Root equality, path traversal, non-canonical spelling, ambiguous overlapping roots, undeclared roots, and agent-authored transcript declarations fail closed before canonical writes, while bounded artifact notices remain diagnostic only. Before writing any Artifact, reference Item, or Review, NanoCore verifies transport length and digest, UTF-8 and declared JSON format for text representations without normalizing canonical bytes, producing lineage, Material proposal against exact accepted Context selections, and exact injected-value exclusion across both submitted payload bytes and the retained `requestId` (refusing rather than redacting or rekeying a matched `requestId`). Core rechecks current authorization and active admission after capture and synchronously commits publication before Turn sealing. A complete authority tuple without its command receipt, or any partial or contradictory tuple, returns `recovery_required` without receipt reconstruction, recapture, or a second settlement lifecycle.
 
 ### Workspace And Artifact Plane Projections
 
-The Workspace plane supplies workspace inputs, while the Artifact plane returns generated outputs and collected changes through backend transport rather than the control channel.
+NanoCore's shared exact-value comparison rule governs Worker Artifact and Review rejection and [transcript Item replacement](20260703-worker_control_protocol.md#exact-value-protection-at-transcript-item-admission) ([Transcript Item Exact-Value Guard](../decisions/20261005-transcript_item_exact_value_guard.md)), while Sandbox Integration redaction is best-effort and NanoHost's outside snapshot scan applies the same literal and loopback-digest checks to staged workspace blobs under [Workspace Synchronization](20260703-workspace_synchronization.md#snapshot-chain). The literal comparison set contains the deduplicated non-empty UTF-8 bytes of every sensitive value injected into that worker materialization (runtime environment, complete runtime files, direct-provider, worker-control, trusted-relay, and the scheduler-owned sandbox binding reference) and matches any contiguous byte substring anywhere in the payload while keeping the comparison evidence in backend-private memory only. Across a NanoCore restart, runtime-env values are reconstructed at the exact Vault material version recorded by the binding's injection evidence. NanoCore scans every 43-byte window (including inside longer alphabet runs) for a canonical unpadded base64url spelling of 32 decoded bytes whose decoded-byte SHA-256 matches any of the three original attempt-bound route-token hashes, while the two session loopback digests remain a separate hash domain compared over the 43 encoded UTF-8 bytes under [Workspace Synchronization](20260703-workspace_synchronization.md#snapshot-chain). Comparison evidence stays bound to the original materialization, attempt, and session past serving-authority expiry. Unavailable or contradictory required evidence after permitted reconstruction returns `recovery_required` with product-safe diagnostics, zero Artifact or Review writes, no current-value substitution, and no skipped check, and invokes the existing backend cleanup lifecycle under [Durable Scheduler Design](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup) without blocking an otherwise provable live adoption before collection is required. Exact-value protection is literal matching, never generic DLP. Under [Workspace Synchronization](20260703-workspace_synchronization.md), NanoCore also validates writable relative roots, rejects path traversal, symlink escape, and undeclared output roots, verifies base and payload digests, summarizes binary, delete, permission, and large-file changes, and requires declared or reviewed outputs; invalid workspace changes produce safe diagnostics, fail or block the Turn per AEP policy, and are never silently applied.
 
-Examples include workspace snapshots, Git checkouts, tar bundles, patches, commit bundles, changed-file manifests, generated artifacts, raw or summarized logs, and backend evidence.
+Before the complete route-bound worker-control readiness exchange succeeds, control failure is fail-fast, retry is disabled, and Sandbox Integration MUST NOT launch the native worker child. After launch, retryable control interruptions enter the single bounded 5-minute (300,000 ms, current default) outage budget owned by [Worker Control Protocol](20260703-worker_control_protocol.md): the control client keeps the resident child alive, pauses new private Harness polling and control-dependent work, avoids an unbounded offline queue, and retries only the same AEP-resolved local binding with the same logical operation identity, sequence, and canonical fingerprint, while mediated inference availability through NanoCore during the outage is zero. Budget expiry fails the affected Turn without killing a shared host or sibling bindings, whereas dedicated-host death ends that binding while preserving written transcript evidence. The resident Turn settlement promise resolves only when correlated native terminal evidence proves the addressed native work ended: ordinary native failure resolves as a failed result, requested OpenKit interruption differs from unsolicited self-stop, positively proved limits never become success, and assistant text, process exit, or host idleness never substitutes for terminal proof. When acceptance or settlement cannot be proved and live native work cannot be excluded, the adapter retains a private cleanup attempt and rejects the settlement promise so the Harness requests bounded interruption; only proved interruption releases the fence, while unproved cleanup retains capacity and Thread exclusion and invokes the cleanup fence without automatic replay or rollback inference.
 
-For OpenShell, this can use sandbox upload, sandbox download, sandbox exec, retained session directories, and future OpenShell file primitives.
+Budget expiry, authoritative cancellation, cleanup fencing, or terminal validation failure stops or cancels the affected work, collects written validated transcripts as evidence, fails with a redacted diagnostic when required transcripts are missing, and never falls back to host execution. Ordinary AgentSession close releases only its native context, routes, disposable slots, outputs, and local binding after their owners settle while preserving a compatible shared Sandbox and sibling AgentSessions. Unproved local cleanup widens to the Harness, Sandbox, or Runtime Epoch boundary, and an unproved Sandbox create or delete invalidates the entire Runtime Epoch while keeping each affected AgentSession's independent `interrupted` or `unknown` outcome truthful. NanoCore retries backend transport only when idempotent and safe, and persists redacted AEP snapshot, materialization, backend label, control registration, workspace input digest, transcript and manifest path, collection, and staged review state without raw secret values.
 
-For future backends, this can use bind mounts, `docker cp`, tar streams, object storage, provider file APIs, or managed sandbox file APIs.
+## Compatibility
 
-NanoCore must normalize collected data into OpenKit records such as `WorkspaceInputSnapshot`, `WorkspaceMaterializationRecord`, `WorkspaceChangeSet`, `StagedWorkspaceReview`, `WorkspaceApplyResult`, `Artifact`, `Evidence`, and Action Center rows.
+Backend portability beyond NanoHost and stock OpenShell is an extension direction rather than an additional current selectable runtime; managed supply stays NanoCore-controlled and repository changes pass staged review and apply gates. Adapter registry and multi-runtime image catalog entries are static bookkeeping in their owning artifacts without dynamic discovery, package loading, or plugin frameworks. Removed host-runtime configuration shapes are unsupported, and deterministic host test fixtures cannot be selected through product configuration, remote MCP, Web UI, deployment docs, status summaries, or capability flags.
 
-The control plane may announce that Workspace or Artifact data is ready, but it must not carry full patches, bundles, artifact files, or raw logs except within strict product metadata limits.
+Dynamic Skill and MCP supply changes create a new AEP snapshot; live safe-point supply refresh is delivered only when the AEP and runtime image prove support, and no supply change is visible mid-Turn ([Tool Surface Changes At Turn Boundaries](../decisions/20260929-tool_surface_changes_at_turn_boundaries.md)). Each adapter pin declares by probe whether its runtime re-lists tools at Turn start: `true` exposes new supply on the next Turn of the same binding, whereas `false`, absent, or uncertain requires the current Turn to settle and a successor AgentSession to resume the native conversation with the new AEP, while narrowing and revocation apply at the next call. Session-static private runtime-environment declarations (`session.open.runtimeEnvironment`) follow the same boundary: a changed declaration or value uses a next-Turn successor AgentSession, and credential revocation interrupts or closes immediately.
 
-Workers intentionally submit one finished file through `work_artifact_submit` on the existing built-in work MCP supply. The command contains a request id, the existing Artifact kind, non-empty title, one canonical absolute POSIX path, a declared media type for the arbitrary-byte file, and at most one `materialProposal` tuple `{ materialId, baseRevisionId, baseContentDigest }`. Core derives the producing package and Turn, physical target, admitted output slot, relative path, capture request identity, and byte bound from authenticated context. The path must be a strict child of exactly one AEP output root with `registerAsArtifacts=true` and `retention=sync-on-turn-end`; path equality, traversal, non-canonical spelling, ambiguous overlapping roots, and every undeclared root fail closed before canonical writes. Separate requests may intentionally capture the same path again. Artifact notices remain bounded diagnostics, and agent-authored transcript declarations no longer produce Artifacts. The synchronous submission replaces that path without a compatibility reader or pending declaration record. The engineer's decision is recorded in [Synchronous Submission Of Worker Files](../decisions/20261005-worker_file_synchronous_submission.md).
+Adapter-normalized stop classification adds no automatic retry, prompt replay, restart loop, watchdog, public StopReason, or durable record type; runtime-native retries inside an admitted prompt stay unchanged, stop provenance does not prove cleanup or absence of external effects, and adapter specs retain per-pin qualification limits. The AEP producer and schema retain the descriptive literal `control.protocol: openkit-worker-control-v1` and the descriptive event list without admitting a version-1 control envelope. [Worker Control Protocol](20260703-worker_control_protocol.md) requires `schemaVersion: 2` on `WorkerControlRequestEnvelopeSchema`, `WorkerControlResponseEnvelopeSchema`, and `HarnessCommandEnvelopeSchema` (`openkit-worker-control-v2`). Canonical worker records retain `schemaVersion: 1` in `packages/worker-protocol/src/index.ts`. No version-1 control envelope is admitted, and no durable worker-command state table exists. Prerelease builds start from a fresh data root and do not read earlier-version retained data ([Earlier Version Data Not Carried](../decisions/20260930-earlier_version_data_not_carried.md)). No diagnostic command family is declared or callable; any future diagnostic operation requires a separately accepted closed typed contract with Policy binding and bounded arguments, permanently excluding arbitrary argv, cwd, environment, or shell input.
 
-Each call captures one file through the existing `file.export` effect during the active Turn, without terminal inspection or invented terminal proof. The agent finishes writing before submission. Success guarantees the exact verified exported copy captured during that call, not a filesystem snapshot, invocation-time contents, or native correctness. Later file edits and later Turn failure or cancellation leave a committed Artifact immutable and visible under its original audience. NanoCore admits arbitrary file bytes under [Work Resource Interaction](20260713-work_resource_interaction_model.md#file-admission-publication-and-download). Text representations validate UTF-8 and declared JSON without normalizing canonical bytes. Binary originals require no text conversion. Before any Artifact, reference Item, or Review write, it checks the transport digest and length, format, producing lineage, Material proposal against exact accepted Context selections, and every submitted byte against the exact injected-value evidence below. An exact injected-value match in the submission request id is likewise refused before canonical writes because origin and receipt retain that key verbatim; the key is not redacted or replaced. A rejection publishes nothing for that call; earlier committed calls remain published.
+## Acceptance
 
-Worker file transfer uses the current 1,000,000,000-byte per-file admission bound and the source owner's server reserve, not remaining raw-output capacity. Each backend copy, actual reader, staging, and result admission enforces the same file bound, with at most one extra sentinel byte to detect overflow. Rejected capture publishes nothing; a corrected new request can transfer again. Publication remains serialized under existing authority, and no SQLite transaction remains open while awaiting capture. [Worker Turn Reliability](20260531-worker_turn_reliability_envelope.md#worker-raw-output-accounting) separately meters the 16,777,216-byte atomic raw-output aggregate.
+- Execution backend port verification proves a single configured backend ID throughout, `submit` only after durability, baseline, and authority gates, definite busy with zero reserved resources, lost-response inspection without duplicate native start, `unknown` and closing exclusion, serialized cancellation races, and `release` only after complete terminal, output, evidence, collection, drain, and revocation barriers, with backend results never treated as Core product completion.
+- Containment verification under [Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) proves that `containment` adds only the single retained consumer-definition value (no new port verb, queue, record, field, or step kind) and verifies all three crash boundaries (before Policy deny, after deny before stop effect, and after stop effect before receipt), missing or conflicting receipts, duplicate sensor events, review deadlines, authority loss, cumulative impact caps, and recovery and alarm progress under flood.
+- Deployment and schema verification proves that deterministic host fixtures are never selectable as a product runtime, every supported deployment generates the same Worker-facing AEP, Integration, RelayStream, wire, capability, and data schemas, and NanoCore validates canonical schemas without importing runtime-native adapters.
+- Extensibility verification proves that native runtime IDs remain opaque to NanoCore and adding a fourth runtime requires only one authored `AgentManifest` and one static worker-side adapter registry entry with adapter-owned modules inside the multi-runtime image—with zero NanoCore runtime-name enum, branch, command builder, native parser (except the isolated version-pinned provenance verifier in [Worker Runtime Subagent Provenance](20260711-worker_runtime_subagent_provenance.md)), provider special case, image-selection branch, schema variant, or governance rule changes.
+- Source inspection and unit or integration fixtures do not replace refreshed real-environment owner acceptance; resident adapter, multi-runtime image-smoke, live-steer, and full-loop packaged deployment qualification MUST be proved per declared runtime pin and path without source, schema, mock, or Promise shortcuts.
+- Resource-accounting verification proves that oversized tool outputs are captured under their source owner first and return only a bounded descriptor without a full-body fallback, and qualifies actual model-visible results rather than relying on native harness truncation.
+- Managed-capability verification proves live candidate event append, validation, and deduplication, and verifies governed catalog, schema, Policy, approval, usage, audit, credential redaction, and teardown enforcement for enabled MCP routes before advertising any additional capability family.
+- Local format, static, schema, Core black-box, Integration, adapter, supply, and CLI checks verify that no public, Core, Gateway, or Integration surface accepts caller-supplied arbitrary executable argv, cwd, environment, or shell input, and prove fail-closed rejection on token, lineage, schema, sequence, idempotency, digest, workspace-path, and Policy violations.
+- Fault-injection checks prove pre-readiness fail-fast without child launch, bounded post-readiness retry preserving the same worker, exact process-key, lineage, and sequence reconnect adoption without replacement, and deadline expiry entering the interrupted recovery path without a separate recovery runner.
+- Real-host end-to-end verification runs NanoCore in `server` mode against the configured NanoHost with a verified-empty Runtime Epoch and one stock RelayStream and HTTP/2 session carrying `/worker-control/*`, `/inference/*`, and `/capabilities/*` (enabling `mcp.list-servers`, `mcp.list-tools`, and `mcp.call-tool`), connects via remote MCP and the Agent Operator Skill loop to create or resume a real Thread, runs at least two sequential Turns on one non-Goal resident binding across at least two Threads and Harnesses without relaunching the native host, with that conversation's prior context present in the second provider request, closes with `session.close` while preserving resumable native context and the shared Sandbox and Runtime Epoch, verifies fresh-empty epoch fault recovery, and reviews staged workspace, Artifact, diagnostic, and capability evidence without bypassing review gates (Goal worker acceptance belongs to [Goal](20261002-goal.md)).
+- Opt-in real-Provider quota and subscription checks are explicitly marked, and an unavailable environment records the exact cause and narrowest rerun command rather than reporting a pass.
 
-Artifact identity derives from authenticated producing package, Turn, and submission request id, with no server ordinal or transcript sequence. Exact request and path/metadata replay the complete original Artifact, reference Item, Review, and receipt before another export; changed input conflicts. A corrected file or new captured version uses a new request. Core rechecks current authorization and active admission after capture and synchronously commits publication before terminalization can win; a sealed Turn admits no new publication. Late Host results cannot publish after admission is lost. A complete authority tuple without its command receipt, or any partial or contradictory tuple, returns `recovery_required` without receipt reconstruction or effect repetition under [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#artifact-and-item-lineage). Lost capture remains unknown; only the existing authorized successor rule may deliver an exact retained result. There is no pending declaration, upload queue, automatic recapture, or second settlement lifecycle. Submission does not accept Task or Goal completion.
+## Implementation
 
-The shared comparison rule for worker-output Artifact payloads and [transcript Item admission](20260703-worker_control_protocol.md#exact-value-protection-at-transcript-item-admission) covers every exact non-empty sensitive value injected into that worker materialization, including runtime environment, runtime file, direct-provider, worker-control, and trusted-relay values. The literal comparison set contains the UTF-8 bytes of each complete injected value, deduplicated by byte equality; a runtime-file entry contributes its complete content, and a match means contiguous byte-substring containment anywhere in the payload rather than whole-payload equality. Secret environment, file, and provider values remain backend-private process memory until collection or cleanup; the existing durable scheduler-owned sandbox binding reference is included without creating another record or copy. The assembled comparison evidence MUST NOT enter a package, transcript, Artifact, diagnostic, log, new durable record, or response.
+- `packages/worker-protocol/`
+- `packages/worker-shim/`
+- `packages/pi-runtime-host/`
+- `apps/nanocore/src/runtime/`
+- `apps/nanohost/src/`
+- `containers/worker-runtimes/`
 
-Across a NanoCore restart, runtime-env values are re-resolved at the exact Vault material version recorded by the binding's injection evidence. The three original attempt-bound worker-control, inference, and capability route-token hashes also establish exact comparison evidence without recovering or persisting plaintext: NanoCore MUST scan every 43-byte window, including within a longer alphabet run, accept a candidate only if it is the canonical unpadded base64url spelling of exactly 32 decoded bytes, and compare SHA-256 of those decoded bytes with each original route hash. Canonical spelling requires re-encoding the decoded bytes to equal the candidate exactly; an alternative spelling that decodes to the same bytes MUST NOT match. The two required session loopback digests remain a separate hash domain: [Snapshot Chain](20260703-workspace_synchronization.md#snapshot-chain) defines their windowed comparison over the 43 encoded UTF-8 credential bytes, not the decoded bytes. Both kinds of window match are exact-value matches under the respective Artifact rejection and Item replacement owners, not a credential-pattern heuristic.
+## Implementation Gaps
 
-Comparison evidence MUST be complete and bound to the original materialization, execution attempt, and session under their existing owners; serving-authority expiry alone does not invalidate that original comparison association. After the permitted exact-version and hash-based reconstruction, genuinely unavailable or contradictory required evidence returns `recovery_required` with product-safe diagnostics, zero Artifact or Review writes, no current-value substitution, and no skipped check; transcript Item writes follow their admission owner. Missing or stale original associations cannot be inferred from a current binding. That rejection does not refuse an otherwise provable live-binding adoption before collection is required. For unavailable or contradictory required comparison evidence, the existing backend cleanup lifecycle runs for terminal collection and live submission alike, owned by [Durable Scheduler Design](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup). Only a proved ordinary live submission refusal creates no Artifact authority and does not alone terminate a healthy Turn; containment uncertainty, lost capture, or unproved cleanup retains the existing effect and cleanup fences. This comparison rule adds no durable state, plaintext persistence, automatic retry, update lifecycle, or termination lifecycle. As with workspace publication, this exact-value check is not generic DLP and does not detect encoded, transformed, derived, or otherwise non-literal secret material.
-
-### Capability Plane
-
-The capability plane gives Worker Agents governed access to privileged services through the separately authenticated sandbox-local `/capabilities/*` Integration family when that family is enabled.
-
-The accepted outer transport namespace is `/capabilities/*`. The AEP projection enables exactly `mcp.list-servers`, `mcp.list-tools`, and `mcp.call-tool` for every worker package, whose resolved MCP supply always includes the built-in servers; an empty manifest MCP selection does not produce `capabilities.mode: disabled`.
-
-The implemented capability family is the selected worker-side MCP slice. Future families include Knowledge Store search, Knowledge Store read, context retrieval, external API calls, network proxy access, and other non-LLM tools.
-
-NanoCore owns routing, policy checks, credential references, redaction, metering, audit summaries, and upstream error normalization.
-
-Worker Agents must not access NanoCore internals, SQLite files, raw data roots, raw secrets, upstream MCP topology, or arbitrary network sources to obtain capabilities. Selected MCP calls use only the fixed authenticated loopback Integration projection and NanoCore Gateway; all undeclared capability routes remain non-callable.
-
-Every Worker Agent runtime that expects an OpenAI-style base URL receives the sandbox-local `/inference/*` Integration binding from its AEP. The inference token, model and provider scope, bounds, failure semantics, usage, and audit remain independent from worker control and capabilities.
-
-The target binding has one fixed native projection: `http://127.0.0.1:17892/inference/v1`. Sandbox Integration owns that loopback-only HTTP/1 listener separately from the stock Supervisor bridge at `127.0.0.1:17891`. Only after its outer HTTP/2 session is ready may the native listener admit requests, and those accept only authenticated `POST /inference/*` and forward them through that session without changing the path, body, content encoding, or response bytes, and without changing end-to-end headers other than authentication. Authentication translation is owned by [Worker Agent Capability](20260703-worker_agent_capability.md). The local request aggregate is at most 16 MiB; carriage retains the 2 MiB family in-flight ceiling and 64 KiB maximum write owned by the NanoHost transport specification. Response bodies, including SSE, remain streaming with backpressure and cancellation rather than receiving a new aggregate buffer or retry. Worker-control, capability, absolute-form, unauthenticated, and non-`POST` requests are rejected locally before an outer stream opens. The native projection creates no second bridge, NanoHost route, egress grant, DNS name, AEP-selected URL, provider authority, durable state, or retry owner.
-
-The AEP-resolved logical-model relay and token reference are specialized for inference and must not be reused for control, knowledge, MCP, vault, or generic capability traffic.
-
-Inference is a specialization of the Capability plane, not an additional communication plane.
-
-The selected MCP plane reuses the existing server-side policy, CapabilityCall ledger, usage, audit, and Vault owners while retaining its separate worker-facing wire contract; future capability families require their own accepted owner and implementation slice.
-
-### Audit And Evidence Cross-Cutting Projection
-
-Audit and evidence are cross-cutting projections over the four communication planes, not additional planes. They record what was launched, what policy was applied, what the backend did, what the worker reported, what changed, and what a human reviewed.
-
-Sandbox Integration may produce normalized audit events and transcript records.
-
-The backend may collect backend-native logs and transport evidence.
-
-NanoCore verifies and stores product-safe summaries and evidence references.
-
-Public App API, end-user remote MCP interface, and Web UI surfaces expose OpenKit ids, summaries, digests, artifact ids, review ids, and next suggested actions rather than backend-private internals.
-
-## Sandbox Integration
-
-Every real worker container runs Sandbox Integration, whose current implementation seed is the generic `openkit-worker-shim` entrypoint plus its runtime adapter. The removed runtime-specific and sidecar entrypoints are not part of the target architecture.
-
-Sandbox Integration owns only outer transport adaptation, injection of already-resolved local bindings, and runtime-neutral worker lifecycle behavior inside the image. It is the link with NanoHost and NanoCore and the supervisor. A selected runtime adapter owns native translation. NanoCore owns canonical verification outside the image and remains the control plane. Sandbox Integration is not a capability gateway, scheduler, policy owner, provider selector, usage owner, audit owner, or second Core. "Harness" names only the in-Sandbox worker-shim component.
-
-Sandbox Integration should:
-
-- read the AEP snapshot and generated files
-- materialize runtime-neutral AEP files and inert MCP supply metadata without enabling executable MCP connectivity
-- allocate one private control binding per open AgentSession until `session.close`, allocate fresh disposable Turn-local output slots there, and address native working data separately in the admitted retained volume. Mint and destruction of the session loopback credentials belong to [Worker Agent Capability](20260703-worker_agent_capability.md). Turn route tokens are not placed in the native environment
-- require one preferred logical model and one exact allowed logical-model set and pass only those IDs, the Gateway token placeholder, the sandbox-local worker-control binding, and the sandbox-local inference binding to the selected adapter without translating them into a Provider-native schema
-- supervise a resident runtime host. Integration and the Harness do not launch a new native process for every Turn. Plugins, Extensions, and tool execution stay out of the long-lived Integration process
-- capture at most 16 MiB of ordinary native stdout for resident observation and fail closed on overflow; the optional S33 Codex provenance sink streams separately under S33's own declared aggregate bound and is not double-buffered here
-- retain at most a 16 KiB diagnostic prefix from each ordinary stdout and stderr stream
-- convert adapter-normalized results into schema-conformant candidate OpenKit transcript and event records
-- write `events.jsonl` and `items.jsonl` below the exact admitted `/openkit/threads/<threadId>/<harness>/capture/<turnId>/`; `<harness>` is the stable runtime adapter id, not a Harness Instance id; Artifact submission uses the existing work MCP supply rather than a transcript declaration writer
-- emit heartbeat and artifact notices through the route-bound `/worker-control/*` family exposed by Sandbox Integration
-- append schema-conformant candidate events through the route-bound `/worker-control/*` family exposed by Sandbox Integration
-- leave workspace-change capture to the outside read-only scan. Sandbox Integration does not publish workspace changes at native exit. The next Turn is dispatched after Turn-end collection completes. A change set whose `base` differs from the previous `head` is `recovery_required` at ingestion. The change-set schema and the first link's base are owned by [Workspace Synchronization](20260703-workspace_synchronization.md). A work volume's chain starts from Core's accepted base for that work slot, and collection returns `recovery_required` when that base is unknown
-- The workspace blob credential check runs in the NanoHost scan, as [Snapshot Chain](20260703-workspace_synchronization.md#snapshot-chain) defines, where a loopback credential is compared by digest and the other credential values keep this model's literal contiguous-substring rule, any match fails closed with the value in no patch, manifest, or transcript, and the check is not generic DLP
-- maintain sequence numbers and lineage on emitted records
-- apply best-effort lightweight redaction before records leave the container
-- fail before child launch when required route-bound worker-control readiness has not completed
-- after readiness, keep the resident host's control path inside the worker-control protocol's bounded retryable outage budget. Budget expiry fails the affected Turn. It does not kill a shared host or sibling bindings. Dedicated-host death ends that binding. Transcript evidence already written is retained. The control-plane budget and zero inference availability during a NanoCore outage stay as the control protocol states them
-
-The shared Harness must not understand a Codex, OpenCode, Pi, DeepSeek, or future runtime event type. It accepts only adapter-owned continuity proof and an adapter-normalized result. One Harness may hold multiple AgentSession bindings for distinct Threads and may supervise one shared server that hosts many bindings, or one dedicated host per binding. This change keeps one active Turn per Harness. Concurrent Turns across bindings stay accepted in [Runtime Scheduling And Scale](20260703-runtime_scheduling_scale.md) and unimplemented. Process identity is private execution state and never substitutes for AgentSession identity or native-conversation proof. One Thread has at most one resident current AgentSession binding.
-
-The worker-side adapter registry has one resident contract. The adapter implements only the seven Harness operations. `session.open` carries `resume: { locator, digest } | null`. A new binding may return pending only when the pinned native protocol creates its conversation with the first prompt, or when the accepted adapter owner explicitly defers native creation until resolved setup and route authority available with the first Turn. Pending is not permission for native work requiring an active Turn, and it is never a fallback for failed resume. The first successful Turn and subsequent exact inspection must establish one restricted ready handle before the binding becomes reusable. A later Turn submits on the resident binding. A successor resumes the retained reference. `turn.interrupt` reports the actual cancellation outcome and does not close the AgentSession. Its purpose is `interrupt`. Human requests follow pending-request semantics, not interrupt mappings. No free-text inference is allowed. Process-group kill of a resident shared server is not the cancel proof. An adapter is supported only when its accepted owner and selected image prove a resident context across Turns, exact native resume, inspection, session-local state isolation, and close that preserves resumable context. A runtime that cannot do those is an unsupported capability. Native resume failure is explicit. A residual native permission request receives the pinned runtime's shortest-lived allow by default without interrupting the Turn, a user's explicit native deny rule stays, and each adapter owner maps this onto its native permission surface ([decision](../decisions/20261001-sandbox_full_capability_rulings.md)). Qualified `turn.steer` follows [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) and [Worker Control Protocol](20260703-worker_control_protocol.md#live-steer-operation-boundary). Follow-up, arbitrary adapter operations, and capability inference remain absent. Refusal with no Turn bound, the Turn-barrier drain, and destruction at `session.close` belong to [Worker Agent Capability](20260703-worker_agent_capability.md). A sibling binding's credential is refused. Collection does not wait for process-group absence.
-
-The private resident Turn settlement promise resolves with an adapter-normalized result only when the adapter has proved that the addressed native work ended. Ordinary native failure is a resolved failed result, not an exception. When acceptance or settlement cannot be proved and live native work cannot be excluded, the adapter retains a private Turn attempt for cleanup and rejects its settlement promise instead of returning a clean start refusal or a fabricated terminal result. The Harness then requests bounded interruption. Interruption fulfillment proves that the addressed native work stopped; rejection or expiry keeps cleanup unknown, retains capacity and Thread ownership, and invokes the existing cleanup fence. A later successful stop may establish cleanup even though the original settlement promise remains rejected. Returning the cleanup attempt supplies no additional execution authority and does not establish successful native completion.
-
-### Adapter-Normalized Stop Outcomes
-
-The private adapter-normalized result distinguishes normal completion, failed native work, interruption caused by an OpenKit request for the addressed Turn, and a positively proved native output or context limit. It carries the existing canonical `length` outcome to the shared Harness without adding a public or durable result kind. The selected adapter owns correlation of native terminal evidence and OpenKit request provenance; native reason text remains bounded diagnostic evidence and cannot select a Core reason by itself.
-
-The Harness maps a proved limit to existing worker-control `status=blocked` with `stopReason=length`, normal completion to `completed/completed`, requested interruption to `interrupted/aborted`, and runtime self-interruption to `failed/error` with a bounded product-safe diagnostic that the runtime stopped on its own. A native interrupted, cancelled, or aborted result without an OpenKit interrupt or cancellation request is a self-interruption, never a user cancellation. Crashes, process exits, errors, malformed or missing terminal evidence, and unproved settlement retain the existing failure or uncertainty and fencing rules above. No native limit may become success because text exists or the host is idle. NanoCore alone accepts and canonicalizes these candidates under [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#worker-turn-envelope).
-
-This private extension adds no automatic retry, prompt replay, harness restart loop, watchdog, StopReason, durable record, state, or lifecycle; runtime-native retries inside the admitted prompt stay unchanged. Stop provenance does not prove cleanup or absence of external effects, and existing restart, cancellation precedence, and fencing owners remain authoritative. Per-runtime evidence and unsupported or ambiguous cases belong to [Codex](20260716-codex_worker_adapter.md#native-output-mapping), [OpenCode](20260716-opencode_worker_adapter.md#native-output-mapping), [Pi](20260716-pi_worker_adapter.md#native-output-mapping), and [DeepSeek](20260930-deepseek_worker_adapter.md#native-output-mapping). The rationale and release hold are recorded in [Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md).
-
-Codex-native provenance capture remains an optional adapter-local implementation connected to the separately owned and verified S33 provenance boundary. It is not a shared adapter operation and creates no provenance requirement for OpenCode, Pi, or a fourth runtime.
-
-Candidate worker records become canonical product truth only after NanoCore validates their lineage, sequence, schema, policy, digest, and workspace boundaries and commits them through the owning product records.
-
-Sandbox Integration must not:
-
-- own Workspace, Thread, Turn, Item, Goal Mode, Action Center, Knowledge Store, Review, or Apply state
-- make final authorization decisions
-- bypass NanoCore policy checks
-- install arbitrary Skills, MCP servers, tools, packages, or credentials. An in-Sandbox MCP server or tool that the Sandbox configuration provides is unrestricted Sandbox execution; storage and network containment still apply at the Sandbox boundary, and approval and audit apply to external systems reached through the Gateway. External traffic follows [Sandbox](../core/sandbox.md) and [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md): Gateway-required integrations remain mediated, while admitted public non-LLM grants and separately authorized non-LLM REST grants retain their respective network and credential contracts. Neither direct route creates NanoCore-managed MCP supply or an upward control route. These routes grant no installation authority to Sandbox Integration
-- read NanoCore private storage directly
-- push, publish, tag, deploy, or trigger external side effects without a NanoCore-approved path
-- become a generic interactive shell
-
-Sandbox Integration redaction is best effort.
-
-The workspace publication guard is exact-value protection only. It does not provide generic DLP or detect encoded, transformed, derived, or otherwise non-literal credential material.
-
-NanoCore canonical verification and redaction remain the server-owned product boundary; [Relationship To Items](20260703-worker_control_protocol.md#exact-value-protection-at-transcript-item-admission) owns exact-value replacement at worker transcript Item admission.
-
-## Runtime Adapter Packaging
-
-Runtime-native adapter logic lives outside NanoCore. The current package structure is:
-
-```text
-packages/worker-protocol
-  canonical worker-control, transcript, item, artifact, workspace-change, capability, sequence, lineage, and error schemas
-
-packages/worker-shim
-  shared worker harness plus Codex, OpenCode, Pi, and DeepSeek runtime adapters
-```
-
-NanoCore may depend on canonical schemas from `packages/worker-protocol`.
-
-NanoCore should not depend on runtime-native adapter packages.
-
-Container images may depend on the worker protocol and worker shim packages.
-
-The static adapter registry lives in `packages/worker-shim`, not NanoCore. Adding a runtime adds one adapter module and one static registry entry; it does not extend the shared harness contract or introduce dynamic discovery, package loading, or a plugin framework.
-
-One authored `AgentManifest` supplies the opaque adapter id, image reference, runtime binary ids and worker-local executable paths, provider and credential requirements, capabilities, and supply compatibility. Nested manifest profiles remain behavior selections rather than runtime records. NanoCore loads and projects the selected manifest data generically into an AEP.
-
-One multi-runtime image replaces the three single-runtime deployment leaves. `worker-common` remains the public base. The image contains Codex, Pi, OpenCode V2, and DeepSeek, and the runtime is chosen per AgentSession. The image catalog and the image id are owned by the worker execution environment images specification. Images may share build mechanisms. The deployment image installs the four native runtimes, the generic worker shim, the statically registered adapter modules, and the declared smoke checks.
-
-The four concrete adapter contracts are owned by:
-
-- `docs/specs/20260716-codex_worker_adapter.md`
-- `docs/specs/20260716-opencode_worker_adapter.md`
-- `docs/specs/20260716-pi_worker_adapter.md`
-- `docs/specs/20260930-deepseek_worker_adapter.md`
-
-## Current Implementation Projection
-
-The AEP producer and schema retain the literal `control.protocol: openkit-worker-control-v1` and a descriptive event list. Neither selects envelope admission or event support. The version-2 envelope and closed event readers remain owned by [Worker Control Protocol](20260703-worker_control_protocol.md); the AEP label does not admit version-1 control envelopes.
-
-NanoCore implements Artifact and Review exact-value rejection and transcript Item replacement through one shared byte matcher, requiring complete original-materialization evidence and exact-version restart reconstruction before canonical admission. Synchronous file submission replaces closeout declaration publication under the accepted submission contract above.
-
-The current implementation is a partial projection of this broader communication model. The facts in this subsection describe code and completed local evidence only; they do not replace the owning acceptance predicates or refreshed real-host proof:
-
-- `packages/worker-protocol` exists and defines canonical worker lineage, schema version, worker event records, transcript records, workspace change manifests, capability call summaries, worker-control request and response envelopes, and worker error shapes.
-- `packages/worker-shim` provides one generic zero-argument `openkit-worker-shim` entrypoint, one static registry, and the one resident adapter contract: `openSession` returns a binding that starts Turns, reports its native handle and host liveness, and closes. Its shared Harness admits independent AgentSessions for distinct Threads, runs the six private operations, and runs at most one active Turn. `session.open` registers the two session loopback credentials, opens the resident binding with the session-static runtime environment, and resumes from the reference stored under the carried locator when its digest matches. A binding takes another Turn when its handle was ready at open or one of its Turns completed. The per-Turn launch contract, both adapter modes, and the durable command poll are deleted; the production registry holds the resident Codex, Pi, OpenCode, and DeepSeek adapters (`packages/worker-shim/src/adapter-registry.ts`). The shared shim has no native config-artifact contract, generic capability client, sidecar binary, or runtime-name fallback.
-- The resident adapter interface and generic Harness are implemented, and the production adapter registry registers the resident `codex`, `deepseek`, `opencode`, and `pi` adapters. Earlier Codex, Pi, OpenCode, image-smoke, and A1 results describe the removed implementation, not this candidate. Resident adapter, image-smoke, and exact-candidate runtime acceptance remain pending in their assigned slices.
-- NanoCore preserves the strict manifest-authored image, pull policy, runtime binaries, adapter id, logical-model admission, and Sandbox envelope through `ResolvedAgentSetup`, then projects the preferred and exact allowed logical-model IDs into the immutable AEP. `control.adapter.targetRuntime` alone selects the adapter; runtime kind, image name, environment, deployment, transport, and backend topology do not select or infer one.
-- The zero-argument Harness keeps one Integration client alive inside the bounded outage budget and may hold multiple resident AgentSession bindings; the production binary has no package-argument or one-shot compatibility path.
-- `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots with the fixed sandbox-local Integration control binding and exact `worker-control` backend capability requirements. Current packages always append the built-in `openkit-generative` and `openkit-work` supply, so every package enables exactly the three selected MCP routes; the disabled capability-plane branch is not reached for a worker package.
-- `apps/nanocore/src/runtime/worker-control-gateway.ts`, `worker-control-records.ts`, `worker-control-sequences.ts`, `worker-control-rejected-evidence.ts`, and `worker-control-rebuild.ts` provide version-2 control envelopes, rejection evidence, and restart rebuilding for registered AEP snapshots; canonical worker records retain version 1. No worker command state exists.
-- `apps/nanocore/src/app.ts` exposes current worker-control routes for heartbeat, artifact notice, event append, final status, supply-refresh acknowledgement, and capability-call summary.
-- NanoCore exposes the private exact server-list route and per-selected-server MCP Streamable HTTP route under `/api/worker-capabilities/mcp/*`; its MCP Gateway owns bounded stdio and HTTP upstreams, schema snapshots, policy, approval, Vault resolution, usage, audit, health, and teardown. `WorkerCapabilityCallSummary` remains the bounded transcript/import projection of durable call state rather than route authority.
-- `apps/nanocore/src/runtime/turn-executor-factory.ts` selects only the configured NanoHost RuntimeTarget, reuses one compatible Sandbox and Harness across independent AgentSessions, opens each binding with the Thread's resume pair and fresh loopback credentials, keeps a binding open across Turns when terminal inspection proves it reusable, materializes fresh Turn package and Context inputs, and contains no alternate runtime selector fields. It carries the adapter id opaquely; the Harness registry refuses an unknown one.
-- The public Worker runtime model selects only container execution through NanoHost; alternate lifecycle and endpoint selectors are absent.
-- `apps/nanocore/src/runtime/worker-governance-backend.ts` owns the backend contract, canonical AEP import bytes, staged-export validation, policy projection, and eligible output-path validation reused by synchronous Artifact submission.
-- `apps/nanocore/src/runtime/filesystem-workspace-sync.ts` and related storage code implement filesystem snapshot, staging, review, and apply records that are now owned by the workspace synchronization spec.
-
-The control route, data collection, runtime-adapter boundary, inference-route validation, selected MCP capability plane, evidence, and audit foundations are implemented. Static Skill metadata grants no callable route, while selected MCP supply enables only its three governed operations. The trusted worker-inference and runtime-provenance extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
-
-NanoHost, Runtime Epoch ownership, Sandbox Integration, stock RelayStream, standard HTTP/2 carriage, private Harness control, and the three outer sandbox-local route families are implemented. The fixed native HTTP/1 projection at `127.0.0.1:17892` carries authenticated inference and enabled selected-MCP requests through distinct tokens and bounds. R058 release closure still requires its own final packaged and deterministic story evidence.
-
-## Skill And MCP Supply
-
-This section is the contract for NanoCore-managed Skill and MCP supply and its external Gateway projection. Worker-owned in-Sandbox tools and MCP configuration are excluded from the materialization and discovery prohibitions below. That exclusion does not grant an unrestricted external download or egress, and it does not permit modifying NanoCore-managed authority. Storage and network containment stay at the Sandbox boundary. NanoCore-managed MCP supply and the upward direction stay on NanoCore-served MCP through the Gateway. External traffic follows [Sandbox](../core/sandbox.md) and [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md): Gateway-required integrations remain mediated, while admitted public non-LLM grants and separately authorized non-LLM REST grants retain their respective network and credential contracts. Neither direct route creates NanoCore-managed MCP supply or an upward control route. Approval and audit of Gateway-mediated external interaction remain required.
-
-Skills and MCP servers in this NanoCore-managed supply are controlled by NanoCore.
-
-Worker Agents must not discover or install that NanoCore-managed supply from arbitrary sources at runtime.
-
-NanoCore resolves a workspace-scoped catalog entry into an AEP supply snapshot.
-
-The minimum catalog record should include:
-
-- stable id
-- kind
-- version
-- digest
-- source reference
-- materialization kind
-- allowed runtime adapters
-- allowed workspace scopes
-- allowed tools or prompts
-- network policy hints
-- secret reference ids
-- review status
-- created by
-- updated at
-
-The AEP snapshot should include stable ids, versions, digests, allowed runtime families, allowed tools, policy annotations, materialization hints, and secret references without secret values.
-
-The backend transfers the resolved supply into the container.
-
-Sandbox Integration may write runtime-neutral Skill files and inert MCP supply metadata from that resolved supply. Admitted public native environment values are AEP inputs under [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md). The selected adapter may derive runtime-native argv, fixed loopback bindings, only protected environment bindings, and state-root paths but returns no files for the shared harness to materialize. Codex may generate its conditional secret-free patch descriptor under [Logical Model Patch Capability](20260716-codex_worker_adapter.md#logical-model-patch-capability); Pi's credential-free model descriptor is SDK input, not a generated file, under [Provider And Credentials](20260716-pi_worker_adapter.md#provider-and-credentials). Neither layer may materialize upstream MCP server commands, endpoints, credential references, or credentials for this NanoCore-managed supply or its external Gateway projection. Worker-owned in-Sandbox tools and MCP configuration are excluded from that prohibition under [Sandbox](../core/sandbox.md); the rationale is recorded in [Full Permission Inside The Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md). Every worker package permits only the fixed authenticated Integration route for its resolved MCP supply.
-
-Static MCP supply alone does not grant a callable tool route. Only exact selected supply plus the matching active package and capability token admits the implemented `/capabilities/mcp/*` Integration family and NanoCore-owned policy; remote MCP and the administrator CLI are not part of this path.
-
-Dynamic supply changes create a new AEP snapshot and follow the safe-point refresh rules in the Static Supply Projection.
-
-### File, Model, And Transport Accounting
-
-[The accepted large-file decision](../decisions/20261015-large_files_and_model_context.md) defines three separate domains. Raw emissions use Turn-owned accounting. File bytes use canonical storage and bounded streaming transfer. Model inputs use [bounded Context Package projections](20260703-worker_context_package.md#bounded-model-projection), exact source reads, and model-specific token admission.
-
-Native stdout, final-result, ACP-update, encoded/decoded request, parser, and diagnostic guards remain resource controls. They are not raw LLM output meters. Tool results and native envelopes consume no raw-output capacity. Capture large tool data under its source owner before returning a bounded descriptor; failure never returns a full-body fallback. Qualify actual model-visible results rather than relying on native harness truncation.
-
-
-## Knowledge And Context
-
-Runtime Knowledge and context access will use the capability plane after that plane is implemented.
-
-Initialization may inject selected knowledge-derived material as context package entries or product-visible context injection items.
-
-Runtime retrieval should use future governed capability calls such as knowledge search, knowledge read, context read, source read, and worker-side MCP calls.
-
-Each retrieval call should produce an auditable capability call summary, and product-visible retrieval should be referenced by an item when it affects the worker-visible conversation or result.
-
-Worker writes to long-term knowledge must be proposals.
-
-NanoCore projects proposals into Action Center review rows and commits only accepted or edited records.
-
-Worker Agents must not write Knowledge Store, note, or knowledge-base storage directly.
-
-## Candidate Event Append
-
-Live event append is required before broad worker-side Skill, MCP, knowledge, and context capabilities are considered complete.
-
-The first live append surface should accept schema-conformant candidate worker records for:
-
-- `worker.ready`
-- `worker.heartbeat`
-- `item.created`
-- `item.delta`
-- `item.completed`
-- `artifact.created`
-- `artifact.updated`
-- `observation.recorded`
-- `observation.content.chunk`
-- `turn.completed`
-- `turn.failed`
-
-NanoCore assigns or validates final product ids according to server policy.
-
-Worker-provided ids are candidate ids unless the schema explicitly marks them as stable package-scoped ids.
-
-NanoCore must preserve enough rejected-record diagnostics to debug Worker Agent and Sandbox Integration failures without importing invalid records into product history.
-
-## Sequence, Idempotency, And Replay
-
-Every worker-emitted control record must include lineage and sequence.
-
-Sequence numbers are monotonic within one package snapshot and channel.
-
-NanoCore should reject stale sequence numbers, deduplicate exact retries, and return idempotency conflicts when a repeated sequence or request id carries different semantic content.
-
-Private Harness polling, operation sequencing, and reconnect result replay follow [Worker Control Protocol](20260703-worker_control_protocol.md#harness-pull-and-result-envelopes); a dispatched Harness effect is never redelivered.
-
-After readiness, retry must preserve the same logical operation identity, worker sequence, and canonical payload fingerprint. Sandbox Integration retries only the AEP-resolved sandbox-local worker-control binding, pauses new private Harness polling and new control-dependent work while disconnected, and does not create an unbounded offline outbound queue.
-
-Live append must work with turn-end transcript import.
-
-If a live record was already accepted, transcript import must deduplicate it instead of creating duplicate Items. Artifact submission replay follows its request-owned tuple and receipt above; closeout neither discovers nor repeats submitted Artifacts.
-
-## Workspace Validation
-
-Worker-produced workspace changes must be validated before staging.
-
-NanoCore must validate:
-
-- changed paths are relative to declared writable roots
-- path traversal is rejected
-- symlink escape is rejected
-- undeclared output roots are rejected
-- base commit or snapshot digest matches the materialization record
-- patch or bundle digest matches the collected payload
-- binary, delete, permission, and large-file changes are summarized
-- generated artifact paths are declared or explicitly reviewed
-- Collected Workspace output is not authority to mutate a hosted repository. Platform-managed hosted effects use their separately admitted Gateway MCP owner. Native Git push remains optional user-space configuration requiring a user-injected credential and admitted git-receive-pack egress; OpenKit adds no native-push mechanism.
-
-Invalid change records should create diagnostics and fail or block the turn according to AEP policy.
-
-They must not be silently applied.
-
-## Diagnostic Commands
-
-No diagnostic command family is implemented or declared by the current worker contract. A future diagnostic operation requires a separately accepted closed typed contract with policy binding and bounded arguments; arbitrary argv, cwd, environment, or shell input is permanently excluded.
-
-## NanoHost Deployment Independence
-
-Every NanoHost deployment shares the same Worker-facing contract and product semantics.
-
-Every deployment uses one configured NanoHost and the same Sandbox Integration boundary. Every active sandbox receives only sandbox-local bindings for `/worker-control/*`, `/inference/*`, and `/capabilities/*`. Sandbox Integration carries the enabled logical route families through the sandbox's one stock RelayStream and its one standard HTTP/2 session; it never exposes a NanoCore address or remote transport endpoint to the Worker Agent. Every admitted worker has a callable capability binding for its resolved MCP supply.
-
-Host topology may change the native data-transfer implementation owned by `docs/specs/20260801-nanohost_workspace_data_boundary.md`. Workspace, Artifact, image, and model bytes remain outside the control HTTP/2 session.
-
-No deployment topology gives NanoCore a second lifecycle channel or gives the sandbox a separate NanoCore control path. NanoHost lifecycle, Runtime Epoch fencing, one-session carriage, and RelayStream ownership are governed by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
-
-These differences must not leak into Worker records, public App API, end-user CLI operations, Web UI, Goal Mode, Action Center, or review semantics.
-
-## Failure And Recovery
-
-Before the complete route-bound worker-control readiness exchange succeeds, required control failure is fail-fast and Sandbox Integration must not launch the main Worker Agent child.
-
-Retry remains disabled until the main Worker Agent child starts, so an interruption before launch is fail-fast. After launch, a retryable worker-control interruption enters the single bounded outage budget owned by `docs/specs/20260703-worker_control_protocol.md`. The worker-control client inside Sandbox Integration keeps the same child alive while pausing new private Harness polling and new control-dependent work and retrying only the same AEP-resolved sandbox-local binding with the same logical operation identity; the Integration carriage itself does not retry or reinterpret the request.
-
-NanoHost reconnect fences the predecessor NanoHost transport session before adopting traffic and must not create another worker, Sandbox, AgentSession, attempt, snapshot restore, or compatibility lookup. NanoCore may re-adopt only the exact durable execution attempt, worker incarnation, AEP snapshot, control lineage, backend session, Workspace handoff, worker-control token binding, process key, and exact next sequence proven through the scheduler and worker-control contracts.
-
-Budget expiry, authoritative cancellation, cleanup fencing, or terminal token, lineage, sequence, policy, digest, workspace-path, or schema failure stops or cancels the worker. NanoCore should still collect transcript files already written through backend transport and import validated records as evidence.
-
-Ordinary AgentSession termination closes only its native context, routes, mutable slots, outputs, evidence staging, and AgentSession-local binding after their owners settle. It preserves a compatible shared Sandbox and sibling AgentSessions. If exact local cleanup cannot be proved, admission stops and cleanup widens to the Harness, Sandbox, or Runtime Epoch boundary whose complete effect domain can be fenced. An accepted Sandbox create or delete whose completion cannot be proved invalidates the complete Runtime Epoch; affected AgentSessions then receive truthful independent `interrupted` or `unknown` outcomes through their owning records.
-
-If transcript files are missing and required by the AEP, the turn should fail with a redacted diagnostic.
-
-If token validation, lineage validation, sequence validation, policy validation, workspace path validation, digest validation, or schema validation fails, NanoCore must reject the record and preserve a diagnostic.
-
-Remote backend unavailability must not fall back to host execution.
-
-NanoCore may retry backend transport when the operation is idempotent and safe.
-
-NanoCore should persist enough state to diagnose or recover after restart, including:
-
-- AEP snapshot id and redacted snapshot summary
-- materialization record id
-- backend session label or product-safe sandbox label
-- control registration metadata without raw token values
-- workspace input digest
-- expected transcript paths
-- expected workspace-change manifest path
-- change-set collection state
-- staged review state
-
-Sandbox tokens and raw worker process keys do not need to be persisted as reusable secret material. Sequence zero binds only the process-key hash to the execution attempt, while sequence one proves that post-launch retry is active and the resident host has begun the Turn. A transport loss or a NanoCore restart may adopt the exact attempt: adoption then requires the original in-memory key, exact durable lineage, the exact next sequence, and the same open attempt inside the NanoHost adapter's unexpired `awaiting-reconnect` window, bounded by the attempt's absolute deadline. It adds no compatibility registry or challenge protocol. A binding that cannot be proved exactly is closed or fenced, and a successor resumes natively. This version starts from a new data root and does not read earlier-version data, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md).
-
-When exact adoption succeeds, the existing worker-Turn checkpoint, AgentSession, and Workspace synchronization records continue terminal observation, evidence collection, review, and cleanup for the same Turn. When key, lineage, sequence, or deadline verification fails, those same owners project the interrupted outcome and reconciliation path. The shim seals the transcript and provenance it owns before `final_status`. It does not publish the workspace change set by an in-Sandbox capture, and process-group absence is not the collection gate. A durable accepted final status closes through the existing backend, checkpoint, Workspace, Turn, execution attempt, and backend-private residency owners; no settlement coordinator or parallel domain workflow exists. The next Turn waits until Turn-end collection completes.
-
-The reconnect contract adds no second protocol or recovery owner. Sandbox Integration, RelayStream, and the NanoHost session preserve transport confidentiality and the distinct worker-control token boundary defined by the runtime-and-transport owner. A NanoHost or Execution Server failure that cannot prove continuity leaves the Turn with the truthful result its lifecycle owner determined; effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, without changing any independent AgentSession result, and it never infers completion, replacement, or settlement.
-
-## Public Surfaces
-
-Public App API, the end-user remote MCP interface, Web UI, deployment docs, and status summaries should describe:
-
-- Core mode: `local | server`
-- Worker runtime: `container`
-- Runtime target: one configured NanoHost
-- Container backend: stock OpenShell private to NanoHost
-
-They should not advertise host execution as a supported Worker runtime.
-
-Remote MCP and the administrator CLI are the implemented channel projections over NanoCore public APIs. They use definition-derived operation projections and do not expose a second workflow or route authority.
-
-The transport-neutral operation catalog may need operations to inspect worker runtime status, worker communication diagnostics, supply catalog summaries, capability call summaries, and staged review evidence.
-
-It must not become worker-side MCP supply and must not expose backend-private sandbox control.
-
-## Implementation Roadmap
-
-Implementation should move through these release-neutral milestones:
-
-1. Remove host Worker runtime from product selection and public surfaces.
-2. Promote canonical worker schemas into `packages/worker-protocol`.
-3. Replace both adapter modes with the one resident contract for Codex, Pi, OpenCode V2, and DeepSeek, carried by the seven Harness operations, without adding another runtime protocol.
-4. Complete live candidate event append, NanoCore validation, and transcript import deduplication through Sandbox Integration's `/worker-control/*` binding.
-5. Complete NanoCore-resolved Skill and MCP supply catalog materialization into container workers.
-6. Extend the implemented selected-MCP capability slice only through separately accepted capability owners; Knowledge Store operations and other families remain future work and must not add another control path.
-7. Keep remote MCP, bundled CLI, and operation catalog aligned as public runtime-communication operations land so coordinator agents can inspect and drive them through public NanoCore APIs.
-8. Verify the full loop through public NanoCore APIs and the remote MCP interface without relying on backend-private runtime state.
-
-## Verification Expectations
-
-The communication model is implemented only when:
-
-- no real product runtime path uses host execution
-- every supported NanoHost deployment generates the same AEP Worker-facing control contract
-- every supported NanoHost deployment uses the same Sandbox Integration, RelayStream, worker-control protocol, transcript schema, event schema, exact disabled-or-selected-MCP capability declaration, and Workspace-change schema
-- NanoCore validates candidate records against canonical schemas without importing runtime-native adapters
-- Runtime adapters own runtime-native argv, protected environment binding derivation, isolated state paths, and output parsing; admitted public native environment values remain AEP inputs; Codex's conditional patch descriptor and Pi's SDK model descriptor remain adapter-owned and credential-free, while the shared Harness has no native config-file contract
-- a further runtime adds one authored `AgentManifest`, one adapter module plus static registry entry, inside the one multi-runtime image, without a NanoCore enum branch, command builder, native parser, or image-selection branch
-- base-path runtime-native command construction and event parsing occur only in the corresponding adapter, specification, and tests; images and manifests declare binaries and policy but no native argv; the resident contract keeps the restricted live handle until `session.close` and a successor resumes that retained conversation; opaque native bytes may persist in the admitted data volume; the only NanoCore native-parser exception is the narrowly isolated version-pinned S33 verifier
-- Skill and MCP supply comes from NanoCore-resolved catalog snapshots
-- selected MCP capability routes pass their governed catalog, schema, policy, approval, usage, audit, credential, and teardown acceptance before roadmap closure; Knowledge, context, and proposal-flow routes remain unadvertised
-- no App API, NanoCore route, gateway method, or Sandbox Integration interface accepts or executes caller-supplied arbitrary argv, cwd, environment, or shell input
-- tests prove token, lineage, schema, sequence, idempotency, digest, workspace path, and policy validation
-- tests prove pre-readiness failure launches no worker, retryable post-readiness interruption preserves the same worker within the bounded budget, exact process-key/lineage/sequence adoption creates no replacement worker or session, and budget expiry enters the existing interrupted recovery path
-- e2e smoke proves one configured NanoHost can run two Turns on one non-Goal resident binding without relaunching the native engine, produce reviewable evidence, leave the binding open across those Turns, close it with `session.close` while preserving resumable native context and retained working roots, and preserve the compatible shared Sandbox and healthy Runtime Epoch. Goal worker execution is not the acceptance path for this change. That limit is current implementation that the Goal implementation replaces, as [Goal](20261002-goal.md) defines
-- real-host fault acceptance proves the same NanoHost and Sandbox Integration contract, stock RelayStream carriage, Sandbox materialization, separately governed data transport, and fresh-empty readiness after Runtime Epoch recovery
-- real Codex provenance acceptance proves the attributed remote inference path; that gate has passed on A1, while the selected MCP slice requires its separate R058 acceptance and the broader non-MCP capability plane remains partial
-- Agent-Skill-driven dogfood loops prove the coordinator can inspect runtime status, run bounded steps, review evidence, and continue/refine/reject/accept without bypassing review gates
-
-## Testing Strategy
-
-Required local development machine verification:
-
-- format and static checks for touched packages
-- schema and contract tests for `packages/worker-protocol`, `packages/config-schema`, `packages/app-api-schemas`, and `packages/core-client`
-- NanoCore unit and black-box tests for runtime selection, AEP generation, route-bound worker-control, event append, transcript import, workspace validation, and Action Center review projection
-- Sandbox Integration tests for worker-control binding, exact one-route enforcement, transcript writing, redaction, bounded output, and sequence handling, plus adapter-local tests for native argv, environment isolation, and parser behavior
-- Sandbox Integration tests for pre-readiness fail-fast behavior, same-operation replay, paused private Harness polling, same-worker adoption after a transport loss or a NanoCore restart, and a restart whose proof fails and therefore closes or fences the binding, recovery timeout, and terminal handoff through existing checkpoint, session, and workspace records
-- selected-MCP capability tests for route authentication, server listing, tool listing and calls, policy, approval, usage, audit, credential redaction, teardown, and fail-closed disabled projection; future Knowledge operations require their own checks before advertisement
-- bundled CLI tests, build, and smoke against a local NanoCore development server
-- a real Agent-Skill-driven non-Goal resident loop through one configured NanoHost. Goal worker execution is not this acceptance path
-
-Required real-host verification:
-
-- run NanoCore in server mode
-- run the configured NanoHost with one fresh, verified-empty Runtime Epoch
-- provide each sandbox one stock RelayStream carrying one standard HTTP/2 session with sandbox-local `/worker-control/*`, `/inference/*`, and `/capabilities/*` bindings; prove that the capability binding enables exactly `mcp.list-servers`, `mcp.list-tools`, and `mcp.call-tool`
-- connect from an MCP-capable agent app through the remote guide and tools
-- create or resume a real thread
-- run two Turns on one non-Goal resident binding through that RuntimeTarget. Goal worker execution is not this acceptance path
-- collect Action Center rows, artifacts, workspace review evidence, worker diagnostics, and capability summaries
-- prove staged review rather than direct protected workspace mutation
-
-Remote provider quota or real Codex subscription tests must remain opt-in and explicitly documented.
-
-If an environment cannot run a check, the implementation evidence must record the exact reason and the narrowest rerun command.
-
-## Risks And Mitigations
-
-Risk: Removing host runtime slows local development.
-
-Mitigation: invest in a fast local-container development profile and deterministic container tests.
-
-Risk: The shared Integration carriage becomes a generic RPC.
-
-Mitigation: keep `/worker-control/*` limited to the worker-control protocol, expose only the current typed interrupt command, and preserve separate tokens, scopes, payload bounds, retry rules, and failure semantics for every logical route family.
-
-Risk: Worker-side MCP bypasses NanoCore policy.
-
-Mitigation: advertise no `/capabilities/*` binding until NanoCore-resolved MCP catalog snapshots, gateway policy, and the thin Sandbox Integration capability client pass acceptance.
-
-Risk: Remote recovery after a transport loss or a NanoCore restart adopts the wrong worker or extends an outage indefinitely.
-
-Mitigation: require the exact memory-only process key, durable lineage, next sequence, and preserved deadline; claim reconnect and apply the ordinary heartbeat update in one database transaction while timeout cleanup uses one exact-row CAS, so only one side can win; fall back to the existing interrupted-evidence path on any mismatch or timeout. After a transport loss or a NanoCore restart, a binding that cannot be proved exactly is closed or fenced, and a successor resumes natively.
+- Image-default layering and the loaded system requirements hold in a deployed Sandbox - On main, local fixtures do not prove the loaded image - #120
+- Transport loss and a Core restart adopt only an exact surviving binding - On main, local adapter fixtures do not establish that adoption - #156
+- Real Task, review, Web, and remote MCP outcomes are separate required evidence - On main, local adapter fixtures do not establish them - #177
+- Observed native compaction survives exact resume without duplicate canonical messages - On main, that continuity is not established - #769
+- Descendant-writer absence, physical fencing, and stable-media collection are independent of local close proof - On main, local close fixtures do not prove them - #769
+- Supported native context, spill, and image controls stay inside the native context manager - On main, that shared qualification is not established - #769
+- A native preparation uses only the remaining outer deadline - On main, adapter open starts a fresh 60000 ms allowance after queue admission - #622
 
 ## Decisions
 
-- Host runtime is removed from product execution and public surfaces.
-- Public runtime configuration exposes one NanoHost identity and rendezvous boundary, not a worker-runtime, placement, backend, SSH, Gateway, or sandbox-direct endpoint selector.
-- Sandbox Integration's sandbox-local `/worker-control/*` binding is the sole Worker-facing target for worker control. The `/inference/*` and future `/capabilities/*` families share only the standard HTTP/2 carriage and retain separate tokens, scopes, payload bounds, retry rules, failure semantics, usage, and audit ownership.
-- NanoHost lifecycle, Runtime Epoch fencing, stock RelayStream carriage, standard HTTP/2 session ownership, and transport credential boundaries are owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
-- The AEP carries one preferred logical model and an exact non-empty allowed route set. The shared shim validates the complete allowed route set, requires a unique route for the preferred model, and passes both the exact admitted set and this Turn's preferred route into the adapter-specific fail-closed native projection; it permits multiple routes only in Gateway mode and never falls back to another model. The selected Codex adapter uses App Server session configuration, Pi uses its SDK-host model descriptor, and OpenCode V2 uses private native configuration and its supported client API under their adapter owners; deployment pins are recorded in `containers/worker-runtimes/versions.json`. Each projection targets the selected trusted NanoCore relay and must satisfy its adapter owner; descriptor generation alone does not prove live Task readiness.
-- `openkit-worker-shim` is the generic real container entrypoint; runtime-native behavior is selected by the AEP-declared opaque adapter id inside the worker image.
-- Codex, Pi, OpenCode V2, and DeepSeek use one shared Harness registry and one resident adapter contract. A runtime that cannot keep live context, or cannot resume the exact retained conversation, is an unsupported capability.
-- One authored `AgentManifest`, one adapter module plus static registry entry, inside the one multi-runtime image, are the complete permitted production extension surface for a further Worker Agent. `worker-common` remains the public base.
-- The resident contract retains one restricted live handle until `session.close` and a successor resumes that retained conversation, while preserving the opaque data volume. `turn.interrupt` cancels the Turn and does not close the AgentSession. Resident observation keeps the 16 MiB capture bound and the 16 KiB-per-stream diagnostic-prefix bound.
-- Selected MCP capability routes are enabled only by exact AEP supply and active Turn authority; all other capability routes remain disabled, and static supply never authorizes direct upstream execution.
-- S33 Codex provenance remains a separate optional verified extension and is not part of the common adapter contract.
-- Live candidate event append and NanoCore validation should be implemented before broad Skill, MCP, knowledge, and context capability work.
-- Dynamic Skill and MCP updates create new AEP snapshots. Tool-surface changes happen at Turn boundaries. Each adapter declares whether its runtime lists tools again at Turn start.
-- Sandbox Integration redaction is best effort; NanoCore redaction and verification remain authoritative.
-- No diagnostic command exists in the current contract; any future typed diagnostic is separately designed and cannot accept arbitrary execution input.
-- Required route-bound worker control is fail-fast before readiness and bounded-reconnect after readiness; successful process-key adoption continues the same worker and existing terminal-handoff records, while verification failure or timeout follows the existing interrupted recovery path.
-
-## Specialized Decision Index
-
-This overview records the worker runtime communication direction. Detailed implementation decisions live in the narrower specs that own each contract:
-
-- Worker-control live append route shape, envelope semantics, event sequence idempotency, stale/conflicting sequence handling, and response fields are owned by `docs/specs/20260703-worker_control_protocol.md`.
-- Runtime-internal sub-agent raw capture, parent-child provenance, trusted worker-inference identity, and runtime cache lineage are owned by `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
-- Worker capability route projection, canonical `knowledge.*` target families, sandbox bearer lineage, `WorkerCapabilityCallSummary`, metering, and audit hooks are owned by `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260702-knowledge_store_governance_rules.md`.
-- Worker-side Skill and MCP catalog resolution, approved catalog ids, version or digest resolution, runtime-adapter compatibility, and provider and Vault references are owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260703-worker_agent_capability.md`, and `docs/specs/20260704-worker_mcp_tool_supply.md`; the AEP carries their resolved static supply projection and admitted public native environment inputs, while adapter-specific native argv, protected environment binding derivation, state-root use, and output parsing are owned by S64-S66 and their future peer specifications.
-- Filesystem workspace staging, resolved-path containment, symlink escape rejection, staged review, apply, and recovery behavior are owned by `docs/specs/20260703-workspace_synchronization.md`.
-- End-user coordinator diagnostics must use public NanoCore App API surfaces rather than runtime internals. Concrete product guidance is owned by `docs/specs/20261002-remote_mcp_interface.md`; administrator CLI behavior is owned by `docs/specs/20260910-agent_operator_skill.md`.
-- NanoHost lifecycle, Runtime Epoch fencing, Sandbox Integration carriage, stock RelayStream ownership, and route-family isolation are owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`; OpenShell network policy defaults, Codex binary allowlists, Git remote helper binary allowlists, and native data transfer remain with their narrower execution-environment and workspace owners.
-- Restart effects use ordinary worker-control adoption plus the existing workspace synchronization, evidence-import, and bounded-step owners; no separate recovery workflows or coordinators exist. Detailed rules are owned by `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-audit_usage_evidence_records.md`, and `docs/specs/20260703-runtime_scheduling_scale.md`.
-
-## Related Documents
-
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20261002-remote_mcp_interface.md`
-- `docs/specs/20260703-workspace_synchronization.md`
-- `docs/specs/20260703-agent_manifest_aep_resolution.md`
-- `docs/specs/20260531-worker_turn_reliability_envelope.md`
-- `docs/specs/20260703-worker_control_protocol.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
-- `docs/specs/20260703-worker_agent_capability.md`
-- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
-- `docs/specs/20260703-runtime_scheduling_scale.md`
+- [Tool Surface Changes At Turn Boundaries](../decisions/20260929-tool_surface_changes_at_turn_boundaries.md)
+- [Earlier Version Data Not Carried](../decisions/20260930-earlier_version_data_not_carried.md)
+- [Full Permission Inside The Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md)
+- [One Multi-Runtime Worker Image](../decisions/20260930-one_multi_runtime_worker_image.md)
+- [Pi Native MCP Discovery](../decisions/20260930-pi_native_mcp_discovery.md)
+- [Sandbox Full Capability Rulings](../decisions/20261001-sandbox_full_capability_rulings.md)
+- [Transcript Item Exact-Value Guard](../decisions/20261005-transcript_item_exact_value_guard.md)
+- [Synchronous Submission Of Worker Files](../decisions/20261005-worker_file_synchronous_submission.md)
+- [Execution Backend Port In NanoCore](../decisions/20261006-execution_backend_port_in_nanocore.md)
+- [Task Live Steer Rulings](../decisions/20261008-task_live_steer_rulings.md)
+- [Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md)
+- [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md)
+- [Worker Failure Final And Chat Call Rulings](../decisions/20261015-worker_failure_final_and_chat_call_rulings.md)

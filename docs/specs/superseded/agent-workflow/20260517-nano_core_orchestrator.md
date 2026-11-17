@@ -2,8 +2,8 @@
 status: Superseded
 implementation: N/A
 status-changed: 2026-07-03
-current-guidance: "`docs/core/agent-workflow.md`, `docs/specs/20260531-worker_turn_reliability_envelope.md`, `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`"
-decision-evidence: "`docs/core/agent-workflow.md`, `docs/specs/20260531-worker_turn_reliability_envelope.md`, `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`"
+current-guidance: "`docs/core/agent-workflow.md`, `docs/specs/20260531-worker_turn_reliability_envelope.md`, `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-durable_scheduler_design.md#scale-limits`"
+decision-evidence: "`docs/core/agent-workflow.md`, `docs/specs/20260531-worker_turn_reliability_envelope.md`, `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-durable_scheduler_design.md#scale-limits`"
 ---
 # NanoCore Turn Orchestrator
 

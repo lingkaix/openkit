@@ -10,7 +10,7 @@ The coordinator approved C01/C02 as the second of three separate reset-cohort in
 
 ## Owners
 
-[Information consolidation](../../specs/20261018-nanocore_interception_and_information_consolidation.md#information-and-record-authority), [Knowledge governance](../../specs/20260702-knowledge_store_governance_rules.md), and [Notebook editing](../../specs/20260909-knowledge_notebook_editing.md) own the accepted lifecycle. Ordinary scoped publication, current admission, fixed bases, Review, Audit and restart remain authoritative. This plan grants no new authority.
+[Information consolidation](../../specs/20260703-policy_enforcement_mapping.md#interception), [Knowledge governance](../../specs/20260702-knowledge_store_governance_rules.md), and [Notebook editing](../../specs/20260909-knowledge_notebook_editing.md) own the accepted lifecycle. Ordinary scoped publication, current admission, fixed bases, Review, Audit and restart remain authoritative. This plan grants no new authority.
 
 ## Proposed Fields And Ablation
 

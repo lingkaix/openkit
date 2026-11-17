@@ -1,59 +1,34 @@
 ---
 status: Accepted
-implementation: Partial
+implementation: Implemented
 kind: boundary
-updated: 2026-09-05
 aspect: contract-evolution
 ---
 # Vendor Snapshot Packages
 
-## Owns
+This specification owns the packaging contract for externally sourced runtime and catalog snapshots under the workspace packages.
 
-This spec owns the repository packaging contract for externally sourced runtime and catalog snapshots under `packages/`.
+## Scope
 
-It owns the rule that external boundary snapshots must be packaged, validated, refreshed, and reviewed separately from OpenKit-owned protocol and runtime source.
+Owns:
 
-It owns what a snapshot package must contain when its consumer deliberately uses checked-in upstream interface files as runtime or generated-code input, and the evidence quality a snapshot refresh requires.
+- The rule that an external boundary snapshot is packaged, validated, refreshed, and reviewed apart from OpenKit-owned protocol and runtime source.
+- What a snapshot package contains when a consumer uses checked-in upstream interface files as runtime or generated-code input.
+- The evidence quality a snapshot refresh requires.
 
-## Does Not Own
+Does not own:
 
-This spec does not own OpenKit protocol schemas, NanoCore provider-template behavior, live catalog fetching, dynamic provider marketplaces, model-routing policy, package-local refresh procedures, external upstream release cadence, NanoHost lifecycle, app-local Cargo dependencies, app-local release metadata, or stock transport qualification.
+- OpenKit protocol schemas — [Protocol](../core/protocol.md). `@openkit/protocol` stays the `UI <-> Core` contract.
+- Which upstream release NanoHost supports, and the evidence kept beside that application — [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md).
+- Live catalog fetching, dynamic provider marketplaces, and model-routing policy — their mediation and provider owners.
+- Package-local refresh commands. Each package keeps its own procedure. This specification does not add a refresh service.
+- Package-local build-supply archives — the consuming specification. [Retrieval Kernel](20261014-retrieval_kernel.md) owns its embedded dictionary supply.
 
-It does not decide which upstream release an application supports, what evidence that application keeps beside its code, or which integration checks qualify a dependency update. `docs/specs/20260802-nanohost_runtime_and_transport.md` owns those decisions for NanoHost and OpenShell.
+Core:
 
-Package-local build-supply archives are outside this boundary-snapshot contract. Their consuming specification owns their use and qualification; [Retrieval Kernel](20261014-retrieval_kernel.md) owns its embedded dictionary supply.
-
-## Core References
-
-- `docs/core/protocol.md`
-- `docs/core/mediation.md`
-- `docs/core/agent-supply.md`
-
-## Summary
-
-OpenKit keeps externally sourced runtime and catalog artifacts in dedicated workspace packages under `packages/`.
-
-`@openkit/codex-app-server-schema` owns the generated Codex app-server JSON Schema snapshot as an external worker runtime boundary.
-
-`@openkit/models-dev-catalog` owns vendored `models.dev` API snapshots and provider-template traceability checks as an external model-catalog boundary.
-
-The core rule is that these artifacts are read-only boundary snapshots at runtime, not OpenKit canonical protocol definitions and not live network dependencies.
-
-## Goals / Non-goals
-
-The goal is to make external artifacts easy to find, validate, review, and refresh without mixing them into OpenKit's own protocol source of truth.
-
-The goal is also to keep NanoCore boot deterministic by avoiding live network fetches for external schema or model catalog data.
-
-This spec does not introduce a runtime catalog fetcher, a dynamic provider marketplace, or a new OpenKit protocol family.
-
-## Background
-
-Codex app-server schemas were originally consumed by NanoCore's host adapter, but they describe an external JSON-RPC surface rather than OpenKit's own protocol.
-
-The `models.dev` API snapshot informs provider-template traceability, but it is an upstream catalog snapshot rather than NanoCore runtime source.
-
-Both artifacts are external snapshots with independent update cadence, source metadata, and review requirements.
+- [Protocol](../core/protocol.md)
+- [Mediation](../core/mediation.md)
+- [Agent Supply](../core/agent-supply.md)
 
 ## Decision
 
@@ -99,13 +74,17 @@ A development branch, floating reference, shallow clone, rendered release page, 
 
 An upstream artifact set is complete only when every consumed component resolves to the recorded release or capture. A mixed, relabelled, or partially resolved set is invalid.
 
+`packages/codex-app-server-schema/scripts/validate.mjs` owns consumed-surface metadata. This specification does not restate that validator's schema. Each consumed file has its own checksum. Each generated JSON file has its own SHA-256. The validator does not produce an aggregate directory digest.
+
 ### Snapshot Refresh Obligation
 
 This subsection applies only to an external snapshot package governed by this specification. A refresh MUST resolve its committed inputs from the exact recorded release or capture and retain source identity and checksums under the package-local contract. Generated or vendored diffs receive separate review from any consuming OpenKit behavior change.
 
-An upstream release creates no obligation to refresh a snapshot. An application dependency update is governed by that application's owner even when both changes happen in one repository slice.
+An upstream release creates no obligation to refresh a snapshot. A refresh uses the package-local procedure. This specification does not add a refresh service. An application dependency update is governed by that application's owner even when both changes happen in one repository slice.
 
 NanoCore adapter logic and provider-template logic must remain in NanoCore-owned packages, not in external snapshot packages.
+
+The deleted OpenShell schema snapshot package MUST NOT be recreated, copied into `apps/nanohost`, or used as OpenShell upgrade evidence. NanoHost dependency qualification stays with [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md).
 
 ## Accepted Design
 
@@ -115,84 +94,15 @@ models.dev refreshes create a new dated snapshot directory and update checksum m
 
 Reviewers should treat generated or vendored artifact diffs as source updates from an external boundary, then separately review any OpenKit code changes needed to adapt to those updates.
 
-## Current Implementation Projection
+## Implementation
 
-`packages/codex-app-server-schema/` contains Codex app-server generated schemas, package metadata, a validation script, package-local maintenance guidance, and package-local agent rules. Its metadata records one SHA-256 checksum for each generated JSON file, the consumed upstream implementation values, and the consumed-surface dispositions, and its validation script checks them.
+- `packages/codex-app-server-schema/` — Codex app-server schema snapshot, metadata, and validator
+- `packages/models-dev-catalog/` — models.dev snapshots, checksums, and provider-template checks
 
-`packages/models-dev-catalog/` contains dated `models.dev` snapshots, snapshot metadata, checksum validation, provider-template traceability validation, package-local maintenance guidance, and package-local agent rules.
+## Implementation Gaps
 
-The legacy `packages/openshell-schema-snapshot/` package has been deleted after its remaining policy consumer moved to the existing policy owner. It was created for the deleted NanoCore CLI adapter and Cell path; NanoHost now compiles the official SDK and uses app-local release metadata and integration tests under `docs/specs/20260802-nanohost_runtime_and_transport.md`. Its former hand-authored CLI, policy, and provider-profile summaries are not a required snapshot of the current NanoHost boundary and MUST NOT be recreated, copied into `apps/nanohost`, or used as OpenShell upgrade evidence.
+None.
 
-`@openkit/codex-app-server-schema` and `@openkit/models-dev-catalog` remain ordinary snapshot packages under this contract; neither is affected by the OpenShell removal.
+## Decisions
 
-These packages expose package-local `test`, `lint`, and `format` scripts through their `package.json` files; packages with TypeScript helper exports also expose `typecheck` and `build`.
-
-NanoCore consumes these packages as external boundary inputs while keeping provider-template behavior and adapter behavior outside the snapshot packages.
-
-## Alternatives Considered
-
-Keeping Codex schemas inside NanoCore was simple while NanoCore was the only consumer, but it made external boundary maintenance look like adapter implementation.
-
-Keeping models.dev under repository-level `vendor/` worked for the first release, but it did not provide package-local commands or ownership.
-
-Moving both artifacts into `@openkit/protocol` was rejected because Codex app-server and models.dev are not OpenKit `UI <-> Core` protocol definitions.
-
-Creating one generic third-party package was rejected because Codex schema and models.dev have different consumers, update cadence, and validation rules.
-
-## Consequences
-
-The root workspace has dedicated private packages for external boundary snapshots.
-
-Artifact refreshes have package-local commands and review checklists.
-
-Large generated files may require package-level formatting exceptions, while package validation still parses and checks the important metadata.
-
-External snapshot updates become explicit maintenance work rather than incidental NanoCore implementation churn.
-
-## Completed Migration
-
-Codex generated schemas were moved out of NanoCore-owned source and into `packages/codex-app-server-schema/`.
-
-`models.dev` snapshots were moved out of the repository-level vendor area and into `packages/models-dev-catalog/`.
-
-The historical OpenShell schema package was removed after its last policy projection moved into the existing NanoCore policy owner; NanoHost dependency qualification remains app-local under its owning specification.
-
-Active docs, package scripts, ignore rules, and validation tests now point at the package paths.
-
-Future snapshot refreshes should follow the package-local refresh procedures rather than repeating the migration.
-
-## Testing Strategy
-
-`@openkit/codex-app-server-schema` validates required generated schema files and metadata.
-
-`@openkit/models-dev-catalog` validates metadata, checksum, snapshot parseability, and provider-template traceability.
-
-A snapshot that supplies machine-readable inputs validates that every consumed definition is present, individually checksummed, and resolved from the recorded release or capture.
-
-NanoCore tests continue to validate runtime behavior against provider templates and Codex adapter code.
-
-## Risks & Mitigations
-
-Generated artifact drift can be missed if maintainers update files without running package-local tests.
-
-Mitigation: keep package `test` scripts small, deterministic, and part of normal verification.
-
-Provider-template drift can occur when models.dev changes provider IDs or model IDs.
-
-Mitigation: validate provider mappings against NanoCore templates and require diff review before committing snapshot refreshes.
-
-## Resolved Decisions
-
-No unresolved decisions remain.
-
-## Deferred / Future Work
-
-- Decide whether release automation should run external snapshot package tests as a distinct verification stage.
-- Decide whether Codex schema metadata should record aggregate file checksums after the next schema refresh.
-
-## Links
-
-- `packages/codex-app-server-schema/README.md`
-- `packages/models-dev-catalog/README.md`
-- `packages/protocol/README.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
+None.

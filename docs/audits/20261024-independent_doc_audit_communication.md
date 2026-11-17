@@ -97,7 +97,7 @@ The removed Core Client clauses described code that no longer exists; the remain
 
 ### Q-41. How many active Turns does one Harness admit?
 
-- Context: the projection says one active Turn per Harness; the Harness admits one per AgentSession up to `maxActiveTurns`, which the same specification sets. Whether the scheduler admits more than one per Harness belongs to `20260703-runtime_scheduling_scale.md`, which is held.
+- Context: the projection says one active Turn per Harness; the Harness admits one per AgentSession up to `maxActiveTurns`, which the same specification sets. Whether the scheduler admits more than one per Harness belongs to `20260703-durable_scheduler_design.md#scale-limits`, which is held.
 - Options: (A) State the per-AgentSession rule and the `maxActiveTurns` bound, and leave scheduler admission to its owner. (B) Keep the one-per-Harness sentence.
 - Recommendation: A, with the scheduling release.
 - Meanwhile: no change.

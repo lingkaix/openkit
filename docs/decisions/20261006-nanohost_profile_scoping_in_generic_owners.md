@@ -27,6 +27,6 @@ An actual backend proposal needs an alternative proof contract, or a rebuild or 
 
 ## Affected Owners
 
-- [Durable Scheduler Design](../specs/20260703-durable_scheduler_design.md#summary)
-- [Runtime Scheduling And Scale](../specs/20260703-runtime_scheduling_scale.md#summary)
+- [Durable Scheduler Design](../specs/20260703-durable_scheduler_design.md#components)
+- [Runtime Scheduling And Scale](../specs/20260703-durable_scheduler_design.md#scale-limits)
 - [NanoCore Bootstrap, Readiness, And Recovery](../specs/20260704-nanocore_bootstrap_readiness.md#contract--expected-behavior)

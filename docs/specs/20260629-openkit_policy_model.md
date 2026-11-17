@@ -6,59 +6,29 @@ aspect: policy
 ---
 # OpenKit Policy Model
 
-## Summary
+This specification owns the `@openkit/policy-kernel` package: the NGAC subset evaluator, its graph vocabulary, and its allow or deny decision.
 
-This spec defines the `@openkit/policy-kernel` package contract: a strict NGAC subset evaluator for OpenKit policy facts, access rights, low-level allow or deny decisions, and structural decision traces.
+## Scope
 
-It keeps canonical product permission semantics in `docs/core/policy.md` and leaves NanoCore enforcement mapping, approval routing, Action Center behavior, backend policy artifacts, and durable permission-decision records to `docs/specs/20260703-policy_enforcement_mapping.md`.
+The package owns policy elements, assignments, associations, prohibitions, access requests, allow or deny decisions, and structural traces.
 
-## Purpose
+It does not own:
 
-OpenKit needs one coherent authorization model for API access, workspace work, agent capabilities, remote MCP and administrator CLI operations, worker-side MCP tools, knowledge, audit, vault references, artifacts, runtime placement, network egress, and future workspace services. This document defines a policy model that follows NGAC and Policy Machine definitions for every implemented kernel concept while keeping OpenKit's product language focused on workspace, agent, tool, approval, vault, knowledge, audit, and review concepts.
+- Product enforcement, approvals, and durable permission decisions. [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) owns them.
+- OpenShell policy rendering. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns it.
+- Authentication and membership storage. [Identity](../core/identity.md) owns them.
+- Secret values. [Vault](../core/vault.md) owns them.
+- Knowledge content. [Knowledge](../core/knowledge.md) owns it.
 
-The goal is not to implement or claim the complete NGAC standard. OpenKit MAY leave NGAC definitions, functions, relations, and functional entities unimplemented. The rule is stricter for implemented concepts: any NGAC concept implemented by `@openkit/policy-kernel` MUST match NGAC definitions, standard terminology, and described semantics instead of becoming an OpenKit-specific redesign.
+Core: [Policy](../core/policy.md).
 
-This spec owns the policy-kernel model and package boundary. `docs/core/policy.md` owns the canonical product permission concept, and `docs/specs/20260703-policy_enforcement_mapping.md` owns how NanoCore maps policy decisions into product workflow, approvals, Action Center rows, backend policy artifacts, and durable permission-decision records.
-
-## Owns
-
-- The `@openkit/policy-kernel` package concept and scope.
-- The selected NGAC graph vocabulary used inside the policy kernel.
-- Policy elements, assignments, associations, prohibitions, access requests, allow/deny decisions, and structural traces.
-- OpenKit operation namespaces and policy domains at the conceptual level.
-- The boundary between canonical OpenKit authorization semantics and derived backend enforcement artifacts.
-- The first package API and package-level acceptance criteria.
-
-## Does Not Own
-
-- NanoCore enforcement-point mapping, durable `PermissionDecision` records, approval routing, or Action Center behavior.
-- OpenShell policy YAML rendering, sandbox policy files, or backend-specific enforcement schemas.
-- Authentication, identity sessions, membership storage, organization roles, or UI copy.
-- Vault secret values, Knowledge Store content, audit record persistence, runtime session storage, or protocol record schemas.
-- Runtime scheduling, workspace synchronization, agent capability gateway routing, or AEP resolution.
-- Runtime Epoch lifecycle, OpenShell operations, Sandbox Integration, or runtime transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
-- Product-level `PermissionDecision` result categories beyond the low-level kernel's allow or deny effect.
-
-## Core References
-
-- `docs/core/policy.md`
-- `docs/core/evidence.md`
-- `docs/core/vault.md`
-- `docs/core/knowledge.md`
-- `docs/core/mediation.md`
-- `docs/core/sandbox.md`
-
-## Product Fit
-
-OpenKit's architecture already assigns permission decisions, sandbox policy summary, agent capability routing and gateway projection, vault reference mediation, storage coordination, audit, and usage records to Core. The product model also makes workspace the top-level product environment that controls permissions, vault references, sandbox defaults, and audit scope. A unified policy model belongs below those Core surfaces and above storage, routes, runtime adapters, and user interfaces.
-
-The model must serve product needs without making users think in NGAC terms. Product surfaces should continue to show ordinary concepts such as workspace access, agent capabilities, tool grants, approvals, vault usage, knowledge visibility, audit visibility, artifact access, and network policy.
+An implemented kernel concept matches NGAC definitions and terminology. The package does not claim complete NGAC conformance. An unimplemented NGAC definition stays out of the package.
 
 ## Naming
 
 The shared package is named `@openkit/policy-kernel`, not `@openkit/ngac`.
 
-This name is intentional. The package is an OpenKit package, not a general-purpose NGAC product surface, but its implemented kernel concepts must be an NGAC-standard-aligned subset. The package must document deferred concepts and must not suggest complete NGAC standards conformance.
+The package is an OpenKit package. Its implemented kernel concepts are an NGAC-aligned subset. It does not claim complete NGAC conformance. Product and protocol surfaces use `knowledge.*` for knowledge capability and policy vocabulary.
 
 ## Boundary
 
@@ -107,7 +77,7 @@ The intended flow is:
 4. OpenShell enforces those artifacts inside the selected sandbox and returns backend evidence such as policy apply status, network deny events, supervisor logs, OCSF records, transcript files, artifacts, and collected workspace changes. Network enforcement matches the socket-owning executable or an executable in its observed ancestor chain against the grant's listed paths while enforcing the same endpoint restrictions.
 5. NanoCore normalizes backend evidence back into OpenKit audit, usage, review, artifact, and worker session records.
 
-This layering is compatible with the accepted OpenShell-first target. Official, unmodified OpenShell `0.0.99` is the first-class target container backend inside the configured NanoHost's private Runtime Epoch, with one loopback-only stock Gateway and the current one active worker slot. It should strongly influence runtime policy materialization, provider vocabulary, endpoint declarations, binary allowlists, and enforcement evidence without becoming lifecycle authority outside the NanoHost.
+OpenShell `0.0.99` is the current NanoHost release pin. The runtime has one loopback-only stock Gateway. Aggregate active-worker capacity is authored configuration owned by [Runtime Scheduling And Scale](20260703-durable_scheduler_design.md#scale-limits); its current default is 20. That capacity is not a Kernel limit. Each session keeps its own single-flight. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns the runtime topology.
 
 Stock ancestor matching implements the authorized executable-and-descendant scope; it does not require a self-only matcher or custom rules ([decision](../decisions/20261004-egress_grant_descendant_scope.md)).
 
@@ -115,7 +85,7 @@ OpenShell must not become the canonical OpenKit permission model. Public App API
 
 The acceptable dependency is an adapter boundary: OpenKit-owned policy and runtime records compile into OpenShell-native artifacts, and OpenShell-native evidence normalizes back into OpenKit-owned records.
 
-The unacceptable dependency is durable OpenKit product state or public protocol shapes that embed OpenShell policy YAML as the source of truth.
+The unacceptable dependency is durable OpenKit product state or public protocol shapes that embed OpenShell policy YAML as the source of truth. NanoHost renders that YAML. The kernel does not import the renderer. The kernel does not authorize a Cell, an SSH path, Gateway forwarding, or a direct worker endpoint.
 
 ### Runtime Enforcement Responsibilities
 
@@ -124,8 +94,6 @@ NanoCore owns policy decisions, audit linkage, product lineage, approval workflo
 OpenShell owns sandbox-local runtime enforcement only for OpenShell-backed worker sessions. That enforcement includes backend isolation, file transport, filesystem policy, process policy, network policy, credential projection, and inference routing. The NanoHost is the sole OpenShell lifecycle authority; its Sandbox Integration projects worker-local APIs onto the distinct `/worker-control/*`, `/inference/*`, and `/capabilities/*` route families without merging their credentials or semantics. Runtime cleanup and uncertain-operation invalidation remain exclusively owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 A publicly or remotely exposed Gateway, insecure Gateway mode, custom OpenShell binary, fork, patch, replacement artifact, custom multiplexer, or historical compatibility path is outside the runtime-policy contract.
-
-Other backends may enforce the same OpenKit decisions through different artifacts. For example, Docker may use container options and copied workspaces, Kubernetes may use pod security context and network policy, and a hosted sandbox may use provider file APIs and managed egress rules.
 
 Backend portability is capability-based. A backend that cannot enforce a required runtime policy capability, including the authorized executable-and-descendant scope and its destination and REST restrictions, should fail before launch with a redacted diagnostic instead of silently weakening OpenKit authorization guarantees.
 
@@ -155,13 +123,7 @@ If a human approval grants a temporary capability, NanoCore should record the ap
 
 A policy element is a typed node in the authorization graph. Kernel-internal policy elements MUST follow NGAC policy element membership: users, user attributes, object attributes including objects, and policy classes.
 
-The standard-aligned kernel target supports these element kinds:
-
-- `user`: an identified principal, including a human, agent, service identity, automation identity, or product actor mapped into NGAC user semantics.
-- `object`: a protected resource instance.
-- `userAttribute`: a container for users or other user attributes.
-- `objectAttribute`: a container for objects or other object attributes.
-- `policyClass`: a trust domain or policy boundary.
+The closed element-kind set is `PolicyElementKind` in `packages/policy-kernel/src/index.ts`.
 
 An agent Turn supplies the actual process context for the evaluated principal. A direct User request may omit process context; adapters MUST NOT invent a Turn. Processes are not policy elements. When a product request has process context, adapters MUST represent it through NGAC process-to-user facts and process-scoped restrictions rather than assigning a process into the policy element graph. The terms `userAttribute` and `objectAttribute` are inherited from NGAC. OpenKit-facing adapters may project friendlier names such as subject group, capability group, resource group, trust domain, or policy domain.
 
@@ -189,37 +151,13 @@ The standard-aligned kernel models prohibitions as NGAC restrictions over access
 
 ### Operation And Access Right
 
-An operation is a requested mode of access. An access right is the authorizable unit of authority used in NGAC associations and restrictions. OpenKit adapters own the product operation namespace, but the kernel MUST evaluate access rights rather than treating product operations as association rights.
-
-Expected OpenKit operation families include:
-
-- `api.call`
-- `workspace.read`
-- `workspace.write`
-- `thread.read`
-- `turn.run`
-- `artifact.read`
-- `artifact.write`
-- `review.apply`
-- `tool.use`
-- `tool.grant`
-- `knowledge.read`
-- `knowledge.write`
-- `knowledge.propose`
-- `audit.read`
-- `vault.use`
-- `vault.admin`
-- `runtime.launch`
-- `network.egress`
+An operation is a requested mode of access. An access right is the authorizable unit of authority used in NGAC associations and restrictions. OpenKit adapters own the product operation namespace. The kernel evaluates access rights. It does not treat a product operation as an association right. The product operation set is `PRODUCT_OPERATION_ACCESS_RIGHTS` in `packages/config-schema`.
 
 ### Decision
 
 A policy decision is the result of evaluating a request against policy state.
 
-The low-level kernel returns:
-
-- `allow`
-- `deny`
+The closed low-level effect set is `PolicyDecisionEffect` in `packages/policy-kernel/src/index.ts`. That boundary is pure allow or deny.
 
 OpenKit adapters may map a kernel decision plus product policy requirements into `PermissionDecision` results such as `require_approval`, `require_escalation`, `defer`, `not_applicable`, or `error`. Those are product permission outcomes, not low-level policy-kernel effects.
 
@@ -227,27 +165,27 @@ OpenKit adapters may map a kernel decision plus product policy requirements into
 
 A decision trace explains why a request was allowed or denied. It records the subject closure, object closure, matching associations, matching prohibitions, and reason codes. Missing privilege and a matching prohibition MUST remain distinguishable. The Kernel trace uses `missing-privilege` and `restriction`; the product adapter maps them to `not_granted` and `prohibited`, respectively. The product adapter preserves `require_approval` as a separate requirement reason; the Kernel does not emit a product approval result.
 
-Decision traces are required for development, tests, audit projection, and future support tooling. Product APIs must redact traces before exposing them to users or agents.
+A product API redacts a trace before exposing it to a user or an agent.
 
 ## NGAC Coverage Matrix
 
-| NGAC or Policy Machine Concept | OpenKit Status | Implementation Rule |
+| NGAC or Policy Machine Concept | Subset | Implementation Rule |
 | --- | --- | --- |
-| Policy elements | Implement now | Implement as typed element records. |
-| Assignment relation | Implement now | Implement transitive containment closure and relation validation for the NGAC assignment relation. |
-| Association relation | Implement now | Implement access right allocation from user attributes to attributes. |
-| Derived privileges | Implement now | Derive at decision time from assignment closure, access rights, associations, and policy-class semantics. |
-| Prohibitions | Implement now | Implement user, process, and user-attribute restrictions over access rights with conjunctive and disjunctive attribute ranges. |
-| Policy classes | Implement now | Represent as elements and implement the NGAC policy-class semantics required for derived privileges. |
-| Access request decision function | Implement now | Evaluate process or user, operation, object or policy element, required access rights, privileges, restrictions, and trace. |
+| Policy elements | in subset | Typed element records. |
+| Assignment relation | in subset | Transitive containment closure and relation validation for the NGAC assignment relation. |
+| Association relation | in subset | Access right allocation from user attributes to attributes. |
+| Derived privileges | in subset | Derive at decision time from assignment closure, access rights, associations, and policy-class semantics. |
+| Prohibitions | in subset | User, process, and user-attribute restrictions over access rights with conjunctive and disjunctive attribute ranges. |
+| Policy classes | in subset | Elements, plus the NGAC policy-class semantics required for derived privileges. |
+| Access request decision function | in subset | Evaluate process or user, operation, object or policy element, required access rights, privileges, restrictions, and trace. |
 | Process context | Existing subset, including native Goal/Task projection | Map the actual process to the evaluated principal's NGAC user element, outside the policy-element graph. Record the responsible human separately for accountability; that identity supplies no inherited rights. |
-| Agent principal accountability | Bounded agent-gate subset implemented; general grants Not Started | Validate the finite, acyclic responsibility chain and current terminal human domain authority under Policy; suspend grants on failure until human reassignment. |
-| Administrative operations | Native human Policy candidate path; broader routines Not Started | The pre-v0.1.0 `policy.write` review path is owned by Policy Enforcement Mapping. Full standard administrative routines remain outside the implemented subset. |
-| Obligations | Deferred after v0.1.0 | Future `react` participation may change Policy after successful access under the defining author's current authority; issue #375 tracks it. Commit obligations such as credential injection are not NGAC post-success Policy obligations. |
-| Dynamic policy mutation | Native human Policy update; other adapters Not Started | The evaluator receives immutable state and stays pure and synchronous. The Policy owner validates and commits new revisions outside it. |
-| Delegated administration | Native Goal-domain and bounded Coordinator subset implemented | Plan approval creates a delegated Goal domain administered by the Coordinator under Policy. This does not claim full standard delegated-administration support. |
-| Functional architecture entities | No current plan | Do not make PEP, PDP, PAP, PIP, RAP, or EPP public OpenKit product concepts unless a future product need requires it. |
-| Standards-level API and full conformance | No current plan | Do not claim complete ANSI/INCITS NGAC compatibility. Claim only the implemented NGAC subset that is verified against the standard. |
+| Agent principal accountability | Bounded agent-gate subset | Validate the finite, acyclic responsibility chain and current terminal human domain authority under Policy; suspend grants on failure until human reassignment. General grants are outside this subset. |
+| Administrative operations | Native human Policy candidate path | The `policy.write` review path is owned by Policy Enforcement Mapping. Full standard administrative routines remain outside the implemented subset. |
+| Obligations | outside this subset | `react` participation after successful access stays out until later activation under the defining author's current authority. Commit obligations such as credential injection are not NGAC post-success Policy obligations. |
+| Dynamic policy mutation | Native human Policy update | The evaluator receives immutable state and stays pure and synchronous. The Policy owner validates and commits new revisions outside it. |
+| Delegated administration | Native Goal-domain and bounded Coordinator subset | Plan approval creates a delegated Goal domain administered by the Coordinator under Policy. This does not claim full standard delegated-administration support. |
+| Functional architecture entities | outside this subset | PEP, PDP, PAP, PIP, RAP, and EPP are not public OpenKit product concepts. |
+| Standards-level API and full conformance | outside this subset | The package claims only the implemented NGAC subset. It does not claim complete ANSI/INCITS NGAC compatibility. |
 
 ## Joint Goal-Domain Publication
 
@@ -259,7 +197,7 @@ The existing Policy collection and sole configuration CAS own publication. Exist
 
 The native read path rechecks the exact Plan, deciding credential, lifetime and saved/loaded revision on each use. An obsolete Plan, closed Goal, ended lifetime or lost human authority supplies no domain; a failed dependency read is an error. The close path withdraws only the Goal's statements and remains available after its old Plan or credential ends. Its current inactive statement prevents reactivation through the old approval. A new joint Plan approval may replace the Goal-owned identity. Generic Server Policy candidates must preserve these statements; the Goal owner supplies publication and withdrawal.
 
-Acceptance requires one joint human approval, no authority before successful publication, current readback inside Task admission, refusal after the human or Plan loses authority, closure without the old human credential, and truthful CAS/reload failures. The Current Implementation Projection records which native consumers exist and separates that fact from complete Goal acceptance.
+Acceptance requires one joint human approval, no authority before successful publication, current readback inside Task admission, refusal after the human or Plan loses authority, closure without the old human credential, and truthful CAS/reload failures. Native consumers of that publication do not establish complete Goal acceptance. The Goal owner retains that acceptance.
 
 ## OpenKit Policy Domains
 
@@ -307,44 +245,17 @@ The network domain governs network targets, provider egress, package registries,
 
 ## Target Package API
 
-The package exports a low-level generic evaluator. The evaluator API may stay product-neutral, but its input facts must map to NGAC terms without redefining them.
+The package exports a low-level evaluator. Input facts map to NGAC terms. They do not redefine those terms.
 
 ```ts
 evaluateAccess(policyState, request): PolicyDecision
 ```
 
-Future OpenKit adapters should provide product-shaped helpers over the low-level evaluator. These helpers may use product terms such as agent process, tool, vault reference, and network target, but the adapter must translate those terms into standard-aligned kernel facts.
-
-```ts
-canCallApi(subject, apiOperation)
-canUseTool(agentProcess, tool, workspace)
-canReadKnowledge(subject, knowledgeRecord)
-canWriteKnowledge(subject, knowledgeRecord)
-canProposeKnowledge(subject, proposal)
-canReadAudit(subject, auditRecord)
-canUseVaultRef(agentProcess, vaultRef, operation)
-canAccessArtifact(subject, artifact, operation)
-canEgressTo(agentProcess, networkTarget)
-canApplyWorkspaceReview(subject, review)
-```
-
-Business code should prefer product-shaped helpers once they exist. New ad hoc authorization checks should not be added for domains already covered by policy adapters.
+A product adapter translates product terms into those kernel facts. The names `canCallApi`, `canUseTool`, `canReadKnowledge`, `canWriteKnowledge`, `canProposeKnowledge`, `canReadAudit`, `canUseVaultRef`, `canAccessArtifact`, `canEgressTo`, and `canApplyWorkspaceReview` are not exported API promises.
 
 ## Performance Model
 
-The first evaluator may compute closures directly because expected policy states are small. Future adapters should add snapshot indexes before high-volume route integration.
-
-Expected indexes:
-
-- element id to element
-- child id to parent assignments
-- subject attribute to associations
-- object attribute to associations
-- user, process, or user attribute to prohibitions
-- object id to object closure
-- subject id to subject closure
-
-Decision traces may be collected by default for package tests and early development. Future hot paths may expose a trace mode so production callers can choose compact decisions when full traces are unnecessary.
+Each `evaluateAccess` builds its lookup maps for that call. `PolicyDecision.trace` is required output. The package has no public prepared-snapshot index and no trace-suppression API.
 
 ## Explanation And Redaction
 
@@ -354,34 +265,17 @@ NanoCore, the transport-neutral operation catalog, bundled CLI, remote MCP, work
 
 ## Package Acceptance Criteria
 
-The package is acceptable when:
+The package proves allow through assignment plus association over access rights, deny when the required right is absent, and validation of the implemented assignment pairs. A process is not a policy element. An operation is not an access right. A decision includes a trace that distinguishes a missing privilege from a prohibition.
 
-- It compiles as a workspace package.
-- It has local `AGENTS.md` and `README.md`.
-- It tests allow decisions from NGAC assignment plus association over access rights.
-- It tests deny decisions when no association grants the required access rights.
-- It tests NGAC assignment relation validation for implemented assignment pairs.
-- It does not model processes as policy elements.
-- It does not collapse operations and access rights.
-- It returns decision traces that make the result explainable.
-
-## Follow-Up Integration Plan
-
-After the package is standard-aligned, the next work should add an OpenKit adapter layer in NanoCore or a separate package. The first integration should be low risk and easy to verify, such as NanoCore App API authorization enforcement or a network egress policy summary.
-
-The integration should not begin by migrating every permission check. It should prove that the policy kernel reduces duplicated authorization logic and produces clearer deny reasons before broader adoption.
-
-The first runtime-policy integration should map one OpenKit policy decision into one OpenShell materialization artifact without making OpenShell canonical. Good candidates are `network.egress` for additional OpenShell endpoint policy entries, `runtime.launch` for selecting a container placement or backend, or `vault.use` for deciding whether a credential injection may be included in the Agent Environment Package.
-
-### Security Principals And Context Envelopes
+## Security Principals And Context Envelopes
 
 Agent operations MUST evaluate the agent grant intersected with the on-behalf-of principal's current authority and context envelope. Only an explicitly established agent-initiated trigger context omits the on-behalf-of grant; missing initiators elsewhere refuse execution. Existing responsibility, domain and credential restrictions remain mandatory.
 
-The Kernel uses existing proposal attributes for surface, conversation, initiative and destination audience. The preset set is closed: owner direct message, Workspace members, agent-initiated, and external group. The first three ship in v0.1.0; external groups follow later. Every shared-Thread or channel reply MUST bound reads by its `OutputAudience` before generation.
+The Kernel uses existing proposal attributes for surface, conversation, initiative and destination audience. The preset set is closed: owner direct message, Workspace members, agent-initiated, and external group. The first three are the v0.1.0 set. External-group activation is not part of this subset. Every shared-Thread or channel reply MUST bound reads by its `OutputAudience` before generation.
 
 Editable defaults MUST include the investigation principal's read-and-propose grant, the review principal's input-disclosure-only grant, the trigger's delegated grant, a separate fixed alarm grant, and the separately approved deterministic containment preset. Restrict-only gates contribute no allow or approval and need no shadow period.
 
-Every `policy.write` MUST classify the full resulting diff, including deleted prohibitions and weakened gates. Every widened element MUST fit the author's current effective authority, and authors MUST NOT approve their own widening. Writes MUST retain scope and classification in Audit. [Runtime Security](20261109-runtime_security.md) E7, E9 and E10 define the statements, presets and gate behavior; [Policy](../core/policy.md) remains the semantic owner.
+Every `policy.write` MUST classify the full resulting diff, including deleted prohibitions and weakened gates. Every widened element MUST fit the author's current effective authority, and authors MUST NOT approve their own widening. Writes MUST retain scope and classification in Audit. [Runtime Security](20261109-runtime_security.md) defines the statements, presets, and gate behavior. [Policy](../core/policy.md) remains the semantic owner.
 
 The containment preset MUST apply only narrowing changes to the exact suspect principal/run and exclusively owned resources. The distinct acting automation accepts only validated sensor/execution facts, not untrusted material or model proposals. It gains no generic Policy editing, widening or recovery authority; readers retain no effect/egress grant. Current responsibility/domain checks and the full-diff ceiling remain mandatory. [Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) owns its operations and stop/recovery rules.
 
@@ -395,35 +289,21 @@ At activation, current Policy validates the approved template, author/delegation
 
 Acceptance rejects quarantine statements carrying `notAfter`, `uses`, or both. Exercise generic expiry processing against a valid quarantine with neither field; it remains effective. Test a missing, late or elapsed journal review deadline without releasing quarantine. Also prove delegation loss, monitoring off, restart and action-deadline expiry after both failed and unknown stops. Every case preserves the deny while refusing new unauthorized actions; only a current authorized human may clear it.
 
-## Current Implementation Projection
+## Implementation
 
-The current package implements the first standard-aligned subset in this spec. The native mediation pilot and human Policy candidate path use this subset without changing its evaluator. The bounded `mcp.call-tool@decide` agent gate checks current responsibility chains through `apps/nanocore/src/policy/statements.ts`. General agent grants and automatic Policy review remain Not Started. Inactive declarations and shape validation do not prove active authority.
+- `packages/policy-kernel/`
+- `apps/nanocore/src/policy/`
+- `apps/nanocore/src/bootstrap/`
+- `apps/nanohost/src/`
 
-`apps/nanocore/src/policy/goal-domains.ts` implements joint Goal-domain publication, current readback, withdrawal and bounded Coordinator administration. `apps/nanocore/src/runtime/task-admission.ts` enforces the admitted domain before Task creation; the Goal producer and approval preview also retain the joint delegation. These implementation facts do not establish complete Goal acceptance, which remains with the Goal owner. The [unified design decision](../decisions/20261018-unified_mediation_and_policy.md) records their acceptance.
+## Implementation Gaps
 
-The existing subset includes:
+- General agent-principal grants beyond the bounded gate - not implemented - #152
+- A generic `policy.write` retains no classification, and direct narrowing apply is absent - unmet on main - #627
+- External-group preset activation - not active - #720
+- Post-success `react` participation - excluded until a later activation - #375
 
-- `packages/policy-kernel` exists as `@openkit/policy-kernel`.
-- The current package implements typed NGAC policy elements, assignments, associations, operation-to-access-right mappings, user/process/user-attribute prohibitions, process-to-user mappings, access requests, allow or deny decisions, and structural traces.
-- The current package uses `user` rather than product-level `principal`, and processes are mapped to users instead of being modeled as policy elements.
-- The current package grants NGAC access rights from associations and evaluates product operations only through their required access rights.
-- The current package implements prohibition restrictions over access rights with conjunctive or disjunctive inclusion and exclusion ranges.
-- Tests cover allow through NGAC assignment plus association over access rights, deny without a required access right, process-to-user mapping outside the policy element graph, user-attribute association targets, assignment relation validation, and process prohibition restrictions.
-- NanoCore depends on `@openkit/policy-kernel` during boot through `apps/nanocore/src/bootstrap/policy.ts`, which maps the baseline process to an NGAC user, loads a baseline policy state, and verifies minimum allow and restriction deny behavior before product work is admitted.
-- NanoCore records the boot policy self-check decisions into durable `PermissionDecision` rows through `apps/nanocore/src/policy/permission-decisions.ts`; broader product enforcement integration remains owned by the policy enforcement mapping spec.
-- The kernel intentionally does not produce `require_approval`, `require_escalation`, `defer`, `not_applicable`, or `error` outcomes. Those are product enforcement outcomes owned by the policy enforcement mapping spec.
-- NanoCore does not yet route all product authorization through `@openkit/policy-kernel`; that integration remains tracked by `docs/specs/20260703-policy_enforcement_mapping.md` rather than by this package-level policy model spec.
-- OpenShell policy YAML rendering exists as derived runtime policy code in NanoCore, not as a dependency of `@openkit/policy-kernel`.
-- Current product and protocol surfaces use `knowledge.*` naming for knowledge-related capability and policy vocabulary.
+## Decisions
 
-The Runtime Epoch and stock RelayStream plus nested standard HTTP/2 transport are implemented by NanoHost. The policy kernel and derived OpenShell policy renderer remain policy projections and do not authorize a Cell, SSH, Gateway-forward, or direct worker endpoint alternative.
-
-## Deferred / Future Work
-
-- Add product-shaped policy adapters over the low-level evaluator.
-- Add durable policy snapshot identity and policy state loading.
-- Complete NanoCore enforcement-point integration through `PermissionDecision` records; the current writers are listed in the Current Implementation Projection of [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md).
-- Add product-safe trace redaction helpers.
-- Add indexes for higher-volume policy evaluation paths.
-- Implement the accepted pre-v0.1.0 Policy review/update path through the existing enforcement owner. Keep administration outside the pure evaluator.
-- Defer NGAC-style post-success Policy obligations and `react` until after v0.1.0 under issue #375. Do not claim complete NGAC conformance.
+- [Unified mediation and policy](../decisions/20261018-unified_mediation_and_policy.md)
+- [Egress grant descendant scope](../decisions/20261004-egress_grant_descendant_scope.md)

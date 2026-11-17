@@ -45,7 +45,7 @@ pnpm run build
 
 - [Vault Secret Injection](../../../../docs/specs/20260703-vault_secret_injection.md)
 - [Vault Backend Implementation](../../../../docs/specs/20260704-vault_backend_implementation.md)
-- [Worker Credential Access Declarations](../../../../docs/specs/20260709-worker_credential_access_declarations.md)
+- [Worker Credential Access Declarations](../../../../docs/specs/20260703-vault_secret_injection.md#credential-access-declarations)
 
 Harness Login selection performs no authorization, material resolution, refresh, persistence or activation. Its caller must supply current authorized candidates and current-generation observations, then use the governed Vault operations to refresh a target, commit its successor and recheck authority before activation. The selector supplies the default pure policy; reviewed Workspace sharing is governed through the existing request and issue operations. Production selection, observations and affinity are composed with the real Codex activation consumer. It does not change Gateway subscription accounts or qualify runtime delivery. Run `pnpm exec vitest run src/vault/login-selection.test.ts --maxWorkers=1` from NanoCore for its default policy and negative cases.
 

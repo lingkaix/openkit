@@ -6,81 +6,32 @@ aspect: mediation
 ---
 # Provider Subscription Accounts
 
-## Owns
+This document owns deployment-admin management of server-owned subscription slots, their profile binding, slot-scoped Vault persistence, authentication lifecycle, sanitized status, and quota projection.
 
-This spec owns deployment-admin management of server-owned LLM subscription account slots, the binding from one provider profile to one slot, the slot-scoped bridge between OpenKit Vault storage and pi-ai authentication, login, refresh, logout, sanitized account status, and optional provider quota projection for the initially supported `openai-codex` and `xai` subscription providers.
+## Scope
 
-## Does Not Own
+**Owns.** Deployment-admin management of server-owned subscription slots for `openai-codex` and `xai`, the binding from one profile to one slot, the slot-scoped Vault bridge, login, refresh persistence, logout, sanitized status, and quota projection.
 
-This spec does not own LLM request, response, streaming, cache, usage, or error mapping, which belongs to `docs/specs/20260708-pi_ai_unified_llm_backend.md`; logical-model route ordering, [pre-commit](20260526-llm_gateway_responses_api.md#commit-boundary-and-retry) fallback, load balancing, or account-route selection, which belongs to `docs/specs/20260526-llm_gateway_responses_api.md`; pi-ai version pinning and external-boundary review, which belongs to `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`; the Vault backend implementation; Provider subscription purchase, cancellation, billing management or mutation, or remote credential revocation; user-owned subscription accounts; or a general OAuth framework.
+**Does not own.**
 
-It also does not own how a fixed real-provider test is executed: run counts, ordering, local credential-source paths, token-claim derivation, temporary environments, evidence packaging, and adjudication are L3 opt-in test concerns under `docs/specs/20260529-test_strategy.md`. A release's execution history belongs to its change record. This spec states product behavior and the distinct evidence a real-provider run must produce, not the procedure that produces it.
+- Request, response, streaming, cache, usage, and error mapping belong to [Pi AI Unified LLM Backend](20260708-pi_ai_unified_llm_backend.md). Stock pin and public-vocabulary review belong to its Provider Adoption Rules.
+- Ordered routes and pre-commit failover belong to [LLM Gateway Responses API](20260526-llm_gateway_responses_api.md).
+- The Vault backend, vendor purchase and billing mutation, remote revocation, user-owned slots, and a general OAuth framework are outside this document.
+- How an opt-in real-provider run is executed belongs to [Test Strategy](20260529-test_strategy.md). This document states the evidence that run must produce.
 
-## Core References
-
-- `docs/core/architecture.md`
-- `docs/core/work-model.md`
-- `docs/core/mediation.md`
-- `docs/core/vault.md`
-- `docs/core/policy.md`
-- `docs/core/evidence.md`
-
-Related specs:
-
-
-## Related Docs
-
-- `docs/specs/20260526-llm_gateway_responses_api.md`
-- `docs/specs/20260708-pi_ai_unified_llm_backend.md`
-- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
-- `docs/specs/20260704-vault_backend_implementation.md`
-- `docs/specs/20260704-app_api_openapi_projection.md`
-- `docs/specs/20260628-nanocore_config_identity_contract.md`
-- `docs/specs/20260715-contract_stability_baseline.md`
-
-## Summary
-
-NanoCore keeps a thin provider-neutral account layer above stock pi-ai. OpenKit owns account slots, provider-profile binding, authorization, Vault persistence, sanitized status, audit, and quota projection; pi-ai owns provider login interactions, credential refresh, logout mechanics, and authenticated inference. Multi-account support is achieved with one pi-ai `Models` instance and one slot-scoped `CredentialStore` view per `(subscriptionProviderId, accountSlotId)`, never by switching a global credential store or changing ambient process state.
-
-The accepted initial subscription providers are `openai-codex` and `xai`. `openai-codex` supports interactive login and Codex subscription inference; `xai` supports the reviewed pi-ai xAI login and Grok inference path. Both providers expose subscription quota through small, strict, release-coupled adapters traced to versioned source in their vendor-maintained clients. A provider interface does not need to be publicly documented when that source establishes the exact read-only contract and the adapter preserves the bounded failure and redaction rules below. Quota-read failure never blocks inference; an explicitly disabled Codex credits setting can refuse dispatch only from a fresh successful reading, as specified below.
-
-NanoCore does not depend on Codex app-server, `CODEX_HOME`, Codex-managed `auth.json`, or a dedicated Codex inference backend after cutover. Pi-ai performs provider refresh through the slot-scoped credential store, and OpenKit persists each refreshed credential through the Vault boundary.
-
-## Goals / Non-goals
-
-### Goals
-
-- Support multiple independent Codex and xAI subscription accounts in one NanoCore deployment.
-- Keep account selection explicit and safe under concurrent requests.
-- Let pi-ai own provider-specific login and refresh behavior while OpenKit retains credential custody and product-facing account management.
-- Preserve login, cancel, logout, status, provider-profile binding, and quota inspection as deployment-admin App API capabilities.
-- Store credential material only through `VaultBackend` and expose only sanitized account metadata.
-- Remove the Gateway's runtime dependency on Codex app-server and Codex local-home semantics.
-- Fail one account slot independently without degrading unrelated slots or providers.
-
-### Non-goals
-
-- Do not build user-owned account slots, organization account sharing, an account-manager load balancer, or a general background quota scheduler. The bounded enabled-account Codex reset-expiry check below is the only periodic quota consumer. Gateway may independently advance across ordered logical-model route members that reference distinct Provider profiles and slots under its own [pre-commit](20260526-llm_gateway_responses_api.md#commit-boundary-and-retry) failure contract.
-- Do not purchase, cancel, or modify a vendor subscription.
-- Do not claim that local logout revokes a token remotely; it only removes OpenKit's local authority to use that credential.
-- Do not scrape provider web pages or mutate provider billing, top-up, or subscription state. Private interfaces remain limited to the release-coupled quota readers and the explicitly accepted Codex banked-reset endpoints below.
-- Do not accept pasted access tokens or refresh tokens through the public App API.
-- Do not expose pi-ai types, provider internals, credential values, account IDs, raw quota responses, Vault references, or authorization headers through public surfaces.
-- Do not treat Claude consumer-subscription authentication as supported until a separate accepted revision proves both the commercial entitlement and the provider contract.
+**Core.** [Architecture](../core/architecture.md), [Work Model](../core/work-model.md), [Mediation](../core/mediation.md), [Vault](../core/vault.md), [Policy](../core/policy.md), and [Evidence](../core/evidence.md).
 
 ## Definitions And Supported Providers
 
-`SubscriptionProviderId` is the closed release-coupled enum `openai-codex | xai`. It identifies the subscription authentication family, not a configured provider-profile instance. `SubscriptionLoginMode` is exactly `device_code`, and `SubscriptionAccountStatus` is `logged_out | pending | logged_in | unavailable | error`.
+`SubscriptionProviderIdSchema` in `packages/config-schema/src/provider-subscription.ts` defines the closed release-coupled subscription provider set; it identifies the subscription authentication family, not a configured provider-profile instance. `StartProviderSubscriptionAccountLoginRequestSchema` and `ProviderSubscriptionAccountSchema` in `packages/app-api-schemas/src/provider-subscriptions.ts` define the closed login-mode and account-status sets.
 
 `AccountSlotId` is a deployment-local non-secret identifier matching `^[a-z0-9][a-z0-9_-]{0,63}$`. The durable account identity is the pair `(subscriptionProviderId, accountSlotId)`; the same slot id may exist under different subscription providers without collision.
 
-A provider profile family is resolved deterministically by normalizing `vendor` and `id` independently: trim, lowercase, and replace hyphens with underscores. Only the exact normalized values `openai_codex` and `xai` are recognized. A recognized normalized `vendor` is authoritative; otherwise a recognized normalized `id` selects the family. If both values are recognized and select different families, the profile is invalid. `openai_codex` maps to subscription provider `openai-codex`, and `xai` maps to `xai`. An unrecognized value selects no subscription family, and `extensions.openkit.subscriptionAccount` never selects or overrides the family.
-
-A supported-family `kind: oauth` profile is subscription-backed, must declare the strict extension `{ accountSlotId }`, and must omit `secretRef` and `baseUrl`. Its resolved family determines `subscriptionProviderId`; the extension does not duplicate that value. `subscriptionAccount` is forbidden for unsupported families and non-OAuth profiles. A supported-family OAuth profile without the extension is invalid. In particular, xAI `direct`, `llm-gateway`, or `custom` profiles without the extension remain ordinary API-key or provider configurations and never appear in subscription inventory, account lifecycle, status, or quota operations.
+Profile shape and family resolution are `ProviderProfileSchema` and the [Gateway profile rule](20260526-llm_gateway_responses_api.md#provider-profiles-and-account-binding). This owner still reconciles each subscription profile to one explicit pair. A supported oauth profile that fails that binding never enters inventory, lifecycle, status, or quota.
 
 Every subscription-backed profile names one explicit `(subscriptionProviderId, accountSlotId)` pair, and NanoCore must not guess a default slot. Dispatch requires that slot to exist and resolve a credential; deletion or logout leaves referencing Gateway routes unavailable under their owner rather than invalidating the authored logical ID. Several provider profiles may bind the same slot, but one profile may bind only one slot. The `extensions.openkit` object is strict at cutover: `codexOAuth` and every other unknown OpenKit-owned field are rejected, while non-OpenKit vendor extension namespaces remain governed by their existing open-extension rule.
 
-A Gateway logical-model route member references exactly one Provider profile and therefore at most one account slot. Rotation across subscription accounts is expressed by multiple ordered route members that reference distinct profiles, never by placing several slots in one profile or asking this account manager to choose a slot. An admitted request binds one route member and slot for one Provider attempt; Gateway may advance to a later compatible member only under its bounded [pre-commit](20260526-llm_gateway_responses_api.md#commit-boundary-and-retry) failure rules, including eligible authentication, rate-limit, or quota-exhaustion failures. Weighted, random, health-scored, and proactive quota-aware selection remain deferred Gateway strategies rather than account fields.
+A Gateway logical-model route member references exactly one Provider profile and therefore at most one account slot. Rotation across subscription accounts is expressed by multiple ordered route members that reference distinct profiles, never by placing several slots in one profile or asking this account manager to choose a slot. An admitted request binds one route member and slot for one Provider attempt; Gateway may advance to a later compatible member only under its bounded [pre-commit](20260526-llm_gateway_responses_api.md#commit-boundary-and-retry) failure rules, including eligible authentication, rate-limit, or quota-exhaustion failures. Weighted, random, health-scored, and proactive quota-aware selection are not account fields and are not part of this contract.
 
 The public subscription-provider inventory reports each supported provider's id, display name, login modes, and quota capability. The accepted initial capability projection is:
 
@@ -89,7 +40,7 @@ The public subscription-provider inventory reports each supported provider's id,
 | `openai-codex` | `device_code` | Codex Responses through pi-ai | `available` through the strict Codex usage adapter, otherwise `temporarily_unavailable` |
 | `xai` | `device_code` through the reviewed pi-ai version | Grok through pi-ai | `available` through the strict xAI credits adapter, otherwise `temporarily_unavailable` |
 
-The public inventory is fixed and ordered as `openai-codex` followed by `xai`. Its exact descriptors are `{ subscriptionProviderId: "openai-codex", displayName: "OpenAI Codex", loginModes: ["device_code"], quotaCapability: "available" }` and `{ subscriptionProviderId: "xai", displayName: "xAI", loginModes: ["device_code"], quotaCapability: "available" }`. Catalog order, authored profile order, account state, credential state, and dispatch readiness cannot alter or remove either descriptor. Inventory handling must return these descriptors without enumerating or reading account directories, `account.json`, Vault references, Vault availability, or credential state.
+The public inventory (`ProviderSubscriptionsResponseSchema` in `packages/app-api-schemas/src/provider-subscriptions.ts`) is fixed and ordered as `openai-codex` followed by `xai`. Catalog order, authored profile order, account state, credential state, and dispatch readiness cannot alter or remove either descriptor. Inventory handling must return these descriptors without enumerating or reading account directories, `account.json`, Vault references, Vault availability, or credential state.
 
 Inventory presence advertises a supported management contract, not current dispatchability. The exact pinned pi-ai version, valid OpenKit profile, provider entitlement, existing slot, available Vault, and usable login credential govern whether a configured profile can dispatch.
 
@@ -164,11 +115,11 @@ The previous `DATA_ROOT/server/files/oauth/openai-codex/.../codex-home` layout, 
 
 NanoCore creates one pi-ai `Models` instance for each active `(subscriptionProviderId, accountSlotId)` pair. Each instance receives a `CredentialStore` view scoped to exactly that pair. The view rejects access to any other provider id and maps its one logical credential to the slot's Vault reference.
 
-NanoCore must not implement multi-account selection by mutating a global pi-ai store, using ambient credentials, changing process environment, synthesizing provider ids, or relying on asynchronous request-local globals. Provider dispatch resolves the account slot first and then selects the corresponding `Models` instance, so concurrent calls to different slots cannot observe each other's credentials.
+Stock dependency, ambient refusal, and public vocabulary belong to [Provider Adoption Rules](20260708-pi_ai_unified_llm_backend.md#provider-adoption-rules). Provider dispatch resolves the account slot first and then selects the corresponding `Models` instance, so concurrent calls to different slots cannot observe each other's credentials.
 
 Credential `set`, `modify`, and `remove`, together with the login and logout interaction transitions that can admit or invalidate those writes, are serialized by the same in-process lock keyed by `(subscriptionProviderId, accountSlotId)`. Pi-ai uses `modify` for refresh; the resulting credential is persisted as a new Vault material version before it becomes visible to later requests. A login completion may call `set` only while its matching interaction is still active, so a cancelled or stale completion cannot restore a credential. An in-flight refresh finishes under the lock before a later logout or delete revokes the latest credential, and work admitted after `remove` commits resolves no credential. One NanoCore process per data root is the accepted deployment baseline, so no distributed lock is required.
 
-Pi-ai owns provider-specific device-code authorization and polling, credential parsing, expiry decisions, refresh exchange, and inference authentication. OpenKit owns the interaction id, cancellation signal, admin authorization, sanitized progress projection, credential persistence, and audit. NanoCore must not call Codex app-server to refresh an account and must not duplicate pi-ai's refresh state machine.
+Pi-ai owns provider-specific device-code authorization and polling, credential parsing, expiry decisions, refresh exchange, and inference authentication. OpenKit owns the interaction id, cancellation signal, admin authorization, sanitized progress projection, credential persistence, and audit. NanoCore does not duplicate pi-ai's refresh state machine.
 
 Login is the only credential-acquisition path the product exposes. NanoCore has no production import, discovery, or migration path, no public or private credential-setup API, and no alternate credential-store owner; the product neither reads nor infers credentials from any host location.
 
@@ -222,103 +173,16 @@ POST /api/app/operations/provider-subscription.codex-settings
 POST /api/app/operations/provider-subscription.account-use-reset
 ```
 
-The canonical operation ids are the thirteen `provider-subscription.*` identities listed above, declared once in `packages/app-api-schemas/src/provider-subscription-operations.ts`.
+The canonical operation ids are the thirteen `provider-subscription.*` identities listed above, declared once in `packages/app-api-schemas/src/provider-subscription-operations.ts`. The public App API does not accept pasted access tokens or refresh tokens.
 
-All provider-subscription operations require deployment-admin authority and register through the canonical App API operation catalog. Inventory, account list, status, quota, and auto-top-up are read operations; create, update, delete, login, cancel, logout, Codex settings and reset consumption are mutations. `provider-subscription.account-delete` succeeds with `204`, an empty body, and no response `Content-Type`; every other lifecycle read or mutation succeeds with `200`; quota normally returns its typed union with `200`. Every operation uses a complete logical JSON input; create, update, login, and cancel retain the strict payload fields defined below. Logout accepts only the complete logical provider and slot selectors. Provider ids and slot ids are validated before storage or credential access. For auto-top-up, the xAI-only capability check is part of request validation and precedes account reconciliation; a valid non-xAI pair yields `invalid_request` regardless of its metadata state.
+All provider-subscription operations require deployment-admin authority and register through the canonical App API operation catalog. Inventory, account list, status, quota, and auto-top-up are read operations; create, update, delete, login, cancel, logout, Codex settings and reset consumption are mutations. `provider-subscription.account-delete` succeeds with `204`, an empty body, and no response `Content-Type`; every other lifecycle read or mutation succeeds with `200`; quota normally returns its typed union with `200`. Every operation uses a complete logical JSON input; create, update, login, and cancel retain the strict payload fields of those schemas. Logout accepts only the complete logical provider and slot selectors. Provider ids and slot ids are validated before storage or credential access. For auto-top-up, the xAI-only capability check is part of request validation and precedes account reconciliation; a valid non-xAI pair yields `invalid_request` regardless of its metadata state.
 
 Provider inventory is the only account-state-free operation. The twelve account-sensitive operations—account list, create, update, delete, status, login start, login cancellation, logout, quota, auto-top-up, Codex settings, and reset consumption—must apply the failed-closed metadata, whole-backend-inventory, and exact Core-row checks defined by this spec before account existence, conflict, lifecycle, or quota handling. A pair-addressed operation checks its requested pair; an account list checks every account-directory pair for that provider and every live or revoked backend inventory row whose non-secret owner metadata names that provider. If any checked current state or historical row violates the ordinary validity invariant above, the entire operation fails, and an account list must not return a partial array that omits the pair. Completed historical tombstones are validated but never projected as accounts. Delete and logout have only the narrow exception that the exact backend-recognized revoked tombstone for the current binding, together with its exact same-version Core row, may continue the already-started removal sequence; no other operation may treat that prefix as an ordinarily valid account.
 
 The release-coupled schemas live in `@openkit/app-api-schemas`, use strict objects, and reject unknown fields. Optional fields are omitted rather than set to `null`. Every timestamp is accepted with the existing Zod datetime convention and emitted as a UTC `Date.toISOString()` value ending in `Z`. Account arrays are ordered lexicographically by `accountSlotId`; `boundProviderIds` are duplicate-free and lexicographically ordered.
 
-```ts
-type SubscriptionProviderId = "openai-codex" | "xai";
-type SubscriptionLoginMode = "device_code";
-type SubscriptionAccountStatus =
-  | "logged_out"
-  | "pending"
-  | "logged_in"
-  | "unavailable"
-  | "error";
 
-type ProviderSubscriptionDescriptor =
-  | {
-      subscriptionProviderId: "openai-codex";
-      displayName: "OpenAI Codex";
-      loginModes: ["device_code"];
-      quotaCapability: "available";
-    }
-  | {
-      subscriptionProviderId: "xai";
-      displayName: "xAI";
-      loginModes: ["device_code"];
-      quotaCapability: "available";
-    };
-
-type ProviderSubscriptionsResponse = {
-  providers: [
-    Extract<ProviderSubscriptionDescriptor, { subscriptionProviderId: "openai-codex" }>,
-    Extract<ProviderSubscriptionDescriptor, { subscriptionProviderId: "xai" }>,
-  ];
-};
-
-type CreateProviderSubscriptionAccountRequest = {
-  accountSlotId: string;
-  displayName?: string;
-};
-
-type UpdateProviderSubscriptionAccountRequest = {
-  displayName: string;
-};
-
-type StartProviderSubscriptionAccountLoginRequest = {
-  mode: SubscriptionLoginMode;
-};
-
-type CancelProviderSubscriptionAccountLoginRequest = {
-  interactionId: string;
-};
-```
-
-`accountSlotId` always uses the declared slot regex. Every other identifier, label, or user code in these public shapes is a non-empty string, and `displayName` additionally must be valid Unicode whose UTF-8 encoding is at most 256 bytes so every valid create or update request is persistable. `verificationUrl` must be an absolute `http:` or `https:` URL. Login mode is required and has no default; the strict request schema rejects `browser` and every value other than `device_code` as `invalid_request`. `interactionId` is the only public login-interaction identifier; `loginId` is not a field or alias.
-
-```ts
-type ProviderSubscriptionLoginInteraction = {
-  mode: "device_code";
-  interactionId: string;
-  verificationUrl: string;
-  userCode: string;
-  expiresAt?: string;
-};
-
-type ProviderSubscriptionAccountBase = {
-  subscriptionProviderId: SubscriptionProviderId;
-  accountSlotId: string;
-  boundProviderIds: string[];
-  createdAt: string;
-  updatedAt: string;
-  displayName?: string;
-  accountLabel?: string;
-  planLabel?: string;
-  inferenceObservation?: {
-    accessRejected?: { observedAt: string };
-    quotaExhausted?: { observedAt: string };
-  };
-};
-
-type ProviderSubscriptionAccountState =
-  | { status: "logged_out" }
-  | { status: "pending"; interaction: ProviderSubscriptionLoginInteraction }
-  | { status: "logged_in" }
-  | { status: "unavailable"; message: string }
-  | { status: "error"; message: string };
-
-type ProviderSubscriptionAccount =
-  ProviderSubscriptionAccountBase & ProviderSubscriptionAccountState;
-
-type ProviderSubscriptionAccountsResponse = {
-  accounts: ProviderSubscriptionAccount[];
-};
-```
+Public account, login, settings, and reset shapes are `ProviderSubscriptionAccountSchema`, `CreateProviderSubscriptionAccountRequestSchema`, `UpdateProviderSubscriptionAccountRequestSchema`, `CodexSubscriptionSettingsSchema`, `UseProviderSubscriptionResetRequestSchema`, `ProviderSubscriptionResetResponseSchema`, and `StartProviderSubscriptionAccountLoginRequestSchema` in `packages/app-api-schemas/src/provider-subscriptions.ts`.
 
 Inventory returns `ProviderSubscriptionsResponse`. List returns `ProviderSubscriptionAccountsResponse`. Create, update, status, login, cancel, and logout return `ProviderSubscriptionAccount`; an accepted login start returns its `pending` branch. Logout is locally idempotent only for an already unbound account or continuation from the exact backend-recognized revoked tombstone with its exact same-version Core row and returns the reconciled account branch after cancelling any active interaction and completing credential removal. Delete returns no payload. The account and status schema is implemented as one strict discriminated union with one branch per status: `interaction` exists only on `pending`, and `message` exists only on `unavailable` or `error`; fields from another branch are rejected rather than ignored. `logged_in` means a credential is locally resolvable; it does not attest current remote acceptance, remaining quota, or refresh-token validity. A quota rejection observation does not rewrite this local lifecycle.
 
@@ -328,68 +192,7 @@ Public account payloads must not contain credential values, raw provider account
 
 ## Quota Capability
 
-The App API quota read is separate from login state. Codex controls may reuse a fresh observation for their bounded dispatch and expiry checks. Every quota response uses this envelope:
-
-```ts
-type SubscriptionAccountObservation = {
-  planType?: string;
-  subscriptionActive?: boolean;
-  accountObservedAt?: string;
-};
-
-type ProviderSubscriptionQuota = (SubscriptionAccountObservation & (
-  | {
-      subscriptionProviderId: SubscriptionProviderId;
-      accountSlotId: string;
-      availability: "available";
-      observedAt: string;
-      windows: Array<{
-        id: string;
-        limitWindowSeconds?: number;
-        usedPercent?: number;
-        remainingPercent?: number;
-        periodType?: "weekly" | "monthly";
-        startsAt?: string;
-        resetsAt?: string;
-      }>;
-      billing?: {
-        currency: "USD";
-        prepaidBalanceCents?: number;
-        onDemandUsedCents?: number;
-        onDemandCapCents?: number;
-        sharedAllowance?: boolean;
-      };
-    }
-  | {
-      subscriptionProviderId: SubscriptionProviderId;
-      accountSlotId: string;
-      availability: "temporarily_unavailable";
-      observedAt: string;
-      retryAfter?: string;
-    }
-)) | {
-      subscriptionProviderId: SubscriptionProviderId;
-      accountSlotId: string;
-      availability: "authentication_required";
-      observedAt: string;
-    };
-
-type ProviderSubscriptionAutoTopup = {
-  subscriptionProviderId: "xai";
-  accountSlotId: string;
-  observedAt: string;
-} & (
-  | {
-      availability: "available";
-      currency: "USD";
-      enabled?: boolean;
-      thresholdCents?: number;
-      amountCents?: number;
-      monthlyCapCents?: number;
-    }
-  | { availability: "temporarily_unavailable" }
-);
-```
+The App API quota read is separate from login state. Codex controls may reuse a fresh observation for their bounded dispatch and expiry checks. Quota and auto-top-up responses are `ProviderSubscriptionQuotaSchema` and `ProviderSubscriptionAutoTopupSchema` in `packages/app-api-schemas/src/provider-subscriptions.ts`. Omitted money and percentages stay omitted. An explicit zero stays zero. A whole null object is omitted. Floating-point money is not inferred.
 
 Percentages are finite values in the inclusive range `0..100`; `remainingPercent` is derived only when the provider gives enough data and is clamped to that range. Window ids are stable OpenKit labels for the provider fields recognized by the current adapter, not raw upstream object keys. Missing provider values are omitted rather than guessed. No raw quota response or upstream error crosses the App API.
 
@@ -424,15 +227,15 @@ Codex accounts may retain `codexAutoUseWeeklyReset`, `codexAutoUseExpiringReset`
 
 `provider-subscription.account-use-reset` requires the same deployment-administrator authority and a UUIDv4 `redeemRequestId`. Pick the available reset with the earliest expiry, placing no-expiry entries last. Before `POST rate-limit-reset-credits/consume {credit_id, redeem_request_id}`, retain that exact non-secret identity in the existing Server Audit. Its `requestId` is the redemption UUID; its `resource` names the local provider/slot and percent-encoded credit id, with the weekly reset timestamp when applicable. A requested effect starts as outcome `unknown`; a terminal vendor-code observation records that code without its raw body. A response has `code` equal to `reset`, `nothing_to_reset`, `no_credit` or `already_redeemed`, and `windows_reset`. A transport, timeout or unclassified response leaves the external result unknown. A later retry may send only the identical saved credit/request pair, including after restart; it must not select another credit or generate a new request id to retry that effect. No automatic replay, repair or success inference is permitted. A later credential store, rotation or revocation, or account recreation/deletion, refuses replay of that earlier unknown effect rather than sending it against replacement material. Reset Audit includes the initiating administrator, or the system for the enabled automatic paths, and no token, upstream account id or raw response. A confirmed reset invalidates the short-lived quota observation.
 
-When weekly auto-use is enabled, the Gateway may consume at most one reset per weekly window only after a settled quota failure with no successful failover target, then retry the affected request once under the original cancellation, deadline and commit bounds. A five-hour window never triggers that spend. The account fence and existing reset Audit prevent concurrent or restarted attempts from spending twice for that weekly window. The expiring-reset setting enables one non-overlapping check about every five minutes: consume the soonest-expiring available reset within thirty minutes of expiry only when some observed window has used more than zero. Shutdown stops the check; an account failure remains local. Both paths share the manual consume owner and its unknown-result rule.
+When weekly auto-use is enabled, the Gateway may consume at most one reset per weekly window only after a settled quota failure with no successful failover target, then retry the affected request once under the original cancellation, deadline and commit bounds. A five-hour window never triggers that spend. The account fence and existing reset Audit prevent concurrent or restarted attempts from spending twice for that weekly window. The expiring-reset setting enables one non-overlapping check every `5` minutes (current default): consume the soonest-expiring available reset within 30 minutes of expiry (current default) only when some observed window has used more than zero. Shutdown stops the check; an account failure remains local. Both paths share the manual consume owner and its unknown-result rule.
 
-When `codexUseCredits` is false, a successful quota reading no older than about one minute that shows any window at 100% refuses inference on that account as a settled pre-dispatch quota failure, allowing ordinary Gateway failover. A stale, missing or failed read does not prove exhaustion. The default false setting changes prior dispatch behavior for accounts without this field; an explicit true setting permits the vendor, not OpenKit, to spend credits after inference dispatch. No routing strategy, cooldown engine or new durable record family is added.
+When `codexUseCredits` is false, a successful quota reading with an age from 0 through 60000 ms inclusive (current default) that shows any window at 100% refuses inference on that account as a settled pre-dispatch quota failure, allowing ordinary Gateway failover. A stale, missing or failed read does not prove exhaustion. The default false setting changes prior dispatch behavior for accounts without this field; an explicit true setting permits the vendor, not OpenKit, to spend credits after inference dispatch. No routing strategy, cooldown engine or new durable record family is added.
 
 ### xAI Release-Coupled Quota Reader
 
 For `xai`, the quota route first completes the same reconciliation and pair-handle resolution as Codex. It then calls the handle's stock pi-ai `models.getAuth("xai")` without an API-key override, so pi-ai retains ownership of expiry detection, serialized refresh, and persistence through the slot-scoped `CredentialStore`. The resolved auth is usable only when `auth.apiKey` is a non-empty string. An absent or invalid result or any auth-resolution or refresh failure returns `temporarily_unavailable` without calling either quota-interface endpoint. NanoCore does not read or extend the xAI OAuth credential shape to obtain provider identity.
 
-With one resolved bearer snapshot, the reader issues exactly one bodyless `GET https://cli-chat-proxy.grok.com/v1/user?include=subscription` request. Its explicit provider headers are `Authorization: Bearer <apiKey>`, `X-XAI-Token-Auth: xai-grok-cli`, `x-grok-client-version: 1.0.12`, and `x-grok-client-mode: headless`; it must not send `x-userid` on this discovery request. Transport-generated headers such as `User-Agent` use the ordinary NanoCore HTTP client identity and are not provider-specific adapter inputs; NanoCore does not synthesize the Grok Build process user-agent string. One timeout of exactly 10,000 milliseconds covers the request and raw-body read. The reader accepts at most 65,536 raw response bytes inclusive, decodes them as fatal UTF-8, and parses JSON. The consumed response requires a non-empty string `userId`; `subscriptionTier` may be absent, null, or a string, and unknown fields are ignored. Discovery emits `accountObservedAt` when successfully observed, `planType` only for a non-empty tier, and `subscriptionActive` using the official Build subscription check: true only for a non-empty tier other than exact case-sensitive `Free`, without trimming or case normalization, false otherwise. This is subscription eligibility, not an effective coding-access grant, a successful inference promise, or the separate remote-settings access gate. No retention preference or payment method implies access. The canonical `userId` is held only for the immediately following request and never enters durable state, logs, diagnostics, audit details, or a public response.
+With one resolved bearer snapshot, the reader issues exactly one bodyless `GET https://cli-chat-proxy.grok.com/v1/user?include=subscription` request. Its explicit provider headers are `Authorization: Bearer <apiKey>`, `X-XAI-Token-Auth: xai-grok-cli`, `x-grok-client-version: 1.0.12` (current default), and `x-grok-client-mode: headless`; it must not send `x-userid` on this discovery request. Transport-generated headers such as `User-Agent` use the ordinary NanoCore HTTP client identity and are not provider-specific adapter inputs; NanoCore does not synthesize the Grok Build process user-agent string. One timeout of exactly 10,000 milliseconds covers the request and raw-body read. The reader accepts at most 65,536 raw response bytes inclusive, decodes them as fatal UTF-8, and parses JSON. The consumed response requires a non-empty string `userId`; `subscriptionTier` may be absent, null, or a string, and unknown fields are ignored. Discovery emits `accountObservedAt` when successfully observed, `planType` only for a non-empty tier, and `subscriptionActive` using the official Build subscription check: true only for a non-empty tier other than exact case-sensitive `Free`, without trimming or case normalization, false otherwise. This is subscription eligibility, not an effective coding-access grant, a successful inference promise, or the separate remote-settings access gate. No retention preference or payment method implies access. The canonical `userId` is held only for the immediately following request and never enters durable state, logs, diagnostics, audit details, or a public response.
 
 After successful identity discovery, the reader issues exactly one bodyless `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` request with the same four explicit provider headers plus `x-userid: <userId>`. One timeout of exactly 15,000 milliseconds covers that request and raw-body read, and the same 65,536-byte and fatal-UTF-8 boundaries apply. The consumed response requires `config` to be an object. Optional consumed provider fields accept absence or null as unknown; a supplied non-null field of the wrong type fails the billing observation. `creditUsagePercent` must be finite and non-negative, clamped to `0..100` for the public used percentage; remaining is derived only from that supplied value. `currentPeriod` accepts optional `type`, `start`, and `end`: type is a string, with only `USAGE_PERIOD_TYPE_WEEKLY` and `USAGE_PERIOD_TYPE_MONTHLY` projected as `weekly` and `monthly`; an unrecognized string is omitted without inventing a period. Supplied start/end must be valid RFC 3339 instants and are canonicalized to UTC. Deprecated quota fields, history, product breakdowns, and billing-response subscription/on-demand flags are ignored.
 
@@ -450,7 +253,7 @@ The consumed response is an object with optional nullable `rule`. Missing/null r
 
 The subscription account portion of the deployment-scoped Gateway Provider card, composed under [the Web projection owner](20260628-web_product_surface_projection.md#unified-gateway-settings-projection), has three levels: account name and connection status with plan and only the actual supplied quota period; usage/reset/last-check with an account-scoped Refresh action; and native disclosures for Balance and costs and Account settings. Inference access-rejection and quota-exhaustion observations come from the account read model's `inferenceObservation` member without an upstream quota request. Account metadata and billing refresh on page load and manual refresh of that account. Auto-top-up is fetched only when that account's costs disclosure is expanded, and again on explicit retry or refresh while expanded; no collapsed-card request, background poll, cross-account refresh, or durable cache is added. Failed refresh removes prior observation values instead of presenting them as current. Unknown individual monetary fields and auto-top-up state are labeled not reported. A successful billing response with no percentage is labeled Provider did not report usage; a failed query is labeled query failed and offers retry. Each window shows one percentage: remaining when supplied, otherwise used when supplied. Explicit zero stays zero used or 100 percent remaining according to that choice; absence remains unknown. Only supplied weekly/monthly periods are shown, without inferred alternate windows. Codex window labels use the reported duration: exactly 604,800 seconds is Weekly; other values use the largest exact day, hour, minute or second unit (for example 18,000 seconds is 5-hour). Without a duration, Primary and Secondary remain the labels. The label does not alter the exact reset instant or create a `periodType`. Prepaid balance, extra spend, spend cap, and auto-top-up status stay distinct in the expanded details. Times use the browser's local timezone with the full instant and timezone inspectable. A locally resolvable login with no available quota observation is labeled Login saved rather than a verified green Connected state. Exact `authentication_required` is labeled Access rejected, explicitly notes that the login may still be refreshable, and offers the existing pair-scoped Sign in again action as an option rather than proof that re-login is necessary; a pending login retains its Connecting state and cancel action. It clears current quota meters and preserves the check time without clearing credentials or changing durable account status. Temporary quota failure offers refresh and is not a rejected-login verdict. Web, Core Client, remote MCP and the administrator CLI expose identical omission, zero, currency, period, and observation-time semantics; none interprets missing quota as sufficient or exhausted.
 
-Quota reads do not create a background scheduler, durable quota ledger, automatic account switch, or readiness gate. A short in-process cache may coalesce concurrent identical reads, but a cached observation must preserve its original `observedAt` and must never be presented as current after its bounded lifetime. Gateway route fallback reacts only to the exact admitted Provider attempt failure classification unless a later accepted Gateway strategy explicitly consumes bounded quota observations.
+General quota polling and account selection do not create a background scheduler, durable quota ledger, automatic account switch, or readiness gate. The enabled expiring-reset check and the credits-off admission control above are the admitted exceptions. A short in-process cache may coalesce concurrent identical reads, but a cached observation must preserve its original `observedAt` and must never be presented as current after its bounded lifetime. Gateway route fallback reacts only to the exact admitted Provider attempt failure classification unless a later accepted Gateway strategy explicitly consumes bounded quota observations.
 
 For an ordinarily valid existing slot, either provider returns `available` after a valid adapter response or `temporarily_unavailable` after a bounded quota dependency failure; either provider may return `authentication_required` only for the exact same-credential rejection proof below. Codex uses the concrete quota proof above, while xAI extends that proof to its actually presented bearer without inventing credential fields or inferring rejection from refresh failure. These are successful `200` results, not `ApiError` responses.
 
@@ -512,89 +315,23 @@ When any ordinary account operation encounters invalid metadata, a binding misma
 - Delete and local credential removal commit backend revocation, then the exact Core revocation cascade, then binding clear or account deletion. A backend revocation failure leaves `account.json` and its binding intact. A later failure is automatically continuable only when the exact current-binding backend-recognized tombstone and exact same-version Core row remain; any other material absence requires reviewed cleanup. Successful completion changes only the classification to immutable completed history and permits future use of a fresh reference.
 - Quota-read failure never changes login status, provider binding, or inference readiness. A fresh successful observation can enforce only the explicit Codex credits-off dispatch control above.
 
-## Current Implementation Projection
+## Acceptance
 
-`packages/config-schema` now owns the closed `openai-codex | xai` subscription-provider identity, bounded account-slot identity, strict `extensions.openkit.subscriptionAccount` profile field, and deterministic provider-family classification. `@openkit/app-api-schemas`, NanoCore's checked operation catalog, generated OpenAPI, and `client.operations[id]` for the provider-subscription family expose the provider-neutral contract and all thirteen accepted operations.
+Opt-in real-provider evidence is explicit, skip-aware, and quota-gated. It proves prepared account status, one inference request, refresh when safely exercisable, local logout, sanitized status, and a provider quota observation or typed temporary unavailability. Evidence contains no credential values, credential-source locations, or provider-private values. Credential-backed xAI real-use verification activates only after an xAI subscription account exists and an engineer explicitly authorizes those effects. Until then deterministic support does not establish or claim xAI real-use acceptance.
 
-`apps/nanocore/src/app.ts` composes the provider-subscription manager and routes. The manager strictly reads and atomically replaces version-1 `account.json`, classifies each pair against the exact generic Core reference and encrypted-file Vault authorities, fences same-pair mutations while permitting cross-pair concurrency, and supplies one slot-scoped stock pi-ai `CredentialStore` and `Models` runtime per pair with ambient environment and file authentication disabled. Stock pi-ai owns both providers' device-code login, refresh through `CredentialStore.modify`, logout, and authenticated inference; OpenKit retains interaction cancellation, Vault custody, account projection, authorization, and audit.
+## Implementation
 
-The lifecycle and Codex reset server `AuditEvent` actions are active through the composed manager, and the existing audited `vault.resolve` path remains the credential-read producer. The unified Gateway resolves the explicit pair before dispatch and uses stock pi-ai for native Codex Responses and reviewed xAI inference. The administrator CLI derives the same thirteen operations from their shared definitions through its existing generic `ops call` path without a provider-specific command branch.
+- `apps/nanocore/src/llm/`
+- `packages/app-api-schemas/src/`
+- `packages/config-schema/src/`
 
-The Web Gateway destination's Provider cards now project the fixed Codex and xAI inventory and the complete provider-scoped account lifecycle through `client.operations[id]` for the provider-subscription family, including slot creation, rename, deletion, device-code login, polling, cancellation, logout, refresh, and quota posture. Generic API-key provider profiles use the separate Vault-owned `vault.provider-api-key-set` operation and do not enter this subscription-account state machine.
+## Implementation Gaps
 
-Codex and xAI quota now use their strict direct readers and the provider-neutral quota projection above, including Codex current-access rejection as `authentication_required`. The xAI reader preserves a valid reset time when the upstream omits `creditUsagePercent`; missing percentages remain unknown rather than becoming zero usage. Successful HTTP responses without recognized quota or billing values still do not prove an available observation. The prior Codex account and Gateway artifacts have been physically removed. Binding-free deletion is implemented, including pending-login cancellation and settlement before the existing fenced revocation and account removal, without rewriting referencing profiles or logical routes. Inference observations are implemented for both providers: subscription inference resolves stock auth once per member attempt, attributes it to the exact material version that produced it, including an ordinary refresh, and projects a settled same-credential access rejection or proven quota exhaustion through the account list and detail read model's `inferenceObservation` member. This spec remains `Partial` until the accepted real-use evidence closes; the fixed run shape is an L3 opt-in test concern and its execution history belongs to the executing release work rather than this specification.
+- Codex subscription real-use evidence - Deterministic account and quota code does not close the owner-governed opt-in proof. - #814
+- xAI subscription real-use evidence - Deterministic lifecycle code does not establish entitlement or a completed qualification run. - #347
 
-## Accepted Design
+## Decisions
 
-The clean target is one cohesive NanoCore Provider-subscription account manager with Provider-specific capability adapters only where the Provider contract genuinely differs. The manager owns slots, authorization, metadata, Vault references, per-slot locking, and public projection. Stock pi-ai owns login and refresh through one `Models` plus one constrained `CredentialStore` view per slot. Codex and xAI each use one small release-coupled quota reader behind the existing route and public quota projection; no Provider-specific account manager, credential format, billing subsystem, or account selector is introduced; the one lazy read-only auto-top-up route shares the existing pair-scoped authorization and credential boundary. Gateway composes multi-account behavior solely from ordinary one-slot Provider profiles and logical-model route members.
-
-No general extension framework, plugin registry, global credential switcher, duplicate OAuth implementation, or second account state machine is introduced. New subscription providers require an accepted spec revision that defines entitlement, pi-ai support, login modes, quota posture, and failure behavior.
-
-## Alternatives Considered
-
-**Keep the dedicated Codex backend and add a parallel xAI backend.** Rejected because each new subscription provider would duplicate login, refresh, streaming, usage, and error behavior that pi-ai already owns.
-
-**Use one global pi-ai credential store and switch the active account around each request.** Rejected because overlapping requests can observe the wrong credential and refresh the wrong account.
-
-**Encode account identity into synthetic pi-ai provider ids.** Rejected because it leaks OpenKit account management into upstream provider vocabulary and breaks catalog and adapter assumptions.
-
-**Keep Codex app-server only for refresh or quota.** Rejected because pi-ai already owns refresh and a bounded direct quota adapter is smaller than retaining a second runtime service and credential home.
-
-**Implement xAI quota through browser scraping or an untraced private endpoint.** Rejected because neither source establishes a reviewable request and response contract. The accepted endpoint is different: it is the bounded read-only path implemented in versioned xAI-maintained Grok Build source, with strict release coupling and fail-closed projection.
-
-## Rollout / Migration Plan
-
-The rollout below has landed, as the Current Implementation Projection records; it stays as the record of the accepted order and its constraints, and it is owned by this specification. The exact stock pi-ai upgrade is verified first. The next implementation package lands only the internally consumed provider-id, slot-id, metadata, Vault credential-store, isolation, locking, and reconciliation foundation, including the exact Core row, new-insert-result ephemeral proof, failed-closed post-restart bound-plus-zero classification, backend-recognized tombstone predicate, exact same-version Core removal continuation, completed-history classification after binding clear or deletion, fresh-reference reuse of unbound and cleanly absent pairs, metadata restoration only for already ordinary-valid restored states, and reviewed cleanup as the sole bound-plus-zero recovery; it does not activate the authored `subscriptionAccount` extension or any provider-subscription route. It adds no additional durable file, record field, MAC, marker, journal, state, migration, cleanup or deletion API, operation, compatibility path, or automatic repair; the existing `account.json`, backend tombstone inventory, and Core row remain the only authorities. One later atomic kernel cutover then replaces configuration, App API schemas and live handlers, the NanoCore operation definitions and their remote MCP/administrator CLI projections, generated OpenAPI, Core Client, diagnostics, pi-ai authentication, and all Codex and xAI subscription inference together while removing the active dedicated Codex account and Gateway dependency. The exact ten mechanical CLI mappings land through the existing generic catalog in that cutover, and no separate CLI projection implementation package follows. No compatibility alias, stub route, dual client, dual credential path, or intermediate account-to-inference bridge is permitted. The xAI quota package changes the inventory descriptor, quota schema, strict reader, route, generated OpenAPI, Core Client, focused tests, Web, and operator manual together in one release; Web deletes its dead `unsupported` branch and reuses its existing available and temporary-unavailability rendering, and no route or durable state is added.
-
-Cutover is same-release and clean-target. Existing Codex slots require re-login, old route and config names have no compatibility aliases, and legacy credential homes are not imported into Vault.
-
-The Gateway and provider-subscription account cutover preserves the name `vault.bootstrap-codex-auth`; [Vault And Secret Injection](20260703-vault_secret_injection.md#harness-subscription-logins) owns its human-only actual-User Login acquisition and the harness credential-delivery contract. Gateway provider-subscription accounts retain their separate ownership and inference contract.
-
-## Testing Strategy / Acceptance Criteria
-
-- L0 verifies the exact pi-ai pin, catalog reconciliation, generated App API projection, no retired route or config vocabulary, and no pi-ai public-vocabulary leak.
-- L1 proves slot-id validation, explicit provider-profile binding, exact device-code interactions for both Codex and xAI, strict `browser` rejection as `invalid_request` before provider work, one `Models` and credential-store view per pair, cross-slot isolation, one shared fence across credential set, refresh, removal, and affected interaction transitions, binding-before-Core-before-material creation, every exact Core-row field and initial active version 1, rejection of a pre-existing or idempotently returned Core row as direct ephemeral proof, same-reference initial store only with the new exact-row insert result inside the creating fenced mutation and inventory proof of no backend artifact, post-restart bound-plus-zero persistence failure without status rewrite, Core creation, binding clear, or reuse, whole-inventory recognition of the unique exact backend-recognized revoked tombstone with no material, temporary, or unknown residue, live Core version equality or lower-only monotonic advance with higher and every field mismatch failed closed, current-binding tombstone continuation only with the exact same-version Core row in active or revoked status and without a Vault write, completed historical classification only after unbind or account deletion with the exact same-version revoked Core row, zero or multiple distinct completed histories without account projection or blockage of a fresh reference, failed closure for every unbound or absent tombstone with active, missing, wrong-version, or non-exact Core state and for every live orphan, successful delete followed by same-pair create and fresh-reference login while old history remains immutable, encrypted-file-before-Core-before-account removal, rotation version projection, Vault store/rotate/revoke mapping, authoritative metadata and bounded projection reconciliation, fixed provider inventory without account or Vault access, valid unbound-plus-zero and bound-plus-one ordinary cases, whole-list and pair-addressed failed-closed behavior across all account-sensitive operations for ambiguous, extra, or binding-mismatched states except the narrow delete and logout current-tombstone continuation, pair-reuse blocking for every old reference but fresh-reference admission for completed pairs, metadata restoration only for a restored ordinary-valid state, reviewed cleanup as the sole bound-plus-zero recovery, authenticated provider-slot projection round trips, atomic account, entry, and state writes, entry/state orphan and mismatch detection without omission or automatic repair, every-version reviewed cleanup, the exact seven server `AuditEvent` actions plus existing `vault.resolve` reuse, safe status projection, strict Codex and xAI quota validation, pi-ai-owned xAI refresh, ephemeral xAI identity discovery, exact provider headers and request order, body and timeout bounds, finite non-negative xAI overage clamping into the public `0..100` range, provider-neutral available and temporary-unavailability projection, and redaction.
-- L2 proves provider-neutral App API schemas and errors, admin authorization, Core Client parity, strict device-code-only request and pending-interaction schemas with `browser` rejected as `invalid_request`, the exact `500` persistence error and absence of partial account-list or quota success under corrupt, live-orphan, ambiguous bound-plus-zero, invalid tombstone, or exact Core-row mismatch conditions, completed-history non-projection, clean-absence create and not-found behavior with completed history, and strict absence of credential, Vault, account-id, raw quota, and upstream-error fields.
-- L3 proves two same-provider account slots can log in through independent test credentials and serve overlapping requests without credential crossover; logout waits for active login settlement, cannot be undone by stale completion, removes the latest in-flight refresh result, and remains isolated through restart reconciliation.
-- L3 opt-in real-provider evidence is explicit, skip-aware, and quota-gated, and proves prepared account status, one inference request, refresh when safely exercisable, local logout, sanitized status, and a provider quota observation or typed temporary unavailability. Evidence contains no credential value, credential-source path, or provider-private value.
-- L5 proves NanoCore boots and serves configured subscription-backed providers without Codex app-server, `CODEX_HOME`, or ambient credentials.
-
-Acceptance requires all of the following: two account slots can be selected explicitly and used concurrently; pi-ai performs login and refresh; credentials persist only through Vault; provider inventory is account-state-free; same-reference initial persistence is possible only inside the creating fenced mutation with clean inventory and direct ephemeral proof that includes the new exact-Core-row insert result; a pre-existing row never supplies that proof; after restart, a bound reference with neither authenticated live material nor the exact backend-recognized revoked tombstone fails every ordinary account operation as a whole with the fixed persistence error, performs no status rewrite, same-reference continuation, Core creation, binding clear, or pair reuse, and remains blocked until reviewed cleanup completes; metadata restoration never resolves that ambiguity; a live reference accepts only the exact active Core row with equal version or a lower version advanced monotonically; the current-binding backend-recognized tombstone can continue only the already-started removal sequence with the exact same-version active-or-revoked Core row and authorizes no Vault write, ordinary validity, same-reference reuse, or other recovery; after binding clear or deletion, only an exact same-version revoked Core row makes it inert completed history; zero or multiple distinct completed histories remain immutable and unprojected without blocking an unbound account or cleanly absent pair from allocating a fresh reference; any other tombstone without a current binding and every live orphan fail closed; successful delete followed by same-provider-and-slot create allocates a fresh reference while the old tombstone and revoked Core row remain; corrupt metadata retains the same failed-closed boundary; public status and quota are sanitized; quota failure does not block inference; the public Gateway uses no dedicated Codex backend; NanoCore has no Gateway/account dependency on Codex app-server or `CODEX_HOME`; and retired Codex-specific App API and provider-extension names are absent.
-
-## Risks & Mitigations
-
-- Pi-ai authentication API drift could corrupt account handling; the exact pin, focused adapter tests, and upgrade review constrain it.
-- Concurrent login, refresh, logout, or delete could restore or remove the wrong credential; one shared mutation fence per provider and slot plus Vault version rotation serializes local writers and rejects stale interaction completion.
-- A crash after binding and exact Core-row creation but before material store makes later material absence historically ambiguous; only the new-row insert result inside the still-live creating mutation permits continuation, while restart fails closed into reviewed cleanup and the exact backend-recognized revoked tombstone with its same-version Core row remains the sole automatic removal prefix.
-- The Codex or xAI private quota interface can change without public notice; exact upstream-source review, strict request and response validation, and typed temporary unavailability contain drift without affecting inference.
-- A credential could leak through account or quota errors; fixed public schemas, redaction tests, and Vault-only material storage fail that boundary closed.
-- Pi-ai xAI login may authenticate an account whose entitlement does not permit the requested Grok model; provider rejection remains a typed authentication or entitlement failure and does not imply subscription support beyond verified behavior.
-- Removing legacy Codex homes requires re-login; the clean cut is an explicit credential retirement that avoids unsafe token import.
-
-## Resolved Decisions
-
-- Multi-account support belongs to a thin OpenKit slot layer above pi-ai, not a fork of pi-ai.
-- Pi-ai owns login and credential refresh for both Codex and xAI.
-- OpenKit owns Vault persistence, authorization, account switching by explicit profile binding, status, and quota projection.
-- The public originator value and other pi-ai-controlled internal request details may use stock pi-ai behavior; OpenKit does not fork or patch pi-ai merely to preserve an old private value.
-- Initial Codex and xAI login is device-code-only; `browser` is not a supported request mode.
-- Codex and xAI quota each use a bounded read-only provider adapter traced to vendor-maintained client source; public documentation is not a prerequisite when the exact private contract is reviewed and fails closed.
-- The dedicated Codex provider backend, Codex app-server account dependency, `CODEX_HOME`, and Codex-specific public account routes are removed at cutover.
-
-## Deferred / Future Work
-
-- User-owned subscription slots and explicit user-to-slot authorization.
-- Quota-aware account selection or failover, if a later accepted design establishes a real need.
-- Credential-backed xAI real-use lifecycle verification, which activates only after an xAI subscription account exists and an engineer explicitly authorizes those effects. Until then xAI retains its product capability and deterministic lower-layer acceptance, and no run claims xAI real-use acceptance.
-- Codex browser login after stock pi-ai exposes a server-compatible callback seam or a separately accepted completion operation; this deferred login flow adds no operation or deployment-mode restriction; the accepted read-only auto-top-up operation above is unrelated.
-- Claude or another consumer subscription after entitlement and provider-interface review.
-
-## Links
-
-- `docs/specs/20260708-pi_ai_unified_llm_backend.md`
-- `docs/specs/20260526-llm_gateway_responses_api.md`
-- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
-- `docs/specs/20260704-vault_backend_implementation.md`
-- `docs/specs/20260704-app_api_openapi_projection.md`
-
-- pi-ai upstream: `https://github.com/earendil-works/pi/tree/main/packages/ai`
+- [Gateway Tier Routing Rulings](../decisions/20261001-gateway_tier_routing_rulings.md)
+- [Inference Account Observation Projection](../decisions/20261002-inference_account_observation_projection.md)
+- [Operation Family Modules And One Error Projection](../decisions/20261003-operation_family_modules_and_error_projection.md)

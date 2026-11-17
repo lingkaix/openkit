@@ -9,7 +9,7 @@ This non-authorizing record holds the knowledge group of the [independent docume
 
 - Group base SHA: `b648f860e3eeab8bf1a7a419f16b674882ed7a55`. During the group `main` moved to `d818256def07ecebfc0bcc9c85270fde5047341a`; between the two, the only changes under the knowledge code paths are two test files (`apps/nanocore/src/knowledge/control-maintenance-admission.test.ts` and `knowledge-maintenance-deadline.test.ts`), so the evidence below holds at both. Issue #440 had no comments and held no group in this scope.
 - Core document: `docs/core/knowledge.md`.
-- Specifications: `20260702-knowledge_store_governance_rules.md` (GOV), `20260703-knowledge_store_implementation.md` (IMP), `20260704-knowledge_manager_internal_agent_runtime.md` (KMR), `20260909-personal_memory_and_knowledge_learning.md` (PML), `20260909-knowledge_notebook_editing.md` (NBE), `20261014-retrieval_kernel.md` (RTK), `20260703-worker_context_package.md` (WCP), and `20260710-self_improvement_evaluation_loop.md` (SIE).
+- Specifications: `20260702-knowledge_store_governance_rules.md` (GOV), `20260703-knowledge_store_implementation.md` (IMP), `20260704-knowledge_manager_internal_agent_runtime.md` (KMR), `20260909-personal_memory_and_knowledge_learning.md` (PML), `20260909-knowledge_notebook_editing.md` (NBE), `20261014-retrieval_kernel.md` (RTK), `20260703-worker_context_package.md` (WCP), and `20260909-personal_memory_and_knowledge_learning.md#reflection-and-improvement` (SIE).
 - G3 inspection: four read-only inspector contexts (KN-GOV for GOV and IMP; KN-KMR for KMR, PML, and SIE; KN-RTK for RTK and NBE; KN-WCP for WCP). They read code only and ran no tests. The auditor verified each kept finding against the code.
 - Carried items: Q-51 (`knowledgeMaintenance.schedule`) and Q-63 (`knowledge-manager` as a `Thread.entryPath` value) asked this group to confirm an owner; the protocol group carried the `KnowledgePage` record name (PR-G2-04).
 
@@ -77,7 +77,7 @@ The inventory tool compared each changed file with the group base.
 | `20260702-knowledge_store_governance_rules.md` (GOV) | unchanged | unchanged | 73 unchanged, 3 added | unchanged | 5 unchanged, 1 added |
 | `20260703-knowledge_store_implementation.md` (IMP) | 87 unchanged, 2 changed (the proposal text guard; Source registration) | unchanged | 312 unchanged, 5 removed (the four canary prefixes and `content.txt` path), 13 added | unchanged | 16 unchanged, 1 added |
 | `20260704-knowledge_manager_internal_agent_runtime.md` (KMR) | unchanged | unchanged | 184 unchanged, 5 added | unchanged | unchanged |
-| `20260710-self_improvement_evaluation_loop.md` (SIE) | 37 unchanged, 1 changed (implementation state) | unchanged | 48 unchanged, 1 added | unchanged | unchanged |
+| `20260909-personal_memory_and_knowledge_learning.md#reflection-and-improvement` (SIE) | 37 unchanged, 1 changed (implementation state) | unchanged | 48 unchanged, 1 added | unchanged | unchanged |
 | `20260909-knowledge_notebook_editing.md` (NBE) | unchanged | unchanged | 120 unchanged, 2 added | unchanged | unchanged |
 | `20260909-personal_memory_and_knowledge_learning.md` (PML) | unchanged | unchanged | 70 unchanged, 3 added | unchanged | unchanged |
 | `20261014-retrieval_kernel.md` (RTK) | unchanged | unchanged | 66 unchanged, 2 added | unchanged | unchanged |

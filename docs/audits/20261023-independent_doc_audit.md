@@ -69,7 +69,7 @@ The ledger lists every Core document and every active specification with its hom
 
 | Specification | Group | State | Group record |
 | --- | --- | --- | --- |
-| `docs/specs/20260709-quick_chat_workspace.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/specs/20260715-multi_user_workspace_system.md#personal-workspace` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/specs/20260711-scheduler_recurring_event_triggers.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/specs/20260703-schema_evolution_record_envelope.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
 | `docs/specs/20260715-contract_stability_baseline.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
@@ -101,17 +101,17 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260930-pending_requests.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
 | `docs/specs/20260703-vault_secret_injection.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
 | `docs/specs/20260704-vault_backend_implementation.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
-| `docs/specs/20260709-worker_credential_access_declarations.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
+| `docs/specs/20260703-vault_secret_injection.md#credential-access-declarations` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
 | `docs/specs/20260703-openshell_mechanism_internalization.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
 | `docs/specs/20261002-operation_definition.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/specs/20260703-worker_agent_capability.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
-| `docs/specs/20260704-capability_usage_gateway_foundation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260703-audit_usage_evidence_records.md#capability-usage` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/specs/20260704-worker_mcp_tool_supply.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/specs/20260526-llm_gateway_responses_api.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
-| `docs/specs/20260703-pi_ai_provider_gateway_adoption.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260708-pi_ai_unified_llm_backend.md#provider-adoption-rules` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/specs/20260708-pi_ai_unified_llm_backend.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/specs/20260721-provider_subscription_accounts.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
-| `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260703-policy_enforcement_mapping.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/specs/20260616-agent_environment_package.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/specs/20260703-agent_manifest_aep_resolution.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/specs/20260711-skill_catalog_versioning_pinning.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
@@ -119,7 +119,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260907-mcp_catalog_management.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/specs/20260704-workspace_data_source_catalog.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/specs/20260709-worker_sandbox_freedom_policy.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
-| `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `20260715-openshell_disposable_cell_lifecycle.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
 | `docs/specs/20260721-worker_execution_environment_images.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
 | `docs/specs/20260910-persistent_worker_volumes.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
 | `docs/specs/20260922-delegated_worker_policy_maintenance.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
@@ -138,17 +138,17 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260909-knowledge_notebook_editing.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/specs/20261014-retrieval_kernel.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/specs/20260703-worker_context_package.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
-| `docs/specs/20260710-self_improvement_evaluation_loop.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260909-personal_memory_and_knowledge_learning.md#reflection-and-improvement` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/specs/20260908-generative_kernel_data_operations.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
 | `docs/specs/20260908-generative_ui_interaction.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
 | `docs/specs/20260529-test_strategy.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260529-l6_story_acceptance.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260719-verification_calibration.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/documentation-model.md#fields` | process | audited | [process](20261025-independent_doc_audit_process.md) |
-| `docs/specs/20260811-execution_residue_measurement.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260719-verification_calibration.md#execution-residue` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260829-release_management.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260909-persistent_deployment_acceptance.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
-| `docs/specs/20260711-evaluation_harness_design.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| evaluation harness design (issue #311) | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/README.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/AGENTS.md` | process | audited (proposals only) | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260703-storage_layout_record_ownership.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
@@ -158,7 +158,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260704-workspace_backup_export_import.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
 | `docs/specs/20260802-nanohost_runtime_and_transport.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
 | `docs/specs/20260703-durable_scheduler_design.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
-| `docs/specs/20260703-runtime_scheduling_scale.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20260703-durable_scheduler_design.md#scale-limits` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
 | `docs/specs/20260531-worker_turn_reliability_envelope.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
 | `docs/specs/20260711-worker_runtime_subagent_provenance.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
 | `docs/specs/20261019-durable_execution_and_control_store.md` | fault-tolerance | audited (round 2) | [fault-tolerance](20261115-independent_doc_audit_fault_tolerance.md) |

@@ -6,7 +6,7 @@ status: in-progress
 
 ## Intent
 
-The coordinator assigns C03 first on the prepared C04 branch: give Light App discovery one native exact pinned Knowledge receiver under current access. Reuse [Knowledge](../../core/knowledge.md), [consolidation](../../specs/20261018-nanocore_interception_and_information_consolidation.md#information-and-record-authority), [Notebook](../../specs/20260909-knowledge_notebook_editing.md) and the [reference owner](../../core/protocol.md#scope-qualified-object-references). L-GO alone owns definitions, deduplication and discovery call sites. The signature is recorded in the lane checkpoint for coordinator relay.
+The coordinator assigns C03 first on the prepared C04 branch: give Light App discovery one native exact pinned Knowledge receiver under current access. Reuse [Knowledge](../../core/knowledge.md), [consolidation](../../specs/20260703-policy_enforcement_mapping.md#interception), [Notebook](../../specs/20260909-knowledge_notebook_editing.md) and the [reference owner](../../core/protocol.md#scope-qualified-object-references). L-GO alone owns definitions, deduplication and discovery call sites. The signature is recorded in the lane checkpoint for coordinator relay.
 
 ## Method And Limits
 

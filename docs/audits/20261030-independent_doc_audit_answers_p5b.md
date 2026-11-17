@@ -129,13 +129,13 @@ No HELD or ESCALATE-E answer is introduced. No document held by #440 was edited.
 [M]: ../core/mediation.md
 [OD]: ../specs/20261002-operation_definition.md
 [WAC]: ../specs/20260703-worker_agent_capability.md
-[CUG]: ../specs/20260704-capability_usage_gateway_foundation.md
+[CUG]: ../specs/20260703-audit_usage_evidence_records.md#capability-usage
 [MCP]: ../specs/20260704-worker_mcp_tool_supply.md
 [GW]: ../specs/20260526-llm_gateway_responses_api.md
-[PIA]: ../specs/20260703-pi_ai_provider_gateway_adoption.md
+[PIA]: ../specs/20260708-pi_ai_unified_llm_backend.md#provider-adoption-rules
 [PIU]: ../specs/20260708-pi_ai_unified_llm_backend.md
 [PSA]: ../specs/20260721-provider_subscription_accounts.md
-[ICP]: ../specs/20261018-nanocore_interception_and_information_consolidation.md
+[ICP]: ../specs/20260703-policy_enforcement_mapping.md
 [PR]: ../specs/20260930-pending_requests.md
 [POL]: ../specs/20260703-policy_enforcement_mapping.md
 [AEP]: ../specs/20260616-agent_environment_package.md

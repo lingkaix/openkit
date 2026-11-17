@@ -2,85 +2,42 @@
 status: Accepted
 implementation: Partial
 kind: process
-date: 2026-07-15
 aspect: contract-evolution
 ---
 # Contract Stability Baseline
 
-## Owns
+This specification owns the stability classification of current contract families and the gates that decide when a family is a baseline.
 
-- The current OpenKit stability classification for contract families that matter before a product release.
-- The release gates that determine whether a classified family is ready to be treated as a baseline.
+## Scope
+
+Owns:
+
+- The current stability classification for contract families that matter before a product release.
+- The release gates that decide whether a classified family is ready to be treated as a baseline.
 - The boundary between durable Core truth, exact-release product projections, experimental surfaces, and private implementation details.
-- The current decision that OpenKit does not promise independently versioned third-party API compatibility.
+- The decision that OpenKit does not promise independently versioned third-party API compatibility.
 
-## Does Not Own
+Does not own:
 
-- The universal meaning of stability classes or contract evolution, which belongs to `docs/core/contract-evolution.md`.
-- Canonical Core concepts, protocol semantics, storage semantics, identity, permission, vault, audit, or metering doctrine.
-- Detailed schemas, routes, tables, migrations, or package implementation plans.
-- Release scheduling, customer support windows, deprecation policy, or semantic-version marketing promises.
-- Business World Model, Meta-Skill, or domain Skill contracts.
-- Multi-tenancy, Federation, P2P, or cross-deployment collaboration.
+- The universal meaning of stability classes and contract evolution — [Contract Evolution](../core/contract-evolution.md).
+- Canonical Core concepts, protocol, storage, identity, policy, vault, evidence, and metering — their Core owners.
+- Detailed schemas, routes, tables, and migrations — the owning specifications and the [Retained Format Register](20261017-retained_format_register.md).
+- Release scheduling, support windows, and semantic-version marketing — [Release Management](20260829-release_management.md) and any later accepted design.
+- Business World Model, Meta-Skill, domain Skill contracts, multi-tenancy, Federation, and P2P. They sit outside this baseline.
 
-## Core References
+Core:
 
-- `docs/core/doctrine.md`
-- `docs/core/core-concepts.md`
-- `docs/core/architecture.md`
-- `docs/core/protocol.md`
-- `docs/core/communication.md`
-- `docs/core/storage.md`
-- `docs/core/identity.md`
-- `docs/core/policy.md`
-- `docs/core/vault.md`
-- `docs/core/evidence.md`
-- `docs/core/contract-evolution.md`
-
-## Intent
-
-- `docs/product-vision.md`
-
-## Summary
-
-OpenKit should freeze durable product truth before release, but it should not freeze every public or user-facing shape.
-
-The durable baseline covers promoted Core meaning, persisted and portable data, workspace ownership, identity and actor attribution, authorization and audit semantics, stable lineage, and the invariants needed to preserve history. NanoCore App API operations, `@openkit/core-client`, the bundled CLI, remote MCP, generated OpenAPI, and Web UI remain exact-release projections that may change together without deprecation windows or compatibility aliases.
-
-Until the launch boundary in the Operation Semantic Promise section of `docs/core/contract-evolution.md`, that freedom includes operation definitions. The boundary is not yet defined. At the launch boundary, settled operation semantic contracts become `Durable`, with Operation Semantic Promise as their evolution rule; their transport, packaging and user-interface projections remain at their existing stability classes. After it, only a settled operation's semantic contract changes by addition, deprecation, or retirement, and an operation id is never reused. Retained data continuity is unchanged, and an operation change before launch does not discard retained records or captured bindings. Deprecation and retirement behavior is owned by [Operation Definition](20261002-operation_definition.md).
-
-Business World Model and Meta-Skill theory must not shape or delay the OpenKit kernel baseline. Domain models belong in separately versioned Skills and catalogs and may consume OpenKit mechanisms without becoming a second owner of Core contracts.
-
-## Goals
-
-- Identify which current contract families require cross-release semantic or data continuity.
-- Identify which current product surfaces should remain free to evolve in lockstep.
-- Give each family a concrete stabilization mechanism and release gate.
-- Prevent implementation details, experimental work, and domain theory from becoming accidental Core obligations.
-- Make remaining release-blocking contract gaps explicit without pretending every classified family is already ready.
-
-## Non-Goals
-
-- Do not declare a general public API support window.
-- Do not keep old routes, fields, aliases, or payloads of release-coupled surfaces for compatibility. Retained data and authored configuration follow the first-stable-release boundary in [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before `v0.1.0`, an explicit operator reset may replace migration. Once the obligation applies, additive evolution or one-way migration keeps the data usable, without permanent legacy readers.
-- Do not add tenant, organization, or legal-isolation placeholders.
-- Do not design independently deployed clients or SDKs.
-- Do not define Federation or P2P contracts.
-- Do not freeze provider, adapter, backend, package, UI component, or database-engine details.
-- Do not embed Business World Model or Meta-Skill-specific types in OpenKit Core.
-
-## Background
-
-The previous root-level freeze report mixed three different concerns: contract lifetime, implementation readiness, and a list of speculative Business World Model and tenancy obligations. It also treated a user-facing API as if it needed deprecation windows and proposed compatibility windows that conflict with the release-coupled posture of first-party surfaces.
-
-The accepted contract-evolution model now separates stability class from stabilization mechanism. This specification applies that model to the current OpenKit product direction.
-
-Two current facts narrow the baseline:
-
-- No requirement exists for one deployment to host multiple legally isolated organizations.
-- No independently released third-party client currently depends on NanoCore App API compatibility across OpenKit releases.
-
-These facts remove the need for tenant placeholders, organization schemas, API deprecation windows, and speculative client support policy.
+- [Doctrine](../core/doctrine.md)
+- [Core Concepts](../core/core-concepts.md)
+- [Architecture](../core/architecture.md)
+- [Protocol](../core/protocol.md)
+- [Communication](../core/communication.md)
+- [Storage](../core/storage.md)
+- [Identity](../core/identity.md)
+- [Policy](../core/policy.md)
+- [Vault](../core/vault.md)
+- [Evidence](../core/evidence.md)
+- [Contract Evolution](../core/contract-evolution.md)
 
 ## Decision
 
@@ -115,12 +72,14 @@ The following families are `Durable` once their readiness gates pass.
 | Persisted product truth | Workspace records, history, knowledge, artifacts, approvals, policy decisions, audit, usage, evidence, vault reference metadata, and other authoritative record families. | Source-of-truth declaration, schema version, strict writes, bounded tolerant reads, and recovery tests. Breaking changes follow the continuity boundary below: one-way migration and a report, or an explicit pre-stable reset. |
 | Storage ownership | Server, user, and workspace ownership boundaries; workspace independence from a current human owner; layout version; and database homing rules. | Layout marker, path and symlink guards, recovery report, backup verification, and ownership tests. A carry-forward migration requires preflight and one-way conversion; an explicit pre-stable reset follows the continuity boundary below. |
 | Workspace export | Export of admitted work data for use outside OpenKit, such as analysis, evaluation, and audit, including inventory, integrity, identity handling, and the authority boundary of what leaves OpenKit. Lossless re-import into an OpenKit Workspace is not an export requirement. Ordinary portable import is removed. The predecessor Goal tables stay out of the portable export inventory and the backup inventory. Current Goal records remain portable work data under export. Operational restore preserves the captured Workspace and does not grant approval authority. The portability decision is recorded in [a decision record](../decisions/20261003-current_goal_records_are_portable.md). The earlier freeze is recorded in [a decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md). | Format version, exact manifest inventory, required features, tamper tests, and export-boundary fixtures. |
-| Backup, restore, and data-root migration | Workspace and whole-server backup and restore, and data-root migration, as a mechanism separate from export whose detailed design is deferred ([decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md)), including consistency, integrity, identity, and recovery of retained data. | Round-trip restore fixtures, migration matrix, backup verification, and recovery behavior, defined in detail by that later design. |
+| Backup, restore, and data-root migration | Workspace and whole-server backup and restore, and data-root migration, as a mechanism separate from export. [Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md) owns the offline mechanism, including consistency, integrity, identity, and recovery of retained data. While-running Workspace recovery and whole-server hot-backup consistency stay with that owner. The portability boundary is recorded in [a decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md). | Round-trip restore fixtures, backup verification, and recovery behavior, as that owner defines them. |
 | Identity and membership | User identity, workspace owner, membership, invitation, token intersection, actor context, disable/remove/transfer semantics, and credential separation. | Strict schemas, database constraints, per-request access resolution, lifecycle transition tests, and durable actor attribution. |
 | Permission and approval | NGAC-aligned policy vocabulary, product-action mapping, decision semantics, enforcement points, approval linkage, and fail-closed behavior. | Policy fixtures, deterministic decision tests, explicit operation mapping, atomic terminal transitions, required features for new authority, and audit linkage. |
 | Vault and secret boundaries | Secret references, grants, non-secret metadata, injection authority, redaction, and the rule that raw secret material stays outside ordinary product records. | Strict schemas, backend isolation, fail-closed binding, secret scanning, redaction tests, and audited use records. |
 | Audit and accountability | Auditable event categories, actor or subject attribution, resource and decision linkage, outcome, redaction, and required producer coverage. | Versioned schema, actor-safe fields, producer coverage matrix, retention rules, export behavior, and completeness diagnostics. |
 | Shared-write correctness | Append ordering, immutable history, expected-revision behavior for mutable shared records, atomic first-writer transitions, conflict-safe workspace apply, and the central command-idempotency default. | Single-writer or atomic append, revision compare-and-swap, transaction tests, typed conflicts, and receipt-backed replay; request-owned effects without a receipt default to `recovery_required` without inference, synthesis, settlement, or repair. |
+
+Equal active-member eligibility is the membership boundary. Access-level fields and role ceilings are not part of it. Promoted Core boundaries remain while an independently owned contract family finishes its own gate. Classify each newly promoted protocol family explicitly. Canonical Workspace data is top-level. The layout marker and the Workspace export marker stay in the [Retained Format Register](20261017-retained_format_register.md#canonical-files-and-retained-evidence). Boot admission fails closed when required layout authority is missing. A migration keeps its report. Export excludes source access authority and preserves non-authorizing history. OpenKit-to-OpenKit preservation uses backup, restore, and MOVE. Export is not backup. A later export owner preserves these boundaries. A full backup preserves same-deployment users and relationships. Re-enable, hard deletion, and organizations remain outside this baseline. This baseline adds no second permission engine. An unrelated operation family keeps its own plan. Required audit coverage is the specified producer set. A producer outside that set is not claimed complete. This baseline creates no generic concurrency framework and no broader compare-and-swap promise.
 
 Durable classification does not freeze one TypeScript type, route, table, or directory forever. It freezes the contract's meaning and requires an explicit transition when the representation changes. The data-continuity obligation starts with the first stable release, `v0.1.0`, regardless of a family's readiness gate. Before then, teams work toward stable owned shapes and safe post-release retention and reading; an explicit deployment reset may replace migration. [Contract Evolution](../core/contract-evolution.md#retained-data-continuity) owns that boundary. A readiness gate governs contract precision and grants no reset authority. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
 
@@ -139,7 +98,7 @@ The following first-party surfaces are `Release-coupled` by default:
 
 These surfaces must satisfy same-release correctness, source-of-truth, security, and coverage requirements. They do not promise that a client from one OpenKit release works against NanoCore from another release.
 
-That cross-release silence covers transport, packaging, and user-interface details throughout, and it covers operation semantic contracts until the launch boundary. At the launch boundary, settled operation semantic contracts become `Durable`, with Operation Semantic Promise in `docs/core/contract-evolution.md` as their evolution rule; their transport, packaging and user-interface projections remain at their existing stability classes. A settled operation's semantic contract is not reshaped in place.
+That cross-release silence covers transport, packaging, and user-interface details throughout, and it covers operation semantic contracts until the launch boundary. [Contract Evolution](../core/contract-evolution.md#operation-semantic-promise) defines that boundary as publication of the first stable `v0.1.0`. At the launch boundary, settled operation semantic contracts become `Durable`, with Operation Semantic Promise as their evolution rule; their transport, packaging and user-interface projections remain at their existing stability classes. A settled operation's semantic contract is not reshaped in place. Every shipped operation carries the stability marker that Contract Evolution defines. That marker is distinct from the four family classes. [Operation Definition](20261002-operation_definition.md) owns the operation definitions. Family classification does not finalize the publication inventory. This baseline does not promise compatibility with two earlier releases. It promises no third-party support window and no parallel supported releases. An independently versioned client or a legal-isolation requirement needs a new accepted design. This baseline adds no Better Auth bearer support, no persisted CLI session, and no second user-token system. Ordinary user bearers cannot invoke the user-scoped own-invitation, leave, and deleted-recovery operations. Invocation depends on the declared credential and current authority.
 
 The release gate for this class is:
 
@@ -176,24 +135,7 @@ The following are `Private` unless a later accepted design promotes them:
 - UI components, client-local drafts, internal hooks, and view-library state
 - implementation helpers and pass-through wrappers
 
-Boundary tests must prevent private fields from leaking into protocol, App API, export, audit, evidence, Skill output, CLI output, or Web read models.
-
-## Current Readiness
-
-| Durable family | Current posture | Release consequence |
-| --- | --- | --- |
-| Core semantics | Strong promoted documentation with owner-independent Workspace storage, centralized request authorization, lifecycle, attribution, and current-effect authority. Equal active-member eligibility is implemented; the cutover removed the access-level fields and role ceilings. | Retain these promoted boundaries while the remaining independently owned contract families finish. |
-| Promoted protocol families | Strict schemas, generated schema coverage, protocol identity, and many conformance tests exist. | Retain strict current-schema gates and classify each newly promoted family explicitly. |
-| Persisted data and storage ownership | Canonical Workspace data is top-level and owner-independent, with one verified stopped-process migration, external cold-backup evidence, and no compatibility reader. | Retain the v2 layout, migration report, and fail-closed boot admission. |
-| Workspace export | The current export, format version 3, excludes source access authority and preserves non-authorizing history. Ordinary portable import is removed. OpenKit-to-OpenKit preservation uses backup, restore and MOVE. [Workspace Backup](20260704-workspace_backup_export_import.md) owns backup, restore and MOVE. | Ready for the current multi-user baseline; later export owners must preserve these authority boundaries, and export is not extended into backup. |
-| Backup, restore, and data-root migration | The existing full backup preserves same-deployment users and relationships, and data-root migration has one verified stopped-process path. | Retain the existing backup verification and authority boundaries; Workspace and whole-server backup and restore await their separate design. |
-| Identity and membership | Better Auth, scoped tokens, equal active-member eligibility, centralized authorization, invitation and membership lifecycle, ownership transfer/recovery, and one-way disable are implemented. | The equal active-member cutover is implemented. Re-enable, hard deletion, organizations, and another token system remain outside V1. |
-| Permission and approval | The NGAC-aligned kernel, exact operation mapping, centralized resolver, child lineage, current-effect reauthorization, and named eligible-principal projections are active. | Ready for the current multi-user baseline without a second permission engine; unrelated operation families retain their own plans. |
-| Audit and accountability | Shared lifecycle, human Item, Turn, policy Approval, governed runtime, usage, and decision families preserve their specified actor, responsible-user, request, subject, and revision lineage. | Ready for the bounded current producer set; this does not claim every S59 producer outside that set is complete. |
-| Shared-write correctness | Append-only history, central request idempotency, direct revisions and atomic claims for the named Workspace lifecycle and policy Approval transitions, and existing owner-local Artifact Review, Material, and Workspace Sync controls are active. | Ready for the named current shared-write set; no generic concurrency framework or broader CAS promise is created. |
-| Release-coupled product surface | App API, generated OpenAPI, Core Client, the catalog, bundled CLI and remote MCP list the baseline sharing and deletion operations in the same release. Invocation depends on the declared credential and current authority. Ordinary user bearers cannot invoke the user-scoped own-invitation, leave and deleted-recovery operations. The rebuilt Web implements membership and invitation management. | Ready for the accepted current projection boundary; S10 owns the remaining multi-user Web work and its browser acceptance. |
-
-`Implementation: Partial` remains correct for this cross-program baseline because S10 and other independently owned contract families are not complete. The current multi-user and contract-stability subset satisfies its named gates; that bounded completion does not promote the whole repository to a frozen or globally complete state.
+Boundary tests must prevent private fields from leaking into protocol, App API, export, audit, evidence, Skill output, CLI output, or Web read models. This baseline adds no tenant, organization, or legal-isolation placeholder.
 
 ## Baseline Gate By Contract Kind
 
@@ -203,6 +145,7 @@ Boundary tests must prevent private fields from leaking into protocol, App API, 
 - Normative invariants and non-goals are settled.
 - Active specs project rather than redefine the concept.
 - Every claimed implementation surface has conformance coverage.
+- Every promoted Core field has a domain-neutral owner and a present kernel use.
 
 ### Protocol And Schema Gate
 
@@ -234,93 +177,23 @@ Boundary tests must prevent private fields from leaking into protocol, App API, 
 - First-party clients, CLI, Skill, and Web use the same operation/schema owners.
 - Mismatch fails clearly before unsupported work.
 - Old projections are removed rather than deprecated.
-- Tests sit at the lowest layer that proves the changed invariant; a higher-layer test is required only when it proves a distinct integration risk.
+- Tests sit at the lowest layer that proves the changed invariant; a higher-layer test is required only when it proves a distinct integration risk. This baseline authorizes no dedicated acceptance platform.
 
-## Current Implementation Projection
+## Implementation
 
-OpenKit implements strict Zod contracts, protocol and App API schema packages, generated schema and OpenAPI drift checks, request idempotency, record envelopes, required-feature handling, versioned Workspace export, data-root layout markers, owner-independent top-level Workspace storage and migration, equal active-member policy eligibility, centralized operation-metadata authorization, handler-owned child-lineage enforcement, scoped bearer tokens, the complete V1 Workspace sharing and user-disable lifecycle, named durable permission decisions and actor attribution, current-effect reauthorization, eligible-principal projections, Vault and portability authority boundaries, Workspace Synchronization Review, and conflict-checked apply.
+- `packages/app-api-schemas/` — operation contracts and their stability markers
+- `apps/nanocore/src/storage/` — layout, backup, export, and MOVE
+- `packages/config-schema/` — workspace export marker
 
-The implemented same-release projection lists the baseline sharing and deletion operations through App API, Core Client, the catalog, bundled CLI and remote MCP. Ordinary user-bearer credentials cannot invoke own-invitation list, accept, decline, Workspace leave, or deleted-Workspace recovery. A currently usable administrator credential retains its separate eligibility under [Multi-User Workspace System](20260715-multi_user_workspace_system.md). This baseline adds no Better Auth bearer support, persisted CLI session, or second user-token system. The rebuilt Web implements membership and invitation management; S10 owns the remaining multi-user Web work and its browser acceptance. Other remaining baseline gaps belong to their named specifications rather than authorizing compatibility machinery or broader current scope. Artifact Review, Material, and Workspace Sync retain their existing owner-local contracts.
+## Implementation Gaps
 
-No current implementation evidence establishes a support promise for independently versioned third-party App API clients.
+- Multi-user Web browser acceptance - the remaining Web work sits outside the current projection - #160
+- While-running Workspace restore and MOVE - offline backup, restore, and MOVE exist; while-running recovery does not - #418
+- Workspace backup reserve - the accepted reserve remains open - #731
 
-## Alternatives Considered
+## Decisions
 
-### Freeze Every Public App API Shape
-
-Rejected because all current consumers are first-party and versioned with OpenKit. A compatibility window would slow iteration without protecting a present consumer.
-
-### Keep Frozen, Stable, And Experimental Tiers
-
-Rejected because the earlier tiers mixed lifetime with enforcement mechanism and implied deprecation windows. The four classes in the Core evolution model separate durable truth from exact-release projections and private implementation.
-
-### Add Tenant And Organization Placeholders
-
-Rejected because no present deployment requires legal tenant isolation. Placeholder authority fields create migration and policy obligations without a current owner or use.
-
-### Freeze Business World Model Integration
-
-Rejected because Business World Model and Meta-Skill contracts belong to external Skill packages. Coupling them to the kernel would let domain theory redefine the general product shape.
-
-### Promise N-2 Compatibility
-
-Rejected because there is no independent client or support policy that needs it. Exact-release identity is the current requirement.
-
-## Consequences
-
-- OpenKit can change its App API, CLI, Skill, and Web surface aggressively as one release.
-- Persisted data, workspace ownership, authorization, audit, and portable history receive stronger gates than presentation surfaces.
-- A release may contain breaking changes without compatibility adapters, but durable data changes still require explicit migration.
-- Business World Model and Meta-Skill work can evolve independently without blocking or reshaping the kernel.
-- Readiness is evaluated per family rather than through one misleading global freeze flag.
-
-## Rollout And Migration
-
-This specification replaces the previous root-level freeze report without preserving its tier names, BWM coupling, tenancy placeholders, deprecation windows, or status table.
-
-No code or data migration occurs merely because this classification is accepted. Concrete implementation work belongs to the linked change plan and owning specifications.
-
-## Testing Strategy
-
-- L0 documentation checks validate active specification lifecycle metadata, including `status` and `implementation`. Review checks surface classification and compatibility claims against their owners.
-- L1 package tests verify strict schemas, version identities, required features, redaction, and private-boundary exclusions where those risks exist.
-- L2 contract tests verify durable fixtures and exact-release projection alignment that crosses package boundaries.
-- L3 NanoCore tests verify representative process-only risks such as restart, migration, fail-closed authority, and one same-release public path; they do not repeat every L1-L2 assertion.
-- L5 artifact tests verify generated schemas, OpenAPI, administrator CLI/operations Skill artifacts, exports, backups, and release identity.
-- L6 stories verify only representative end-to-end product intent that lower layers cannot establish. Existing runners are reused; this baseline authorizes no dedicated acceptance platform.
-
-## Risks And Mitigations
-
-- Risk: `Durable` is misread as immutable. Mitigation: require explicit versioned transitions and migrations, not permanent representations.
-- Risk: `Release-coupled` becomes an excuse for weak same-release contracts. Mitigation: require one source, exact identity, typed mismatch, and L2/L3 coverage.
-- Risk: a generated or public-looking artifact creates an accidental compatibility promise. Mitigation: classification must be explicit; observability alone does not promote a surface.
-- Risk: readiness tables drift. Mitigation: update this baseline only at material release-gate changes and keep implementation detail in owning specs and change records.
-- Risk: domain Skill needs leak into Core. Mitigation: require every promoted Core field to have a domain-neutral owner and present kernel use.
-
-## Open Questions
-
-None. A future independently released API consumer or legal-isolation deployment requirement would require a new accepted design rather than changing this baseline implicitly.
-
-## Deferred Work
-
-- A separately accepted third-party API support policy if a real independently versioned consumer appears.
-- A release support window if product operations later require parallel supported releases.
-- Stability baselines for independently versioned domain Skill packages.
-
-## Links
-
-- [Contract Evolution Model](../core/contract-evolution.md)
-- [Core Concepts](../core/core-concepts.md)
-- [Storage Model](../core/storage.md)
-- [Identity Model](../core/identity.md)
-- [Policy Model](../core/policy.md)
-- [Evidence Model](../core/evidence.md)
-- [Core Protocol](../core/protocol.md)
-- [Core Client Boundary](./20260528-core_client_boundary.md)
-- [Schema Evolution And Record Envelope](./20260703-schema_evolution_record_envelope.md)
-- [Storage Layout And Record Ownership](./20260703-storage_layout_record_ownership.md)
-- [Workspace Backup, Export, Import, And Data-Root Migration](./20260704-workspace_backup_export_import.md)
-- [App API OpenAPI Projection](./20260704-app_api_openapi_projection.md)
-- [Remote Auth Credential Bootstrap](./20260704-remote_auth_credential_bootstrap.md)
-- [Remote MCP Interface](./20261002-remote_mcp_interface.md)
-- [Single-Deployment Multi-User Workspace System](./20260715-multi_user_workspace_system.md)
+- [Current Goal records are portable](../decisions/20261003-current_goal_records_are_portable.md)
+- [Goal freeze and export backup boundary](../decisions/20260928-goal_freeze_and_export_backup_boundary.md)
+- [Pre-stable data continuity](../decisions/20261014-pre_stable_data_continuity.md)
+- [Operation definition rulings](../decisions/20261002-operation_definition_rulings.md)

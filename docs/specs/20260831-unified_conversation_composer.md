@@ -2,45 +2,30 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-date: 2026-08-31
-updated: "2026-10-08"
 aspect: work-model
 ---
 # Unified Conversation Composer
 
-## Owns
+This specification owns the Workspace conversation-target catalog, the shared Composer, and one structured submission. `New Shard + Worker` means a linked Task Thread and bounded Worker work. Shard is not a Core entity.
 
-This specification owns the Workspace-scoped conversation-target catalog, the shared user-observable Composer interaction contract, and the one structured conversation submission that turns Composer choices into calls to existing Assistant, Knowledge Manager, Coordinator, Worker, Task Mode, Thread, Turn, Item, Artifact, AgentSession, Agent supply, and Gateway owners.
+## Scope
 
-## Does Not Own
+Owns the Workspace conversation-target catalog, the shared Composer interaction, and the one structured submission that calls the existing owners.
 
-- `docs/core/work-model.md` owns Thread, Turn, Item, Task, Goal, conversation-continuity, and product-mode semantics.
-- `docs/core/agent-supply.md` owns Agent and profile composition, and `docs/specs/20260703-agent_manifest_aep_resolution.md` owns resolved Worker setup.
-- `docs/specs/20260704-chat_mode_assistant.md`, `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`, `docs/specs/20261002-goal.md`, and `docs/specs/20260704-task_mode_worker_delegation.md` own execution after a target is selected.
-- `docs/specs/20260526-llm_gateway_responses_api.md` owns logical-model admission and private Provider routing.
-- `docs/specs/20260713-work_resource_interaction_model.md` owns Artifact import and reference semantics. This specification adds no upload store, blob protocol, or attachment lifecycle.
-- `docs/specs/20260628-web_product_surface_projection.md` owns publication of this capability through the Web product, and `docs/specs/20260710-web_ui_rebuild_stack.md` owns component and client-state placement. `DESIGN.md` is a non-authoritative visual projection. This specification owns the observable Composer layout, sizing, keyboard, selection, and draft-retention behavior below.
-- This specification creates no Shard, AgentSession, Harness, physical Sandbox runtime instance, process, Provider route, or account identity and exposes none of those infrastructure identities to ordinary clients. The Advanced settings may project the selectable retained Sandbox identity owned by [Persistent Worker Volumes](20260910-persistent_worker_volumes.md).
+Does not own:
+- Thread, Turn, Task, and Goal semantics. [Work Model](../core/work-model.md) owns them.
+- Execution after a target is selected. Assistant, Knowledge Manager, Goal, and Task Mode own it.
+- Logical-model admission. [Gateway](20260526-llm_gateway_responses_api.md) owns it.
+- Artifact bytes and publication. [Work Resource Interaction](20260713-work_resource_interaction_model.md) owns them.
+- Web publication and component placement. [Web Product Surface](20260628-web_product_surface_projection.md) and [Web UI Rebuild Stack](20260710-web_ui_rebuild_stack.md) own them.
 
-## Core References
-
-- `docs/core/work-model.md`
-- `docs/core/agent-supply.md`
-- `docs/core/architecture.md`
-- `docs/core/identity.md`
-- `docs/core/protocol.md`
+Core: [Work Model](../core/work-model.md), [Agent Supply](../core/agent-supply.md), [Architecture](../core/architecture.md).
 
 ## Audience At Submission
 
 `20260909-thread_visibility_and_sharing.md` owns Thread visibility. Target selection never silently changes audience. New Personal Assistant and management conversations are private; Task/Goal destinations are Workspace-shared. Before handoff the Composer shows the exact public brief/attachments and receiving Workspace in the existing confirmation. Existing shared Assistant continuations use their shared audience and cannot invoke private Memory or management operations. Contract projections carry the durable visibility/private-owner metadata, and all target/history discovery excludes inaccessible private metadata before returning candidates.
 
 An Assistant Task proposal made after an Assistant submission remains brief-only. Its confirmation states in one line that private files are excluded and the User can attach files explicitly when selecting a Worker. Originals remain on their accepted Assistant Turn; the later proposal adds no file-transfer state. Explicit Worker target selection uses the file-handoff confirmation below. The [private-file exclusion decision](../decisions/20261016-assistant_task_proposals_exclude_private_files.md) records this boundary.
-
-## Summary
-
-One Composer can address a built-in role, an applicable running or warm Worker, or a new Task Worker and can express one logical-model preference and zero or more existing Artifact references. NanoCore publishes the valid choices as a context-sensitive read model and accepts one idempotent structured submission. The submission resolves the selected target once, records the resulting durable Thread and Turn lineage through existing owners, and invokes the existing role or workflow service instead of adding a dispatcher lifecycle.
-
-The product label `New Shard + Worker` means "create a linked Task execution Thread and start bounded Worker work." `Shard` is not a Core entity and has no record, identifier, API, storage, or lifecycle.
 
 ## Composer Interaction Contract
 
@@ -49,6 +34,8 @@ The shared Composer is one rounded container with an upper text-entry region and
 The target selector may show the built-in Assistant, a running Coordinator, the Workspace Knowledge Manager, pinned reusable Worker supply with warm availability, running Workers, and `New Shard + Worker`. The model selector shows only logical models admitted for the selected target; changing the target preserves the model only when it remains admitted. The effort selector offers only the selected logical model's advertised levels from [Gateway](20260526-llm_gateway_responses_api.md#reasoning-effort-metadata-and-dispatch), in [canonical order](20261021-protocol_identifiers_and_enums.md#canonical-enums), and updates with model selection. It is hidden for a model without reasoning or without advertised options. The selector preselects the Thread's last admitted effort while the selected logical model still advertises it; otherwise it has no preselection. The preselected value is an ordinary explicit submission, subject to the same canonical input identity and immutable Turn admission as a user-selected value. It is derived from admitted Turns, not native runtime state or another effort store. Omission during a new Turn admission uses the composed Agent default when present; otherwise no effort is recorded and runtime retention follows [AEP delivery](20260616-agent_environment_package.md#reasoning-effort-projection-and-delivery). The retention decision and its reason are recorded in [the effort-retention decision](../decisions/20261001-reasoning_effort_retention.md). Selected Artifacts appear as removable context chips between the text region and the action row.
 
 Enter submits while text composition is inactive, Shift+Enter inserts a newline, every icon-only action has an accessible name and visible focus treatment, target, model, and any visible effort selectors are keyboard operable, and unavailable choices expose their reason. Send is enabled only when non-whitespace text or at least one accepted Artifact reference or selected file draft is present, no file staging is pending, the selected target remains available, the selected model remains admitted, and an identical request is not already pending. A failed or uncertain submission preserves the exact draft, target, model, optional effort, Artifact references, and request identity.
+
+`ComposerDraft` and the optional voice, live-input, and phone-run props in `apps/web/src/primitives/Composer.tsx` are the component boundary. `variant: assistant` pins the admitted Assistant and hides target and environment selection. `holdSubmit` blocks dispatch and keeps the draft editable. Dictation uses `composer.transcribe`. It appends editable text and never sends. Capture is at most 60 seconds. Decoded audio is at most 2 MB. The HTTP JSON body is at most 2.7 MB. The local file inventory is at most 10,000 entries. There is no pre-Send upload. Duplicate selections stay distinct by ordinal. Unsent state protects a reload in memory. It is not a persisted draft.
 
 ## Advanced Worker Environment Choice
 
@@ -68,34 +55,7 @@ Resource controls allow member rename and idle stop, display busy affected work 
 
 NanoCore exposes `POST /api/app/operations/conversation.targets`. The response is a Workspace-authorized read model whose entries have this closed product shape:
 
-```ts
-interface ConversationTarget {
-  targetRef: string;
-  kind:
-    | 'assistant'
-    | 'goal-orchestrator'
-    | 'knowledge-manager'
-    | 'warm-worker'
-    | 'running-worker'
-    | 'new-task-worker';
-  label: string;
-  description: string | null;
-  availability: 'available' | 'busy' | 'unavailable';
-  unavailableReason: string | null;
-  threadId: string | null;
-  profileId: string | null;
-  activeTurnId: string | null;
-  steerAvailability: 'available' | 'busy' | 'unsupported' | 'unavailable';
-  steerUnavailableReason: string | null;
-  logicalModels: readonly {
-    id: string;
-    label: string;
-    capabilities: readonly string[];
-    reasoningEffortLevels: readonly ReasoningEffort[];
-  }[];
-  defaultLogicalModelId: string | null;
-}
-```
+`ConversationTargetSchema` in `packages/app-api-schemas/src/chat-mode.ts` is the catalog entry. `ConversationTargetCatalogSchema` in the same file is the response. Kind, availability, and steer availability stay in that schema. The accepted Goal wire discriminator remains `goal-orchestrator`; the schema's current coordinator name is [#744](https://github.com/lingkaix/openkit/issues/744).
 
 The response envelope contains the ordered `targets` and one `defaultTargetRef`. `targetRef` is an opaque deterministic projection of the target kind plus its stable existing product owner identifiers and selected Agent profile when applicable. The same owner tuple yields the same reference across catalog reads and NanoCore restarts, a changed or removed owner tuple yields a different or missing reference, and request replay retains the originally accepted reference. It is a lookup key and not durable authority. `threadId` is present only for a target whose conversation continuity belongs to an existing product Thread. `profileId` is a product Agent-profile selection and is not a runtime instance. `ReasoningEffort` uses the [canonical reasoning-effort enum](20261021-protocol_identifiers_and_enums.md#canonical-enums); advertised levels are the Gateway-derived projection, not browser-inferred Provider capability. Logical-model capabilities are the Gateway-derived closed projection; entries contain no model-family classification, Provider profile, provider-native model, account slot, route member, Harness, Sandbox, process, or AgentSession identity.
 
@@ -127,28 +87,7 @@ The client retains the exact text, Thread, Turn, request identity, and inapplica
 
 ## Structured Submission
 
-NanoCore exposes `POST /api/app/operations/conversation.submit` and the public command identity `conversation.submit`. The request is strict:
-
-```ts
-interface SubmitConversationTurnRequest {
-  requestId: string;
-  input: string;
-  targetRef: string;
-  logicalModelId?: string;
-  reasoningEffort?: ReasoningEffort;
-  workerStorageChoice?: WorkerEnvironmentStorageChoice;
-  fileInputs?: readonly {
-    name: string;
-    mediaType: string;
-    sizeBytes: number;
-    contentDigest: string;
-  }[];
-  artifactRefs: readonly {
-    artifactId: string;
-    artifactVersion: number;
-  }[];
-}
-```
+NanoCore exposes `POST /api/app/operations/conversation.submit` and the public command identity `conversation.submit`. `conversation.submit` in `packages/app-api-schemas/src/conversation-operations.ts` is the strict request. The local `File[]` draft is not that JSON shape.
 
 `input` may be empty when at least one Artifact reference or file input is present. Artifact references remain ordered, unique by `(artifactId, artifactVersion)`, and readable in the same Workspace. Arbitrary-file selections remain client drafts until submission succeeds; unsent drafts have no cross-device recovery or server draft record. The current submission cap is 1,000,000,000 combined file bytes. Stream the payloads separately from bounded JSON metadata; never encode whole files into model input. `fileInputs` is the ordered metadata inventory; the submission stream carries one matching payload per entry. Each input binds name, declared media type, exact size, and digest. Omission is the empty inventory. Names are display data, not paths. Successful submission retains verified original bytes as inputs of its admitted receiving Turn. Existing Turn acceptance owns their lifecycle; this creates no peer attachment entity, upload registry, or server draft. A submission branch that creates no receiving Turn cannot accept new file inputs and fails before effects. Canonical request identity includes the ordered metadata and verified digests; changed files under one request conflict. Exact retry uses retained accepted inputs and the existing command outcome without importing or launching again. Missing or contradictory accepted input evidence returns `recovery_required`; no draft reconstruction or automatic effect replay occurs. ZIP folders retain their relative-path inventory and obey [Work Resource Interaction's extraction limits](20260713-work_resource_interaction_model.md#file-admission-publication-and-download).
 
@@ -165,10 +104,10 @@ Optional `reasoningEffort` uses the [canonical reasoning-effort enum](20261021-p
 Target dispatch is a synchronous branch over existing services, not a durable dispatcher or workflow:
 
 - `assistant` invokes the Core Assistant in the originating Thread.
-- `knowledge-manager` invokes the Workspace Knowledge Manager in the originating Thread and projects its answer through ordinary Turn and Item history.
+- `knowledge-manager` opens the Knowledge Manager on its own Thread. The answer is not an ordinary Turn of the originating Chat Thread.
 - `goal-orchestrator` remains the wire discriminator for the Goal target. A handoff calls create Goal, as [Goal](20261002-goal.md) defines, and addresses the Coordinator Thread that operation records. A submission to an active Goal addresses that Goal's Coordinator Thread. A delegated intent change calls the same Goal intent operations. Steering is not a dispatch. This branch does not authorize a separate Goal execution path and does not define a mapping from natural language onto a Goal operation. It adds no audience, replay, or target-revalidation rule. Those checks stay the ones this specification already states.
 - `warm-worker` starts the next Task Turn in the Thread selected or created under the existing Task and AgentSession continuity rules.
-- `running-worker` addresses only its owning Thread. Ordinary submission starts a later Task Turn only when that Thread can admit it; an active Turn returns `target_busy` with no effects and the client retains the draft. Explicit live input calls only `task.steer` under [Task live steer](20260704-task_mode_worker_delegation.md#live-steer), with its displayed exact Turn and distinct input shape; no implicit busy-to-steer or steer-to-follow-up branch exists.
+- `running-worker` addresses only its owning Thread. Ordinary submission starts a later Task Turn only when that Thread can admit it. A second submission to a Thread with a nonterminal Turn returns `thread_busy`, and the client retains the draft. [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) is the only exception. There is no submission queue. Explicit live input calls only `task.steer` under [Task live steer](20260704-task_mode_worker_delegation.md#live-steer), with its displayed exact Turn and distinct input shape; no implicit busy-to-steer or steer-to-follow-up branch exists.
 - `new-task-worker` creates one linked Task execution Thread from the originating Thread and enters the existing Task Mode start path with the selected Agent profile and logical-model preference. It creates no Shard entity.
 
 The response names the accepted outcome, originating Workspace and Thread, receiving Workspace and Thread, created or continued Turn when one exists, selected target, accepted logical model, and existing handoff or failure projection. `receivingWorkspaceId` equals the originating Workspace for ordinary branches and names the actual receiving Workspace for an explicitly selected authorized cross-Workspace handoff. It does not contain placement or private routing identities. A target chosen from an earlier catalog read is revalidated at submission; NanoCore does not silently substitute another target when it is missing, stale, busy, unauthorized, or incompatible.
@@ -189,40 +128,29 @@ Missing target, unavailable target, busy target, disallowed model, missing Artif
 
 The client retains exact text, target, model, optional effort, Artifact references, and request identity after transport uncertainty or typed failure. It clears the draft only after an accepted response. It may refresh the catalog after `target_missing`, `target_busy`, `target_unavailable`, or `model_not_allowed`, but it must not silently change the pending selection or automatically resubmit.
 
-## Current Implementation Projection
+## Acceptance
 
-The explicit live-input action uses the implemented `task.steer` operation, its receipt and the qualified-availability source. Adapter and runtime qualification remain separate, so this specification stays Partial.
+One catalog, one structured new-Turn command, and the Task owner's live-steer operation. No second workflow engine and no Shard record. A failed or uncertain submission keeps the exact draft and request identity.
 
-NanoCore implements `POST /api/app/operations/conversation.targets` and `POST /api/app/operations/conversation.submit` with strict target, logical-model, Artifact-reference, command-receipt, replay, and recovery behavior. The catalog includes Assistant, Knowledge Manager, active Coordinator, warm Worker, running Worker, and new Task Worker choices when their owning resources are available. Submission reuses existing Assistant, Knowledge, Goal, Worker, Task, Thread, Turn, Item, Artifact, and scheduler owners and adds no Shard record or second workflow engine.
+One end-to-end proof selects New Shard + Worker, submits a supported Artifact and a logical model, and observes the linked Task Thread and Worker Turn. The worker-visible identity stays the public logical model. Gateway evidence records the private route. This specification does not claim that proof has been run. Task Mode and Gateway remain the owners of those effects.
 
-`@openkit/core-client` exposes `client.operations['conversation.targets']` and `client.operations['conversation.submit']`; `StartChatMode*`, `client.app.startChatMode`, the Chat-specific App route, and `chat.start` are absent. Direct Task, Goal, and Knowledge operations remain available to non-Composer callers.
+## Implementation
 
-The Web Composer implements the accepted two-region design with bounded auto-growth, existing Artifact selection and arbitrary client file drafts, context-filtered Agent targets, logical model selection, send action, accessible keyboard behavior, and exact draft plus request-identity preservation after failure. Selection and removal have no server effect. Submission computes file digests in bounded sequential slices and reconciles the existing command before transferring originals. Verified originals enter the actual receiving Turn before worker dispatch or model access; an explicitly selected Worker destination retains them only on its receiving Worker Turn. Goal create and intent operations refuse new files because they have no receiving input Turn. Product surfaces display only logical model and product target identities. The effort control offers only the selected logical model's advertised levels, preselects the Thread's last admitted effort only while that model advertises it, and submits and retains effort, or its omission, with the exact draft and request identity.
+- `apps/web/src/primitives/`
+- `apps/nanocore/src/`
+- `packages/app-api-schemas/src/`
 
-## Testing Strategy / Acceptance Criteria
+## Implementation Gaps
 
-- L1 schema tests cover optional canonical effort, retained omission and unknown-value refusal, every target kind, strict requests and responses, empty-input Artifact submission, duplicate or cross-Workspace Artifact rejection, logical-model validation, and absence of private runtime or Gateway fields.
-- L2 client and command tests prove request-id insertion, canonical hashing, stable target-reference derivation, exact replay for every branch, changed-input and changed-effort conflict, admitted Turn effort and admission precedence, absent effort without an inferred native default, stale-target rejection, receiving-Workspace projection, and no silent target or model substitution.
-- L3 NanoCore tests exercise Assistant, Knowledge Manager, Coordinator, warm Worker, running Worker, and new Task Worker branches through their existing owners, including busy rejection and linked Task Thread creation without a Shard record.
-- L4 Web tests prove the two-region action order, approximately two-and-one-half-line minimum, `min(240px, 40vh)` maximum, target and model filtering, advertised-only effort choices and hidden control without reasoning/options, Thread-last-admitted-effort preselection only while advertised, no preselection otherwise, preselection submitted as an ordinary explicit value, effort delivery and failure retention without catalog refresh changing a pending choice, existing Artifact selection and arbitrary client file drafts without implicit Artifact import, preserved draft and request identity after failure, starter Thread half-state, exact retry, Enter and Shift+Enter behavior, keyboard and screen-reader operation, and no concrete Provider or runtime identity in the UI.
-- L1-L4 live-input coverage consumes the Task owner's acceptance predicates and proves exact displayed Turn forwarding, text-only controls, explicit resolution of inapplicable fields, unsupported draft retention, distinct accepted/refused/unknown rendering, unchanged pending target after refresh, and zero automatic resend or new-Turn fallback.
-- File-input coverage proves local selection/removal without publication, ordered empty and arbitrary binary originals, combined declared and actual byte admission, malformed framing and false inventory refusal before effects, cancellation cleanup, first receiving-Turn publication before execution, same-request replay without opening retry files, corrupt accepted input refusal, and verified export of exact bytes. Ordinary portable Workspace import is absent and does not remint Thread or Turn ownership.
-- One end-to-end story selects `New Shard + Worker`, submits a supported Artifact and logical model, observes the linked Task Thread and Worker Turn, and proves the worker-visible model stays logical while Gateway evidence records the private route.
+- The Goal target wire kind is `goal-orchestrator` - code emits `goal-coordinator` - #744
+- Advanced settings offer a fresh Sandbox, a published template revision, and an existing shared Sandbox - the shared control emits only a selected work environment - #122
+- The Knowledge Manager opens its own Thread - submission still creates the origin Chat Turn - #790
+- A second submission to a Thread with a nonterminal Turn returns `thread_busy` - Assistant, Knowledge Manager, Coordinator, and new handoff targets have no common origin-Thread check; catalog busy uses `target_busy` - #787
 
-Acceptance requires one target catalog, one structured new-Turn submit command and the Task owner's explicit live-steer operation, no second workflow engine, no durable Shard, exact reuse of existing execution owners, one visible logical-model choice, and complete draft preservation on failure.
+## Decisions
 
-## Alternatives Considered
-
-- Extend the existing text-only `chat.start` name while making it dispatch non-Assistant targets. Rejected because the public name would lie about its scope.
-- Add one endpoint per target kind for ordinary new-Turn submission. Rejected because the Composer would become a client-side dispatcher and duplicate idempotency and error handling. Explicit live steer is the Task owner's different semantic operation, not a per-target replacement for structured submission.
-- Add an attachment store or general binary upload service. Rejected because the current bounded Artifact import already supports the required first upload path.
-- Expose AgentSession or Sandbox identities in the target selector. Rejected because Thread and Agent supply are the product owners and runtime placement is private.
-
-## Links
-
-- `docs/specs/20260628-web_product_surface_projection.md`
-- `docs/specs/20260710-web_ui_rebuild_stack.md`
-- `docs/specs/20260704-chat_mode_assistant.md`
-- `docs/specs/20260704-task_mode_worker_delegation.md`
-- `docs/specs/20260713-work_resource_interaction_model.md`
-- `docs/specs/20260528-core_client_boundary.md`
+- [Reasoning effort retention](../decisions/20261001-reasoning_effort_retention.md)
+- [User-selected Workspace-shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md)
+- [Task live-steer rulings](../decisions/20261008-task_live_steer_rulings.md)
+- [Private-file exclusion](../decisions/20261016-assistant_task_proposals_exclude_private_files.md)
+- [Pinning and delegated apply](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md)

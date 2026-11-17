@@ -6,321 +6,282 @@ aspect: mediation
 ---
 # Pi AI Unified LLM Backend
 
-## Owns
+This document owns NanoCore provider transport and mapping through one stock pi-ai client. It also owns the stock-release, isolation, and catalog rules for that client.
 
-This spec is the sole owner of NanoCore LLM provider transport and routing through `@earendil-works/pi-ai`, including request, response, streaming, provider-error, usage, provider-capability, credential-input, native Responses, Codex turn-state, and cache-scope mapping. It also owns removal of the dedicated Codex Responses client and every other parallel general-purpose provider transport from production dispatch.
+## Scope
 
-## Does Not Own
+**Owns.** One production transport and mapping owner, `PiAiGatewayClient`, serves hosted, subscription, gateway, local, and custom routes. The mapping stays one cohesive client plus small API-specific functions. There is no parallel transport, client hierarchy, or plugin subsystem.
 
-This spec does not own the public Gateway HTTP contract, which remains with `docs/specs/20260526-llm_gateway_responses_api.md`; subscription account slots, login, refresh persistence, logout, or quota projection, which remain with `docs/specs/20260721-provider_subscription_accounts.md`; pi-ai pinning, public-vocabulary isolation, or catalog reconciliation, which remain with `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`; durable capability and usage records; worker capability semantics; or authorization for a caller to use a provider.
+**Does not own.**
 
-## Core References
+- Public HTTP, routing, and caller authorization belong to [LLM Gateway Responses API](20260526-llm_gateway_responses_api.md).
+- Account slots, login, refresh persistence, logout, and quota belong to [Provider Subscription Accounts](20260721-provider_subscription_accounts.md).
+- Durable usage belongs to [Audit, Usage, And Evidence Records](20260703-audit_usage_evidence_records.md).
+- This document does not select accounts, run a cache platform, or keep a general cache registry.
+- Worker capability semantics and a caller's right to use a provider stay with their owners.
 
-- `docs/core/mediation.md`
-- `docs/core/evidence.md`
-- `docs/core/vault.md`
-- `docs/core/work-model.md`
+**Core.** [Mediation](../core/mediation.md), [Evidence](../core/evidence.md), [Vault](../core/vault.md), and [Work Model](../core/work-model.md).
 
-Related specs:
+## Parties
 
+Gateway owns HTTP, route and model selection, and caller authorization. The subscription-account owner owns slots, login, refresh persistence, logout, quota, and Vault persistence. Evidence owns durable usage, and configuration owns authored intent. This backend and its stock pi-ai adoption add no account selector, failover, authorization, billing authority, or cache platform.
 
-## Related Docs
+Provider Adoption Rules in this document own the exact stock release, isolation, and catalog review.
 
-- `docs/specs/20260526-llm_gateway_responses_api.md`
-- `docs/specs/20260721-provider_subscription_accounts.md`
-- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
-- `docs/specs/20260704-chat_mode_assistant.md`
-- `docs/specs/20260704-task_mode_worker_delegation.md`
-- `docs/specs/20261002-goal.md`
-- `docs/specs/20260704-workflow_coordinator_internal_agent.md`
+OpenKit owns validation, admission, attribution, and effort fitting. Stock pi-ai owns upstream serialization, reasoning, signatures, replay, and transport. Provider exceptions stay inside the Gateway.
 
-## Summary
+The name `vault.bootstrap-codex-auth` stays a human harness Login. [Vault And Secret Injection](20260703-vault_secret_injection.md#harness-subscription-logins) owns that acquisition. It is not Gateway or account credential authority.
 
-NanoCore uses one LLM provider backend: every hosted, subscription-backed, gateway, local, and custom provider route dispatches through stock pi-ai. Codex and xAI subscription profiles first resolve an explicit OpenKit account slot and then select the slot-scoped pi-ai `Models` instance defined by the subscription-account spec; they do not select a separate backend. The `codex-oauth` backend discriminator, dedicated Codex Responses client, app-server refresh path, and hand-written generic OpenAI-compatible transport are absent from the clean target.
+Upstream support or discovery does not prove subscription authorization, entitlement, or an unlimited plan. The account owner decides authorized activation.
 
-Both Worker public API types must work on every admitted route, using the selected model's native API where supported and the existing stock-IR mapping otherwise. Pi-ai native Responses is required where its selected model API supports Responses, including stock xAI `openai-responses`. In particular, Codex subscription inference uses pi-ai's native Codex Responses adapter rather than the current OpenKit Codex client or a Chat Completions bridge. OpenKit accepts stock pi-ai's internal `originator` value and provider request defaults instead of maintaining a fork to preserve private wire details.
+## Backend Contract
 
-OpenKit keeps its cache optimization above the adapter. NanoCore derives one non-secret cache scope from trusted request context, configured provider, model, and optional subscription slot, hashes it before provider-facing use, passes it to pi-ai as supported session and retention input, and records only provider-reported cache-read and cache-write usage as effectiveness evidence.
+Production dispatch has no `codex-oauth` discriminator, no dedicated Codex Responses client, no app-server refresh, and no handwritten general OpenAI transport. There is no alias and no second live path.
 
-## Decision
+Cache optimization stays above the adapter. The adapter does not promise a provider cache hit and does not create cache authority; there is no custom cache engine and no raw or global cache identity.
 
-E9 decision calls use pi-ai's documented classifier provider extension inside PiAiGatewayClient; no parallel transport.
+An E9 decision call uses the documented classifier extension inside this same client. It does not open a parallel transport.
 
-- `PiAiGatewayClient` is the only production LLM transport owner.
-- The internal `codex-oauth` backend kind is removed rather than retained as an alias; a subscription-backed profile is still a normal pi-ai provider profile with an explicit account-slot binding.
-- OpenAI, Codex, Anthropic, Google, OpenRouter, xAI, custom OpenAI-compatible endpoints, and future accepted providers use the corresponding pi-ai adapter family.
-- OpenAI-compatible custom endpoints default to pi-ai `openai-completions` and may use `openai-responses` only when OpenKit configuration declares native Responses support.
-- Native pi-ai Responses is mandatory for a provider family whose accepted contract is Responses-native. A lossy Chat Completions bridge is not an acceptable Codex implementation.
-- Provider discovery never grants authority. The OpenKit profile, readiness state, model allowlist, caller authorization, and explicit credential path must all allow the call before pi-ai is invoked.
-- Pi-ai receives no ambient credential. API-key providers use explicitly resolved Vault material, and subscription providers use the exact slot-scoped `Models` instance selected before dispatch.
-- Gateway owns ordered member selection, retry, failover, and cross-member reasoning handoff under its public contract; the backend invokes only the selected member. Vendor-side fallback stays unset.
+Accepted OpenAI, Codex, Anthropic, Google, OpenRouter, xAI, and custom routes use stock family adapters. xAI does not select a second backend.
 
-## Goals / Non-goals
+A custom catalog miss uses the configured stock provider. The default API is Chat-compatible. Native Responses is used only when the profile states that capability. The client does not guess from a URL or a model name.
 
-### Goals
+Each public Chat Completions or Responses request maps once into stock Context and options. Each result maps once back into that public format, including streaming and final output. There is no Chat-to-Responses or Responses-to-Chat detour.
 
-- Maintain one provider mapping, streaming, usage, error, and cancellation implementation.
-- Remove NanoCore's dedicated Codex inference transport and its runtime dependency on Codex app-server.
-- Add Grok subscription inference without creating a dedicated xAI backend.
-- Preserve the public Chat Completions and Responses entry points while using native provider adapters where required.
-- Preserve Codex turn-state continuity and the existing provider-cache optimization through stock pi-ai extension points.
-- Keep credentials explicit, slot-isolated, and Vault-backed.
-- Fail typed before Provider access when neither stock pi-ai mappings nor the admitted same-protocol native channel can preserve a requested public Gateway shape.
+Profile, readiness, the exact authored model, authentication, and shape admission finish before any credential or provider access. There is no hidden backend branch. Omitted, `ready`, and `degraded` readiness may run. `blocked`, `disabled`, and `unknown` refuse before credentials.
 
-### Non-goals
+A hosted adapter requires an explicit resolved credential. `env={}` blocks ambient pi lookup. An explicitly authored environment reference may resolve through the injected resolver. That path is not ambient scanning. A subscription account uses its explicit pair, and that credential stays in Vault. Ordinary provider API keys are not universally Vault-only.
 
-- Do not change the public Gateway route names or basic OpenAI-compatible shapes.
-- Do not add a plugin framework around pi-ai or maintain a private pi-ai distribution.
-- Do not introduce a standalone cache service, local KV-cache, prompt snapshot store, or prewarming scheduler.
-- Do not guarantee cache hits, provider retention, pricing, or routing behavior.
-- Do not expose raw ownership ids, credential ids, prompt text, tool arguments, raw cache input, pi-ai vocabulary, or upstream response bodies through public logs or errors.
-- Do not implement a second fallback owner or quota-aware account selector in the backend.
+When an admitted feature cannot be preserved, the client returns a bounded explicit refusal before the Provider. It does not drop the feature or imply native support.
 
-## Target Backend Model
+Resolution inputs are the profile, the model, and the authorized actor. The client then resolves an optional family-and-slot pair and one stock invocation. Family, capability, endpoint, models, and the explicit binding are enough. There is no backend discriminator.
 
-The clean target is:
+Direct mappings preserve messages, roles, Tool definitions, sampling, reasoning, stream order, and usage.
 
-```text
-OpenKit provider profile + explicit model + authorized caller
-  -> optional subscription account-slot resolution
-  -> PiAiGatewayClient
-  -> slot-scoped pi-ai Models instance or explicit API-key options
-  -> stock pi-ai provider adapter
-```
+`native`, `bridged`, and `unsupported` are OpenKit endpoint capabilities. Admission uses the exact selected API plus that capability, not the provider-family name. Native Codex is required where the route is native. The matrix is read only after profile authorization. It never enables a family, an endpoint, or a credential.
 
-There is no production backend branch before `PiAiGatewayClient`. If a provider is deliberately unsupported, readiness or capability validation fails before credential resolution. Omitted readiness, `ready`, and `degraded` are runnable; `blocked`, `disabled`, and `unknown` fail closed. The requested model must exactly match one model explicitly listed by the selected OpenKit profile.
+Every new Chat call requires this request's declared complete callable identity and valid arguments, in the final result and in the stream. Historical context never expands the callable set.
 
-The internal resolved-provider shape does not need a backend discriminator once migration completes. Provider family, endpoint capability, base URL, configured models, optional explicit credential reference, and optional subscription account binding are sufficient to resolve one pi-ai model and invocation path.
+The client collects incomplete fragments and does not publish an executable success before the identity is complete. A malformed, undeclared, conflicting, or unknown call ends with zero Tool execution. There is no repair, retry, or fallback. A completion-only identity uses the same validation.
 
-## Request Routing Contract
+Chat `reasoning_content` maps to stock thinking and to non-redacted readable output and deltas. Terminal text is reconciled without duplication. Opaque or redacted thinking is omitted.
 
-### Public Formats And Stock Intermediate Representation
+Responses thinking and signature reuse require process-local exact producer-member attribution. API, model, or account similarity is not enough. A signature is not an arbitrary extension carrier.
 
-Each admitted Chat Completions or Responses request maps once into stock pi-ai `Context` plus call options at the existing Gateway call boundary. Each stock pi-ai `AssistantMessage` or event stream projects once into the public format the caller requested, for streaming and non-streaming calls with or without tools. The mappings preserve supported system, developer, user, assistant and tool messages, instructions, function tools and results, sampling, reasoning effort, streaming order and terminal usage semantics. No path converts a Chat Completions request or result into Responses, or a Responses request or result into Chat Completions. The [convergence decision](../decisions/20261006-gateway_converges_on_pi_ai_ir.md) records the direction and its scoped reasoning exception.
+Only an OpenKit Worker or internal inference call may default an omitted `reasoning.summary` to `auto`, and only on a reasoning model and API whose stock adapter supports `reasoningSummary`. An explicit summary and an ordinary public request stay unchanged.
 
-OpenKit owns public validation, input mappings, output projections, selected-member capability admission, and producing-member attribution. Stock pi-ai owns upstream protocol adaptation, reasoning request switches and effort-to-wire mapping, signature and encrypted-content parsing, replay and cross-model transformation, and transport. Gateway effort fitting and retention remain governed by the [public Gateway contract](20260526-llm_gateway_responses_api.md#reasoning-effort-metadata-and-dispatch); this boundary hands over that fitted control rather than introducing another fitter.
+One attempt-local OpenKit native envelope carries only missing admitted features of the same protocol. It does not extend stock IR, add a variant, fork the package, or become a durable carrier.
 
-The member's [per-format capability declaration](20260526-llm_gateway_responses_api.md#provider-endpoint-capabilities) decides eligibility; it does not select a public-format conversion chain. Native handling is selected by the exact upstream API capability of the resolved model and member, never merely by a subscription or Provider name. Codex subscription inference still uses stock pi-ai's native Codex Responses adapter. Credential, account-slot, and transport plumbing retain their existing owners.
+The client applies documented `onPayload` after stock assembly. It uses read-only `onProviderStreamEvent` only for missing output. Stock blocks take precedence. Item order, usage, and the terminal outcome stay intact and are not duplicated.
 
-### New Chat Tool Call Declaration Parity
+The native seam preserves stock authentication, cache handling, and transport. It cannot add execution or authorization for hosted tools, remote MCP, computer use, or a new modality. The admitted image subset is inline PNG and JPEG in user content and in image-bearing function results, with optional detail `auto`, `low`, or `high`, on a native path whose effective input includes images. That subset adds no URL fetch and no transcode.
 
-Every newly produced Chat tool call must match a callable declaration admitted for that exact request, in non-streaming final output and streamed output alike. Validate the completed callable identity and arguments through the same declaration contract as Responses. Complete historical Tool call/result context remains non-executable; it neither declares a Tool nor widens the current callable set ([#127 ruling](../decisions/20261015-worker_failure_final_and_chat_call_rulings.md)).
+The catalog is an optional inventory, not an ID allowlist. Exact authored native IDs are admitted. Context must be sourced. The synthetic maximum output on a custom or unknown accepted subscription model is the current default `32000`. It is not a physical limit. A synthetic cost of `0` is not proof of free pricing.
 
-Streaming may collect incomplete call fragments, but cannot treat them as a validated executable call or claim successful completion before completed-identity validation. A completed undeclared or malformed call fails the response through the existing typed error and streaming terminal contract. The Gateway executes no Tool, repairs no declaration, and introduces no retry or public-format fallback. Current native search activation rules retain their own declaration owner.
+The synthetic custom path keeps the ordinary credential, capability, and error owners. A catalog miss and a synthetic model grant no authority.
 
-Acceptance covers declared calls, absent or unknown declarations, a historical-but-undeclared callable, conflicting identities, malformed arguments, and identity available only at stream completion. Final and streaming projections make the same admission decision, with zero executable dispatch for refused output. Existing declared history and non-call text remain unchanged.
+Effective reasoning, input modalities, `contextWindow`, and `maxTokens` apply to stock, custom, and subscription paths through a request-local clone. The shared catalog model is never mutated.
 
-### Reasoning Input And Output
+`cache_read` and `cache_write` from models.dev become stock `cacheRead` and `cacheWrite` only at this boundary. The client reuses the stock calculator and the existing Usage producer. There is no second pricing engine and no second ledger.
 
-Readable assistant Chat `reasoning_content` input maps to a stock thinking block alongside assistant text and function calls. Readable, non-redacted thinking projects into Chat `message.reasoning_content` for non-streaming output and `delta.reasoning_content` for streaming output. Text and tool output remain separate. Stream projection reconciles completed thinking with already emitted content without duplication, including thinking available only at completion; opaque-only or redacted blocks never become readable reasoning or placeholder text.
+Authored leaves override effective catalog rates. Only the selected real stock or pair model may supply a missing financial rate. A custom miss has none. An optional price cannot block a valid inference.
 
-Responses reasoning items round-trip through a stock thinking block, retaining the native reasoning item in `thinkingSignature` only for an attributed producer under [Sealed Reasoning Handoff](20260526-llm_gateway_responses_api.md#sealed-reasoning-handoff). The signature carrier keeps only its existing provider meaning; it is not a container for arbitrary native items or OpenKit metadata. OpenKit applies producing-member attribution before assigning in-flight producer identity, because stock provider/API/model equality does not establish account provenance. Responses output preserves admitted native item boundaries, identity, readable content and opaque payload for that producer.
+A USD estimate is published only when all four rates are known and finite and the stock calculator returns a finite amount. Otherwise the amount is omitted and usage is kept. An explicit `0` means free. Defaults cannot invent a partial or free estimate. An estimate is not an invoice.
 
-Across public formats or producers, only readable content moves. Chat reasoning text cannot be promoted into an attributed encrypted Responses item; Responses ciphertext and provider signatures cannot leak into Chat output or be forged for a new producer. Unattributed, foreign, evicted and post-restart reasoning follows the existing readable assistant-text handoff, including omission of empty or redacted thinking and paired function-call item IDs. A readable Responses reasoning projection from another format carries no fabricated ciphertext or signature and makes no signed-continuation promise.
+An authored per-rate leaf overrides every cloned stock tier, independent of request length. An inherited catalog flat rate and a default empty object are not authored leaves. Thresholds, omitted leaves, and stock cache-write semantics stay.
 
-OpenKit-originated Responses requests (Worker lineage or internal-agent dispatch) that omit `reasoning.summary` receive `auto` when the selected model declares reasoning and the stock pi-ai API accepts `reasoningSummary`; explicit caller values and public Gateway passthrough stay unchanged.
+Model discovery and dispatch share the admitted profile and capability predicate. The adapter catalog is not runtime enablement.
 
-Provider-specific reasoning handling for common providers is permitted only inside the Gateway, preferring existing stock pi-ai behavior. This exception does not move ordinary upstream adapter ownership out of pi-ai and does not permit provider-specific compatibility work outside the Gateway.
+Hosted keys are explicit. The non-secret placeholder `openkit-keyless` is used only for an explicitly keyless local or private adapter that needs `apiKey`. It is never stored as a credential, an identity, or authority.
 
-### Native Channel
+The client resolves the exact provider family and slot before it builds that pair's model view, and it rejects a mismatch. Concurrent accounts keep independent credentials and locks. There is no global active-account switch.
 
-One request-local, OpenKit-owned native envelope at the existing Gateway call boundary carries admitted same-protocol features that stock `Context` and options cannot express. It is scoped to the exact selected member and upstream API capability. Stock blocks and options are used wherever sufficient; no extra properties, interface augmentation, new block variants, fork, patch or vendored pi-ai source supply this channel.
+Only a recognized normalized family on `kind: oauth`, plus a strict `accountSlotId` extension, selects a subscription. That profile forbids `secretRef` and `baseUrl`. An ordinary xAI direct, gateway, or custom profile stays ordinary.
 
-The envelope is consumed through pi-ai's documented `onPayload` hook after stock request assembly. Only native output that stock blocks cannot represent is observed through the documented, read-only `onProviderStreamEvent` hook and projected into the caller's same public protocol. Native and semantic output preserve item identity, order, usage and terminal meaning without duplicate publication. The channel preserves stock-owned authentication, cache and transport controls and cannot replace authorization, tool execution admission, attribution or failure classification.
+Codex turn state is an opaque caller-held header. It is forwarded and returned only for the same provider, model, slot, and cache context, and only on a successful `2xx` response. The client does not parse, log, or persist it. An error, a redirect, or another slot must not replace it.
 
-A feature absent from the selected member's admitted capability, an incompatible public/upstream protocol, an unknown required native field, or a conflicting native and semantic representation fails with `unsupported_gateway_feature` before Provider access. This channel does not itself admit hosted tools, remote MCP, computer use or new modalities; their existing refusal holds unless an accepted owner admits that exact feature. The existing native local-tool boundary below remains applicable.
+Native admission accepts top-level local `function` and `custom` tools, one namespace level with local children, and the exact top-level client `tool_search` with a nonempty description and object parameters. Provider-executed, nested, and unknown tools are rejected before credentials.
 
-Mappings and the native envelope are created from each admitted request, remain local to its selected attempt, and end with that attempt's result, failure or cancellation. An eligible retry or new selected member rebuilds admission and projections from the request under the existing Gateway executor; it never reuses an envelope authorized for another member. Missing or stale producer attribution takes the existing readable handoff. Malformed output and hook or dependency failure follow the existing terminal and commit rules, without repair, fabricated success or replay of committed or uncertain effects. Restart recovers no mapping or envelope; a later request rebuilds them from admitted history. No independent durable creation, update, termination, retry or recovery lifecycle applies.
+`defer_loading` is only `true` or omitted on a local function or custom tool. `false`, `null`, a malformed value, or a duplicate canonical callable key is rejected.
 
-Pi-ai inference types exist only in flight. Persisted Gateway usage, route lineage, model capture and other retained records keep their OpenKit-owned schemas and data-continuity obligations; neither `Context`, `AssistantMessage`, stock events nor the native envelope becomes durable authority.
+An optional additional-tools id must use the `at_` prefix and a canonical lowercase UUIDv5 or UUIDv7 with the RFC variant. A missing id is allowed. `null`, a bad prefix, a bad version, or a bad case is rejected. The client preserves only the request prefix. The id has no Core, credential, timestamp, or durable meaning.
 
-### Custom OpenAI-Compatible Endpoints
+Stock representation comes first. Native data carries only missing semantics. Callable kind and namespace stay distinct even when bare names match. A bare-name lookup cannot replace the admitted identity.
 
-When no stock pi-ai catalog provider represents a configured custom endpoint, NanoCore synthesizes one bounded pi-ai provider definition from the OpenKit profile. The default API family is `openai-completions`; `openai-responses` requires an explicit OpenKit capability declaration. NanoCore must not guess capability from URL shape or model name.
+A native message phase is only `commentary` or `final_answer`. Nullable native reasoning `content` and `encrypted_content` stay only with exact producer attribution. Otherwise the readable handoff applies.
 
-Neither the pi-ai model inventory nor models.dev is an allowlist for an explicitly configured API-key or custom endpoint. An unmatched configured model uses the existing synthesis path and retains its exact authored upstream ID. Optional catalog metadata may enrich adapter behavior; absence does not require an alias, a different vendor identity, or a catalog refresh. An effective context limit is required by the Gateway owner; synthetic output defaults are adapter operating values, not verified physical limits, and a zero synthetic price is not evidence of zero actual cost. Endpoint/request representability, explicit credential resolution, subscription-specific transport requirements, and actual Provider errors retain their existing authority.
+Client-search call/result lineage and validated discovered local definitions survive continuation. Discovered definitions activate immediately after their matching result, consuming deferred markers. Repeated declarations retain the same callable kind and definition; conflicts fail. Discovered and active declarations stay request-local and confer no Tool execution authority. Stock-parser acceptance covers native search-call reconstruction, next-request discovered-tool activation, a subsequent discovered namespaced function/custom call, and distinct function/custom history sharing a bare name.
 
-### Effective Model Parameters
+An absent namespace, an empty namespace, and the `functions` namespace are equivalent. A streamed namespace may arrive only with the completed item. The client validates the completed identity and does not refuse early.
 
-Deployment extension metadata and Provider `modelMetadata` follow the Gateway owner's models.dev-shaped declaration and single effective-metadata resolver. Apply effective `reasoning`, supported input modalities, `limit.context` as pi-ai `contextWindow`, and `limit.output` as pi-ai `maxTokens` to the selected model definition for stock API-key, custom synthesis and explicit subscription-account paths. Preserve the selected adapter, native model ID, endpoint and account authority. Override a request-local model value or registration owned by that Provider; never mutate a shared stock catalog object or another slot's Models state. Existing request-option precedence and unsupported-payload errors remain in force; declaring audio, video or image capability does not add a missing transport mapping.
+A public client `tool_search_call` keeps `execution=client`, object arguments, and its IDs. Function and custom kind, name, namespace, input, and history output are preserved through the stock or native projection. That projection adds no second authority.
 
-Map models.dev `cache_read` and `cache_write` to the adapter's `cacheRead` and `cacheWrite` only at this boundary. Reuse stock pi-ai cost calculation and the existing Usage producer; no second token-price calculator or billing ledger is added. Authored leaves override effective catalog rates; an existing stock model's known rates may supply remaining adapter rates. Optional pricing never gates otherwise valid inference. Publish an adapter-derived USD estimate only when all four adapter rates are known and finite after effective metadata and real stock-model inheritance; otherwise retain token usage and omit the USD estimate. A pair model inherits only its own known rates, a stock template inherits its own rates, and a custom catalog miss has no stock price source. Adapter-private numeric defaults may keep stock calculation operational but cannot supply missing financial facts or create a partial, free or non-finite USD estimate. Explicit zero is a declared free rate. Adapter-derived amounts are estimates rather than Provider invoices, and current durable Usage retention semantics remain unchanged.
+New output must match the current declarations or a valid client-search discovery. An unknown, malformed, or new historical-only call is terminal, in the stream and in the final result, with zero Tool execution. History is not repaired into a success.
 
-A present authored cost leaf, including one supplied by the deployment extension catalog, is an operator assertion independent of request length: it replaces that rate wherever stock calculation selects it, including stock request-wide tiers. Omitted tier rates, thresholds and tier structure remain inherited and cannot be authored through this declaration. This removes length-based differentiation only for explicitly authored rates; an unmodified stock model retains its tier pricing. Known-rate completeness relies on the pinned adapter's tier type requiring all four rates, and the published calculated amount must still be finite. Reuse the stock calculation, including its cache-write semantics, rather than introducing a second pricing formula.
+The xAI native API lowers an accepted custom or namespaced tool to a function tool under [Bridge Compatibility](20260526-llm_gateway_responses_api.md#bridge-compatibility). Custom input is a required string `input`. The inverse mapping keeps kind, namespace, call, and history. Client-search continuation and activation use the stock parser. An unknown native shape is unsupported.
 
-### Provider Capability Matrix
+Codex uses forced SSE because the stock WebSocket path has no response-header hook. There is no second HTTP client and no WebSocket client.
 
-Endpoint capability remains OpenKit-owned configuration vocabulary:
+One `PromptCacheKeyResolver` admits the configured provider and model, an optional family and slot, and an authorized Workspace, thread, AgentSession, session, and hint. A trusted Worker identity also includes `runtimeFamily` and `nativeCacheLineageId`. A missing lineage uses per-request random isolation and sets `degraded` true. The resolver normalizes and hashes those inputs with the canonical form in [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids) before the Provider. Pairs stay partitioned. Raw scopes are not sent. Native lineage is not stored as authority. The product-safe lineage reference is a separate domain from the provider key.
 
-```ts
-{
-  chatCompletions: "native" | "bridged" | "unsupported",
-  responses: "native" | "bridged" | "unsupported"
-}
-```
+Worker and internal attribution comes only from Server-owned records. Public metadata is advisory. A supplied Workspace is authorized before use. An authorized call without Workspace scope uses the existing Server-owned call and usage accounting when Core exists. Otherwise it uses process-local diagnostics.
 
-Pi-ai catalog data may select an internal adapter only after the profile and model are authorized. It must not silently enable a provider, model, endpoint family, base URL, or credential path. The same dispatchability predicate filters `/v1/models`.
+Where stock supports them, the hash maps to `sessionId` and `cacheRetention`. The Provider may ignore either field. The client invents no header and promises no hit.
 
-### Keyless Local Endpoints
+Opaque turn-state continuity is not the hashed cache scope. Reuse requires a matching scope. A diagnostic must not treat the hashed value as the turn state.
 
-Hosted profiles that require a credential fail before pi-ai when no explicit credential resolves. NanoCore never lets pi-ai read ambient provider credentials.
+Cache effectiveness uses only Provider-reported read and write quantities. A missing quantity means unknown. Latency and matching prompts do not prove a miss or a hit.
 
-When a configured local or private endpoint explicitly requires no API key, the adapter may supply the fixed non-secret placeholder `openkit-keyless` only when the stock pi-ai adapter rejects a missing option before contacting that endpoint. The placeholder carries no authority, may be sent only to that configured endpoint, is never persisted, and does not authorize provider-specific headers or a second transport.
+Input, output, total, cache, and cost are mapped only when they are present. Missing evidence stays absent. The client does not invent Provider usage.
 
-## Subscription Provider Mapping
+Two overlapping subscription slots use this one backend. Their credentials do not cross. Deterministic isolation exists. This sentence does not claim a fresh external run.
 
-Subscription-backed profiles follow `docs/specs/20260721-provider_subscription_accounts.md`. Dispatch resolves `(subscriptionProviderId, accountSlotId)` before model lookup and uses only that pair's pi-ai `Models` instance. The credential store rejects any provider or slot mismatch. Concurrent requests for different accounts therefore share adapter code but not credential state or refresh locks.
+Invalid history, declaration, and search pairs fail before the Provider. Stock-generated historical-only or unknown new output fails in the stream and in the final result with zero execution. A completed-only namespace identity is allowed. A valid declared call does not cross namespaces.
 
-Only a profile selected by the provider-subscription specification's deterministic recognized-family algorithm, with `kind: oauth`, a strict `extensions.openkit.subscriptionAccount` binding, and no `secretRef` or `baseUrl`, enters this slot path. A recognized normalized vendor wins over id, a recognized id is used when vendor is unrecognized, and conflicting recognized families are invalid. Ordinary xAI `direct`, `llm-gateway`, and `custom` profiles stay on their explicit API-key or provider path and never acquire subscription credentials implicitly.
+The same stock result preserves readable thinking, text, admitted tool identities, usage, and terminal meaning in each requested public format, with and without tools, streamed and not streamed. Ciphertext does not leak. Indexed output is not duplicated. Retained record meaning stays unchanged.
 
-Pi-ai performs login-time and inference-time refresh through the slot-scoped store. The Gateway does not start Codex app-server, read `CODEX_HOME`, inspect `auth.json`, or maintain a second refresh implementation. Authentication failure belongs to that exact member attempt. The backend never falls through to another account; Gateway alone may select another authored member under its routing contract. Account observations follow the subscription owner and never rewrite local login status or skip routes.
+## Provider Adoption Rules
 
-Stock pi-ai request identity is accepted for provider-private headers such as `originator`. OpenKit must not fork or patch pi-ai to send `originator: openkit`; the currently accepted stock value is `pi`. This field is not public OpenKit vocabulary or an authority boundary.
+Stock native provider behavior includes the originator `pi`. OpenKit does not fork pi-ai and does not spoof an OpenKit originator.
 
-## Codex Turn-State Continuity
+One exact stock `@earendil-works/pi-ai` dependency supplies adapter and authentication integration. The boundary is private and replaceable. There is no second public provider framework.
 
-Codex may return opaque `x-codex-turn-state` response metadata that must be supplied on the next request in the same provider conversation. This is a caller-held header that Gateway forwards to the Provider and returns to the caller; Gateway holds no existing per-conversation state. NanoCore never parses it, logs it, or treats it as credential or durable work provenance.
+One reviewed exact semver is current at a time. The current pin is `0.99.2`, with its lockfile integrity; the reconciliation validator and repository root check enforce that pin and catalog alignment, while Worker adapter pins belong to their separate adapter owners. Floating `latest`, `^`, `~`, overrides, patches, and alternate sources are forbidden. Historical pins `0.80.3`, `0.80.10`, and `0.84.2` are not current requirements.
 
-Native Responses Lite message-anchored tool admission is selected by the exact upstream API capability, including Codex Responses, and preserves client-executed declarations, not provider effect authority. NanoCore accepts only top-level local `custom` and `function` tools, local `custom` or `function` children in a single-level `namespace`, and the exact top-level `tool_search` declaration with `execution: "client"`, a non-empty `description`, and object `parameters`. Local function and custom declarations may carry only the optional native `defer_loading: true` marker. The selected Codex runtime may carry an `at_`-prefixed canonical lowercase UUIDv5 or UUIDv7 item id: its deterministic request-prefix path uses UUIDv5, and its native context-item path assigns UUIDv7. NanoCore validates the exact prefix, UUID version, lowercase representation and RFC variant, then preserves the id only in the provider request prefix, with no Core record, credential, authorization, timestamp or durable continuity meaning. The [2026-10-31 worker runtime upgrade](../decisions/20261031-worker_runtimes_upgrade_to_latest.md) selects the current pin; both identity paths belong to that pin. Missing id is allowed by the native optional field; null, another prefix, malformed ids, nested namespaces, provider-executed tools, duplicate callable keys, malformed deferred markers, and unknown fields fail before credential or provider access.
+The selected release supports programmatic provider login, device-code cancellation, refresh, logout, discovery, and an injected custom `CredentialStore`. OpenKit does not reimplement OAuth and does not delegate state to default files.
 
-NanoCore maps admitted message, reasoning, function and custom history into stock blocks wherever they carry the accepted semantics. The request-local native channel preserves only admitted same-protocol content that stock blocks cannot carry, including native namespace declarations and client tool-search history. Admitted namespace and callable kind remain unambiguous even when distinct function/custom declarations share a bare name; a bare-name grammar lookup cannot replace the admitted identity. Native message history may carry the optional `phase` value `commentary` or `final_answer`; native reasoning history preserves nullable `content` and `encrypted_content` without interpreting the opaque payload. The opaque payload is preserved for the member attributed by the new process-local item-to-member association and omitted, with the [Gateway-owned readable-text handoff](20260526-llm_gateway_responses_api.md#sealed-reasoning-handoff), for every other member and for an unattributed item, as recorded in [the tier-routing decision record](../decisions/20261001-gateway_tier_routing_rulings.md). Stock pi-ai remains the only provider HTTP/SSE transport and parser and owns upstream tool-search, custom-tool and replay adaptation. Client search call/result lineage and validated discovered local definitions must survive continuation, with discovered definitions activated immediately after their matching result and deferred markers consumed on activation. Repeated declarations must retain the same callable kind and definition; conflicting definitions fail. The native channel and public projection carry no execution authority, credential, durable identity or additional lifecycle. The caller remains the client that executes search and returns discovered definitions.
+Pi-ai type names, events, provider API names, options, login callbacks, credentials, and error vocabulary do not cross Protocol, App API, Gateway, configuration, UI, CLI, or MCP. Authored vocabulary stays provider-neutral. The public contract stays replaceable.
 
-Native callable identity treats an absent, empty, or explicit `functions` namespace as the same default namespace; other named namespaces remain distinct. Declaration collision and history validation use that identity. A streaming tool item may omit its namespace until the completed item, so NanoCore publishes its tool kind and namespace only once the completed identity is available; incomplete start metadata is not an undeclared-tool failure. Final undeclared calls still fail without tool execution.
+Every upgrade carries a deliberate review and focused authentication, native-stream, usage, cache, turn-state, and redaction checks. A package bump alone is not that review.
 
-NanoCore projects an admitted native client search call as public `tool_search_call` with `execution: "client"`, preserving its item id, call id, object arguments and stream completion. Other calls preserve their public item id, call id, namespace, function arguments, custom input and matching output. Stock semantic blocks supply representable output; the native observer supplies only admitted output those blocks cannot represent.
+models.dev is an optional shared metadata inventory. It is a read-only metadata inventory. It is not a provider or model allowlist, and it does not enable adapter discovery. Overlapping exact provider, model, and price rows are compared at update time.
 
-On a same-protocol native Responses request, a missing current declaration is permitted only for a complete historical local `function_call`/`function_call_output` or `custom_tool_call`/`custom_tool_call_output` pair admitted as non-callable context. This exception does not cover client tool-search lineage, provider-executed tools, or unsupported item types. It applies independently of compaction prompts or runtime provenance hints.
+OpenKit does not fork, vendor, patch, or monkey-patch pi-ai. Stock IR gains no extra fields and no new variants. One cohesive client and small API mappings remain. There is no inheritance tree, plugin subsystem, or replacement transport.
 
-For this exception, a non-empty `call_id` identifies exactly one call and one later result in the request and is not shared with search lineage. The call and result kinds must agree. Any result name or namespace must agree with the call under the existing canonical namespace identity. Item identities must be valid and unambiguous; arguments, custom input, output content, status and fields must satisfy the existing native item schema. Omitted optional call status remains permitted; a present call status must be `completed`. Both items must be complete before dispatch. Duplicate or ambiguous identities, orphan results, missing results, reversed order, kind or identity conflicts, malformed history and unsupported required semantics fail before Provider access. This exception does not alter existing pairing rules for declared history.
+There is no default auth file or path, no shell or CLI credential command, no process-global active account, no ambient discovery, and no copy, symlink, or swap of auth state. Multi-account selection MUST NOT mutate a global pi-ai credential store, change process environment, synthesize provider ids, or rely on asynchronous request-local globals. A secret-resolving registry is not authority. An explicitly authored resolver, stated in the credential rule above, is a separate path.
 
-Historical pairs retain their admitted item identities, order, names, namespaces, arguments or input, and output. They do not create declarations, activate discovered definitions, authorize execution, or populate the callable set used to validate new Provider output. A present declaration must agree with the historical callable kind; conflicting definitions and invalid search results still fail before Provider access. Search discovery retains its existing declaration, validation and ordered activation rules. A missing declaration outside this historical exception fails before Provider access. Every newly emitted call requires a currently admitted callable declaration, including definitions activated through valid client search lineage. A completed undeclared or malformed Provider call fails the response without executing a tool, promoting history to authority, repairing history, or claiming successful completion. Streaming retains the existing completed-identity validation and terminal-error rules.
+Missing admitted native fields use only documented `onPayload` and read-only `onProviderStreamEvent` on the attempt-local OpenKit envelope. There is no upstream or private patch and no new authority.
 
-For xAI native Responses, local custom tools and namespace declarations use function tools because xAI does not admit those native declaration forms. Reuse stock function schemas, representing custom input as one required string property named `input`, and the existing request-local namespace-name inverse. Restore the original callable kind, namespace, call id and result history at the public boundary. Historical pairs remain context only; translation does not grant callable authority. Preserve independently supported native request controls. The [xAI Responses reference](https://docs.x.ai/developers/rest-api-reference/inference/responses) and [function-calling guide](https://docs.x.ai/developers/tools/function-calling) describe the admitted function wire form.
+If the stock public seam cannot represent an exact accepted feature, the result is a bounded refusal, a deferral, an upstream request, or a new decision. The stock IR is not widened or modified in silence.
 
-The projection is request-local, is rebuilt from admitted history after restart, and introduces no durable state, retry, alternate transport, or recovery path. Acceptance requires a stock-provider parser test covering native search call reconstruction, next-request discovered-tool activation, a subsequent discovered namespaced function/custom call, and distinct function/custom history sharing a bare name. Unknown native request fields fail with `unsupported_gateway_feature` rather than being silently dropped.
+A release must support native Codex Responses, session, and metadata, the xAI login and inference seam, refresh, a custom store, and cancellation. Catalog or API discovery alone is not enough.
 
-Historical-pair bookkeeping is attempt-local validation derived from the request. It introduces no durable authority, record or migration. Creation, update, termination, retry, cancellation, recovery, restart and dependency failure follow the existing [Native Channel lifecycle](#native-channel); no separate historical-pair lifecycle applies. An absent declaration supplies no schema for argument validation beyond the admitted native item syntax. The reason for this exception is recorded in [Historical Tool Pairs And Release Hold](../decisions/20261008-historical_tool_pairs_and_release_hold.md).
+An explicit credential store and provider configuration exist before login or inference. The default stock credential owner is not activated.
 
-The pi-ai call supplies an existing state through the generic request-header option and captures the next state through pi-ai's generic response callback. A new value is accepted only from a successful `2xx` response for the same provider, model, account slot, and authorized cache/session scope. Errors, redirects, and another slot's response cannot replace it.
+Focused checks protect native headers, hooks, stream and terminal usage, errors, cancellation, login, logout, refresh, the custom store, cache, hash, turn state, and redaction on the exact release. Deterministic suites exist. This sentence does not claim a fresh run.
 
-The initial Codex implementation forces pi-ai's SSE transport because the reviewed WebSocket adapter does not expose handshake response headers through the required callback. WebSocket may be enabled only after the pinned pi-ai version provides equivalent response-metadata capture and focused tests prove turn-state parity. This is a bounded transport selection, not a second Codex client.
+A private adapter identifier may appear only in a private test or a redacted diagnostic. It never appears in user-authored configuration or in public transport or error vocabulary.
 
-## Prompt Cache Contract
+An upgrade record names the exact selected version and its integrity.
 
-### Cache Scope Input
+An upgrade record reviews the release notes and breaking API or behavior changes. Code cannot prove that a human review occurred. This is an ongoing release obligation, not a runtime schema and not a permanent checklist store.
 
-NanoCore's `PromptCacheKeyResolver` remains the unique owner of normalized cache scope. It may use the following non-secret inputs when their authority is proven:
+The review covers authentication `Models` and discovery, `CredentialStore`, refresh, logout, and cancellation.
 
-```text
-providerId
-model
-subscriptionProviderId when subscription-backed
-accountSlotId when subscription-backed
-authorized workspaceId
-server-resolved threadId
-agentSessionId
-sessionId
-explicit prompt_cache_key or authorized public hint
-```
+The review covers native Responses, stream metadata hooks, headers, usage, cancellation, and error mappings.
 
-The resolver hashes normalized scope before any provider-facing use. Raw workspace, thread, subscription-provider, account-slot, session, credential, prompt, or user identifiers must not cross the provider or public diagnostics boundary. The full `(subscriptionProviderId, accountSlotId)` pair participates in the scope so equal slot ids under different providers or accounts cannot share a cache or Codex turn-state lineage accidentally.
+The review covers xAI subscription and Grok login and inference separately from entitlement and from a credential-backed acceptance claim.
 
-For Internal Core Role and worker calls, trusted attribution comes only from server-owned identity, authorization, Workspace, thread, turn, agent, and AgentSession records. Public Gateway metadata is advisory: an explicit Workspace id must be authorized before use, other fields remain caller-asserted labels, and an otherwise authorized call without Workspace scope uses existing Server-owned call and usage accounting when Core is available, and process-local diagnostics otherwise.
+The review covers Codex login, refresh, native transport, session continuity, and private wire behavior.
 
-### Pi Mapping
+The review covers models.dev overlap and catalog reconciliation for the selected release.
 
-`PiAiGatewayClient` passes the derived value through pi-ai's supported `sessionId` and `cacheRetention` inputs when present. Provider-family adapters may translate those generic inputs differently or ignore them. This contract proves only that OpenKit supplied stable bounded input; it does not promise a particular upstream header, breakpoint, cache key, or retained entry.
+The review confirms that no public pi-ai vocabulary and no ambient credential path returned.
 
-Codex turn state and prompt cache scope are related continuity inputs but remain distinct values. The opaque turn state is never hashed into diagnostics, and a cache-scope match is required before caller-held turn state can be reused.
+The current pin is not frozen to a stale historical floor. The exact release lives in the package and in the completed change, not in a contradictory narrative.
 
-### Effectiveness Evidence
+Vendored catalog data is read-only at runtime. Boot does not refresh it. Dynamic catalog behavior is disabled or bounded by the explicit profile owner. It is never an ambient enablement path.
 
-Only provider-reported cache-read and cache-write quantities prove cache effectiveness. Their absence means unknown, not miss. Durable usage evidence preserves those quantities when available and never infers a hit from latency, repeated input, session identity, or turn-state reuse.
+The runtime is an isolated adapter with an injected store. OpenKit never creates the default file credential owner and then copies, links, or swaps its material.
 
-## Usage, Errors, And Cancellation
+The store supports provider-scoped read, write, remove, and serialized modify. The view is limited to the exact family and slot. OpenKit Vault remains the subscription persistence owner.
 
-Pi-ai usage is normalized into input, output, total, cache-read, cache-write, and cost-estimate records when the provider supplies them. Missing values remain absent; NanoCore does not invent usage.
+Login uses programmatic seams, safe callbacks, and redacted stable failures. There is no scripted pi CLI. An unsupported login flow stays unavailable. It does not invent a browser callback.
 
-One classifier at the pi-ai boundary converts both thrown errors and terminal assistant error events or results into the same closed failure value. The [Gateway failure table](20260526-llm_gateway_responses_api.md#failure-kinds-and-advancement) is the sole owner of its `kind` values and routing eligibility. Capture actual status, provider code, and `retry-after` where an adapter exposes them. Recognize context overflow using the reviewed stock pi-ai boundary's context-overflow evidence, and use a bounded set of known Provider texts, including Codex usage-limit codes and friendly text. The representative probe table must prove that recognition. Never invent a synthetic HTTP status before classification. Unexposed evidence remains absent and insufficient evidence takes the terminal unknown kind. A normal length/incomplete finish remains a protocol result rather than an error solely because it reached a token limit.
+A new adapter-inventory entry does not become a configured or enabled provider without an explicit authored profile and model.
 
-The failure value belongs to one selected member attempt and carries only observed evidence into Gateway handling. It grants no credential, account-status, retry, or routing authority and creates no durable record or recovery lifecycle. The Gateway owner defines its lifetime, restart, missing-evidence, lineage, and commit semantics. Pi-ai retry options stay unset; Gateway owns the bounded same-member retry policy. Adapter transport repair inside an attempt does not become another local routing policy. Vendor-side fallback stays unset. The decisions are recorded in [the tier-routing decision record](../decisions/20261001-gateway_tier_routing_rulings.md).
+Common provider and model IDs must match exactly. ID mismatch tolerance is `0`. Each available input, output, and cache token price class is compared.
 
-Every provider failure crossing JSON or post-start SSE uses a stable OpenKit code and fixed generic message. Pi-ai messages, provider-native codes, raw response bodies, auth payloads, and stack traces remain internal even when used to classify authentication, rate limit, context overflow, invalid request, provider unavailable, cancellation, or generic failure.
+The current reconciliation default is a `5%` relative price tolerance per class. A wider gap blocks the upgrade unless an acknowledgement names the exact release, provider, model, class, and both prices. A missing, stale, duplicate, or unobserved acknowledgement is rejected.
 
-Cancellation propagates through the pi-ai request signal. If cancellation or transport loss occurs after an external provider effect may have started, the result may be interrupted or unknown under the Core/external-effect boundary; NanoCore does not retry automatically or dispatch to a different provider.
+Inside that tolerance, product cost stays models.dev-based. The stock adapter calculator uses the selected request metadata.
 
-## Current Implementation Projection
+L0 checks the exact pin, integrity, the absence of a patch, catalog drift, and the public-vocabulary boundary.
 
-The implemented failure classifier consumes the stock pi-ai `isContextOverflow` export and records settlement only from affirmative evidence.
+L1 checks injected-store pair isolation, refresh, cancellation, secret-safe callbacks, and zero ambient credential fallback.
 
-Every dispatchable provider now routes through `LLMGatewayProviderDispatcher` and `PiAiGatewayClient`. Subscription-backed profiles resolve their explicit provider-slot pair to the manager-owned stock pi-ai `Models` runtime before invocation; there is no active provider-specific dispatcher branch or account fallback. Both public formats now map directly to stock Context and options and project stock messages or events directly, with or without tools. Public-format converters and fallback paths are removed. Native admission uses the resolved upstream API and declared member capability; the request-local native envelope uses supported payload and native-event hooks. Custom-provider synthesis, provider-error normalization, cancellation, and usage mapping remain unified in this path.
+Native Responses, xAI, stream metadata hooks, and private wire behavior are checked through stock seams, not through a second homemade transport.
 
-Codex subscription inference uses stock pi-ai's native Responses adapter with SSE response-header capture for `x-codex-turn-state`; xAI subscription inference uses the same pi-ai client through its pair-scoped runtime. The selected pi-ai dependency preserves Codex Responses namespaces and custom tool calls through pi-ai's semantic tool-call events without a second transport; its pin is governed by [pi-ai Provider Gateway Adoption](20260703-pi_ai_provider_gateway_adoption.md). `PromptCacheKeyResolver` remains the single cache-scope owner, the dispatcher hashes the provider/model/provider-slot scope, and the pi-ai boundary maps accepted cache input to `sessionId` and `cacheRetention` while durable effectiveness evidence uses only provider-reported usage. OpenKit accepts stock pi-ai request identity and maintains no private provider patch.
+L2 checks that no pi-ai vocabulary leaks across Gateway, the account App API, Core Client, Web, CLI, or MCP. Shared shapes stay provider-neutral.
 
-The former dedicated Codex Responses client, app-server account flow, Codex-home credential path, and `codex-oauth` artifacts have been physically removed. This spec remains `Partial` until the owner-governed Codex real-use runs complete the accepted transport evidence.
+## Errors And Failover
 
-## Accepted Design
+The Gateway alone selects the ordered member, retries, failover, and handoff. This backend receives one selected attempt. Stock retry options and vendor fallback stay unset. The account manager cannot fail over.
 
-The accepted implementation keeps one cohesive `PiAiGatewayClient` and small mapping modules grouped by real API-family differences. Subscription account selection happens before this client; provider-specific authentication state does not create provider-specific inference clients. Codex turn state uses pi-ai's generic header and response callback with SSE transport. Cache scope remains an OpenKit-owned normalized input passed through generic pi-ai options. No wrapper hierarchy, provider plugin system, dedicated Codex transport, or private pi-ai patch is needed.
+Public errors and diagnostics contain no credentials, raw scope or slot identifiers, prompts, Tool arguments, or upstream or raw pi error objects. Projections use stable OpenKit errors.
 
-## Rollout / Remaining Implementation
+Absent capability, incompatible protocols, an unknown required native field, or a conflicting native and semantic representation yield `unsupported_gateway_feature` before the Provider.
 
-Remaining rollout is owned by this specification together with `docs/specs/20260721-provider_subscription_accounts.md`. After the provider-subscription storage and Vault foundation lands without activating the authored extension or public routes, one atomic kernel cutover implements profile classification, provider-neutral schemas and live handlers, Core Client and generated contract projections, pi-ai authentication, native Responses, subscription-slot selection, Codex turn-state continuity through generic hooks, stock pi-ai originator behavior, cache and usage parity, and removal of the active `codex-oauth` branch and dedicated client. Authentication and inference cannot cut over in separate live packages because the resulting intermediate state would require a forbidden bridge, dual client, dual credential path, alias, or stub.
+Stock refresh uses the store owned by the account specification. There is no app-server, home-auth, or second refresh path. A failure belongs to the selected member. An account observation is neither a login nor route authority.
 
-No internal compatibility alias remains for `codex-oauth`, and no app-server fallback remains after cutover.
+The same classifier receives thrown and terminal pi events before generic wrapping. The kind comes from the Gateway closed set, using exposed HTTP status, code, and retry guidance, the stock overflow predicate, and bounded quota patterns. The client does not invent an HTTP status. An unknown case stays terminal.
 
-The Gateway and provider-subscription account cutover preserves the name `vault.bootstrap-codex-auth`; [Vault And Secret Injection](20260703-vault_secret_injection.md#harness-subscription-logins) owns its human-only actual-User Login acquisition and the harness credential-delivery contract. Gateway provider-subscription accounts retain their separate ownership and inference contract.
+An ordinary max-output stop or a usable refusal is a normal completion. A reject or error terminal is classified apart from that completion. Lexical transient wording alone is not proof of a safe replay.
 
-## Testing Strategy / Acceptance Criteria
+A failure is local to the selected attempt. It is not routing, account, or durable state. It carries the original affirmative settled evidence downstream. There is no second retry engine. A generic wrapper must not discard that evidence.
 
-- L1 provider-resolution tests prove every dispatchable provider reaches `PiAiGatewayClient`, no backend discriminator or Provider-named public mapping selector remains, and subscription profiles require an explicit valid slot.
-- L1 adapter tests prove native Codex Responses mapping, direct Chat and Responses stock-IR mappings and output projections, custom-provider synthesis, keyless-local behavior, no ambient credentials, generic originator acceptance, SSE turn-state round trips, cross-slot turn-state isolation, cancellation, and stable error normalization.
-- L1 cache tests prove the generic subscription slot participates in hashed scope, public metadata cannot override server-owned authority, raw ids never leave the resolver, and effectiveness uses only provider-reported usage.
-- L2 contract tests prove public Chat Completions and Responses envelopes, streaming chunks, tool-call deltas, usage normalization, and no pi-ai or provider-private vocabulary leakage.
-- L3 black-box tests prove OpenAI-compatible, Codex subscription, and xAI subscription profiles all use the unified client; two overlapping subscription slots cannot cross credentials, cache scope, or turn state.
-- L3 opt-in real-provider evidence proves native Codex Responses, streaming where supported, refresh when safely exercisable, accepted cache input, and provider-reported cache usage when available without requiring a cache hit.
-- L5 NanoCore smoke proves boot and Gateway service with no Codex app-server process, `CODEX_HOME`, `auth.json`, dedicated Codex client, or ambient credential dependency.
+Public JSON and SSE errors use stable generic OpenKit messages and codes and the closed Gateway kind. Adapter and private errors do not leak.
 
-Historical-pair acceptance additionally requires:
+Cancellation reaches the active stock request. An uncertain effect that may have started forbids automatic retry and failover, even when no output is visible.
 
-- The admission regression replays the retained Gateway request body through real dispatcher and client admission. Complete historical function and custom call/result pairs are admitted without current declarations, with both empty message-anchored declarations and absent top-level declarations. A stock-adapter payload capture shows intact item identities, order, names, canonical default-namespace aliases and distinct named namespaces, arguments or custom input, and outputs; callable declarations remain empty, the summary input is unchanged, and dispatch uses ordinary Responses.
-- Missing calls or results, orphan results, result-before-call order, duplicate or ambiguous identities, mismatched kinds, names or namespaces, conflicting present declarations or discovered definitions, invalid search results, malformed arguments, status or output, unknown required fields and unsupported tool types are refused before any Provider invocation. Existing declared-history and client-search round trips retain declaration validation and ordered discovered-definition activation; undeclared history never activates search tools.
-- Through the stock parser, a newly emitted call to a historical-but-undeclared tool or a wholly unknown tool terminates unsuccessfully with zero executable tool dispatch in streaming and non-streaming modes. A namespace supplied only at completion receives completed-identity validation, an allowed declared call succeeds, and history in one namespace never authorizes another. Same-member opaque reasoning and existing cross-member and post-restart readable handoff remain unchanged; these observations make no cache-effectiveness claim.
+Bounded probes cover thrown and event forms of quota, rate, overflow, unsupported, and cancellation. They fabricate no structure and no status. The first lifecycle event alone does not start retries. Ordinary length and readable reasoning remain normal completions.
 
-Acceptance requires: all production LLM dispatch uses stock pi-ai; native Codex Responses preserves the accepted public semantics; Codex turn state survives sequential requests without crossing account or scope boundaries; the old `codex-oauth` backend and dedicated client are absent; app-server is not started or queried by the Gateway/account path; OpenKit's cache resolver remains authoritative; and no credential, raw scope, pi-ai vocabulary, or upstream error leaks publicly.
+A failure-value handoff crosses the real downstream classifier and executor boundary. A generic `Error` wrapper is not that proof. Existing suites exercise those paths. This sentence does not claim a fresh run.
 
-Additional acceptance requires a bounded probe table of real Provider error strings, statuses, native codes, optional retry guidance, terminal events, and thrown errors. It must distinguish quota from transient throttling, recognize pi-ai context overflow, preserve cancellation, and keep refusals and unsupported requests terminal without a synthetic status broadening them. Verify absent structured evidence honestly, normal length finishes, first-error-event handling before public commit, pi-ai retry options remaining unset, and same-member versus cross-member or unattributed opaque reasoning handoff without a new response field.
+## Compatibility
 
-The normalized failure value and selective reasoning handoff are implemented; classifier and same-member/cross-member handoff regressions qualify them rather than generic error wrapping or incoming-item attribution alone.
+Public HTTP routes, models, request controls, SSE lifecycle, usage, and error vocabulary stay as the Gateway defines them. Backend convergence does not redefine Gateway or Worker authority.
 
-Convergence acceptance additionally requires the same stock result to preserve readable thinking, text, admitted tool identities, usage and terminal meaning in each requested public format, with streaming and non-streaming coverage both with and without tools. Verify Chat reasoning input/output, terminal-only thinking, native Responses reasoning round trips for the attributed member, readable-only cross-format projection, and no opaque leakage or forged signatures. Verify native feature refusal before Provider access on the exact ineligible member, request-local hook carriage and output observation without duplicate items, and unchanged retained OpenKit record interpretation. These checks do not replace existing effort, route-lineage, commit, settlement, cancellation, SSE or turn-state acceptance.
+Cross-format, cross-member, and unattributed history yield readable assistant text only. Ciphertext, signatures, and the paired `fc_` id are dropped. Empty or redacted thinking is omitted. Restart cannot forge attribution.
 
-## Alternatives Considered
+Each retry or member rebuilds the attempt-local envelope. There is no replay after commit or after an uncertain effect. Restart retains no envelope. Stale opaque attribution uses the readable handoff.
 
-**Keep the dedicated Codex client.** Rejected because it preserves duplicate request, streaming, usage, error, refresh, and cache behavior for one provider family.
+Durable retained records stay OpenKit schemas. They are not stock IR and not the native envelope. This contract adds no historical-pair lifecycle and does not reinterpret a retained format.
 
-**Add a dedicated xAI subscription client beside Codex.** Rejected because it repeats the same maintenance problem and bypasses pi-ai's provider ownership.
+An undeclared complete historical local function or custom pair is admitted only on native same-protocol traffic, including when the current declaration set is absent, empty, or unrelated. History does not create callability. Admission does not depend on a compaction hint.
 
-**Use pi-ai only for non-OpenAI providers.** Rejected because it leaves two general transport stacks despite pi-ai supporting the required OpenAI and subscription API families.
+That historical exception excludes search, provider-executed, and unsupported tools. Each nonempty `call_id` has exactly one matching later result. Kind, name, namespace, and native syntax match. A supplied status is `completed`. A duplicate, orphan, reversed, or malformed history fails before the Provider.
 
-**Create an OpenKit cache service.** Rejected because current providers own their caches; OpenKit needs stable scope input and provider-reported evidence, not another durable cache platform.
+History grants no current declaration, no deferred activation, and no new-output authority. If a declaration is present, the kind must match. An absent declaration does not invent an argument schema beyond native syntax.
 
-**Patch pi-ai for an OpenKit originator or Codex-specific transport.** Rejected because neither private wire value justifies a fork, and generic pi-ai hooks cover the required continuity behavior.
+After the exact dependency, catalog, and boundary gates pass, the account, provider, authentication, inference, and public Gateway cutover lands in one release that removes the legacy path; no temporary public dual route, dual implementation, or legacy client remains as a live fallback.
 
-## Deferred / Future Work
+NanoCore bootstrap and dispatch do not depend on an account or Gateway app-server, on home auth, or on an ambient credential.
 
-- The pi-ai version upgrade and reconciliation of stale version projections are outside this amendment; whether a later release is needed for admitted native feature parity remains open.
-- WebSocket Codex transport after pi-ai exposes response-header metadata with tested parity.
-- Native multimodal Responses expansion after pi-ai can preserve the relevant public shapes without lossy conversion.
-- Credential-backed xAI real-use activation remains governed by `docs/specs/20260721-provider_subscription_accounts.md`.
-- New provider families only after their adapter, entitlement, credential, and capability boundaries are accepted.
+A retained request body is replayed through the real dispatcher and client for native historical pairs. The captured stock payload keeps IDs, order, kind, namespace, and arguments. Current callables may be zero. Summaries are not rewritten.
 
-## Links
+Stock IR belongs only to in-flight calls. Retained OpenKit schemas own persistence. A stock thinking signature is not an extension bag.
 
-- `docs/specs/20260526-llm_gateway_responses_api.md`
-- `docs/specs/20260721-provider_subscription_accounts.md`
-- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
+Replacing the adapter must not change a public API or configuration contract so that it matches pi implementation vocabulary.
 
-- pi-ai upstream: `https://github.com/earendil-works/pi/tree/main/packages/ai`
+The old account and Responses source is physically removed. No live compatibility backend branch remains.
+
+## Implementation
+
+- `apps/nanocore/src/llm/`
+- `apps/nanocore/src/providers/`
+- `packages/config-schema/src/`
+- `packages/models-dev-catalog/`
+- `apps/nanocore/`
+
+## Implementation Gaps
+
+- Codex real-use acceptance - An owner-governed opt-in run has not proved the exact release, injected store, native Responses and streaming, safely exercisable refresh, absence of ambient fallback, cache inputs, and reported cache usage when supplied; no cache hit is required. Dependency import, deterministic tests, and upgrade review do not replace this proof. - #814
+- xAI credential-backed real-use - Deterministic support does not establish entitlement or a completed acceptance run. Activation stays with the account owner. - #347
+
+## Decisions
+
+- [Gateway Converges On Pi AI IR](../decisions/20261006-gateway_converges_on_pi_ai_ir.md)
+- [Historical Tool Pairs And Release Hold](../decisions/20261008-historical_tool_pairs_and_release_hold.md)
+- [Worker Failure, Final, And Chat Call Rulings](../decisions/20261015-worker_failure_final_and_chat_call_rulings.md)
+- [Gateway Tier Routing Rulings](../decisions/20261001-gateway_tier_routing_rulings.md)

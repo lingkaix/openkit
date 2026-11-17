@@ -2,69 +2,32 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: 2026-10-18
 aspect: agent-session
 ---
+
 # AgentSession Continuity
+
+This specification owns durable AgentSession continuity for one Thread: exact reconnect, later-Turn reuse, and internal successor replacement.
+
+## Scope
+
+Owns:
+
+- One current AgentSession per Thread, exact reconnect of the active attempt, later-Turn reuse, and internal successor replacement.
+
+Does not own:
+
+- Canonical AgentSession meaning. [`docs/core/agent-session.md`](../core/agent-session.md) owns it.
+- Attempt deadlines, adapter liveness, and transport. The scheduler, worker-control, and [NanoHost Runtime](20260802-nanohost_runtime_and_transport.md) own them.
+- Workspace collection, review, and apply. [Workspace Synchronization](20260703-workspace_synchronization.md) owns them.
+- Credential mint and destruction. [Worker Agent Capability](20260703-worker_agent_capability.md) owns them.
+- Generic snapshot, restore, rollback, fork, and clone. They have no current owner. Issue #318.
 
 ## Persistent Data Is Separate From Native Continuity
 
 The current physical bindings, locator/digest pairs, and retained-storage facts describe NanoHost continuity and retain those meanings. An external harness owns its native session state and transcripts independently of executor placement. Later external references are additive under the [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md); they do not reinterpret retained Sandbox data or relax current resume proofs.
 
 [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) permits a freshly authorized successor to reattach its own group's complete retained volume after predecessor writers are fenced. Unimported files and opaque retained native data remain available as data, without becoming exact-version input or generic continuation authority. The exact retained native resume reference is the native continuation authority for the successor. Exact handle, immutable mode, Thread identity and sequence checks are unchanged; no `--last`, latest-session discovery, generic restore, transcript replay, hidden process-state inheritance, or active-Turn replay is introduced. A successor receives fresh Turn authority and new session loopback credentials even when it sees the same retained files; their mint belongs to [Worker Agent Capability](20260703-worker_agent_capability.md). `session.open` carries `resume: { locator, digest } | null`. Core stores the locator and the digest; the raw reference stays in retained Sandbox storage.
-
-## Owns
-
-- The current durable AgentSession identity, one-current-per-Thread selection, historical replacement lineage, and the relationship of one AgentSession to one Thread and to the sequential Turns admitted on that binding. Each Turn has its own scheduler attempt. The binding is not one Turn and not one attempt.
-- Exact reconnect of the same active attempt after a transport loss or a NanoCore restart, under the existing proof contract.
-- Exact compatible idle AgentSession reuse by later Turns in the same Thread, fresh Turn authority on every reuse, and internal successor replacement when reuse is forbidden.
-- The rule that Turn interruption or cancellation does not by itself make the AgentSession non-reusable, and that a supply change the live binding cannot apply is a successor AgentSession that resumes the exact native conversation. An empty fresh conversation is not that fallback.
-- The boundary that keeps runtime continuity from becoming hidden product history, knowledge, credential state, or an availability promise.
-
-## Does Not Own
-
-- Canonical AgentSession meaning, product boundary, and lifecycle vocabulary, which belong to `docs/core/agent-session.md`.
-- Execution-attempt deadlines, NanoHost adapter liveness, process-key adoption, worker-control sequencing, NanoHost transport replacement, sandbox cleanup, or Runtime Epoch invalidation.
-- Workspace change collection, review, apply, or canonical product history.
-- Snapshot stores, generic resume precedence, rollback, fork, clone, automatic retry, or recovery-option workflows. These are deferred and non-authorizing.
-
-## Core References
-
-- `docs/core/agent-session.md`
-- `docs/core/runtime-model.md`
-- `docs/core/work-model.md`
-- `docs/core/sandbox.md`
-
-## Summary
-
-V1 continuity preserves the exact original worker, AgentSession, Turn, and attempt across a transport loss or a NanoCore restart when the worker proves its memory-only process key, durable lineage, exact next sequence, and unexpired reconnect deadline. This is reconnect of the same active attempt, not replacement or replay.
-
-After a Turn settles, a later Turn in the same Thread submits on the resident binding when compatibility and hygiene are proved. Reuse is continuation of that binding. It is not a reattachment that starts another native process after Turn completion closed the binding. Reuse preserves conversation continuity but supplies no carried Turn authority: the later Turn receives fresh admission, AEP snapshot, Context Package, upstream route tokens, attempt, deadline, sequence scope, Workspace input snapshot, and current policy and Vault decisions. The native process does not receive those upstream tokens. The session loopback credentials' mint, attribution, and destruction belong to [Worker Agent Capability](20260703-worker_agent_capability.md). When reuse is forbidden, NanoCore first retires and runtime-fences the predecessor, then atomically creates the sole current successor for the same Thread, and that successor resumes the exact retained native conversation when the Agent and runtime are unchanged. An explicit Agent or runtime switch starts fresh under the selection rule below. Ordinary product surfaces still show only the same Thread and its Turn outcome; AgentSession identity and replacement are restricted to authorized operator diagnostics.
-
-Native continuity is process-independent. A later Turn uses the current resident binding. A new process is a successor AgentSession or a replacement host after the previous host is invalid. A dedicated host is one host process for that binding. Codex and OpenCode may place the conversation inside a shared server. The same OS process is neither required nor sufficient; exact handle, session-local state, compatibility, hygiene, lineage, and current authority are required. The binding is not an operating-system process.
-
-If exact continuity of the same active attempt cannot be proved, or native resume fails, the failure stays explicit. Native resume failure must not be replaced by an empty conversation or by transcript replay. The old AgentSession becomes non-reusable, the prior Turn and evidence remain visible, and that Turn retains the truthful result its lifecycle owner determined. Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen. A later retry uses a fresh authorized AgentSession and a new Turn or request as required by its owning mode. Automatic retry of the interrupted attempt, snapshot restore, or transparent continuation is not a V1 requirement. Turn interruption and Turn cancellation do not by themselves close the AgentSession.
-
-A transport loss or a NanoCore restart does not invalidate a healthy Runtime Epoch and does not recreate a Sandbox. The NanoHost, Sandbox Integration, and already-authorized worker continue locally. Continuity resumes only after one successor NanoHost transport session fences its predecessor and the exact same AgentSession, attempt, backend session, package snapshot, process key, and next worker sequence are proven. This version starts from a new data root and does not read earlier-version data, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md).
-
-## Goals / Non-goals
-
-Goals:
-
-- Keep AgentSession continuity distinct from Thread and Item history and hidden from ordinary user navigation and action.
-- Preserve the exact same worker across a transport loss or a NanoCore restart, when proof succeeds.
-- Prevent a compatible but different worker from impersonating continuity.
-- Preserve prior work and use a fresh authorized session when continuity fails.
-- Reuse one exact compatible idle AgentSession for sequential Turns in its one lifetime Thread.
-- Keep replacement identity and reason available to authorized operator diagnostics without exposing AgentSession to ordinary users.
-- Keep credentials, Knowledge, and unimported sandbox state out of continuity authority.
-
-Non-goals:
-
-- Do not implement a general snapshot, restore, rollback, fork, or clone system.
-- Do not automatically retry interrupted work on a replacement session.
-- Do not promise that restart is invisible to the user.
-- Do not add a continuity registry, recovery matrix, Action Center workflow, runner, or harness.
 
 ## Decision
 
@@ -90,13 +53,13 @@ The baseline has three permitted continuity outcomes:
 2. Later-Turn reuse: the prior Turn is terminal, the exact Thread-affine AgentSession is idle, its compatibility evidence is current, and every hygiene check succeeds. Idle means no active Turn on that binding. It does not mean the native host has exited. The same binding receives the next Turn with fresh authority and current inputs.
 3. Internal successor replacement: exact reconnect or later-Turn reuse is forbidden or unprovable. The predecessor and prior Turn remain unchanged, the predecessor becomes terminal and runtime-fenced, and separately authorized later work uses the sole current successor created from current manifest resolution, policy, credentials, Workspace materialization, and Core-owned Thread history. The successor is a new AgentSession. It reopens the exact retained native conversation within the same Agent/runtime selection, or starts fresh after an explicit switch. Core-owned Thread history remains the product context and does not replace required native resume.
 
-There is no fourth outcome that silently substitutes a compatible worker for the original attempt.
+There is no fourth outcome that silently substitutes a compatible worker for the original attempt. This version starts from a new data root and does not read earlier-version data, as [the engineer decided](../decisions/20260930-earlier_version_data_not_carried.md). The same OS process is neither required nor sufficient.
 
 An adapter whose native protocol creates a conversation only with the first prompt, or whose accepted owner explicitly defers native creation until resolved first-Turn setup and route authority are available, MAY open one capacity-holding new AgentSession runtime binding with its native handle pending; a supplied resume reference never permits this pending fallback. The first accepted Turn must establish the exact handle and bind its digest before the AgentSession may return to reusable `idle`; failure, ambiguity, or cleanup uncertainty closes or fences that binding and never substitutes Core history for native continuity. `session.open` carries `resume: { locator, digest } | null`. Null starts a new conversation. The object is the resume pair of the predecessor AgentSession and starts a successor from the retained reference, and the Harness validates the native result before any work. A missing, corrupt, or mismatched reference fails the resume and does not select another session. The Turn receives fresh Turn authority and must prove the same conversation. Ordinary fresh-process launch of a later Turn on the resident binding is not the path. A binding that never had a native conversation, the first binding of a Thread or an explicit Agent or runtime switch, starts a new one. Absence of a reference that the binding expects is a resume failure, and the user continues in a new Thread. `turn.interrupt` cancels that Turn and does not by itself close the binding. `session.close` revokes live authority. Destruction of the session loopback credentials belongs to [Worker Agent Capability](20260703-worker_agent_capability.md). Closing one binding on a shared host does not kill the server or sibling bindings. Dedicated-host close terminates that host. A host restart invalidates every binding that host held. Socket reconnect to a surviving host does not create a new AgentSession.
 
 ## Later-Turn Reuse And Successor Replacement
 
-`SandboxCompatibilityKey` decides whether placement may use one shared Sandbox envelope; it neither decides conversation continuity nor permits an existing AgentSession to move between runtime bindings. `HarnessCompatibilityKey` selects one compatible Harness Instance inside that Sandbox and includes the runtime adapter, runtime image and command shape, process-global extensions, hooks, plugin and MCP posture, and process-static credential and configuration requirements. `AgentSessionCompatibilityKey` decides whether a later Turn may reuse the exact existing native conversation continuity in that exact Harness binding. For V1, the AgentSession key must match exactly and includes Agent and profile identity, Thread affinity, native conversation protocol, context and transcript posture, static policy envelope, logical-model admission posture, required features, the selected Harness key, and the exact `SessionCompatibilityKey` owned by the session-static materialization specification.
+`SandboxCompatibilityKey` decides whether placement may use one shared Sandbox envelope; it neither decides conversation continuity nor permits an existing AgentSession to move between runtime bindings. `HarnessCompatibilityKey` selects one compatible Harness Instance inside that Sandbox and includes the runtime adapter, runtime image and command shape, process-global extensions, hooks, plugin and MCP posture, and process-static credential and configuration requirements. `AgentSessionCompatibilityKey` decides whether a later Turn may reuse the exact existing native conversation continuity in that exact Harness binding. For V1, the AgentSession key must match exactly and includes Agent and profile identity, Thread affinity, native conversation protocol, context and transcript posture, static policy envelope, logical-model admission posture, required features, the selected Harness key, and the exact `SessionCompatibilityKey` owned by the session-static materialization specification. [Session Static Workspace Materialization](20260704-session_static_workspace_materialization.md#sessioncompatibilitykey) owns that Session key and its digest form. The native AgentSession key is plain SHA-256 of canonical JSON over the adapter id, the adapter version, the Harness key, the final Session key, and the Thread id. [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md) owns that canonical form. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns the physical Sandbox key. The accepted physical-key members and the missing-input refusal are Implementation Gaps #735 and #641.
 
 Compatibility evidence is immutable for one effective setup. Every later-Turn admission recomputes desired inputs from current owners and rejects reuse when the key is missing, stale, conflicting, unequal, revoked, or unsupported. Ordinary Turn input revisions do not invalidate compatibility when the current inputs fit the declared slots and the freshness barrier can reconcile them safely. A changed static path, process environment, OS user, logical-model admission posture, network envelope, credential visibility class, required Harness feature, Agent or profile identity, Thread, or incompatible setup generation requires replacement.
 
@@ -123,7 +86,7 @@ A changed effective public native environment waits for the next Turn admission 
 
 Desired and effective setup generations are immutable derived identities, not new Core product records. The desired generation derives from current Agent Manifest and profile resolution, Worker Skill and instruction digests, runtime image and adapter identity, policy digests, Workspace layout, provider and plugin posture, and current AEP requirements. The effective generation is what one Sandbox, Harness, and AgentSession binding can prove it materialized.
 
-Every new AgentSession placement and later-Turn reuse decision compares current desired requirements with the exact effective generation. A compatible Turn receives fresh dynamic authority without changing static setup. An AgentSession-local instruction, Skill, provider posture, or other compatibility change marks the AgentSession stale for new Turns. An AgentSession-local supply change that the adapter declares it will list again at the next Turn start does not drain the Harness and does not replace the AgentSession. A supply change the adapter cannot list again, and any other setup change the live binding cannot apply, is a successor AgentSession that resumes the native conversation. Each adapter declares whether it re-lists tools at Turn start, and its slice establishes the answer by probe; this specification does not invent that answer. The setup-change replacement boundary is the AgentSession. A process-global Tool, plugin, native MCP, adapter, or Harness requirement that cannot be isolated to one binding drains and replaces the Harness under its owner. A runtime image, OS user, mount, network, credential-visibility, containment, or Sandbox-policy incompatibility requires Sandbox replacement. The accepted runtime owner decides the exact physical boundary; this specification decides only that a stale generation is never hot-patched and presented as unchanged continuity.
+Every new AgentSession placement and later-Turn reuse decision compares current desired requirements with the exact effective generation. A compatible Turn receives fresh dynamic authority without changing static setup. An AgentSession-local instruction, Skill, provider posture, or other compatibility change marks the AgentSession stale for new Turns. An AgentSession-local supply change that the adapter declares it will list again at the next Turn start does not drain the Harness and does not replace the AgentSession. A supply change the adapter cannot list again, and any other setup change the live binding cannot apply, is a successor AgentSession that resumes the native conversation. Each adapter declares whether it re-lists tools at Turn start, and its slice establishes the answer by probe; this specification does not invent that answer. Codex, Pi, OpenCode, and DeepSeek each declare that they do not re-list mounted supply. A supply change on those bindings requires a successor. [Codex](20260716-codex_worker_adapter.md), [Pi](20260716-pi_worker_adapter.md), [OpenCode](20260716-opencode_worker_adapter.md), and [DeepSeek](20260930-deepseek_worker_adapter.md) own each carrier. This specification does not copy credential configuration and does not add a timer. The setup-change replacement boundary is the AgentSession. A process-global Tool, plugin, native MCP, adapter, or Harness requirement that cannot be isolated to one binding drains and replaces the Harness under its owner. A runtime image, OS user, mount, network, credential-visibility, containment, or Sandbox-policy incompatibility requires Sandbox replacement. The accepted runtime owner decides the exact physical boundary; this specification decides only that a stale generation is never hot-patched and presented as unchanged continuity.
 
 Ordinary non-security updates use rolling replacement: publish the new desired generation, reject new work on incompatible old bindings, admit and prove the replacement at the required boundary, route new AgentSessions and Turns only to the replacement, let already-running non-security-sensitive Turns settle under their pinned immutable authority, and close the old binding after output, evidence, route-revocation, and cleanup barriers complete. Missing or failed replacement dependencies leave new work blocked or unavailable and do not mutate the running generation.
 
@@ -157,8 +120,6 @@ Exact native resume of the Thread's retained conversation is current scope. Snap
 
 Any future activation requires a present backend and workflow need plus an accepted specification that defines credential invalidation, current-policy reattachment, Workspace truth, lineage, failure, cleanup, and user-visible behavior. A future concept does not justify a current `SessionSnapshotRecord`, generic selector, restore workflow, migration, runner, harness, or test matrix.
 
-Existing inactive snapshot or generic recovery-option helpers are Private implementation projections and may be removed without compatibility obligations if no current backend consumes them.
-
 ## Decision Completeness
 
 The definition and exclusions are the exact reconnect, later-Turn reuse, and internal successor outcomes above. An AgentSession is one authorized active execution binding to the Thread's retained native conversation, on one admitted runtime host instance, as [AgentSession](../core/agent-session.md) defines. Sequential Turns use that binding. Turn completion does not close it and does not stop the runtime. Closure releases the binding. Cross-Thread reuse, two current AgentSessions, compatible substitution during one active attempt, snapshot restore, automatic replay, an empty conversation standing in for resume, transcript replay, inherited Turn authority, and ordinary product exposure are excluded. Core-owned AgentSession, Thread, Turn, Item, and evidence records are durable authority, while runtime bindings, native conversations, compatibility keys, and replacement diagnostics are projections that cannot rewrite product history.
@@ -171,45 +132,27 @@ Observable acceptance requires two sequential Turns in one Thread to use the sam
 
 The durable AgentSession record MUST retain the conservative external-influence bit. A set bit survives reconnect, later-Turn reuse, native resume and successor replacement that continues the context. Summaries, retained history and compaction MUST NOT clear it; a missing recorded bit counts as influenced. This fact carries no prior Turn authority. [AgentSession](../core/agent-session.md) owns the semantic state and [Runtime Security](20261109-runtime_security.md) E9 owns its sources and gated effects.
 
-## Current Implementation Projection
+## Acceptance
 
-NanoCore persists AgentSession identity, policy and compatibility evidence, scheduler lease lineage, worker checkpoints, the bounded `awaiting-reconnect` path, and distinct Sandbox runtime, Harness instance, and AgentSession runtime bindings. The active restart implementation restores the exact lease-named AgentSession. The current NanoHost path supports stock RelayStream carriage, nested HTTP/2, a token-free long-lived Harness bootstrap, private Harness pull carriage, multiple open AgentSessions for distinct Threads, and Sandbox-preserving local close. NanoCore dispatches `session.open` with the nearest accepted resume pair within the same Agent/runtime selection, or `null` when no pair exists in that selection, and records each validated ready proof, including one from a failed non-reusable binding, on the AgentSession record when it is accepted, where it stays after close. The recorder is required before terminal inspection is dispatched, and a recording failure keeps the binding row. A crash between the SQLite binding commit and the AgentSession write can leave the proof only on that row until the exact binding is restored and its recorder is bound before cleanup. A binding stays open across Turns when terminal inspection proves the same ready handle, or a completed first Turn with a ready handle; the next Turn starts on it without `session.open`, and an interrupted or failed Turn on a retained binding leaves the AgentSession `idle`. The Harness keeps the resident binding and stores ready references under the proving AgentSession id. The production registry holds the resident Codex, DeepSeek, OpenCode, and Pi adapters (`packages/worker-shim/src/adapter-registry.ts`); the per-Turn Codex, Pi, and OpenCode launch is deleted.
+L1 and L2 cover the predicates in Exact Reconnect Contract, Later-Turn Reuse And Successor Replacement, and Successor Fallback. One deterministic L3 scenario proves transport loss. A separate deterministic L3 scenario proves a NanoCore restart. A higher-layer real-worker check is used only for integration that those levels cannot prove.
 
-Uncertain native creation stays in the existing recovery-required projection and its already-authorized actions. The current projection has no linked-Thread continuation action for this failure; creating such an action is outside this selection change. No native-creation ambiguity authorizes a silent fresh conversation.
+## Implementation
 
-Normal product admission now derives the exact static SessionCompatibilityKey before a scheduler lease, admits work only through one ready configured NanoHost RuntimeTarget, reuses the sole compatible idle current AgentSession, and otherwise completes exact runtime-owned close or uncertainty fencing before terminalizing the predecessor and selecting one fresh internal identity. Store reload and Harness binding projections enforce at most one current AgentSession per Thread; ordinary App API projections expose no AgentSession identity or action. The unowned generic AgentSession snapshot table, selector, restore options, and recovery matrix have been deleted through the strict current migration. Implementation remains Partial only until these local bytes and the exact shared-Sandbox lifecycle pass the required real-runner, restart, interrupt, cleanup, and fault acceptance.
+- `apps/nanocore/src/runtime/`
+- `apps/nanocore/src/lib/`
+- `packages/worker-shim/src/`
+- `packages/config-schema/src/`
 
-## Testing Strategy / Acceptance Criteria
+## Implementation Gaps
 
-- L1 covers exact reconnect eligibility, wrong-key and lineage rejection, exact-next sequence, deadline ownership, same-AgentSession continuation, and fresh-AgentSession isolation from credentials and hidden runtime state.
-- L2 covers the scheduler and worker-control boundary that authorizes adoption.
-- L3 retains one deterministic scenario for a transport loss and one for a NanoCore restart. Each proves predecessor-fenced exact adoption of the same worker, AgentSession, Sandbox, and next sequence, with no replacement or duplicate launch, or, when proof fails, that the binding is closed or fenced and a successor resumes the retained native conversation or fails explicitly.
-- NanoHost and execution-server failure coverage proves every attached AgentSession receives its own interrupted or unknown outcome and no affected capacity returns before the owning cleanup proof.
-- A higher-layer real worker check reuses the existing local or A1 acceptance path only when it proves transport integration unavailable at L1-L3.
-- Later-Turn tests prove exact same-Thread reuse, one current AgentSession, exact compatibility-key matching, every hygiene boundary, fresh authority and input lineage, predecessor retirement before successor creation, rejection of cross-Thread reuse, and absence of AgentSession controls and identity from ordinary App API projections.
-- Native selection tests prove that a failed preparation cannot carry an earlier foreign Agent/runtime reference into the selected runtime, that a different Agent on the same runtime starts fresh, and that the same Agent/runtime retains its exact resume pair. Both retained-storage selection and native open use the same boundary.
-- No current tests are required for snapshot creation, restore precedence, rollback, fork, clone, superset compatibility, or an exhaustive recovery matrix.
+- The Sandbox compatibility key includes the declared Harness set, the Integration version, and the sensitivity class, and a missing required input rejects co-residency - On main, the key lacks those members and does not refuse when they are absent - #735
+- A declared Harness set is admitted before shared placement - On main, that admission is not established - #641
+- Real-runner, restart, interrupt, cleanup, and shared-Sandbox fault acceptance is proved - On main, that physical qualification is not established - #156
 
-Acceptance requires exact or rejected reconnect, same-Thread exact-compatible idle reuse with fresh authority, sole-current successor replacement when reuse is forbidden, preserved prior history, no secret or unproved execution-authority inheritance, no automatic duplicate attempt, no ordinary product exposure, and a working successor path for a new authorized request.
+## Decisions
 
-## Consequences
-
-- NanoCore can preserve valuable remote work across a transport loss or a NanoCore restart, without promising transparent availability.
-- Failure to reconnect is visible and may require a new request; this is an accepted bounded compromise.
-- AgentSession continuity remains small enough that it cannot become a second workflow engine or a user-facing conversation model.
-
-## Deferred / Future Work
-
-- Snapshot and restore for a backend that can prove credential invalidation and Workspace isolation.
-- A separately accepted snapshot, restore, rollback, fork, or clone contract for a concrete workflow and backend that need them.
-
-Deferred work is non-authorizing and creates no current schema, state, implementation, migration, runner, harness, or test requirement.
-
-## Links
-
-- `docs/core/agent-session.md`
-- `docs/specs/20260703-durable_scheduler_design.md`
-- `docs/specs/20260703-worker_control_protocol.md`
-- `docs/specs/20260531-worker_turn_reliability_envelope.md`
-- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
+- [Compute and harness neutrality](../decisions/20261020-compute_and_harness_neutrality.md)
+- [Earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)
+- [Successor resume walks back to the nearest recorded pair](../decisions/20260930-successor_resume_walks_back.md)
+- [Retired Workspace cleanup proof](../decisions/20261023-retired_workspace_cleanup_proof.md)
+- [Native environment managed outside the Sandbox](../decisions/20260930-native_environment_managed_outside_the_sandbox.md)

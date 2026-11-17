@@ -5,83 +5,33 @@ kind: process
 date: "2026-11-09"
 aspect: security
 ---
+
 # Development Security
 
-## Owns
+This specification owns repository and release security checks: classes, findings, disclosure, scanning, exposure-switch coverage, supply-chain controls, release integrity, and secret scanning.
 
-How OpenKit development and maintenance handle security:
+## Scope
 
-- finding classes, response times, the finding record and its closure;
-- dependency and image vulnerability scanning;
-- supply-chain controls on Actions, packages, lock files and image builds;
-- release integrity (SBOMs and signed build provenance);
-- secret scanning;
-- the private disclosure process;
-- the review gate for pull requests authored by instances;
-- where each check runs;
-- how all of this meets the dependency upgrade program.
+Owns:
 
-## Does Not Own
+- Dependency and image scanning, supply-chain controls, release integrity, secret scanning, private disclosure, the instance pull-request review gate, and where each check runs.
 
-- Security inside a running instance (part 3, runtime security), and the maintainers' own machines (part 2, private operations library).
-- Release identity, lifecycle and publication authority ([Release Management](20260829-release_management.md)). Image contents ([Container Image Packaging](20260708-container_image_packaging.md)). App update mechanics ([App Update Delivery](20260910-app_update_delivery.md)). Version pins and the dependency procedure ([Toolchain](../toolchain.md)). This spec adds predicates and rules to these owners.
-- Repository settings and publication credentials. The engineer owns them.
+Does not own:
 
-## Core References
-
-[Security](../core/security.md), [Doctrine](../core/doctrine.md), [Policy](../core/policy.md), [Evidence](../core/evidence.md), [Contract Evolution](../core/contract-evolution.md).
-
-## Summary
-
-The question this spec answers fast: does a new vulnerability affect what OpenKit ships, and when is it fixed?
-
-- Four classes: known exploited 24 h, critical 72 h, high 7 days, other at the next routine upgrade.
-- One scanner, `osv-scanner`, on lock files and release images. It uses the same OSV data that running instances use (part 3).
-- Supply-chain controls:
-  - Actions are pinned by SHA and linted.
-  - Pull-request jobs hold no write token.
-  - Rulesets protect `main` and release tags.
-  - npm versions must be at least 3 days old; a security fix is exempt.
-  - Build scripts need an allowlist.
-  - Every install uses a lock file, including installs inside images.
-- Each release carries SBOMs and Sigstore-signed build provenance. Producing them is v0.1.0; App update verification of the provenance follows after v0.1.0.
-- Secret scanning in the local gate and in CI. Private disclosure through `SECURITY.md`. An embargo rule for every contributor, human or agent. An independent review for every pull request an instance authors.
-
-## Goals / Non-goals
-
-Goals:
-- Detect a known vulnerability in shipped code within a day.
-- Fix or mitigate it within its class time, and keep a record of the decision.
-- Close the common supply-chain paths.
-- Give reporters a private channel.
-
-Non-goals:
-- Proving that no vulnerabilities exist.
-- Static analysis, fuzzing or an audit program (deferred).
-- License compliance.
-- Parts 2 and 3.
-
-## Background
-
-| Area | State at 835ffb0a4 |
-| --- | --- |
-| Actions | Every `uses:` is SHA-pinned with a version comment. Default token `contents: read`. No workflow lint. |
-| Pull-request jobs | `test-image` runs on `pull_request` with `packages: write` and publishes to GHCR. Fork pull requests get a read-only token. |
-| Base images | `FROM` pinned by digest. The release preflight checks base digests. |
-| npm | pnpm 10.33.3 with an `allowBuilds` map. Unlisted build scripts only warn (`strictDepBuilds` unset). No minimum release age. |
-| Image-time installs | The Worker image's runtime-supply step runs `npm install` with no lock file and with scripts on. The App builder runs rustup by `curl \| sh`. The `gh` and `mise` downloads are checksum-verified. |
-| Scanning, secret checks, SBOM | None. A credential pattern exists in `scripts/release-safety.mjs` for redaction only. |
-| Release integrity | Release images build with `provenance: false`. No signatures or attestations. App update checks the digest and the release attribution, but no signature. |
-| Disclosure | No `SECURITY.md`. Private vulnerability reporting is off. |
+- Security inside a running instance. [Runtime Security](20261109-runtime_security.md) owns it.
+- Maintainer machines. The private operations library owns them.
+- Release identity, lifecycle, and publication. [Release Management](20260829-release_management.md) owns them.
+- Image contents and App update mechanics. [Container Image Packaging](20260708-container_image_packaging.md) and [App Update Delivery](20260910-app_update_delivery.md) own them.
+- Version pins and the dependency procedure. [Toolchain](../toolchain.md) owns them. Repository settings and publication credentials stay with the engineer.
 
 ## Decision
 
 1. This new process spec is the single owner of development security.
 2. Four classes with fixed times (engineer, 2026-11-09).
-3. OSV data through `osv-scanner` is the one scanner. KEV marks known exploitation.
+3. The current selected scanner is osv-scanner v2. It is not a permanent scanner identity. KEV marks known exploitation.
 4. Actions keep SHA pins, enforced by `zizmor`. Pull-request jobs hold no write permission. Rulesets restrict `main` and `v*` tags to maintainers.
 5. npm minimum release age is 3 days, with a security-fix exemption (engineer, 2026-11-09). An unreviewed build script fails the install. Every image-time install uses a lock file and disables scripts.
-6. Each release publishes SBOMs and GitHub artifact attestations: Sigstore-signed SLSA provenance. Consumer verification in App update comes after v0.1.0 ([#690](https://github.com/lingkaix/openkit/issues/690)).
+6. Each release publishes SBOMs and GitHub artifact attestations: Sigstore-signed SLSA provenance. Consumer verification in App update comes after v0.1.0 ([#690](https://github.com/lingkaix/openkit/issues/690)). There is no data migration. These owners receive the rules in this contract: `SECURITY.md`, `CONTRIBUTING.md`, [Toolchain](../toolchain.md), [Release Management](20260829-release_management.md), [Container Image Packaging](20260708-container_image_packaging.md), [Worker images](20260721-worker_execution_environment_images.md), [App Update Delivery](20260910-app_update_delivery.md), and `.github/workflows/README.md`. Root `AGENTS.md` is not edited.
 7. Secret scanning reuses the existing credential pattern. It catches known credential forms only and is not a confidentiality proof.
 8. Disclosure goes through GitHub private vulnerability reporting under an embargo rule. The finding register stays private.
 9. A pull request authored by an instance needs an independent review before merge.
@@ -161,7 +111,7 @@ The repository check compares actual mounted routes and public projections with 
 - Rulesets let only maintainers update `main` and create, move or delete `v*` tags. No App or bot is on a bypass list. No App holds the `workflows` permission.
 
 **npm (pnpm).**
-- `minimumReleaseAge: 4320`.
+- `minimumReleaseAge: 4320`. This current default implements the three-day rule.
 - **Exemption.** A security fix adds an exact-version entry to `minimumReleaseAgeExclude` (supported since pnpm 10.19, for example `pkg@1.2.3`) and names the advisory id in the commit message. The next routine upgrade removes the entry. An exemption without an advisory id fails review.
 - `strictDepBuilds: true`. `allowBuilds` is the only allowlist. A new `true` entry needs a reason and an independent review.
 - `blockExoticSubdeps: true`, unconditionally. The pinned pnpm supports it (since 10.26).
@@ -175,10 +125,10 @@ The repository check compares actual mounted routes and public projections with 
 
 ### Release Integrity
 
-- **SBOM.** One SBOM per released image platform and per NanoHost archive, with a purl and version for every package. They are release attachments covered by `SHA256SUMS`. The App image also carries its SBOM at a fixed path, so an instance can inventory itself offline (part 3).
-- **Provenance.** The release job attests every released image digest, the multi-platform index, each NanoHost archive and `SHA256SUMS` with [GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations).
+- **SBOM.** One SBOM per released image platform and per NanoHost archive, with a purl and version for every package. They are release attachments covered by `SHA256SUMS`. The App image also carries its SBOM at a fixed path, so an instance can inventory itself offline (part 3). The release SBOM combines the pinned scanners and build metadata. It checks purl and version coverage and includes Syft rootfs generation. It does not claim completeness for opaque vendor transitive dependencies.
+- **Provenance.** The tag-only release and promotion jobs attest every released image digest, the multi-platform index, each NanoHost archive and `SHA256SUMS` with [GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations).
   - Each attestation is a Sigstore-signed SLSA provenance statement. It binds the digest to the repository, workflow, tag and commit. There is no long-lived signing key.
-  - The tag-only release job alone gets `id-token: write` and `attestations: write`.
+  - The tag-only release and promotion jobs get `id-token: write` and `attestations: write`. Those jobs are `attest-release-images` (Attest ${{ matrix.id }} candidate provenance) and `github-release` (Publish GitHub Release) in `.github/workflows/ci.yml`, on a tag push. The third job is `promote` (Promote verified prerelease without rebuild) in `.github/workflows/release-promotion.yml`, on a stable `v*.*.*` tag push. No other job gets both permissions.
   - BuildKit's own `provenance` stays off, so the image index that candidate admission checks does not change.
 - **Verification (after v0.1.0, [#690](https://github.com/lingkaix/openkit/issues/690)).** App update `prepare` verifies the target App digest's attestation. The signer must be the release workflow of the fixed repository at a release tag, and the issuer must be GitHub Actions OIDC. A missing or mismatched attestation refuses the update. Operators can verify by hand with `gh attestation verify` or `cosign`.
 - The release verification job checks that every artifact has its SBOM and attestation.
@@ -236,102 +186,24 @@ The local gate carries the cheap checks, because trunk-mode pushes may skip CI. 
 | Workflow lint | [`zizmor`](https://docs.zizmor.sh/) | Replaces a custom pin checker and covers injection and permissions. |
 | Age, build scripts | [pnpm settings](https://pnpm.io/settings/dependency-resolution) | Enforced natively at every install. |
 | Secrets | The existing pattern plus host push protection | Already knows the `okt_` and `okw_` prefixes. |
-| SBOM | The pinned scanner, or the build system's generator, whichever emits complete purls for both OS and npm packages | Generated from the built artifact. |
+| SBOM | The pinned scanners and build metadata, including Syft rootfs generation | Generated from the built artifact. Purl and version coverage is checked. Opaque vendor transitive completeness is not claimed. |
 | Provenance | GitHub artifact attestations | Signature and provenance in one step, with no key to manage. Free on a public repository. |
 
 Security tools are supply-chain targets too. The March 2026 Trivy compromise illustrates the risk ([CVE-2026-33634](https://www.aquasec.com/blog/trivy-supply-chain-attack-what-you-need-to-know)). A SHA pin plus the 3-day age rule would have kept a workflow on reviewed code. The scanners here are therefore pinned, checksum-verified and given no write token.
 
-## Current Implementation Projection
+## Implementation
 
-- `.github/workflows/ci.yml`:
-  - `test-image` does not run on `pull_request`, so it pushes no image from one;
-  - `pr-check` and the `main` path run `scripts/check-security.mjs`;
-  - in the release workflow, `release-security` scans every candidate image digest, `attest-release-images` attests the candidate subjects, `github-release` generates the SBOMs and attests every released subject, and `verify-release` checks them;
-  - `.github/workflows/security.yml` runs the daily diagnostic rescan of the latest release images.
-- `lefthook.yml` pre-commit calls `check:security --staged`. `check:repo` runs the workflow lint and the supply-chain rule test, not `check:security`. The tools are pinned with checksums in `scripts/security-tools.json` and installed in `containers/test-env/Dockerfile`.
-- The existing operation/route descriptors carry source-only owner/switch metadata (`packages/app-api-schemas/src/operation-definitions.ts`). Mounted-route/projection coverage runs as a NanoCore test (`apps/nanocore/src/policy/operation-exposure-coverage.test.ts`); its `check:repo` step remains an acceptance-phase implementation requirement, not a current check claim. Runtime Policy retains enforcement.
-- `scripts/release-safety.mjs` imports the shared `CREDENTIAL_PATTERN` from `scripts/credential-patterns.mjs`.
-- `pnpm-workspace.yaml` sets `minimumReleaseAge`, `strictDepBuilds` and `blockExoticSubdeps: true`.
-- Image builds:
-  - `containers/workers/Dockerfile` installs runtime-supply from its lock file with scripts disabled;
-  - `containers/app/Dockerfile` verifies the rustup installer by checksum and embeds the SBOM.
-- `scripts/release-preflight.mjs` runs the workflow lint. The `release-preflight` job also runs `scripts/check-security.mjs --release` over all lock files and the tagged tree; the `release-security` job runs `scripts/release-security.mjs` on each candidate image digest.
-- After v0.1.0, the App update helper's `prepare` gains attestation verification ([#690](https://github.com/lingkaix/openkit/issues/690)).
-- Repository settings (engineer): private vulnerability reporting, push protection, dependency alerts, rulesets.
+<a id="current-implementation-projection"></a>
 
-## Alternatives Considered
+- `../../.github/workflows/`
+- `scripts/`
+- `containers/`
 
-- **Amend Toolchain or Release Management.** Rejected. Classes, records, disclosure and the embargo would have no owner.
-- **Trivy or Grype as well.** Rejected for now. A second tool and database doubles the triage work and does not match part 3's data.
-- **`cargo-deny`, `gitleaks`.** Rejected. They duplicate OSV and the existing pattern.
-- **A separate cosign key signature next to the attestations.** Rejected. The attestation already proves identity and digest, and a key adds custody risk.
-- **Dependabot pull requests.** Rejected. Alerts only. The upgrade program makes the changes.
-- **Block releases on every K, C or H finding regardless of records.** Rejected. Base images often carry findings that have no fix. K and C instead need an explicit record (mitigated, not affected, or engineer-accepted with expiry).
+## Implementation Gaps
 
-## Consequences
+- Exposure owner and switch coverage runs in `check:repo` and on pull requests - On main, that coverage does not run in `check:repo` or on pull requests - #747
+- After v0.1.0, App update `prepare` verifies the target digest attestation - On main, `prepare` does not verify an attestation - #690
 
-- A fresh npm version can wait up to 3 days. Only a security fix bypasses the wait.
-- The release gate gains a narrow blocking predicate. The release job gains an OIDC permission.
-- Instance-authored pull requests cost a review each.
+## Decisions
 
-## Rollout / Migration Plan
-
-| Document | Edit |
-| --- | --- |
-| `SECURITY.md` (new) | Supported versions, the private route, response times, the process |
-| `CONTRIBUTING.md` | The disclosure route, the embargo, the instance pull request review gate. Root `AGENTS.md` is not edited; if the engineer wants a pointer there, it is a protected-owner action outside lane scope. |
-| [Toolchain](../toolchain.md) | The age rule, the exemption, `strictDepBuilds`, locked image installs, "latest" means at least 3 days old |
-| [Release Management](20260829-release_management.md) | SBOM and attestation attachments, the scan predicate, workflow lint, the OIDC permission |
-| [Container Image Packaging](20260708-container_image_packaging.md), [Worker images](20260721-worker_execution_environment_images.md) | Locked installs, disabled scripts, verified downloads, the embedded SBOM |
-| [App Update Delivery](20260910-app_update_delivery.md) | Attestation verification in `prepare`, after v0.1.0 ([#690](https://github.com/lingkaix/openkit/issues/690)) |
-| `.github/workflows/README.md` | Check placement; no write permission on pull-request jobs |
-| Decision record, `docs/specs/README.md` | Rulings; index line |
-
-There is no data migration.
-
-## Testing Strategy / Acceptance Criteria
-
-- **Exploitation sources.** RSS raises H/N to C and preserves K; free text never sets K. KEV, `MAL-` and person-recorded vendor confirmation remain the only K sources. A source change never lowers/clears a finding or restarts its clock.
-- **Exposure switches.** A new mounted external route group without an owner/switch fails, including alternate transports and non-JSON routes. Valid descriptors pass; E13 behavioral checks prove common enforcement and available human recovery.
-
-- **Secrets.** The secret check fails on each credential kind, prints no value and passes on the current tree.
-- **Lock files and workflows.**
-  - A lock file with a known K advisory fails the check. The current lock files pass or list only recorded findings.
-  - A workflow with a tag pin fails the lint. A workflow with template injection fails the lint.
-- **Pull-request runs.** A scratch pull request that changes the tag script publishes nothing.
-- **pnpm.**
-  - A version younger than 3 days is refused, and passes after an exact-version exclusion.
-  - An unreviewed build script fails the install.
-- **Images.** The Worker image builds from its runtime lock file on both platforms and passes its smoke test.
-- **Release gate.** Fixtures per status, each with and without an available fix: `open` and expired `accepted` are refused; current `mitigated`, reviewed `not_affected` and unexpired engineer `accepted` pass; an `accepted` decided by someone other than the engineer is refused for K and C.
-- **Release artifacts.**
-  - Every artifact has an SBOM and an attestation that `gh attestation verify` accepts.
-  - After v0.1.0 ([#690](https://github.com/lingkaix/openkit/issues/690)): App update `prepare` refuses a digest that has no attestation.
-
-## Risks & Mitigations
-
-| Risk | Mitigation |
-| --- | --- |
-| Noise from findings | Only new K, C or H matches fail a change. N waits for the routine upgrade. |
-| The exemption becomes a bypass | It needs an advisory id, and the next upgrade removes it. |
-| `[skip ci]` pushes skip CI | The local gate, the release gate and the daily rescan still catch it. |
-| A 24-hour class with a small team | Mitigation counts. Disabling the affected path meets the deadline. |
-
-## Open Questions
-
-- [Non-blocking] Which generator emits complete purls for both the Debian and npm packages in the current images? Try `osv-scanner` first.
-
-## Deferred / Future Work
-
-- [Update attestation verification](https://github.com/lingkaix/openkit/issues/690) (#690).
-- [Attestation verification for Worker images](https://github.com/lingkaix/openkit/issues/691) (#691).
-- [VEX publication and consumption](https://github.com/lingkaix/openkit/issues/692) (#692).
-- [SLSA build level 3](https://github.com/lingkaix/openkit/issues/693) (#693).
-- [OpenSSF Scorecard](https://github.com/lingkaix/openkit/issues/694) (#694).
-- [Age rules for Cargo and uv](https://github.com/lingkaix/openkit/issues/695) (#695).
-- [Static analysis, fuzzing and external audit](https://github.com/lingkaix/openkit/issues/696) (#696), including authorized merge/nightly/weekly self-attack lanes, reproducible evidence and replay regressions.
-- [OSV.dev ingestion](https://github.com/lingkaix/openkit/issues/697) (#697).
-
-## Links
-
-[OSV schema](https://ossf.github.io/osv-schema/) · [osv-scanner](https://google.github.io/osv-scanner/) · [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) · [zizmor](https://docs.zizmor.sh/) · [pnpm settings](https://pnpm.io/settings/dependency-resolution) · [pnpm 10.19 release](https://pnpm.io/blog/releases/10.19) · [GitHub private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability) · [GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) · [SLSA](https://slsa.dev/) · [Trivy compromise](https://www.aquasec.com/blog/trivy-supply-chain-attack-what-you-need-to-know)
+- [Security Program Rulings](../decisions/20261109-security_program_rulings.md)

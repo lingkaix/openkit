@@ -1,624 +1,204 @@
 ---
-status: Draft
+status: Accepted
 implementation: Partial
 kind: mechanism
-date: "2026-10-19"
 aspect: fault-tolerance
 ---
 # Durable Execution And Control Store
 
-## Owns
+This specification is the single owner of scope-owned transactional control commits, off-Main `DatabaseOwner` worker batching and admission fairness, the durable execution and step journal (`control_executions` and `control_execution_steps`), global dispatch indexing and server reservation commit-gap recovery, physical receipt consumption, common-cut capture protection, reviewed Workspace schema CAS application, and replacement of split-store recovery.
 
-Scope-owned transactional control, durable execution, dispatch, immutable-content placement, and replacement of split-store recovery under the [engineer decision](../decisions/20261019-durable_execution_and_control_store.md).
+## Scope
 
-## Does Not Own
+Owns:
+- Scope-local SQLite control commits, immutable-content publication ordering, off-Main `DatabaseOwner` worker cohorts, per-Turn FIFO savepoints, MCP closeout credit, and WAL/memory bounds.
+- The durable execution and step journal (`control_executions` and `control_execution_steps`), OpenTelemetry span representation, stage mapping, unverified Worker phase markers, deterministic `containment` consumer, global dispatch index, server capacity reservations, physical receipt consumption, and cross-Workspace activation.
+- Common-cut snapshot capture protection (`workspace_capture_records`), reviewed Workspace schema readset-CAS application, `SOURCE-RETENTION` producer handoff, and replacement of split-store recovery classifiers.
 
-Product/Goal structures, authorization, Knowledge semantics, retention schemas/defaults, telemetry delivery or backup/move commands; no public Run, DSL, code replay, external workflow server or second blob service.
+Does not own:
+- Domain semantics for Work, Goal, authentication, Policy, Knowledge, retention classes, telemetry delivery, or backup/move commands ([Storage Layout And Record Ownership](20260703-storage_layout_record_ownership.md), [Work Data Retention Format](20260921-work_data_retention_format.md), [Operational Telemetry Standardization](20260731-operational_telemetry_standardization.md), [Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md)).
+- Any new public Run resource, workflow DSL, deterministic transcript-effect replay, external workflow server, or second blob service.
 
-## Core References
+Core: [Storage](../core/storage.md), [Runtime Model](../core/runtime-model.md), [Fault Tolerance](../core/fault-tolerance.md), [Contract Evolution](../core/contract-evolution.md), [Policy](../core/policy.md), [AgentSession](../core/agent-session.md).
 
-- [Storage](../core/storage.md) and [Runtime Model](../core/runtime-model.md).
-- [Fault Tolerance](../core/fault-tolerance.md) and [Contract Evolution](../core/contract-evolution.md).
-- [Permissions](../core/policy.md) and [AgentSession](../core/agent-session.md).
+## Definitions
 
-## Related Docs
+- **Execution phases and step states**: an execution (`control_executions`) moves through `open`, `closing`, and `closed`. A step (`control_execution_steps`) starts at nonterminal `intent` and settles once into immutable `completed`, `failed`, `unknown`, or `cancelled`; ended steps are never rewritten or silently skipped.
+- **Closed definitions and step kinds**: one release-authored `definition_version` and closed step-kind set govern interpretation; unknown required definitions or kinds fail closed while descriptive additions are ignored. Current definitions (`apps/nanocore/src/runtime/execution-journal.ts`) are `core-image-acquire/v1`, `core-idle-cleanup/v1`, `core-harness-consume/v1`, `core-workspace-recovery/v1`, `containment`, and `workspace-worker-turn/v1`. The type-level step vocabulary (`execution-step-journal.ts`) has `19` kinds (`admit`, `queue-capacity-wait`, `reserve`, `resolve-setup`, `validate-setup`, `materialize`, `open-session`, `inspect-session`, `deliver-start`, `deliver-steer`, `observe`, `collect`, `terminal-publication`, `cancel`, `human-wait`, `consume-receipt`, `inspect-cleanup`, `fence`, `release`), of which `workspace-worker-turn/v1` admits the `13` producer-backed kinds (`resolve-setup`, `validate-setup`, `materialize`, `open-session`, `inspect-session`, `deliver-start`, `deliver-steer`, `collect`, `terminal-publication`, `cancel`, `consume-receipt`, `inspect-cleanup`, `release`).
+- **Operational timer and deadline defaults**: capacity waits, human waits, health/reclamation intervals, and cleanup pacing are distinct from execution lifetime and retain their owning contracts until measured convergence:
+  - Preparation clock: `25 min` (`1,500,000 ms`, `nanohost-attempt-records.ts`).
+  - Image acquire/build: `900 s` (`900,000 ms`, `turn-executor-factory.ts`); Sandbox readiness: `120 s` (`epoch_coordinator.rs`); native open: `60 s` (`60,000 ms`); native request: `8 s` (`8,000 ms`, `packages/worker-shim/src/lifecycle-deadline.ts`).
+  - Harness command/result and Core outage budgets: `300 s` (`300,000 ms`, `nanohost-harness-records.ts`); retry pacing: `250 ms`; Worker control-request bound: `10 s` (`10,000 ms`, `control-client.ts`), distinct from Worker `1 s` (`1,000 ms`) heartbeat send interval (`harness.ts`).
+  - Execution authority ceiling: `2 h` (`7,200,000 ms`, `execution-attempt-records.ts`); attempt heartbeat liveness timeout: `30 s` (`30,000 ms`, distinct from `10,000 ms` readiness); reconnect/adoption window: `<= 5 min` (`300,000 ms`, bounded by the existing execution deadline without minting a new command/effect identity); shim native stop: `10 s` (`10,000 ms`) and cleanup tail: `4 s` (`4,000 ms`).
+  - Workspace collection phase: `120 s` (`120,000 ms`) and Host helper timeout: `300 s` (`300,000 ms`, `nanohost-session-dispatch.ts`).
+  - Gateway pre-commit timeout: `120 s` (`120,000 ms`) with `1 s`/`2 s`/`4 s` retry waits and `Retry-After <= 10 s` (`gateway-execution.ts`, never post-commit effect retry); Worker MCP health probe `15 s` (`15,000 ms`) and idle close `60 s` (`60,000 ms`, `worker-mcp-gateway.ts`); Host service startup `120 s`, stop `30 s`, and systemd restart backoff (`5 s` initial, `5` steps, `5 min` max, `StartLimitInterval=0`, exit `78` non-restart).
 
-- [Storage Layout](20260703-storage_layout_record_ownership.md), [Storage Service](20261018-file_storage_and_knowledge_packages.md), and [Notebook](20260909-knowledge_notebook_editing.md).
-- [Scheduler](20260703-durable_scheduler_design.md), [Scale](20260703-runtime_scheduling_scale.md), [Bootstrap](20260704-nanocore_bootstrap_readiness.md), and [NanoHost](20260802-nanohost_runtime_and_transport.md).
-- [Pending Requests](20260531-human_attention_intervention_model.md), [Recurring Triggers](20260711-scheduler_recurring_event_triggers.md), and [Test Strategy](20260529-test_strategy.md).
+## Control Store Per Scope
 
-## Commit Rule And Scope Layout
+### Commit Rule And Scope Layout
 
-One owning SQLite transaction commits state, journal, dependent local records and receipt; resolve uncertain acknowledgement through that request identity.
+One owning SQLite transaction commits local state, journal progress, dependent local records, and the command receipt; uncertain acknowledgement resolves through that original request identity rather than minting new authority. WAL `ATTACH` never makes cross-database effects atomic; a Server fact must commit before another database references it, and independent Workspaces, Sandboxes, AgentSessions, and Threads require no joint commit or global order outside shared owning-database CAS checks.
 
-Synchronize and verify file-backed content before its first durable reference. Bounded retained Item and Item-event bodies instead follow [Storage's inline rule](../core/storage.md#item-log-invariants): verify their exact bytes and commit them with their owning metadata in the same FULL transaction. Each file-backed content byte is synchronized exactly once by its publishing owner; a second pipeline stage must not repeat a successful publication barrier. This allocates first-publication work, not permission to treat an uncertain publication as durable. Publish caches and notifications only after FULL commit: visible canonical progress means committed progress, with no volatile publication path. Intent commits before external contact; outcome commits afterwards. Neither progress coalescing nor a future storage backend weakens that effect write-ahead rule.
-
-WAL ATTACH cannot make cross-database effects atomic.
-
-| Location | Authority |
-| --- | --- |
-| `workspaces/<id>/db/workspace.sqlite` | Workspace, Thread, Turn, AgentSession, ordered Items, receipts, executions/steps, signals/timers, Policy/configuration/catalog/Knowledge heads, local Audit/usage/observations/evidence. |
-| `workspaces/<id>/content/` | Existing Storage immutable AEP/context, messages/parts, prompt/tool definitions, configuration revisions, Artifact/evidence payloads. |
-| `workspaces/<id>/knowledge/` | Existing managed originals, schema revisions and immutable Notebook history. |
-| `workspaces/<id>/projections/` | Disposable readable records, never accepted writes or recovery authority. |
-| `server/db/core.sqlite` and server Storage | Users, membership/registry, configuration/Knowledge heads, server executions/evidence, physical bindings and capacity. |
-| Existing user databases/Storage | Private preferences, Memory, receipts and content. |
-| Derived indexes | Rebuildable audience-scoped projections only. |
-
-Reuse `@openkit/storage`, staged handoff, `sha256:` and content references; prohibit immutable overwrites and cross-scope deduplication disclosure.
-
-Server configuration stays server-owned; AEP pins revisions/digests, distinct from reload outcome and running-Turn input.
-
-Vault and host-owned Worker volumes retain their owners.
-
-When AgentSession facts move into SQL, native continuation references retain the scope of their actual native owner, independently of executor placement. The current file-backed pair remains the NanoHost representation; do not give a generic column a NanoHost-placement meaning. Preserve the [AgentSession owner](../core/agent-session.md); this amendment adds no native-reference fields or provider integration.
+File-backed immutable content MUST be synchronized and verified once by its publishing owner before its first durable SQL reference; bounded inline Item and event bodies (`<= 65,536` UTF-8 bytes) commit with their metadata in the same `synchronous=FULL` transaction, while caches and notifications publish only after FULL acknowledgement. Unified scope-local immutable content uses `@openkit/storage` (`sha256:` content references, prohibiting immutable overwrites and cross-scope deduplication disclosure; existing `<scope>/evidence/backend`, Notebook, and Artifact owners remain until full adoption under `#275`). Notebook bytes are immutable and readable files/indexes are disposable projections. Vault material and persistent Worker volumes keep their existing physical owners, and AgentSession SQL records retain their native continuation reference pair and owner scope independently of NanoHost placement.
 
 ### Write And Space Budget
 
-For `v0.1.0`, the physical DatabaseOwner uses the existing bounded control-store worker pool. Each Workspace database is pinned to one worker while open; server-owned physical state has its separate scope. The storage-foundation cutover supersedes the permanent [mixed-writer exception](../decisions/20261020-control_store_mixed_writer_exception.md), including its cold-family exemption. Each complete family move retires the Main writer and displaced commits in the same landing. SQLite locking supplies no ownership boundary. The [worker and load-reference decision](../decisions/20261023-independent_control_store_writers_and_load_references.md) still owns independent placement and measured qualification; all threads remain inside one NanoCore and its existing data-root authority. During incomplete rollout, unmoved families retain their recorded Main path; this temporary state is no exemption for a new Main writer or a dual path within a moved family. Preparing unused handlers or schema does not activate a family.
+Every physical database (`server/db/core.sqlite`, `users/<userId>/db/user.sqlite`, `workspaces/<workspaceId>/db/workspace.sqlite`, and per-App `light-apps/<appId>/data.sqlite`) has one off-Main `DatabaseOwner` writer in the bounded worker pool (`4` Workspace workers plus `1` Server worker in `control-store-worker-protocol.ts`), bounded snapshot readers (`query_only=ON`) released before checkpoint/close, and one open/drain/release-readers/checkpoint/close lifecycle leaving no ordinary WAL/SHM at rest. Each complete family move retires its Main writer, shared receipt/Audit writers, and pruning in the same change without dual paths; remaining unmoved Main writers (including user-disable/Token/Vault, channels/deletion/config/catalog, and unmoved AEP/capture/sync/Policy/Usage paths) are migration debt (`#616`, `#715`).
 
-Every physical database has one off-Main DatabaseOwner writer, bounded snapshot readers and one open/drain/release-readers/checkpoint/close lifecycle, leaving no WAL/SHM at rest. The bounded residue exception for refused unsupported migration history follows [Core Storage](../core/storage.md#sqlite-layers) and its [accepted decision](../decisions/20261110-refused_ledger_sidecar_residue.md); accepted and normal paths retain the complete close requirement. Scope-local immutable blobs and shared byte primitives follow [Core Storage](../core/storage.md#sqlite-layers). Retained Main writers are migration debt, not an allowed release design. Existing reserve, covering-FULL-ACK and lost-ACK uncertainty rules remain unchanged.
+Native family commands carry only bounded typed domain tuples (never arbitrary SQL, table selectors, or Main callbacks) and return complete authoritative results within existing operation bounds without silent truncation, added reply caps, or raced post-ACK rereads (`#613` tracks uncapped input fields):
+- **Product and receipt tuples**: native workers commit complete Workspace/Server Thread, Turn, AgentSession, and Item/event metadata and body descriptors (`control_workspaces`, `control_threads`, `control_agent_sessions`, `control_turns`, `control_product_entries`, `task_turn_terminal_facts`, `control_work_observations`), partitioned command receipts, required local Audit rows, and receipt pruning.
+- **Identity, sharing, resources, and presentations**: native workers commit Better Auth persistence and public Workspace invitation/member/sharing stages; Artifact submission (`Item`, reference, `ArtifactReview`, and `artifact.submit` receipt after durable payload), Material create/save/bind/unbind/exclude/restore (carrying Material UTF-8 content up to `16,777,216` bytes as a transferable binary payload outside the `1 MiB` JSON capability envelope, charged against the `64 MiB` binary/clone pool before `postMessage`), Review decisions/proposals/range feedback, and `evaluation_candidate_sets` (with Main repeating Kernel/Artifact audience checks before and after native open); and Generative presentations (optional answer Item, presentation, Audit, reference Item, and receipt) plus User Thread read-membership ordered-set unions.
+- **Attention, Knowledge, Pending, and Capability/Usage**: native Core owns Attention enqueue/claim/completion; native Workspace owns `knowledge_notebook_heads`/schema heads/Proposals/Reviews/Source registration/maintenance receipts (while User Memory and Server Knowledge keep their scoped writers); native Workspace owns Pending Request and dependent Goal claim/effect/disposition tuples (with Main checking current authority before contact or Goal claim-and-effect posting); and native Workspace owns `CapabilityCall`, `UsageRecord`, `PermissionDecision`, participant Audit, and MCP schema capture (using two native transactions on known Turn/server schema or three on cold discovery, with Main rechecking authority before contact).
+- **Checkpoints, storage bindings, attempts, Harness, NanoHost, and Apps**: native Workspace owns worker checkpoints, launch `PermissionDecision`/Audit, Goal-card/Thread links, terminal runtime Call/Usage/Audit, guarded deletion, and `worker.recovery.retry`; native Core owns `WorkerStorageBinding` reserve/contributors/activation/release/purge, `scheduler_execution_attempts` and first-live Worker final status (committing both stream fingerprints, receipts, and closing state atomically after Main validates raw-output proof), Core Harness capacity/sequence/settlement, and NanoHost preparation/reconnect/liveness/`RuntimeTarget`/backend-session/image-receipt/journal transitions; per-App `data.sqlite` owns its staged business/schema/recovery tuple (`1,000 ms` lock wait); and startup DDL, stopped migration/import, and maintenance tools run under explicit phase exclusion with live writers stopped.
 
-A native family carries only its exact typed domain tuple, never SQL, table selectors or Main callbacks. An existing atomic tuple MUST remain one native transaction. Existing multi-commit sequences remain ordered awaited stages, including their original Git, file and external-effect boundaries; Main holds no SQL transaction across an await and rechecks current authority before later effects. Same-database current facts are deciding native predicates; cross-scope authority stays with its current Main admission. Preserve complete existing returned records under the existing offered, pending and read bounds: no reply-backing reservation, added reply cap, truncation or post-ACK reread is required. The uncapped-field edge remains deferred as #613. App physical scope uses the same owner/lifecycle and existing 1000-ms policy, not another queue, owner or budget.
+For new immutable files first referenced by a worker batch, the database worker prepares and verifies bodies outside SQL, synchronizes each new file once in a bounded parallel cohort, publishes create-only canonical names, and `fsync`s each distinct changed directory (including newly created parent directories) once per batch without `fsync`ing unchanged ancestors or unlinked private `.tmp` names, and only then runs the local SQL savepoints and outer `synchronous=FULL` COMMIT. A worker groups at most `32` eligible ready transitions with at most `5 ms` added coalescing wait (`current defaults`), isolating each transition/Item in its own savepoint so a failed Item leaves no rows and refuses same-Turn queued successors without failing unrelated siblings or rebasing over a failed predecessor.
 
-Current implementation projection: product, Item/event, checkpoint, WorkBody, provenance, presentation, read-membership, public-sharing, Light App, Worker storage-binding, Core Harness lifecycle, execution-attempt, Core final-status, NanoHost liveness/backend-session/RuntimeTarget, image settlement/environment and Core execution-journal families use the native owner. Scheduler admission, retry, cancellation, denial, recurring occurrence acceptance and external event joins use the native owner. Recurring definitions and scanner plan/publication use the native Core owner; Main retains the existing authorization, Workspace guards and callbacks. Other lifecycle and scoped Knowledge/credential families remain incomplete rollout work, not a permanent Main-writer allowance. No Main transaction spans an await. The landed foundation cuts cover cold-read admission, capture pinning, reader release and native close; the all-writer capture fence and busy-Workspace capture remain pending. `apps/nanocore/src/generative-kernel/commands.ts` (`runNativeAppCommand`, `upgradeLightAppFormat`) uses typed App commands and ordered stages; `apps/nanocore/src/storage/evaluation-candidate-native.ts` (`applyControlEvaluationCandidate`) implements the candidate family; `apps/nanocore/src/storage/control-store-product-records.ts` (`closeWorkspaceProductReadHandles`) releases current product readers before close; global bounded-reader pooling and common scope-local blob adoption remain pending. Landed export, Memory Source inspection and server-sent event window readers are read-only cuts, not a complete read-lifetime census. [#616](https://github.com/lingkaix/openkit/issues/616) landed in `a1df05e57`: `getCoreDb` now returns the existing read-only, query-only Core view, and the ordinary Core writer constructors use the default 5 ms busy wait. Explicit boot/setup writers remain; the separate offline integrity reader retains its 5000 ms wait. This removes the default-view writer, not every physical Main writer. The family table below records scoped moves, not a completed physical-writer or read-lifetime census; that broader work remains open under [#715](https://github.com/lingkaix/openkit/issues/715).
+Main readers use `query_only=ON`, see the last committed state, end transactions before streaming or awaiting, and page export/backup/diagnostic scans. Retained Main writable connections use a `5 ms` busy wait with no automatic retry (observed Main `BEGIN` or deferred first-write lock acquisition MUST stay `<= 10 ms`). During writer retirement, remaining synchronous Main Workspace writes acquire the per-database posting hold (FIFO per database, ordered with global backup holds, settling posted ACKs, deferring new posts within admission budgets, and releasing in `finally`).
 
-Different Workspaces require no joint commit or global order. Within one Workspace, different Sandboxes, AgentSessions and Threads are logically independent. Shared Knowledge publication bases, capacity/quota, Pending authority and synchronization cursors still use deciding SQL revision checks in their owning database. Server-owned physical capacity remains server-owned. A server fact must commit before another database references it; this causal dependency creates no cross-database transaction. These boundaries remove unrelated waiting without weakening shared-state checks.
+Per-Turn natural batching allows at most one in-flight commit per Turn and at most eight pending publications per physical database/Turn, including the active publication (`pendingTurnTransitions = 8` in `control-store-worker-protocol.ts`, atomic across multi-Turn selectors), `1,024` pending requests per database, `64 MiB` cloned input and `64 MiB` binary/echo pools, and one shared WAL-growth forecast per database (retaining reservations until channel exit). Determine physical-copy size after its predecessors in the same FIFO slot; Main synchronously decides through existing `FileStorageAdmission` without an awaited Main chain. Refusal commits none of the family; channel uncertainty retains the reservation. Same-database current facts (including page revision/digest and Source Audit pointer at suppression) are deciding native SQL predicates, while cross-scope credential/User authority stays in Main stages. Each admitted MCP call reserves `1` native count credit for its serial closeout (and cold/changed schema observation), which charges actual envelope/material bytes while bypassing per-Turn and aggregate byte-pressure refusal. The exact terminal Tool-call Item borrows its original invocation credit, and successful Tool Item, Usage, terminal Call, and linked Audit commit in the Item owner's existing savepoint/FULL acknowledgement. If Item publication is proved not committed, retain the known upstream outcome through its original ledger and withhold the unavailable Item/result; uncertain publication must neither repeat settlement nor authorize contact replay. High-frequency progress commits immediately on first change after idle and coalesces subsequent ordinary progress to `>= 100 ms` intervals. Coalesce replaceable pending progress projections or append batches; never discard canonical Items, observations, or native transcript bytes. Side-effect, Pending, API-receipt, terminal, capture, deletion, Vault, and auth barriers flush their causal prefix immediately without throttle delay. All OpenKit-owned databases (Core, Workspace, User, and Light App `data.sqlite`, excluding opaque MCP databases) enable `auto_vacuum=INCREMENTAL` on fresh creation, run bounded `incremental_vacuum` with `secure_delete=ON` (never `FAST`) and checkpoint/truncate retries after deletion obligations, keep each WAL `<= 32 MiB` (`walMaxBytes = 32 MiB`, `walMaxAgeMs = 5,000 ms`, checkpoint threshold `8 MiB` / `1,000 ms`, max read duration `250 ms` in `control-store.ts`), and use `VACUUM INTO` only on common-cut static snapshots under durable capture protection.
 
-| Family | Writer and boundary |
-| --- | --- |
-| Activated Workspace product metadata, Workspace/Server Thread, Turn, AgentSession and ordered admission/product records | Database worker, with the entire dependent local tuple. Retain the product's actual server or Workspace scope; do not invent a Workspace for a server product. |
-| Original command receipts and required local Audit rows | The tuple's writer, partitioned by admitted operation identity and owning scope. Each writer commits and prunes only its own rows; no new ledger or ownership column. A legacy read that prunes is a write. |
-| BetterAuth SDK persistence and public Workspace invitation/member/sharing commands | Database worker for the complete existing scoped stage or command, with its required Audit and original receipt. Registry ownership remains distinct from Workspace product authority. User-disable outer composition, other identity/Token and Vault families remain incomplete rollout work with their current owners. |
-| Artifact submission SQL tuple; Artifact Review; Workspace Material, Material revision and Thread Material binding mutations | Database worker. Artifact submission commits its Item/reference, Review and original artifact.submit receipt together after durable bytes. All Review insertions, judgements, selections and decisions use this writer. Accepted Material proposal decisions commit their revision, current pointer, bound queues, Review decision and original receipt together. Material creation, independent revision save, binding/inclusion changes, exact-range judgements/corrections and verified queue consumption use this same writer; each command commits its original receipt with its complete local tuple. |
-| Evaluation candidate sets and their set-owned selections/assessments | Database worker commits the existing complete candidate record and original receipt. Main retains current Kernel and exact Artifact audience admission and repeats it after native open. |
-| Generative presentation and User Thread read membership | Database worker. Presentation commits its optional answer Item, presentation record, required Audit, presentation Item and original receipt together. Read membership commits the exact User-owned union and returns the complete ordered set. |
-| Attention enqueue, attempt claim and completion; channels, deletion and remaining configuration/catalog families | Attention enqueue, attempt claim and completion use the native Core owner. Channels, deletion and the remaining configuration/catalog families keep their existing owners during incomplete rollout; their complete native or file publication and lifecycle joins remain required. |
-| Workspace Knowledge Notebook/schema heads, Proposal metadata and ordered Review decisions | Database worker over prepared immutable Git/schema/Proposal content. Commit the exact expected Notebook/schema heads, applicable Review, required Audit and original command receipt together. Source registration keeps its original command identity; maintenance keeps its admitted Turn receipt. Ordinary portable import is removed. User Memory and Server Knowledge retain their existing scope writers. |
-| Pending Request and dependent Goal product mutations | Database worker for the complete native admission/publication/claim/effect/disposition tuple and original receipts. Native claims reserve at most one execution and apply native-owned checks. Main checks its current authority at the existing effect-submission boundary: after external claim ACK before contact, or immediately before posting a Goal claim-and-effect transaction. |
-| Workspace CapabilityCall, linked usage, PermissionDecision and their required Audit rows | Database worker for the complete measured family: admission, final/gate/approval decisions and finite-use consumption, participant Audit, raw-proof accounting, same-row attribution, MCP schema capture/binding and usage/terminal publication. Preserve correlation with the native Pending claim through its request-derived execution call identity. MCP Tool success uses two native transactions, including its terminal Item, for an existing Turn/server schema and three on first discovery; unchanged current observation reuse preserves its capture time. After awaited commits, Main rechecks current authority at effect submission; the durable Call row precedes contact. Server/User decisions and unrelated Audit producers keep their existing owners. |
-| Worker checkpoint and its required launch/recovery/terminal tuple | Database worker for reservation, launch PermissionDecision/Audit, preparing checkpoint, dependent Goal-card/Thread link and revision, update/bind, terminal evidence and derived runtime Call/usage/Audit, guarded deletion, and interrupted retry with its original worker.recovery.retry receipt. Core execution-attempt mutations use their native owner; current cross-scope authority checks remain on Main before submission; exact retained checkpoint comparison protects cleanup after awaited proof. |
-| Not-yet-moved execution/control, AEP/observation/evidence/synchronization, unrelated usage and other Policy families | Existing main-thread owner until its complete typed family move to the owning database worker, with an explicit ownership switch. Unmeasured frequency does not make these families cold; there is no permanent Main-writer exception. Moved scheduler admission, recurring occurrence acceptance, external joins, recurring definition publication and scanner plan/publication are not in this row. |
-| Core Worker storage bindings | Database worker for atomic fresh create-and-reserve, existing reserve/contributor admission, exact activation/unknown/release and purge reservation/settlement. Current cross-scope audience and Host effects retain their original stages; the owner rechecks binding CAS and the exact active Scheduler references. |
-| Core execution attempts and Worker final status | Database worker. Attempt admission acquisition, input/session binding, operation intent, observations and closeout preserve each original atomic tuple. A first live Worker final status commits both original stream fingerprints, both retained receipts and attempt closing together; exact replay rewrites none of them, and cancellation-owned admission is already closing. Native refusal rolls back all members. Main validates raw-output proof before submission and installs memory/notifications only after the covering FULL acknowledgement. |
-| Core Harness lifecycle | Database worker for runtime/binding creation, drain/fence/removal, prepared queue, lineage-qualified dispatch, expiry, settlement/unknown and exact consumer acknowledgement. Each existing tuple retains its atomic receipt, capacity and sequence joins inside the native transition savepoint and covering FULL commit. Main retains reads, preparation, raw credentials and physical transport delivery. |
-| Core NanoHost execution metadata | Database worker for current preparation/reconnect/liveness, RuntimeTarget allocation/readiness/close, accepted event/sequence stages, backend-session transitions, image receipt and Core image/idle-cleanup journal decisions. Preserve the original sequence/record and confirmed-defaults commit boundaries. Image receipt and its journal advancement remain atomic; idle outcome and linked consumption remain atomic. Current same-Core provenance is revalidated inside the deciding section. Main retains process-local authentication, raw credentials and immutable package preparation; later effects follow FULL acknowledgement and current process authority. |
-| Independent Light App business databases | Existing native physical App scope for the exact staged Kernel business/schema/recovery tuple. Current Kernel authority stays with its effect owner; no cross-database atomicity claim. |
-| Startup DDL/recovery, stopped migration/import and maintenance tools | Existing scoped owner under explicit phase exclusion. Stop or exclude the live writer before the phase; never compete with it. Live imports follow each target family's writer. |
+## Execution Journal
 
-Artifact files and synchronous capacity sections keep their existing owner. Synchronize durable bytes before the submission SQL transition; preserve truthful fail-closed file/SQL gaps and the accepted refusal, replay and recovery rules. Review refinement/redo keeps its existing separate checkpoint, Turn and scheduler proof paths; this switch creates no cross-domain transaction. Route evaluation.judgement-add and its original receipt to the existing exact target's writer; candidate-set mutations use their native owner. Stopped staged import retains the explicit phase exclusion. No second writer, settlement state, ledger, asynchronous global admission scope or terminal bypass is authorized by an individual family switch. All complete-body, savepoint, FULL acknowledgement, committed-read, bounded queue, batching, WAL, busy-handling and qualification requirements above remain binding.
-
-Direct Material save admits at most 16,777,216 exact UTF-8 bytes. Native transport carries them in one transferable binary payload outside the unchanged 1 MiB JSON envelope. The client admits binary bytes against its bounded in-flight budget before `postMessage`; native preparation verifies length and digest before SQL. Artifact-backed Review preparation reads and verifies the retained original under the existing UTF-8 processor limit. Failure, cancellation and lost acknowledgement preserve truthful commit certainty. This adds no Storage stage capability, durable family, ledger, settlement state, Main fallback or asynchronous global admission scope.
-
-For new native bodies first referenced by a worker batch, the owning database worker is the publishing owner. Inline Item and Item-event bodies use the existing control database; file-backed bodies use existing Storage staging and content references rather than a new buffer or ledger. Existing Artifact/file authorities and already durable content keep their owners. The minimal durable pipeline is:
-
-1. Prepare and verify the bounded batch's exact native bodies outside SQL. Select inline or the unchanged file descriptor under the Core byte boundary, without converting prior revisions. Synchronize each new immutable file exactly once, in a bounded parallel cohort owned by that database worker, not first in Main and again in the worker. Reused content must have a verified completed durability boundary; mere path existence after interruption is insufficient.
-2. Publish create-only canonical names and synchronize each distinct changed directory once for the batch, after its entries are prepared. Do not synchronize existing unchanged ancestors on every ensure-directory call. Retain existing path, type and scope validation. Newly created directories still require their changed parent entries to be durable before references; include those parents in the distinct-directory set. Unlink private staging names without a following cleanup sync. Names surviving a crash are garbage, not authoritative deletion or capture results.
-3. Only after all referenced files and paths are durable, run the complete local SQL transitions and outer FULL COMMIT, committing exact inline bodies with their metadata. A failed savepoint may leave an unreferenced immutable object, never a dangling accepted reference. Publish acknowledgements and committed views afterwards.
-
-The existing startup staging-cleanup owner must remove abandoned native publication names under writer exclusion, before live admission. Its current Workspace `.staging` cleanup alone does not cover hidden publication `.tmp` names beside canonical content; extend that owner to the exact private names in admitted roots, without touching canonical digests or live captures. No new cleanup service or durable marker is required. A directory whose first publication is uncertain still needs recovery validation; an unchanged, established ancestor does not need a repeated sync. This optimization does not weaken acknowledged deletion.
-
-- The complete read-check-write body of a worker-owned transition runs inside the worker's transaction. If a required tuple dependency lacks a native handler, do not split the tuple between worker and main commits.
-- No main-thread callback, awaited external effect or file synchronization runs inside SQL.
-- The worker groups eligible ready transitions of one database into one transaction: at most 32 transitions and at most 5 ms of additional writer coalescing wait. Progress eligibility follows the explicit throttle below; other work does not inherit that delay. These existing writer bounds limit batch monopolization and added waiting; they do not synchronize different databases.
-- Each transition/Item gets its own savepoint. A failed Item leaves no rows and refuses that Turn's queued successors; it does not fail independent siblings or undo an earlier committed Item. Expected predecessor revisions still decide applicability. No successor is silently rebased or skipped.
-- The worker acknowledges a transition only after the outer COMMIT with `synchronous=FULL`. Writing callers await that acknowledgement, then publish caches and notifications.
-- A missing acknowledgement does not prove non-commit. The request identity and receipt rule above resolves it.
-
-The main thread uses bounded snapshot readers (`query_only=ON`) for product reads. Remaining writable connections are transitional debt; each complete family move must retire its producers and shared receipt/Audit writers together. A writable handle is not a table-level SQLite access-control boundary.
-- These reads stay synchronous, see the last committed state and never write.
-- A read ends its SQL transaction before streaming or awaiting a downstream consumer.
-- Export, backup copy and diagnostic scans are paged; none runs as one long main-thread read.
-- If a read must see a write that is not yet acknowledged, the caller's design is wrong. That is not a reason to route reads through the worker.
-
-Keep retained Main writable Core, User and Workspace connections' busy wait bounded at 5 ms; the [QA091 interim](https://github.com/lingkaix/openkit/issues/616) 5,000 ms Core exception is retired. Workspace owner provisioning takes immediate write intent before dependent current-fact reads. This bounds lock waiting, not COMMIT/fsync time, transaction duration or operating-system scheduling. Do not retry automatically. Retain the original qualification criterion of at most 10 ms observed Main BEGIN duration, including failed starts; it bounds write-admission stalls separately from the main-loop percentile. Observe actual first-write lock acquisition for deferred transactions as well, rather than claiming a pass from absent BEGIN IMMEDIATE samples.
-
-During writer retirement, remaining Main-owned synchronous Workspace writes take the existing native posting hold scoped to that database key. The hold asynchronously settles that database's posted acknowledgements, defers its new posts within the existing admission slots and byte budget, and releases idempotently in finally after the synchronous operation. Same-database holds run FIFO; a global backup hold waits for earlier database holds, while later database holds wait for it. A failed channel refuses the hold. Other databases continue independently. The Main Workspace busy wait remains 5 ms with no retry. This is writer exclusion, not a family switch or a new request queue. The hold is transitional exclusion, not an exemption from complete writer retirement.
-
-All remaining production Main writer families must move to their owning database worker, with complete tuples, original receipts, required Audit and disjoint pruning. This requirement is independent of measured frequency. Retain actual family/transaction timing, the same real-effect workload and the existing Main-loop, BEGIN and sibling-isolation acceptance criteria; neither a proxy nor deletion of the effect dose qualifies the move.
-
-Native BUSY/LOCKED uses the existing transport-neutral operation error owner: HTTP 503 and `operation_storage_unavailable`, with equivalent MCP framing. Tell the caller to inspect the original request outcome before retry. Do not expose SQL, classify busy as authorization refusal, promise non-commit from timeout alone or create another retry ledger. Only proved pre-effect failure or rollback establishes non-commit; COMMIT/reply uncertainty still resolves through the original receipt.
-
-Preparation does not activate the writer or transport changes. Qualification uses actual native tuples, including immutable-body publication, Pending, Goal and terminal publication, plus real effect submission through its actual owner. The mixed arm must exercise CapabilityCall, PermissionDecision and required Audit while they remain Main-owned; it must not substitute candidate-set creation or direct SQL. Preserve required usage, outcome and Item publication work and the owner's transaction boundaries; a synthetic combined transaction is not the product path. Preserve the native payload/operation mix; SQL-only or prepublished-content probes cannot qualify it. Account for scheduled, offered, committed, refused, late and unresolved work by identity. A Main stall or client single-flight check must not silently reduce offered load. After a justified migration, retain the same effect workload and verify the new writer placement, rather than remove the effect dose or retain a redundant Main writer.
-
-Use natural batching for one Turn or AgentSession. At most one commit is in flight per Turn, including its publication-to-COMMIT boundary. Items arriving meanwhile enter the existing FIFO within its count and byte bounds, or receive explicit refusal beyond them; queued means pending, not durably accepted or visible. The next commit takes queued Items in order with one savepoint each. Preserve the AgentSession's ordering boundary where applicable, expected predecessor revisions and in-order FULL acknowledgements. A failed Item refuses its Turn successors, including later queued work, rather than rebasing them. This does not multiply capacity by addressing both identities or change one-active-Turn execution exclusion. Lost acknowledgements resolve through original receipts, never automatic effect replay. There is no four-item or K-deep in-flight commit requirement.
-
-Admission bounds each physical database/Turn to eight pending publications, including its active publication. A publication addressing several Turns checks their distinct selectors atomically before reserving or installing any tail; excess work is refused busy with definite non-commit. Before durable MCP call admission, reserve one native count credit for that exact call's serial closeout through its original invocation settlement. The admitted call's cold or changed MCP schema observation also borrows that same exact-call credit; exact unchanged current observation needs no additional native request once that Call's bound schema stamp is proved. Child discovery has its own credit; cold opening, admission and unrelated commands retain ordinary accounting. Credited closeout charges its actual envelope and material bytes but is exempt from aggregate byte-pressure refusal, so ordinary new work yields to already admitted effect closeout. Existing single-item ceilings remain: capability JSON is at most 1 MiB, and a scalar larger than the entire material pool is refused. This rule also covers builtin Knowledge answers without adding an answer cap or worst-case byte reservation. The admitted effect's exact terminal tool-call Item publication is serial closeout: it borrows that invocation credit and is exempt from the per-Turn and aggregate byte-pressure refusal while preserving same-Turn ordering and actual byte charges. A successful Tool's Item, usage, terminal Call and linked Audit share the Item owner's existing native savepoint and FULL acknowledgement. If that Item request is proved not committed, record the known upstream outcome through the original ledger owner and withhold the unavailable Item/result; an uncertain commit neither repeats settlement nor permits contact replay. These limits bound new admissions. Genuine terminal Item publication failure is explicit and privately diagnosed; it does not rewrite the settled effect. After acknowledged failed closeout, a proved absence of target Tool contact is reported as `details: { outcome: 'failed', upstreamEffect: 'not-contacted' }`; an earlier committed terminal outcome, uncertain closeout or unavailable required publication cannot establish that failed outcome. This does not claim non-commit of admission or any internal substep. Only proved pre-contact native admission refusal carries `commit: 'not-committed'` to the MCP caller; a failed post-contact SQL write or missing acknowledgement grants no such claim about the effect. The [admission fairness decision](../decisions/20261025-native_admission_fairness.md) records the accepted count and byte-pressure trade-off.
-
-For high-frequency progress, the first change after idle commits immediately without a throttle delay. Subsequent progress commits are at least 100 ms apart; intervening changes coalesce into the next eligible batch, with storage pressure allowed to lengthen the interval within existing operation deadlines and queue bounds. Arrivals do not perpetually restart a debounce timer. Coalesce replaceable pending progress projections or append batches, never discard canonical Items, observations or native transcript bytes. Producers retain all unacknowledged data under SOURCE-RETENTION below. A barrier bypasses the throttle and flushes its complete causal prefix before acceptance: effect write-ahead, Pending/approval, API receipts, Turn terminality, capture acceptance, deletion, Vault and authentication are never deferred for progress coalescing. The 5-ms writer window begins once work becomes eligible; the 100-ms progress eligibility delay is explicit, not hidden in that window. First-idle progress and barriers do not deliberately wait for a writer-coalescing timer. No new durable scheduler, buffer or public operation class is introduced.
-
-Design load envelope (committed work, not merely offers):
-- **Status and headroom:** expected product peak remains well below 100 transitions/s per NanoCore instance. A capacity floor of 200 committed transitions/s provides at least twice that peak, including when it concentrates in one Workspace. This floor and the safety criteria are firm requirements, not claims of measured achievement. The following workload shapes, single-Turn throughput, isolation percentage and pool sizing are provisional reference defaults until the first native measurement. Revisions must retain the capacity floor and safety criteria; failure is not a waiver.
-- **Per-Workspace reference:** sustain at least 200 committed transitions/s with 40 active Turns at a mean 5/s each (40 × 5 = 200). The 5/s rate means one transition per 200 ms; increased concurrency supplies headroom without demanding an 80/s serial Turn. It is a provisional workload reference, not a measured per-Turn rate. Separately demonstrate one Turn sustaining 20 committed/s with natural batching and at most one commit in flight. Queued Items are not concurrent commits. At a 100-ms progress cadence, this needs at least two Items per commit rather than twenty separate commits/s; report actual batch sizes and timing instead of assuming that amortization.
-- **Per-NanoCore-instance reference:** sustain at least 200 committed transitions/s across four concurrently active Workspaces, each contributing at least 50/s from ten active Turns at 5/s. Four preserves the previous hot-plus-three-siblings topology. Use four Workspace workers plus the separate server worker on the reference host; this is a bounded reference configuration, not a thread per stored Workspace. The concentrated and distributed profiles are alternative distributions of one 200/s budget, not a promise of 800/s.
-- **Workspace isolation:** offer one Workspace 400 transitions/s, twice the instance reference, while each of three siblings offers 5/s. Each sibling must commit and acknowledge at least 99% of its own scheduled valid offers during the steady measurement window. Count refusal, missed scheduling and late acknowledgement as failures, not reduced denominators. At the window below, each sibling needs at least 1485 of 1500 successes. This allows at most 1% boundary/tail variation. The earlier 72.0–74.4% result measured cold commands in the primary Workspace, not sibling success; each sibling now needs its own proof. The three siblings need only 15/s; the hot Workspace must yield and refuse excess rather than monopolize admission, preparation or SQL service. This is bounded storage-service isolation, not a new execution-placement or quota policy.
-- **Real-effect mixed reference:** schedule one complete effect lifecycle per ten scheduled native transitions, independently of acknowledgement timing. This provisional 1:10 ratio requires 20 effects/s at 200 native transitions/s, or 5 effects/s in each 50/s Workspace. A normal Worker MCP effect publishes one terminal tool-call Item; ten percent effect-associated native traffic is a reference assumption, not observed production frequency. The effect dose is four times the former 5/s proxy and prevents a zero-Main mixed qualification. Within the envelope, complete the scheduled valid effect dose at the stated rate; missing or refused effect dose fails qualification. Ledger writes do not count toward the native committed-rate targets. Record lifecycle/ledger counts separately from native product progress, counting each terminal Item only once. The ratio and actual synchronous family coverage remain in force after migration; a higher deployment effect ratio needs its own RC measurement.
-- **Measurement:** use a steady 300-second window and two repetitions per reference profile. This retains the earlier 192000/640-second observation length and exposes the observed run-to-run variation. Derive offers from wall-clock time, not acknowledgement timing. Report committed acknowledgements in the measurement window separately from drain completion; a drain proves disposition, not throughput. Include count/byte queue occupancy, actual batch sizes, per-Turn in-flight commit counts and refusal reasons. Every repetition must pass, including each sibling separately; aggregate averages cannot hide starvation. Exercise overflow and a failed predecessor with dependent queued successors without changing the ordinary valid-load denominator.
-- **Reference storage class:** the measured development host has 16 cores and a local btrfs filesystem on a LUKS SSD. With 4 KiB objects, serial file-plus-parent publication measured 43 objects/s, or 85 fsync/s and approximately 11.7 ms per fsync, not per object. At 16-way concurrency it measured 560 objects/s, or 1121 fsync/s. A 32-file cohort with one parent sync measured 1129 objects/s; serial WAL-like append plus fdatasync measured 88/s. These observations identify the storage class and distinguish latency from concurrent capacity; they are not transition-throughput guarantees. Re-measure deployment hosts, storage and the complete native profiles at release-candidate acceptance; report CPU, filesystem, encryption, storage concurrency and competing load. An unqualified host cannot inherit the development host's result.
-- **Synchronization observation:** the current path is estimated at 1060 syncs/s for 200 transitions/s, about 5.3 per transition, versus approximately 1121 fsync/s measured parallel storage capacity. That leaves no useful margin. Target an average of at most three sync operations per committed native transition, or 600/s at the reference rate. This is a design target, not an additional numerical pass/fail gate: committed throughput and the existing safety criteria still decide qualification. The actual count and breakdown are REQUIRED reported observations for every reference profile, not an inference from this estimate. Include all Main/worker file, directory, SQLite WAL and checkpoint synchronization, actual effect-dose work, new-directory costs and failed work during the measurement window; normalize by native transitions committed and acknowledged in that window. Count actual platform fsync/fdatasync operations, including SQLite-internal calls, without double-counting wrapper instrumentation. Report batching and I/O concurrency and any measurement gaps; JavaScript-only counters are not a complete count. No claim of achieving the target may substitute for measurement.
-- **Within the envelope:** Core loses no accepted transition, keeps main event-loop delay p99 at or below 25 ms, and survives reopen with exact original receipts and their committed tuples/content. The loop bound protects service responsiveness; exact reopen and no loss protect acknowledged authority. Acknowledgement remains after outer FULL COMMIT, with immutable content durable before its first durable reference. These requirements also remain binding during the saturation/isolation run.
-- **Beyond the envelope:** Core refuses excess work explicitly through bounded admission, ordered-queue and WAL backpressure, scope-local where the owning scope is known. It never drops acknowledged work, acknowledges before COMMIT or grows an unbounded queue. Pressure in one Workspace must preserve the stated sibling service. Worker sharding replaces the former shared-worker latency coupling; it promises only the measured reference isolation, not unlimited hardware isolation.
-
-Bound offered work, pending work and read duration. Keep each WAL at or below the existing 32 MiB bound through checkpoints and backpressure, preventing storage growth under blocked readers. WAL age triggers backpressure and is reported for diagnosis; it is not a latency objective.
-
-Return complete current RETURNING rows and records within the existing offered/pending/read bounds. Add no reply-backing reservation, reply cap or join; do not truncate or reread after ACK. Replies retain per-database FIFO order in batches of at most `batchTransitions`. Implementation projection: `apps/nanocore/src/storage/control-store-worker-protocol.ts` (`ControlSqlRow`, `CONTROL_WORKER_LIMITS`) and `apps/nanocore/src/storage/evaluation-candidate-native.ts` (`applyControlEvaluationCandidate`) preserve materialized results. The uncapped-input-field edge is deferred beyond v0.1.0 as #613; it does not block these family moves.
-
-Queued envelope and binary/echo backing budgets are per owning database. Outstanding commands for that database share one bounded WAL-growth forecast; they do not each reserve the complete WAL allowance. Distinct databases and other file producers still share actual filesystem capacity. Every affected filesystem must admit each new request against its current ordinary or control margin. A failed channel retains its outstanding reservations until the native owner actually exits.
-
-For a physical copy, determine exact size after predecessors in the same FIFO slot. Main synchronously decides through existing FileStorageAdmission, without an awaited Main chain while that slot waits. Refusal commits none of the family; channel uncertainty retains the reservation. Same-database current facts, including page revision/digest and Source Audit pointer at suppression, must be deciding native SQL predicates. Cross-database credential/User authority stays in the existing Main stages with the effect recheck above.
-
-Implementation projection: `apps/nanocore/src/storage/control-store-worker.ts` (`admitPhysicalPublication`) and `apps/nanocore/src/storage/control-store-worker-client.ts` (`receivePhysicalForecast`) implement the copy handshake. Cohesive scoped Knowledge authority reads and suppression predicates remain pending in MAIN storage foundation row 18; `apps/nanocore/src/knowledge/memory-forget.ts` (`applyMemoryForget`) still owns the existing Main orchestration.
-
-At creation, including the authorized reset, set `auto_vacuum=INCREMENTAL` for all OpenKit-owned databases, including server, Workspace, user and Light App `data.sqlite`; opaque MCP databases remain app-owned.
-
-Run bounded `incremental_vacuum`; enforce `secure_delete=ON` per connection because FAST can leave freelist remnants; checkpoint/truncate after deletion obligations, retrying blocked checkpoints without device-erasure guarantees.
-
-Use `VACUUM INTO` only on common-cut static snapshots under durable capture protection.
-
-Content deletion removes unheld blobs through reachability GC; backups expire under retention.
-
-Thread-owned rows carry Thread identity directly or through their owner, permitting transactional separation; stable cross-Thread references, including Knowledge provenance/Task links, resolve archived/purged states truthfully.
-
-### Workspace Authorities Outside The Control Database
-
-| Existing owner | Target commit and complete-snapshot boundary |
-| --- | --- |
-| Notebook Git refs/pages/Source pointers | SQL head, expected-base check, Audit and receipt commit over synchronized immutable Git history; refs/pages become projections. Copy the referenced history, not a moving branch. Preserve Source identities, semantics and reference-may-miss behavior. |
-| Authored configuration, schemas, mounts | SQL admitted heads over exact immutable revision bytes; editable files are drafts. Full-directory capture labels and includes unadmitted drafts without activating them. Failed admission preserves the prior head. |
-| Skill/MCP/Plugin/Light App catalogs | SQL heads, pins, binding associations and receipts; installed snapshots remain immutable. Include retained historical versions. |
-| `light-apps/<appId>/data.sqlite` | Keep independent business DDL/schema-data rollback and app-local receipt/Audit authority. Turn writes are keyed effects resolved through app receipts, not another execution journal. Snapshot each database and exact definitions. |
-| `mcp-data/<packageDataKey>/` | Opaque binding-owned mutable business data; preserve referenced data across rollback/uninstall. Pause/stop every writer and obtain supported flush/snapshot proof; otherwise refuse hot capture. Unknown mutations cannot be retried. |
-| Managed `files/`, `data/`, `sources/`, Artifact/transcript metadata | Mutable Core heads/records move to SQL; payloads remain immutable. External mounts remain explicit external references, not implicit backup coverage. |
-| Runtime/staging/indexes/logs/projections | Disposable or diagnostic, never product authority; exclusion requires declared coverage. |
-
-Only accepted per-Light-App business databases remain additional canonical Workspace databases because their independent schema/data recovery contract requires them.
-
-Workspace close must drain its already-open dependent App databases under the same actual bound root, checking Workspace identity, canonical App path and current inode. Its proof authorizes closes only; a failed or unknown child close prevents Workspace database close. Rollback is one ordered owner publication: verify immutable candidate content before admission, then recheck path, inode, size and receipt before rename, directory fsync and reopen. Implementation projection: `apps/nanocore/src/storage/control-store-worker-client.ts` (`close`, `assertFrozenCall`), `apps/nanocore/src/generative-kernel/commands.ts` (`publishRollback`) and `apps/nanocore/src/storage/control-store-worker.ts` (`maintainDatabase`) implement these mechanisms. Product readers release before the normal native close. Retirement refuses new App readers; retained observations use an already-owned reader without reopening the retiring scope. After a failed or unknown close, exclusion remains bound to the original peer until its actual exit; a timeout alone proves neither exit nor shutdown. Remaining physical-lifecycle caller retirement and the exhaustive census remain open under [#715](https://github.com/lingkaix/openkit/issues/715).
-
-### Snapshot Cut And Capture Protection
-
-Busy capture requires one bounded crash-consistent cut fencing every physical SQL and mutable-file writer. An ACK drain alone is insufficient. The idle-only capture rules below describe the current realization until that fence lands; destructive restore/MOVE/delete blockers do not change. Restore interrupts captured in-flight work, preserves unknown effects and replays nothing. Implementation projection: `apps/nanocore/src/storage/workspace-backup.ts` (`runWorkspaceCapture`) retains the scoped freeze/blockers; busy capture is pending behind the all-writer fence.
-
-Cold App reads follow [Core Storage](../core/storage.md#sqlite-layers). For capture, a no-residue cold App read requires proof at the held cut that no WAL or SHM is present, no native App handle is open, and the freeze is held. Otherwise, before the capture/global hold, the existing native owner admits the App as a participant and owns its writable final close, or capture refuses typed. Ordinary non-capture cold App reads must either leave no residue or be covered by an owned writable final close; this does not require a capture freeze for every ordinary read. No normal-at-rest waiver is permitted. The landed cold App path reserves the Main acquisition before native admission and releases it in `finally`. Cold App opens join the original native Opening/capture generation; physical rechecks use its existing finite Pending slot. Ordinary backup ends that generation only after native resume and logical freeze release; MOVE and caller-held freezes retain it until cleanup. The [recovery fix-forward](https://github.com/lingkaix/openkit/commit/efd9a2d197a8de795c96b7d2a65af5442c926683) ends each recovery-preflight generation before its posting hold releases, including refusal and retry paths. Its logical recovery freeze keeps its existing lifetime. Format-upgrade preflight uses the same native App-read owner and preserves the typed unsupported-history refusal before any migration or recovery snapshot. Four synchronous metadata readiness checks remain within admitted App reads; this is not a Main-I/O-zero claim. Final writable close belongs to the original native scope, not a fabricated per-App close acknowledgement.
-
-The same-build `active` variant approved by [Private Active Capture Pin](../decisions/20261112-private_active_capture_pin.md) remains pending. The private recovery-capture message currently admits only `finished` and `abandoned`; active protection still calls `protectCapture` through the capture worker's writable handle under the existing hold. Request-local settlement fences join the original accepted callbacks before releasing their hold; holder/global-hold ordering remains with the existing owner. The public protocol, retained capture record and existing `finished` and `abandoned` variants are unchanged. The landed terminal-capture and callback-lifetime results do not qualify the pending native active pin, busy capture or complete all-writer coverage.
-
-Before snapshots, the backup owner durably creates a Workspace SQL capture record excluding Storage GC and Notebook prune/repack for that Workspace.
-
-This specific capture obligation is new, not an existing hold implementation or generic service.
-
-Existing mutation admission blocks writes, settles cross-database effects and establishes one common control/app/opaque-root cut; release the gate only after all snapshots stabilize.
-
-Other Workspaces continue; an unfreezable writer refuses hot capture, and independent database copies do not prove consistency.
-
-Quiesced capture settles executions/stops writers; never file-copy live SQLite/WAL or declare unresolved effects application-consistent.
-
-The owner durably finishes after verifying transitive blob/history closure, or explicitly abandons; GC/prune/repack resumes only without active captures.
-
-Restart, unavailable authority, process loss and wall-clock passage cannot release protection; abandoned partial bundles cannot restore as complete.
-
-#### Reviewed Workspace Schema Application
-
-Reviewed Workspace schema application MUST use the existing DatabaseOwner for bounded current observations and a short final readset-CAS/commit section, without a lifecycle freeze or idle-Workspace requirement. It MUST NOT retain a SQL read cut across dependency computation or event-loop scheduling. Compare the reviewed base schema head, recompute complete current dependency impact, and atomically commit the exact reviewed candidate, Audit and original receipt only if no new impact class appears. More instances of a reviewed class are allowed; Audit records the actual inventory. A moved base or new impact class refuses with the delta for re-review, without wait or retry. Schema-dependent pending writes MUST retain their validated schema head and revalidate on later admission/publication. Immutable retrieval/Context traces remain history, without fencing or rewriting. Keep current human, Policy and disclosure checks, durable previous-schema/candidate/report preparation and truthful unknown results.
-
-Current observations cover Core, the target and every admitted positive or negative opaque-identity search owner, plus the exact physical inventories and named absences used by the computation. The target observes its actual writer; Core and peer observations use their original read owners without retaining snapshots. Complete dependency and retained provenance checks run through those owners in released contributions. A definite changed readset with proved SQL non-commit permits at most one recomputation with the original reviewed input and receipt; a second such conflict returns the existing storage-unavailable result for the administrative request only. Semantic moved-base/new-impact, authority, capacity and uncertain outcomes do not use that recomputation. Existing read and WAL limits remain unchanged; an over-budget pinned reader can refuse foreground publication through its original typed busy result.
-
-Each submitted native attempt retains its existing FIFO slot while preparation yields to independent healthy foreground work. Before publication it promotes that slot to the existing barrier and joins its originally earlier prefix. It then compares the current readset and repeats the original current authority checks, including schema-write eligibility on retained-receipt replay. For an attempt that reaches fresh history publication, one existing physical forecast covers its exact recomputed history files and any database-directory publications. Retained-receipt replay rechecks current authority and returns the original result without impact recomputation or a new history forecast. Main derives the allowed history root from the opening's own Workspace and compares captured non-retained Actor identity, effective Policy, review-required Page ids and scope-refusal facts with their original current owners before reserving; these inputs are not authorization results. The final native section synchronously prepares the immutable history and commits the original schema-head CAS, Audit and receipt under the covering FULL acknowledgement. Refusal before history preparation publishes no new history in that attempt. A later SQL conflict can leave immutable preparation residue with no committed schema tuple. Cross-owner observation and admission do not promise a global atomic snapshot.
-
-Implementation projection: `apps/nanocore/src/knowledge-operations.ts` submits the original reviewed request and exact candidate binding to the existing native writer. `knowledge/schema-application.ts` drives the shared owner steps without a held SQL cut; the existing worker owns final promotion, the physical-capacity exchange and synchronous history/CAS/Audit/receipt section. Native rechecks current Core authority before publication. The schema-only lifecycle-freeze exception is removed; unrelated capture/recovery lifecycle freezes keep their owners.
-
-## Minimal Engine
-
-One NanoCore reconciler advances executions, steps, existing signals and timers.
-
-| Primitive | Retained contract |
-| --- | --- |
-| Execution | Existing work/operation identity, immutable scope/input identity, execution-definition version, current steps, terminal cause and exclusion. Worker execution belongs to one Turn; Task lineage remains unchanged. |
-| Step | Exact invocation/actor, intent/outcome, fingerprint, permitting decision, authority/fences, references, retry declaration and deadline. Intent precedes effects; outcome and next transition commit together. |
-| Signal | Existing Pending Request identity, first valid decision and delivery linkage; same identity/content returns the result, changed content conflicts. Existing withdrawal/late-outcome rules apply. |
-| Timer | Existing deadline/next-due and recurring families; conditional consumption in the owning transaction, preserving due instants across restart. |
-
-Execution phases: `open`, `closing`, `closed`; step states: `intent`, `completed`, `failed`, `unknown`, `cancelled`; only intent is nonterminal, ended steps immutable/skipped.
-
-One release-authored execution-definition version and closed step kinds govern interpretation; unsupported required semantics fail closed, descriptive additions remain ignorable.
-
-Each step names its own selected execution target and control parent/deadline cap; an execution may have concurrently open steps and nested child steps. Invocation identity is stable and distinct from the input fingerprint and trace identity; the definition version and exact versioned control/content references carry consumer-specific child keys, replay fingerprint inputs and actual result-delivery order, never diagnostic attributes.
-
-Claims and outcomes condition on the unchanged execution and selected current step; constraints enforce Thread/AgentSession single flight and effects recheck authority.
-
-Worker/network/user waits occur outside SQL.
+One NanoCore reconciler (`apps/nanocore/src/runtime/execution-reconciler.ts`) advances scope-local executions (`control_executions`), steps (`control_execution_steps`), signals (Pending Request first decisions with same-input replay, conflict, and withdrawal rules), and timers (deadline/next-due and recurring families consumed conditionally in the owning transaction). Each execution retains stable work/operation identity, immutable scope/input identity, `definition_version`, current steps, terminal cause, and exclusion fences (one owning execution per Worker Turn, with no public Run). Each step retains stable invocation identity (distinct from input fingerprint and trace ID), selected physical target, control parent and deadline cap, actor, intent/outcome, permitting decision, authority/fences, versioned input/output references, and retry declaration; claims condition on unchanged execution/step/authority with Thread/AgentSession single-flight, and waits occur outside SQL.
 
 ### Containment Consumer
 
-The accepted [port consumer contract](20260629-worker_runtime_communication_model.md#containment-consumer) admits the deterministic Core `containment` consumer. It uses the existing Server journal and reconciler outside publication Turns. It creates no Worker admission, fake AgentSession, public run, executor, queue, table or field. The existing execution-definition field gains exactly `containment`; reuse existing `fence`, `cancel`, `inspect-cleanup`, `collect`, `release` and `consume-receipt` kinds for their owned operations, plus the existing non-effect `human-wait` kind for review.
-
-The existing root work/input references identify the trusted sensor AuditEvent and exact immutable target/scope. Authority and permitting-decision references identify the current approved template and decision. Each step retains its existing operation/invocation identity, bounded deadline, target/attempt/binding references, input fingerprint and output references to the owning Policy/native operation receipt. Audit and EvidenceBundle references stay with their owners. The definition admits only exact quarantine installation, suspect credential revocation, Turn interruption and exclusively suspect Sandbox control; it grants no effects by itself.
-
-The mandatory quarantine review/escalation deadline is the existing `control.deadlineUnixNano` on a non-effect `human-wait` step linked through existing work/input/authority references to the same sensor/quarantine. Record that deadline with consumer intent before applying the deny. It schedules human review/reminders only. Action steps retain their separate execution caps; this review deadline supplies or extends no effect authority. Missing, late or elapsed review handling may delay a reminder but cannot release quarantine. Policy rejects a quarantine lifetime carrying `notAfter` or `uses`; no Policy expiry field is used for review.
-
-Commit bounded intent before any effect. Atomically admit distinct-target/window capacity from existing committed/pending journal and Policy facts; repeated incidents and human releases do not reset cumulative counts. No new budget counter owner is created. Policy owns the committed deny; operation receivers own each later receipt; this journal owns consumer progress and immutable links. Persisting a journal outcome cannot manufacture a missing receiver receipt or cross-domain atomicity.
-
-Recovery compares current Policy and original receipts: before deny, establish whether one committed; after deny/before stop, retain quarantine and inspect the original step before any currently authorized continuation; after stop/incomplete acknowledgement, inspect exact original acceptance/result and never blindly repeat an unknown effect. Action expiry, delegation loss and monitoring off stop new effects while the Policy quarantine remains. Review deadlines only escalate. Record unknown/failed/partial outcomes truthfully, and keep the existing independently draining notice lifecycle.
-
-Qualification covers these three crash boundaries, repeated sensor events, authority/cap changes between intent and effect, missing/conflicting receipts and static-bound floods with reserved recovery and critical-alarm progress. Unknown required definitions fail closed; no step gains retry authority from this consumer name.
+The deterministic Core `containment` consumer ([Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md#containment-consumer), [Runtime Security](20261109-runtime_security.md)) runs on the Server execution journal (`definition_version: 'containment'`) outside publication Turns without creating a Worker, AgentSession, public run, or new table. Root work/input references bind the trusted sensor `AuditEvent` and immutable target/scope; authority and permitting-decision references bind the approved template and decision; and `fence`, `cancel`, `inspect-cleanup`, `collect`, `release`, and `consume-receipt` steps carry operations, while a non-effect `human-wait` step carries the mandatory review/escalation deadline in `control.deadlineUnixNano` (recorded before applying the Policy deny, scheduling reminders only without granting or expiring effect authority; Policy rejects quarantine lifetimes with `notAfter` or `uses`). Bounded intent commits before effects, distinct-target/window capacity is admitted atomically from journal and Policy facts without resetting cumulative counts on human release, and Policy deny, receiver receipts, and journal progress remain distinct truths.
 
 ### Worker-Turn Transitions
 
-W is Workspace SQL, S is server SQL; these closed transitions apply normally and after restart.
-
-| Transition / owner | Effect identity and receipt; retry | Next step / exclusion proof |
-| --- | --- | --- |
-| Admission / W | Request identity/hash; atomic Turn/source/execution/receipt. Identical input returns receipt; changed input conflicts. | Reservation; Thread/AgentSession exclusion. |
-| Reservation / W intent, S apply, W result | Reserve invocation key defined below; exact S receipt. Same-key inspection/apply only. | Held -> preparation; definite refusal -> due admission with fresh invocation; cancellation -> fencing/release. No Worker starts before W accepts held result. |
-| Preparation / W and receiver | Execution/attempt/step invocation, fingerprint/fences and retained receipt; retry only under receiver idempotence. | Consume receipts, then start; failure/cancellation -> terminal publication. Missing proof retains exclusion. |
-| Start / W and Harness | Exact command invocation/fingerprint; Harness receipt and Worker identity. Proven non-receipt permits delivery within deadline; ambiguous native start never permits replay. | Observation/collection, or terminal publication on definite failure/unknown. Dispatch alone proves neither completion nor absence. |
-| Observation/collection / W and receiver | Attempt/process/sequence/payload fingerprint; keyed collection receipt. Deduplicate identical content; reject divergent replay. | Observe or publish terminal result/prefix/coverage; never invent output. |
-| Terminal publication / W | Turn outcome, ordered Items, Task fact, `turn.reap`, evidence, receipt and next cleanup step commit together. Same request resolves uncertain commit. | Execution becomes closing; product terminality does not release physical or local exclusion. |
-| Fencing/release / W intent, S apply, W result | Exact reservation/binding identities, stop/absence and attachment proofs; idempotent release receipt/tombstone. | Close execution and release local exclusion only after physical no-writer/release proof or proved no-allocation. Otherwise remain closing and fenced. |
-| Cancellation / W | Commit first cause/revocation; cancel definite unstarted work, inspect possibly applied effects. | Terminal publication then fencing/release; late evidence cannot reopen work. |
-| Human wait / W | Pending Request and owner's terminal Turn outcome commit; no paused Turn or default response expiry. | Terminal publication and cleanup; decision delivery admits a later Turn under current authority and exclusion. |
-
-An internal terminal publication that settles both the original submission and a waiting Stop command commits both original command receipts and Audits with that Turn tuple on the same native writer.
-
-Failed, cancelled and interrupted Turn publication retains all applicable original RuntimeEvidence and required references; a zero record count alone does not prevent that publication when the original execution and all required observation and evidence facts agree, and unknown effects and cleanup keep their exclusion until physical release is proved.
-
-Lost replies leave intent open for bounded inspection, without dependency-driven deadline extension. Deadline, cancellation or proved Worker loss ends unproved effects `unknown`; definite non-execution permits failed/cancelled settlement.
-
-Later inspection is linked cleanup evidence, never revision of the original outcome.
-
-Native loss interrupts its Turn; continuation requires newly admitted work and proved native resume, with the existing new-linked-Thread rule on resume failure.
-
-Recurring cadence, overlap, missed-occurrence and admission-only retry semantics remain unchanged; accepted failed/unknown execution is not retried as an occurrence.
-
-## Step Journal And Span Model
-
-The journal uses the OpenTelemetry span model, not an SDK buffer; fields contain bounded diagnostics, never prompts, tool arguments, output bodies, credentials or private reasoning.
-
-| Field group | Required representation |
-| --- | --- |
-| Correlation | Execution trace: 16 bytes/32 lowercase hexadecimal digits; root/step spans: 8 bytes/16 digits; optional parent has span width. Nonzero IDs confer no authority. |
-| Description | Name, span kind, integer Unix-nanosecond start, nullable end, OTel `UNSET`/`OK`/`ERROR` status and description; no floating-point timestamp loss. |
-| Attributes | Typed AnyValue preserves double versus int and exact int64; applicable semantic conventions/GenAI keys, `openkit.*`, pinned schema URL; no stringification or attribute-controlled execution. |
-| Events/links | Ordered timestamped typed events, trace/span links, permitted flags/state, optional fields and dropped counts; no silent loss of required facts. |
-| Envelope | Stable instrumentation scope, resource descriptors, schema URLs and flags; immutable descriptor sharing is permitted. |
-| Separate control | Work/attempt identity, step kind, selected target, control parent/cap separate from the trace parent, versioned input/output references, fingerprint, authority, retry permission, deadline and physical fences. |
-
-Projection must preserve stored types, values, counts and metadata exactly; the telemetry owner chooses the typed OTLP/JSON path, not a narrowing SDK-span conversion.
-
-Open roots/steps remain inspectable but unexported; unknown ends with `ERROR`, controlled description and uncertainty attributes.
-
-Export may drop/duplicate spans, never delay, roll back or retry work.
-
-Orphan detection is observed time, not physical completion.
-
-Journal retention follows work/evidence/holds, not diagnostic-file limits; expiry never releases fences.
-
-This journal alone narrows the [no-durable-trace decision](../decisions/20261016-nanohost_trace_headers_and_startup_link.md); other canonical records and transport bodies gain no trace fields.
+For Workspace (`W`) and Server (`S`) SQLite, Worker-Turn execution follows these closed transitions normally and across restart:
+- **Admission (`W`)**: request identity/hash commits Turn, source, execution, and receipt atomically (identical input replays; changed input conflicts; Thread/AgentSession exclusion enforced).
+- **Reservation (`W` intent, `S` apply, `W` result)**: keyed by `(Workspace, execution, attempt, reservation-step invocation)`; no Worker starts before `W` accepts the `held` result.
+- **Preparation (`W` and receiver)** and **Start (`W` and Harness)**: carry exact invocation, fingerprint, fences, and Worker identity; only proven non-receipt permits redelivery within the deadline, never ambiguous native start.
+- **Observation/collection (`W` and receiver)**: deduplicates identical sequence/payload fingerprints, rejects divergent replay, and never invents output.
+- **Terminal publication (`W`)**: atomically commits Turn outcome, ordered Items, Task terminal fact, `turn.reap`, `RuntimeEvidence` (even when record count is zero if execution and observation/evidence facts agree), command receipt (including both submission and waiting Stop receipts/Audits when settled together), and next cleanup step, transitioning the execution to `closing` without releasing physical or local exclusion.
+- **Fencing/release (`W` intent, `S` apply, `W` result)**, **Cancellation (`W`)**, and **Human wait (`W`)**: release closes the execution and local exclusion only after physical no-writer/release or no-allocation proof; cancellation commits the first cause/revocation and inspects possibly applied effects; human wait commits the Pending Request and terminal Turn outcome so decision delivery starts a new authorized Turn rather than pausing an open execution.
 
 ### Journal-To-Lifecycle Mapping
 
-Admission persists the root span model/identity/start on the execution row; restart preserves it, cleanup/release closure ends it without a step-duration sample. Steps use that trace and causal parent/root; distinct executions link rather than reparent.
+Admission persists the root span identity and start timestamp on `control_executions` (closed at cleanup/release without emitting a step-duration sample; distinct executions link rather than reparent). Step kinds map to the eight closed lifecycle stage strings owned and emitted by [Operational Telemetry Standardization](20260731-operational_telemetry_standardization.md) (`apps/nanocore/src/telemetry.ts`):
+- `resolve-setup` -> `preparation`
+- `reserve`, `validate-setup` -> `validation`
+- `materialize` -> `materialization`
+- `open-session`, `inspect-session` -> `session.open.inspect`
+- `deliver-start`, `deliver-steer` -> `turn.start.delivery`
+- `observe` -> `native.run`
+- `collect` -> `collection`
+- `consume-receipt`, `inspect-cleanup`, `fence`, `release` -> `cleanup.release`
 
-Preparation follows resolve -> check -> materialize -> open/inspect; actual invocations map to the telemetry owner's ten stages:
-
-| Step kind | Lifecycle stage |
-| --- | --- |
-| Admit, queue/capacity wait | Admission/queue |
-| Resolve setup | Preparation |
-| Reserve, validate setup | Validation |
-| Materialize | Materialization |
-| Open/inspect session | Session open/inspect |
-| Deliver start | turn.start delivery |
-| Observe native execution | Native run |
-| Record this Turn's human wait | Pending request wait |
-| Collect evidence | Collection |
-| Consume receipt, inspect cleanup, fence, release | Cleanup/release |
-
-Local terminal/cancellation commits inherit the settling step's stage; they create no synthetic stage or sample.
-
-Each ended step supplies one span/sample; label linked retries separately, report invalid durations, never resample repeated reads/exports.
-
-Attach Host summaries before step end; late observations use linked inspection/cleanup, never ended spans.
+Local terminal and cancellation commits inherit the settling step's stage without creating a synthetic stage. Each ended step supplies one span and one stage-duration histogram sample (with seven closed outcomes `success`, `failure`, `cancelled`, `timeout`, `rejected`, `unknown`, `degraded`, labeling retries separately, reporting invalid durations, and never resampling on read/export).
 
 ### Unverified Worker Markers
 
-Use the [telemetry owner's closed marker schema](20260731-operational_telemetry_standardization.md): phase, environment preflight, native exit and shim error code; do not define another variant grammar.
+Worker-reported phase markers use the closed marker schema owned by [Operational Telemetry Standardization](20260731-operational_telemetry_standardization.md) (phase, environment preflight, native exit, and shim error code), bound to the Core-selected parent step, clamped to the observed parent/receipt window, validated against accumulated count/byte limits atomically on append, and stamped with `openkit.report.origin = 'worker'` and `openkit.report.verified = false`. Markers never drive outcome, retry, recovery, deadline, or fence decisions.
 
-Bind the exact Core-selected parent, validate the closed schema/budgets, and atomically check accumulated limits with append.
+### Global Dispatch And Physical Capacity
 
-Clamp to the observed parent/receipt window; reject overflow, wrong ownership and ended-step input.
+An in-memory dispatch index tracks eligible execution identities and earliest due times across Server and validated Workspace databases, paged at boot and woken on both scopes' commits (including server-only image settlement). Any index-update failure invalidates that scope's index and rebuilds it before dispatch; every selection rereads and conditionally claims its owning row in fair `(dueTime, identity)` order with bounded database handles and boot concurrency. Cross-Workspace activation `A -> B` commits `A` intent, atomically commits `B` local admission/execution/source-evidence/receipt (making `B` locally eligible without scanning `A`), and records `A` result.
 
-At admission, set `openkit.report.origin=worker` and boolean `openkit.report.verified=false`; marker events never decide outcome, retry, recovery, deadline or fences.
+### Replacement Inventory
 
-Marker loss is diagnostic, not work-data capture failure; no Sandbox SDK, OTLP exporter, new egress or credential is admitted.
+The control-store and execution-journal architecture replaces: (1) file-backed Workspace/Thread/Turn/AgentSession/Item/observation authority (`control_workspaces`, `control_threads`, `control_turns`, `control_agent_sessions`, `control_product_entries`, `control_work_observations`, `task_turn_terminal_facts`), (2) Git-ref-only Workspace Notebook head authority (`knowledge_notebook_heads`), and (3) separate global queue, cross-Workspace activation scan, attempt, checkpoint, backend-session, worker-control (`worker_control_records` and `worker_control_sequence_fingerprints` -> Workspace observation/fingerprint and step evidence committing together under one journal observation owner while preserving divergent-replay rejection; `runtime/worker-control-rebuild.ts` -> retaining only disposable handle/index reconstruction from committed authority or deleting it, never outcome classification), image-settlement, Pending-delivery repair, recurring scanner, boot-only recovery classifier, running-Call boot scan, observation-recovery loops, and AEP/context/sync handoff flags (AEP/context publishers and `workspace-sync`/`snapshot-chain` joins -> durable Storage handoff and local SQL/journal result/handle/cursor references, deleting unsynchronized publication, completion flags, and boot reconstruction), converging `7` coordination families into `control_executions`, `control_execution_steps`, and server `execution_resource_reservations` (while preserving `workspace_capture_records` as a separate family) and resolving all `27` recovery-required ingress classes (`01`–`27`) through atomic local tuples, keyed cross-scope handshakes, physical fences, and scoped quarantine.
 
-## Effect And Deadline Semantics
+## Recovery And Fences
 
-Retry needs the retained declaration, actual receiver idempotence/non-execution proof, current authority and remaining allowance; changed declarations may revoke permission, never upgrade unsafe intent.
+Intent commits before physical contact and outcome commits afterward. On terminal Tool closeout, a proven pre-contact native admission refusal reports `commit: 'not-committed'`, and after acknowledged failed closeout a proved absence of target Tool contact reports `details: { outcome: 'failed', upstreamEffect: 'not-contacted' }`. Lost replies leave step intent open for bounded inspection without extending deadlines; at deadline, cancellation, or proved Worker loss, unproved effects settle as `unknown` (with later inspection linked as cleanup evidence rather than rewriting the outcome, requiring newly admitted work and proved native resume or a new linked Thread, and never re-running an accepted failed/unknown recurring occurrence). Host summaries arriving before step end may join the step; late observations link without mutating an ended span.
 
-Never blindly redeliver unknown effects; missing dependencies preserve fences.
+Retry requires a retained retry declaration, receiver idempotence or proved non-execution, current authority, and remaining budget from the single absolute execution deadline persisted once at admission (clamped conservatively with a process-monotonic witness across restart, with child deadlines `<=` parent, no heartbeat renewal, separate cleanup budgets, and authenticated remaining-allowance transport headers that match or narrow the stored allowance). Required authenticated deadline carriage binds the stored operation/invocation and fingerprint, accounts for transit, and refuses missing, invalid, or extending carriage without changing the JSON/file fingerprint. Optional W3C trace headers remain diagnostic.
 
-One deadline covers operation slot wait/delivery/execution/collection/retries; durable queue residence and human response retain their semantics.
+Server capacity reservations key `(Workspace, execution, attempt, reservation-step invocation)` with immutable fingerprint and admission deadline, atomically committing the capacity debit and `held`, `refused`, or `released` disposition (where active-execution capacity derives from held rows and is distinct from resident physical capacity, and terminal reservation IDs are retained at least through their deadline and across restore fencing; a restore lacking a terminal reservation identity refuses pre-restore invocations rather than reopening admission or recreating capacity for them):
+- `W` intent with no `S` row applies the same key if unexpired (treating storage unavailability as unknown, never absence); `S` held with `W` result absent inspects the same key and commits `W` result without a second allocation; definite refusal retains no debit and requires a fresh invocation ID on later retry; cancel before `S` row installs a `released` tombstone; cancel while `S` held prevents start and requires physical proof before release; `S` released with `W` ACK absent reuses the retained terminal result; and `W` unavailable while `S` held preserves the physical fence until inspection/fencing proves release.
+- In the `containment` consumer, crash recovery compares current Policy and original receipts (before deny: check if deny committed; after deny/before stop: keep quarantine and inspect step before continuing; after stop/incomplete ACK: inspect original receipt and never repeat an unknown effect; action expiry, delegation loss, or monitoring off stops new effects while Policy quarantine remains).
+- Duplicate/ambiguous sessions, active Turn/session conflicts, storage generation conflicts, changed prepared setup, missing capture bindings, invalid Context traces/bytes, unknown command/results, missing cleanup proof, and assignment mismatches fail closed into physical fences or Workspace quarantine without synthesizing identities or replaying uncertain effects. Additional ingress dispositions:
 
-Persist absolute expiry once; use monotonic remaining time locally, conservatively clamped after restart or clock uncertainty.
-
-Children cannot extend parents; heartbeats cannot renew authority; cleanup has separate bounded attempts without implied successful release. Parent success or replay neither settles unknown children nor renews their authority.
-
-Authenticate absolute expiry/remaining allowance, accounting for transit; never transport monotonic timestamps.
-
-Optional W3C headers stay diagnostic; required deadline headers bind stored operations without changing JSON/file fingerprints, refusing missing/invalid/extending carriage.
-
-## Global Dispatch And Physical Capacity
-
-The in-memory index holds eligible identities/earliest due times; boot pages server and validated Workspace open/due executions.
-
-Both scopes' commits wake the same index/reconciler, including server-only image settlement.
-
-Index-update failure invalidates that scope's index and rebuilds it before dispatch; every selection rereads and conditionally claims its owning row.
-
-Preserve ordering/fairness with identity ties; reject stale/duplicate candidates, wake on capacity changes, and avoid all-database dispatch scans.
-
-Resource tests select bounded handle/boot concurrency limits; deadline-bound backpressure cannot exceed them.
-
-Pin only during local operations; eviction preserves work, reopen validates scope/version.
-
-### Reservation Identity And Commit Gaps
-
-A reserve invocation key is `(Workspace, execution, attempt, reservation-step invocation)` with immutable fingerprint and absolute admission deadline.
-
-Its server row retains requested quantities, selected physical boundary, exact result and `held`, `refused` or `released` disposition, including cancellation tombstones.
-
-Capacity debit and held result commit together; active-execution capacity derives from held rows, distinct from resident physical capacity.
-
-Same key/input returns the exact result; changed input conflicts.
-
-| Committed situation | Required continuation |
+| Ingress class | Required disposition |
 | --- | --- |
-| W intent; no S row | Current, unexpired admission may apply same key; unavailable storage is not absence. |
-| S held; W result absent | Inspect same key, commit W result; no second allocation or premature Worker start. |
-| Definite no-capacity refusal | Retain refusal without debit. Later eligible admission uses a fresh invocation identity; never mutate/replay the refusal into success. |
-| Cancel/release; S key absent | Atomically install released tombstone; delayed reserve must reject it. |
-| Cancel; S held | Keep exact identity; prevent start and release only with required physical proof. |
-| S released; W acknowledgement absent | Return retained terminal result; no double decrement or resurrection. |
-| W unavailable; S held | Preserve capacity exclusion until physical inspection/fencing proves release. |
-| S authority unreadable | Refuse server boot/admission; never reconstruct capacity from Workspace projections. |
+| `05` Unsupported continuity inspection | Block inspection, then become `unknown` at the closure boundary, requiring restored dependency or fencing. |
+| `06` Missing AEP or native proof | Missing required AEP content quarantines the Workspace, while missing native proof blocks resume. |
+| `10` Task/Knowledge/Item contradiction | Validate references; quarantine corrupt authority while distinguishing external unavailability from corruption. |
+| `16` Collection/cursor/transcript mismatch | Commit collection cursor and result atomically under the ordinary engine; source loss stays incomplete. |
+| `19` Ineligible adoption or unresolved cleanup | Follow ordinary `unknown`/cleanup transitions; retain survivor adoption (`R`) until authorized ablation proves removal. |
+| `20` Retry with missing checkpoint | Read the execution and original receipt rather than the retired checkpoint classifier. |
+| `24` Wrong session scope | Refuse without relocating the session to repair. |
+| `25` Absent or multiple attempts | Resolve ordinary cases through execution linkage and exclusion, and fence disputed physical owners. |
 
-Retain terminal identity until the original invocation cannot be admitted, at least through its deadline, with supported snapshot/restore preserving that protection.
+### Snapshot Cut And Capture Protection
 
-A restore lacking that identity must refuse pre-restore invocations, not reopen admission for them.
+Before taking Workspace snapshots, the backup owner durably writes a `workspace_capture_records` row in `workspace.sqlite` excluding Storage GC and Notebook prune/repack for that Workspace; active pins survive restart, clock ambiguity, and unreadable state, and capture finishes only after verifying complete transitive blob/history closure or explicitly abandons. Busy capture requires a crash-consistent cut fencing every physical SQL and mutable-file writer (including opaque `mcp-data/` writers, which must flush/stop or refuse hot capture); until that all-writer fence lands, capture enforces the idle scoped freeze and blocker checks (`#417`, `#418`). For cold Light App reads ([Storage](../core/storage.md#sqlite-layers)), capture requires proof at the held cut that no WAL/SHM or open native App handle exists under the freeze, or the native owner must enroll the App as a participant and own its writable final close before the hold (ordinary cold reads require no capture freeze but must leave no residue or use an owned writable final close, with reader registrations released in `finally`). Workspace close drains only already-open dependent App databases bound to the same Workspace, root, canonical App path, and current inode, blocking parent close on any failed or unknown child close. Retirement refuses new App readers; retained observations use an already-owned reader without reopening the retiring scope. Failed or unknown close retains exclusion against the original peer until actual exit; timeout alone proves neither exit nor shutdown. App rollback verifies the immutable candidate first and rechecks path, inode, size, and receipt before rename, directory `fsync`, and reopen.
+
+### Reviewed Workspace Schema Application
+
+Reviewed Workspace schema application (`apps/nanocore/src/knowledge/schema-application.ts`) uses the Workspace `DatabaseOwner` for bounded current observations and a short final readset-CAS commit without a lifecycle freeze, idle-Workspace requirement, or held SQL read cut across dependency computation. It observes Core, the target writer, and peer opaque-identity search owners (observing named absences as well as positive physical inventories through their original owners and releasing read owners), compares the reviewed base schema head and full dependency impact, and atomically prepares immutable history and commits the schema-head CAS, Audit (recording the actual impact inventory), and original receipt under FULL acknowledgement only if no new impact class appears. A moved base or new impact class refuses with its delta for re-review without wait or retry, and schema-dependent pending writes retain their validated schema head and revalidate on later admission/publication. Each submitted native attempt retains its original FIFO slot while preparation yields to foreground work, promotes to the earlier-prefix barrier before publication, and rechecks current schema-write authority (including on retained-receipt replay, where replay returns the original result without impact recomputation or a new history forecast, whereas fresh publication uses one exact physical forecast and local FULL history/head/Audit/receipt tuple). At most one recomputation with the original request/candidate is permitted, only for a definite changed-readset with proved SQL non-commit (excluding semantic, authority, capacity, and unknown failures), returning `503` `operation_storage_unavailable` on a second conflict; early refusal publishes no history, a late SQL conflict may leave inert immutable preparation bytes, and cross-owner observations do not promise a global atomic snapshot.
 
 ### Physical Receipt Consumption
 
-Every physical receiver, including Harness, retains its keyed result until the Workspace outcome transaction durably schedules consumption acknowledgement, retried by the reconciler after crashes.
+Every physical receiver (including Harness) retains its keyed result until the consuming Workspace outcome or Core idle-binding lifecycle owner durably schedules consumption acknowledgement, and the receiver conditionally accepts the exact consumer identity/receipt acknowledgement before result retirement, with Core recording one completed `core-harness-consume/v1` `consume-receipt` step in its execution journal (bound to the original Harness binding, operation, sequence, normalized result fingerprint, and exact Workspace-step or idle Core-binding consumer) and leaving immutable physical result bytes unchanged. Active or closing Worker-Turn work consumes in its Workspace owner, while idle AgentSession lifecycle work consumes in the Core binding owner (never reopening a historical closed Turn), and required Workspace capture or outcome publication commits in its actual owner before the corresponding barrier releases. Idle resident cleanup uses `core-idle-cleanup/v1` in Core's journal with intent before contact and consumed result before ACK, and recovered never-admitted delete continues only after an acknowledged bridge close. Unavailable consumers block result retirement and competing dispatch while preserving proof; stale process, connection, Epoch, or attachment identities are rejected.
 
-Physical results owned by an active or closing Worker-Turn execution use that execution's Workspace outcome and consumption acknowledgement. Idle AgentSession lifecycle work is admitted by its existing exact Core binding owner, never by a historical Turn. For that Core-owned work, the existing lifecycle owner must durably consume the exact keyed result and commit its required physical-state transition before acknowledgement or retirement. Required Workspace capture or outcome publication still commits in its actual owner before the corresponding barrier releases. A closed Turn execution is never reopened for idle lifecycle work.
+### Portability, Snapshot Closure And Garbage Collection
 
-Wider idle-resident cleanup uses `core-idle-cleanup/v1` in the existing Core journal. Its existing cleanup, collection, release and receipt-consumption kinds retain the exact original bridge/delete request, resident, actor and physical Epoch. Intent precedes contact; the exact outcome and consumption commit before acknowledgement. The existing closed-resident recovery owner consumes retained results and continues a never-admitted delete after an acknowledged bridge close. An unfinished or unknown effect grants result-only inspection, never repeated contact or a renewed allowance; unavailable evidence preserves exclusion until the existing physical fencing owner proves absence. This definition adds no table, column, queue, retry or protocol and supplies no authority for prior Turn work.
+Workspace databases and their locally retained immutable closure travel together in operational backup, restore, and MOVE ([Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md)), while Vault secrets, Server users/memberships/config, Server Knowledge, external mounts, Host bindings, and Worker volumes remain explicit external references. Outside active capture pins, reachability GC roots include live references, retained history, and legal holds, serializing publication against sweep and refusing to sweep unreadable or quarantined roots. Thread-owned rows carry Thread identity directly or through their owner so stable cross-Thread references resolve archived or purged states truthfully.
 
-The receiver conditionally accepts the exact consumer identity/receipt acknowledgement; only then may a successor retire the result. Core records this acknowledgement as one completed `consume-receipt` step under `core-harness-consume/v1` in its existing execution journal, bound to the original Harness binding, operation, sequence, normalized result fingerprint and exact Workspace-step or idle Core-binding consumer. Settled Harness result bytes and their fingerprint remain immutable; consumer progress does not append to the result cell. The Workspace outcome remains in its actual owner, and Core acknowledgement does not claim cross-database atomicity. A successful candidate collection includes the admitted candidate digest in its collect step's output references; a later result cannot rewrite an unknown original.
+## Configuration Authority
 
-Unavailable consumers block retirement and competing dispatch rather than discard evidence; this uses existing receiver receipts, not another ledger.
+### Workspace Authorities Outside The Control Database
 
-Receivers reject stale process/connection/Epoch/attachment identities; absence proof never establishes prior work success.
+- **Workspace Notebook heads**: `knowledge_notebook_heads` in `workspace.sqlite` commits the current head, expected-base check, local Audit, and command receipt over synchronized immutable `notebook.git` history (`notebook-workspace-selection.ts`); Git refs and `pages/` are projections.
+- **Authored configuration, schemas, and mounts**: in `v0.1.0`, the authored-file revision service (`apps/nanocore/src/config/runtime-config-files.ts`, hashing raw source bytes as SHA-256 and checking expected revisions before atomic publication) is the current configuration authority (while AEP snapshots pin evaluated revisions/digests separately from reload); moving admitted configuration heads into scope SQLite databases is tracked for post-`v0.1.0` migration (#767).
+- **Resource catalogs and Light Apps**: `catalog/catalog.json` with immutable `skill-snapshots/` and `plugin-snapshots/` is the current catalog authority (moving catalog heads into SQLite is tracked under #767); per-App `light-apps/<appId>/data.sqlite` and `definitions/<sha256>.json` remain independent business/schema authorities with pre-migration SQLite snapshots; and managed `files/`, `data/`, `sources/`, and Artifact payloads keep immutable bytes in Storage while runtime/staging/index/log directories remain disposable.
 
-### Cross-Workspace Activation
+## Retained Data
 
-Activation A->B is keyed: A commits intent; B atomically commits admission/execution, source evidence and receipt; A records the result.
+`Work Data Retention Format` (`20260921-work_data_retention_format.md`) owns capture records, privacy exclusions, and default-on capture semantics (`#732`). Under `SOURCE-RETENTION`, every producer (worker-shim, NanoHost, and Sandbox owners) retains admitted unacknowledged data and resends it with stable idempotent sequence numbers until NanoCore durably acknowledges it; transport acceptance, reconnect, baseline replacement, or cleanup is never a durable ACK, and missing source bytes after restart produce explicit capture gaps rather than fabricated empty-but-complete capture. Retained slots map to existing SQL and immutable content owners (`#732`): (1) instructions, Items, Task/Turn, and human interventions -> SQL identity/order/decision/delivery and immutable messages/attachments; (2) model I/O and requested sampling -> SQL observer/model/snapshot/coverage and immutable ordered request/response roots; (3) tool and native work -> SQL correlation/outcome/coverage and immutable arguments/results and incremental verbatim native transcripts; (4) environment and context -> AEP/package/configuration/delivery/resource identities and retained inputs, exact admitted prompt bytes, and Agent/Skill/MCP definitions; (5) Audit, permissions, and usage/cost -> existing domain records without duplicate journal ledgers; (6) Artifacts, changes, and acceptance/evaluation -> version/review/outcome and candidate/rubric/model identities and retained outputs/check evidence without activating an Evaluation Harness; and (7) lifecycle and absent capture -> journal step timings/outcomes, failed checks, `turn.reap`, and expected-unpublished/unavailable facts. Admitted messages/parts, exact prompt bytes, and tool definitions deduplicate by digest within their authorized scope (preserving order, role, tool correlation, and omitted-versus-present values, reusing shared immutable request roots rather than copied conversation prefixes, and streaming bounded immutable chunks with one verified ordered SQL reference per chunk boundary while keeping prefixes explicitly incomplete and expired references truthfully unavailable under holds). Exact admitted prompt bytes, CapabilityCall payload bodies, and incremental verbatim native transcripts are required producer targets, unsupported wire-digest/context-eviction/runtime-manifest coverage labels remain preserved until producers exist, and Gateway calls without Thread lineage remain an explicit capture gap without inventing an observation owner. Execution-journal tables (`control_executions`, `control_execution_steps`) and `workspace_capture_records` are non-portable control state excluded from analytical Workspace export V3 and carried only as Workspace database bytes in operational backup and MOVE.
 
-B's eligibility depends only on B's local tuple, never scanning A's receipt or waiting for A's outcome commit.
+### Step Journal And Span Model
 
-Changed input under the same key conflicts; duplicates return B's result and first admission checks current target authority.
+`control_executions` and `control_execution_steps` (`apps/nanocore/src/runtime/execution-step-journal.ts`, `storage/schema/execution-journal.ts`) persist bounded OpenTelemetry span records (never prompts, tool arguments, output bodies, credentials, or private reasoning), narrowing the no-durable-trace rule solely for this journal:
+- **Correlation and description**: nonzero `16`-byte (`32` lowercase hex) `traceId`, nonzero `8`-byte (`16` lowercase hex) root and step `spanId` with optional parent `spanId`, name, closed `6`-value span kind (`UNSPECIFIED`, `INTERNAL`, `SERVER`, `CLIENT`, `PRODUCER`, `CONSUMER`), exact integer Unix-nanosecond start and nullable end timestamps (encoded as decimal strings in JSON without float truncation), and `UNSET`/`OK`/`ERROR` status.
+- **Attributes, events/links, and envelope**: lossless `8`-variant typed `AnyValue` (`empty`, `string`, `boolean`, `int`, `double`, `bytes`, `array`, `kvlist` preserving exact `int64` and `double` distinctions), ordered timestamped events, trace/span links, W3C flags/state, dropped-attribute/event/link counts, instrumentation scope, resource descriptors, and pinned schema URLs, kept separate from control fields (`stepKind`, target, control parent/deadline cap, versioned input/output refs, fingerprint, authority, retry declaration, and fences).
+- **Export and retention**: open steps remain inspectable but unexported until ended (`unknown` ends with `ERROR` and uncertainty attributes); OTLP/JSON export may drop or duplicate spans without delaying, rolling back, or retrying work; and journal retention follows work/evidence/legal-hold lifecycles without releasing execution fences on expiry.
 
-Server configuration/physical changes remain separate keyed effects.
+## Failure And Recovery
 
-## Failure Scope And Boot
+- **Busy, lock, and lost-ACK handling**: native `SQLITE_BUSY`/`SQLITE_LOCKED` returns transport-neutral HTTP `503` `operation_storage_unavailable` (and equivalent MCP framing) instructing the caller to inspect the original request outcome before retry, never exposing raw SQL or misclassifying busy as an auth error. A lost worker ACK never proves non-commit; callers resolve uncertainty through the original command receipt. Startup staging cleanup under writer exclusion removes abandoned private `.staging` and hidden `.tmp` publication files without touching canonical digests or live captures, and diagnostic/marker loss never fails canonical work capture or requires Sandbox OTLP egress.
 
-[Owning-scope failure](../core/fault-tolerance.md) applies before cutover: unreadable/unsupported Workspace authority, missing required content or contradictory lineage quarantines that Workspace, preserving bytes and blocking unsafe operations.
+### Failure Scope And Boot
 
-Expose authorized diagnosis; never initialize empty replacement authority or trust projections.
+Unreadable, unsupported, or contradictory Workspace SQLite authority, missing required content, or missing Turn/AgentSession/assignment lineage quarantines only that Workspace (`recovery_required`), preserving original bytes and blocking unsafe operations while healthy Workspaces and the server boot. Corrupt Core authority (`core.sqlite`, including reservation authority) fails server boot; User database failure isolates only dependent User operations; and derived index failure rebuilds from canonical authority. The stopped-server administrator recovery procedure ([Remote Auth Credential Bootstrap](20260704-remote_auth_credential_bootstrap.md#stopped-server-administrator-recovery)) MAY open an existing `core.sqlite` without initialization or migration only when creation is disabled, the owner is server-scoped, an admitted data root is present, and canonical-path and schema-safety checks pass; all running-server Core opens require normal initialization. Boot establishes the data-root lock and foundations, validates scopes, builds the dispatch index, and starts the listener and reconciler using stock systemd restart backoff (`NanoHost Runtime And Transport`). Pre-`v0.1.0` cutover uses only an explicitly authorized deployment reset or one-way migration, never automatic startup reset, dual writes, or legacy converters.
 
-The stopped-server administrator recovery procedure MAY open an existing Core without initialization or migration only when creation is disabled, the product owner is server-scoped, an admitted data root is present, and the existing canonical-path check passes. Schema safety validation MUST still run. Omitted initialization in every other product-open shape MUST refuse; ordinary running-server Core opens retain Core initialization. The procedure retains the existing Core owner and FIFO and adds no open mode, owner or wire field. The [administrator recovery contract](20260704-remote_auth_credential_bootstrap.md#stopped-server-administrator-recovery) owns its exclusive-lock and credential-publication requirements.
+## Acceptance
 
-Server/shared-authority failure refuses boot; user-private failure blocks dependent operations; rebuildable-index failure is not canonical loss.
+- **Native writer and load envelope qualification**: verify that query-only product handles reject writes, moved families mutate only through their pinned database worker, and Main `BEGIN` / deferred first-write lock acquisition stays `<= 10 ms` with zero retries. Across two `300 s` steady-state repetitions per reference profile with `1` real effect lifecycle per `10` native offers (`20` effects/s at `200` transitions/s), qualify: (1) single-Workspace `200` committed transitions/s (`40` active Turns at `5/s`), (2) single-Turn `20` committed transitions/s with `1` in-flight commit and natural savepoint batching, (3) four-Workspace `200` committed transitions/s (`4 x 50/s`), and (4) hot-Workspace isolation (`400/s` offered on one Workspace while three siblings each offer `5/s` and each sibling achieves `>= 99%` / `>= 1,485` of `1,500` scheduled ACKs), maintaining zero lost accepted transitions, main-loop delay `p99 <= 25 ms`, WAL `<= 32 MiB`, and exact reopen receipt/tuple parity. Qualification MUST account for wall-clock scheduled, offered, committed, refused, late, and unresolved work by identity, exercise the actual `CapabilityCall`/`PermissionDecision`/Audit and native effect-submission path without proxy or missing-dose substitution, complete the required effect dose while recording lifecycle/ledger counts separately from native transitions (counting each terminal Item once), report measurement-window ACKs separately from drain completion alongside count/byte queue occupancy, batch sizes, per-Turn in-flight counts, and refusal reasons (with every repetition and sibling passing independently), exercise overflow and failed-predecessor queued successors without changing the valid-load denominator, and count all actual platform Main/worker file, directory, SQLite WAL, checkpoint, effect, and failed-work `fsync`/`fdatasync` calls normalized to native ACKs in the measurement window without wrapper double-counting or JavaScript-only counters (disclosing any measurement gaps).
+- **Crash, reservation, containment, ablation, and span round-trip qualification**: verify all `5` increment gates, `27` ingress dispositions, and individual mechanism ablations (testing each independently and retaining it absent proof and a governing removal decision, including: single-owner batch directory syncs, `1`-in-flight natural batching, `100 ms` progress coalescing, `SOURCE-RETENTION` sequence redelivery, survivor adoption `R` with exact observation/interruption, fencing, new-Turn resume, and measured availability cost, process-key wrong-survivor identity/receipt/fence oracles, connection-generation delayed-old-carriage/reconnect oracles, physical Epoch replaced-Host authority oracles, and attachment-generation old-writer/reattached-volume oracles): (1) crash after Harness settlement before Workspace outcome blocks competing dispatch until `core-harness-consume/v1` ACK replay, (2) `A -> B` activation crash after `B` admission leaves `B` locally eligible without scanning `A`, (3) server-only image settlement is discovered and settled on restart without a Workspace execution, (4) containment crash boundaries (before deny, after deny/before stop, and after stop/incomplete ACK) and static-bound floods preserve quarantine and reserved recovery progress, and (5) journal span OTLP/JSON round-trip preserves `double` `1.0`, exact `int64` beyond JavaScript safe integers, dropped counts, and `openkit.report.verified = false` marker trust keys.
 
-Containment/writer uncertainty fences its actual affected scope; healthy Workspaces remain usable.
+## Implementation
 
-Establish server lock/foundations, validate scopes, build the index, then start the ordinary listener/reconciler without listener-dependent pre-listen cleanup.
+- `apps/nanocore/src/storage/`
+- `apps/nanocore/src/runtime/`
+- `apps/nanocore/src/knowledge/`
+- `apps/nanocore/src/generative-kernel/`
+- `apps/nanocore/src/security/`
+- `apps/nanocore/src/test-support/`
 
-[NanoHost backoff](20260802-nanohost_runtime_and_transport.md#core-outage-restart-backoff) remains stock systemd policy, not another retry daemon or deadline.
+## Implementation Gaps
 
-## Portability, Snapshot Closure And Garbage Collection
+- Complete off-Main writer retirement and physical writer/reader-lifetime census - Unmoved Main writer families (user-disable/Token/Vault, channels/deletion/config/catalog, and AEP/capture/sync/Policy/Usage), global bounded reader pooling, and the exhaustive physical-writer, cold-App, and handle-close census remain open - #616, #715
+- Unified scope-local immutable content root and all-owner GC sweep serialization - Product files use `<scope>/evidence/backend` rather than a unified `<scope>/content/` root, and complete publication-versus-GC sweep serialization across all file owners is incomplete - #275
+- Admitted configuration and resource-catalog SQLite heads - Authored configuration files (`runtime-config-files.ts`) and `catalog/catalog.json` remain file-revision authorities rather than SQLite head tables - #767, #767
+- All-writer busy snapshot capture and private active capture pin - Live Workspace capture enforces the idle scoped freeze/blockers rather than an all-writer SQL/mutable-file busy fence, and the private recovery-capture RPC admits only `finished` and `abandoned` variants - #417, #418, #767
+- Universal execution engine, eligible dispatch index, and server reservation table convergence - `execution-reconciler.ts` runs `core-idle-cleanup/v1` only; global scheduler queues, attempts, checkpoints, backend sessions, worker-control records, Pending scans, recurring scanners, boot recovery classifiers, and independent timeout/deadline stacks are not yet replaced by universal journal dispatch, `execution_resource_reservations`, and single-deadline propagation - #535, #767
+- Ordinary `100 ms` progress eligibility coalescer and full 8-arm load/ablation qualification - The native publication path has no `100 ms` progress eligibility coalescer, Main-stall attribution residuals remain open, and full 8-arm load, OTLP round-trip, and 27-ingress ablation qualification are incomplete - #703, #767
+- Journal-derived lifecycle stage duration sampling - The stage-duration histogram samples process-local wrappers rather than each ended journal step - #742
+- Default-on work-data capture and continuous `SOURCE-RETENTION` producer coverage - Full model I/O and native transcript capture remain default-off and continuous producer retention/cursor coverage is incomplete - #732
 
-Workspace databases and all locally retained immutable closure travel together, independently readable without a source-server join.
+## Decisions
 
-Vault, server users/membership/configuration origin, server Knowledge shares, mounts/repositories, Host bindings and Worker volumes remain explicit external references with declared coverage.
-
-Historical grants and server snapshots are evidence, not destination authority; unavailable external references remain unavailable.
-
-Move requires settled effects and fencing; durable human history travels, unconsumed executable authority does not.
-
-Restore verifies complete closure before admission and preserves active capture protection.
-
-Outside capture, GC roots include live references, retained history and legal holds; serialize publication against sweep so pre-commit objects cannot race accepted references.
-
-Quarantine forbids sweeping unreadable roots; failed GC preserves bytes and reports pressure.
-
-### Deferred Thread Cold Tier
-
-After `v0.1.0` (estimated 3–5 engineer-days), archive only terminal Threads with closed executions and no queued/open work: seal rows into one immutable digest-addressed Workspace object using [backup/move closure](20260704-workspace_backup_export_import.md), rooting referenced blobs, then one transaction conditionally replaces unchanged hot rows with an archive pointer.
-
-Restore imports under current authority; purge retains a purged stub and deletes unheld archives.
-
-Creation-time reclamation, secure deletion and Thread-keyed stable references make this additive.
-
-If load tests fail, per-Thread hot-append databases are an unbuilt escape hatch; Workspace control remains centralized.
-
-## Retained Work Data And Cost
-
-The [banked progress consent](../decisions/20261027-inline_retained_work_bodies.md#progress-durability-consent) changes no current ACK or live-delivery rule. A later per-type progress choice requires its own measured owner amendment and bounded crash-loss window; effects, decisions, user input, terminal outcomes, final messages and tool results remain per-Item durable. Implementation projection: `apps/nanocore/src/storage/control-store-worker.ts` (`flush`) still provides FULL acknowledgements; progress relaxation remains pending. Scale aspirations do not replace the existing C-a/r2 acceptance populations.
-
-Retention owns records, privacy exclusions and default-on capture; steps reference IDs/digests.
-
-**SOURCE-RETENTION:** every producer, including worker shim, NanoHost and Sandbox-side owners, retains the admitted data it owes NanoCore until NanoCore durably acknowledges it, and resends unacknowledged data with stable idempotent sequence numbers in the existing operation/producer scope. Identical redelivery resolves through the original receipt or durable capture cursor; conflicting bytes for the same sequence refuse. Transport acceptance, reconnect, a new baseline or producer cleanup is not a durable acknowledgement. Existing privacy exclusions still apply; this rule does not admit otherwise forbidden capture.
-
-Reuse the producer's existing ownership: NanoHost `workspace_collect` pending pairs and worker-volume native transcripts are examples, not a new NanoHost buffer, ledger or state family. Correct acknowledgement, baseline-replacement and cleanup paths in those owners where necessary; retain or refuse rather than replace an unacknowledged pair. Core retains user-data authority and the accepted capture cursor; source copies are redelivery material, not canonical Workspace history. Core restart recovers durable receipts/cursors and requests the missing suffix from those owners without replaying effects. Missing source bytes produce truthful capture gaps, never fabricated completeness. Durable acknowledgement is the earliest release boundary, not permission to bypass any longer existing retention policy. The physical-receipt consumption rule is the effect-result instance of this same handoff rule.
-
-| Retained slot | Workspace placement |
-| --- | --- |
-| Instructions, Items, Task/Turn and human interventions | SQL identity/order/decision/delivery; immutable messages and attachments. |
-| Model I/O, requested sampling | SQL observer/model/snapshot/coverage and immutable ordered request/response roots. |
-| Tool/native work | SQL correlation/outcome/coverage; admitted arguments/results and verbatim native transcripts in immutable blobs. |
-| Environment/context | AEP/package/configuration/delivery/resource identities and retained inputs, prompts, Agent/Skill/MCP definitions. |
-| Audit, permissions, usage/cost | Existing domain records, not duplicate journal ledgers. |
-| Artifacts, changes, acceptance/evaluation | Version/review/outcome and candidate/rubric/model identities; retained outputs/check evidence, without activating Evaluation Harness. |
-| Lifecycle and absent capture | Step timings/outcomes, failed checks, `turn.reap`, expected/unpublished and unavailable facts. |
-
-Share lossless messages/parts, prompts and tool definitions by digest within authorized scope; preserve order, role, tool correlation and omitted-versus-present values.
-
-Immutable request roots share content rather than repeatedly storing conversation prefixes; the retention owner chooses representation.
-
-Stream bounded immutable chunks, one verified ordered SQL reference per chunk boundary, never per-delta rows; prefixes remain explicitly incomplete.
-
-Cost follows unique retained bytes plus references/journal metadata; expiry leaves truthful unavailable references and respects holds.
-
-| Current capture gap | Required receiver |
-| --- | --- |
-| Default-off full I/O | Default-on peer amendment; absent history stays absent. |
-| Digest-only prompts | Retain exact admitted bytes once per digest. |
-| CapabilityCall metadata only | Enabled observation producer; counts cannot reconstruct bodies. |
-| Native-only transcripts/volumes | Verbatim incremental collector with explicit coverage; volumes alone are not collection. |
-| Unsupported wire digest/context eviction/runtime context manifests | Preserve unsupported labels until a producer exists. |
-| Gateway without Thread or lineage/database | Explicit gap; never invent an observation owner. |
-| Crash, overflow, rejection, missing events | Preserve committed prefixes/failure facts, never successful empty capture. |
-
-## Replacement Inventory
-
-Paths use `apps/nanocore/src/`; preserve domain logic.
-
-| Existing authority/path | Replacement / deletion |
-| --- | --- |
-| Canonical Workspace/Thread/Turn/AgentSession JSON, Items JSONL; `lib/store.ts`, `storage/workspace-file-records.ts` | Product SQL; delete file truth, whole-Workspace rewrite, cache-before-persist and publication repair. |
-| Artifact/review/proposal/configuration metadata; Notebook publishers | SQL records/heads/receipt/Audit over immutable versions; delete Git-ref commit authority and cross-file repair. |
-| `scheduler_admission_entries` | Executions/index; delete global durable queue and local publication predicates. |
-| `worker-environments/worker-environment-activation.ts`, dispatch `activationPublicationComplete` | Keyed A->B admission and B-local evidence/receipt; delete cross-Workspace source scans. |
-| `scheduler_execution_attempts` | Execution/step attributes; delete duplicate phase lifecycle. |
-| `worker_turn_checkpoints`, `runtime/worker-checkpoints.ts` | Intent/outcome plus atomic products; delete stage mirroring/checkpoint joins. |
-| `worker_backend_sessions` | Preparation/cleanup steps; delete parallel lifecycle and handoff flags. |
-| `worker_control_records`, `worker_control_sequence_fingerprints` | Workspace observation/fingerprint and step evidence commit together; preserve divergent-replay rejection. |
-| `worker_image_settlements` | Server execution/steps in ordinary discovery; delete deferred-settlement lifecycle. |
-| `pending_requests`, pending flow/captured-call modules | Existing signals plus ordinary delivery steps; delete boot-only delivery/publication repair. |
-| Recurring schedules/occurrences/expired ranges/external admissions | Workspace records and engine timers; delete scanner/restart publication repair. |
-| Scheduler restart, NanoHost attempt recovery, maintenance service | Ordinary inspection/deadline/cleanup; delete separate classifiers/loops. |
-| Worker recovery/operations/failure, cancelled-checkpoint cleanup, backend-cleanup projection, mode-entry closeout | Delete checkpoint reconstruction/release and fill-only repair; preserve diagnostics/new-request admission. |
-| `recoverRunningCapabilityCalls` in `capability/usage-ledger.ts` and its boot call | Ordinary call-loss step settlement; preserve usage family, delete boot-only unknown classifier. |
-| `storage/work-observation-recovery.ts` | Publish `turn.reap` in ordinary terminal transition, not restart-only recovery. |
-| `runtime/task-terminal-fact.ts` repair | Fact and Turn share transaction; delete fact-to-file scan, preserve Task facts/Goals. |
-| `storage/work-observations.ts`, mutable `observations.jsonl` | SQL observation metadata/order/sequence; immutable bodies; delete mutable-file publication. |
-| `runtime/worker-control-rebuild.ts` | Retain only disposable handle reconstruction from committed authority, or delete; no outcome classification. |
-| AEP/context publishers, workspace-sync/snapshot-chain joins | Storage handoff and local result/handle/cursor commit; delete unsynchronized publication and completion flags. |
-| Executor command waiter; worker-shim Harness outage budgets | Remaining-deadline context; delete untimed wait/fresh allowances, preserve serialization/exact receipts. |
-
-Preserve physical runtime/transport/binding/token/image authorities, rejected-control evidence, synchronization/review/apply, Audit/permission/usage/evidence, app business and Goal/Task fact families.
-
-Seven coordination families become `executions`, `execution_steps`, `execution_resource_reservations`: **7 -> 3**; signals, four recurring/event families and moved product families are reused.
-
-The separate capture-record family prevents snapshot-versus-GC loss.
-
-## Disposition Of The 27 Recovery-Required Ingress Classes
-
-| Class | Replacement fate |
-| --- | --- |
-| 01 Incomplete command/source publication | Local gaps eliminated by admission tuple; cross-Workspace activation remains keyed effect/result gap, without source scans. |
-| 02 Request/checkpoint/input mismatch | Delete checkpoint join; input conflicts refuse, corrupt linkage quarantines. |
-| 03 Duplicate/ambiguous session | Local uniqueness; native predecessor proof remains required. |
-| 04 Active Turn/session conflict | Atomic exclusion; real work waits, contradictory ownership quarantines. |
-| 05 Unsupported continuity inspection | Block inspection, then unknown at closure boundary; restore dependency or fence. |
-| 06 Missing AEP/native proof | Missing required content quarantines; absent native proof blocks resume. |
-| 07 Storage generation conflict | Physical fencing; no successor attachment without absence proof. |
-| 08 Prepared setup changed | Pinned input and conditional transition refuse; settle old effects before new admission. |
-| 09 Missing capture binding | Local admission binding; no current-default substitution. |
-| 10 Task/Knowledge/Item contradiction | Validate references; quarantine corrupt authority, preserve external unavailability. |
-| 11 Partial handoff | Atomic local publication; cross-scope exact-result inspection. |
-| 12 Invalid Context trace/bytes | Immutable-before-reference; lost content never rebuilt from current data. |
-| 13 Unknown command/result | Intent permits bounded inspection; deadline/cancellation/Worker loss ends unknown; later inspection is linked, never blind redelivery. |
-| 14 Receipt/sequence contradiction | Atomic local observations; divergent replay conflicts. |
-| 15 Pending/grant/effect/delivery gap | Signals/steps; external uncertainty remains explicit. |
-| 16 Collection/cursor/transcript mismatch | Atomic cursor/result; source loss stays incomplete. |
-| 17 Terminal/checkpoint/receipt disagreement | Atomic terminal tuple; lost referenced bytes still fail. |
-| 18 Missing cleanup proof | Closing remains fenced; explicit inspection may be necessary. |
-| 19 Ineligible adoption/unresolved cleanup | Ordinary unknown/cleanup; R remains an ablation candidate. |
-| 20 Retry: missing checkpoint | Classifier deleted; read execution/original receipt. |
-| 21 Retry: missing Turn | Quarantine integrity failure. |
-| 22 Retry: assignment mismatch | Atomic assignment; corruption quarantines and fences. |
-| 23 Retry: missing AgentSession | Quarantine, never synthesize identity. |
-| 24 Retry: wrong session scope | Refuse; never relocate session to repair. |
-| 25 Retry: absent/multiple attempts | Execution linkage/exclusion; disputed physical owners require fencing. |
-| 26 Retry: terminal disagreement | Atomic terminal tuple; successor still requires fence eligibility. |
-| 27 Deferred image settlement | Server boot/commit discovery; exact-result inspection, lost witness remains unknown. |
-
-## Ablation Plan
-
-Remove one mechanism at a time against unchanged fault oracles; retain it unless evidence and the governing decision permit deletion.
-
-| Removal | Failure / gate |
-| --- | --- |
-| Single-owner durable pipeline: compare duplicate/serial publication with parallel file cohorts and one sync per changed directory | Report full sync counts and the 200/s profiles without relaxing FULL. Removing any required file/path barrier must fail content-before-reference/reopen fault oracles; removing redundant ancestor/cleanup syncs must not. Prove startup removes only abandoned private names. |
-| Natural batching versus K-deep in-flight pipelining | First prove one Turn at 20 committed/s with one commit in flight, bounded FIFO savepoints, ordered ACK and failed-successor refusal. A single SQLite writer cannot commit K transactions concurrently. MAIN may propose the smallest necessary overlap only after a measured preparation bottleneck survives natural batching; no K is prescribed. |
-| Throttled progress coalescing | Compare per-change publication with first-idle-immediate, then at least 100-ms coalescing. Report syncs, batch sizes and latency; barriers bypass the delay, every retained record/byte survives, and canonical visibility still follows FULL. |
-| SOURCE-RETENTION | Lose a Core ACK, restart/reconnect, and attempt producer cleanup or baseline replacement: the existing source owner must retain/resend the identical sequence until durable acknowledgement. Prove exact receipt/capture recovery without effect replay or a second buffer; report unavailable-source gaps truthfully. |
-| R survivor adoption | Core dies during work: `scheduler-restart-recovery.test.ts`/`worker-first-release-faults.test.ts` prove exact observation or truthful interruption, fencing and new-Turn resume; report availability cost. |
-| Preparation 25-minute clock | Stalled preparation: `worker-first-release-faults.test.ts`/`turn-executor-factory.test.ts` prove parent deadline bounds authority. |
-| Image 300s, Sandbox-ready 120s, native-open 60s, native-request 8s, separately | Stalled dependency/uncertain stop: `turn-executor-factory.test.ts`, shim `native-startup.test.ts`, adapter faults. |
-| Core command 300s and untimed slot wait | Blocked/lost dispatch, late result: `nanohost-harness-records.test.ts`, `worker-first-release-faults.test.ts`, shim `harness.test.ts`. |
-| Worker poll/result 300s, separately | Lost header/body/ack: shim `harness.test.ts`/`control-client.test.ts` exact receipts. |
-| Exchange 1s / retry pacing 250ms, separately | Hung exchange/hot loop: same transport faults; resource bounds remain necessary. |
-| Execution authority 2h | Runaway live Worker: `scheduler-restart-recovery.test.ts`/`worker-first-release-faults.test.ts` enforce expiry. |
-| Heartbeat 30s | Dead Worker holds capacity: `worker-control-gateway.test.ts`/`worker-first-release-faults.test.ts`; silence is not non-execution. |
-| Reconnect allowance / boot adoption 5m, separately | Repeated restart cannot renew authority: `scheduler-restart-recovery.test.ts`/`control-client.test.ts`. |
-| Native stop 10s / cleanup tail 4s, separately | Hung close remains fenced: shim `lifecycle-deadline.test.ts`/adapter faults. |
-| Core live-export / Host helper 300s, separately | Lost collection remains incomplete: `workspace-snapshot-chain.test.ts`/`turn-executor-factory.test.ts`/Host collection tests. |
-| Gateway pre-commit 120s, waits 1/2/4s, Retry-After 10s, separately | Outage/accepted-output uncertainty: Gateway execution tests, no post-commit retry. |
-| MCP SDK/fetch bounds, health 15s, idle 60s, separately | Hung call/stale session/leak: `worker-mcp-gateway.test.ts`. |
-| Host startup 120s, stop 30s, restart delay, separately | Unready Epoch/survivor/outage storm: Host Epoch/installer/service tests. |
-| Process key | Wrong survivor: `scheduler-restart-recovery.test.ts`/`worker-control-gateway.test.ts`. |
-| Connection generation | Delayed old carriage: `nanohost-harness-records.test.ts`/Host transport tests. |
-| Physical Epoch | Replaced Host claims absence: `scheduler-restart-recovery.test.ts`/Host Epoch tests. |
-| Attachment generation | Old writer reaches reattached volume: `worker-storage-bindings.test.ts`/Host volume tests. |
-
-Capacity, human waits, health/reclamation and cleanup pacing are not execution clocks.
-
-## Implementation Plan And Acceptance
-
-Remove obsolete responsibilities with replacements; move tests without weakening oracles. The accepted terminal-F result at `a1df05e57` covers two main-loop arms: rep1-1ws p99/p99.9 = 18.153/27.165 ms, and rep2-4ws = 16.212/28.393 ms. Both pass the 20/50 ms limits without host confounding. Both retain rate 202/s, 20 s warmup, 300 s measurement, 30 s drain, the explicit 900000 ms case bound and zero retries. Both used the same recorded image and direct pnpm/Vitest invocation, with Node 26.13.0 and pnpm 10.33.3 matching the measured repository. An explicit waiver bypassed `test-env.sh` admission after R12 changed its image build inputs; this was not a newly qualified image or hardware profile. [#445](https://github.com/lingkaix/openkit/issues/445) accepts 504/60600 progress-only refusals under latest-wins consent: each is a self-contained snapshot, and all 36 affected Turn streams have their latest progress durably ACKed. Effects, decisions, input and terminal publications had no refusals. These are explicit non-commit refusals, not acknowledged Item loss or a new batched publication class. The raw rep2 `qualification=false` remains unchanged. Seven >100 ms gaps remain UNKNOWN after one GC/event-loop-delay diagnostic; rep2's maximum main-loop delay was 258.605 ms. The diagnostic records did not establish a GC or host cause. [#703](https://github.com/lingkaix/openkit/issues/703#issuecomment-6864001871) retains that attribution/coverage residual and the native COMMIT-stall investigation without asserting a shared cause. This acceptance does not qualify all eight arms, busy capture, a global writer-zero census or deployment-hardware equivalence; it does not replace the wider criteria below.
-
-Admission preparation may land unused native handlers/schema before public activation; it does not satisfy public admission or mixed-load acceptance. Prove that separate read-only/query-only product handles reject writes and each database's worker-owned families use its pinned worker. Instrument ordinary producers to prove that Main never mutates those families, including every complete family switch and its receipt/Audit partitions and pruning. Retire remaining production Main writers; the transitional handle does not exempt cold families. Qualify complete native tuples, the committed-load and natural-batching profiles, durable-publication/synchronization observations and SOURCE-RETENTION recovery, real per-effect Main contention with the required dose and BEGIN observations, and the separate per-sibling isolation criterion above. Re-run the same real-effect profile after each justified writer switch; moving a proxy cannot satisfy this gate. No loss, dangling reference, early acknowledgement, stale-revision success or unauthorized cross-family mutation is permitted. Earlier failed qualifications remain failed; this document supplies no implementation proof.
-
-| Order | Increment | Gates to extend |
-| --- | --- | --- |
-| 1 | Workspace quarantine and stock Host backoff | Startup/layout/readiness and service/installer faults; healthy siblings serve, corrupt server refuses boot. |
-| 2 | Immutable handoff and product/control SQL | Canonical-write-capacity/observation-recovery/pending-publication faults before/after sync/commit: no dangling references/cache. Real concurrent transitions through the grouped worker: commit/acknowledgement/savepoint correctness, exact acknowledged receipts after reopen, no loss and main event-loop delay p99 <= 25 ms through the design load envelope, explicit refusal beyond it, 32 MiB WAL cap. |
-| 3 | Engine/journal/signals/timers/deadlines | First-release/restart/pending/recurring/shim faults; open intent survives, ended steps skip, later-Turn delivery, no replay. |
-| 4 | Global index/handles/reservations | Both commit gaps; absent-key cancel then delayed reserve; refusal then fresh admission; restored tombstone; missing Workspace/cache eviction. |
-| 5 | Retention placement, snapshot closure, ablations | Observation/export/snapshot-chain faults; exact shared content/prefix coverage; capture crash and explicit abandonment; Storage GC and Git prune/repack remain excluded. |
-
-Additional deciding crash cases:
-
-- `runtime/nanohost-harness-records.test.ts`: settlement -> crash before Workspace outcome -> competing dispatch cannot retire the result; acknowledgement replay permits succession.
-- B activation admission -> crash before A outcome -> B is locally eligible and A recovers the exact receipt without duplicate Turn or source scanning.
-- Server-only image-settlement restart test: with no Workspace execution, the ordinary reconciler discovers and settles the retained image effect/result.
-- Lost native result -> terminal unknown and separate linked inspection; product terminality alone never releases exclusion.
-- Call loss, `turn.reap` and Task terminal fact settle through ordinary transitions without boot-only scans.
-- Span round-trip preserves double `1.0`, exact int64 beyond JavaScript safe integers and dropped counts; all marker variants preserve stored/exported trust keys. Open roots/steps and late Host observations obey lifecycle/sample rules without changing control.
-
-### Acceptance Dependencies
-
-Acceptance is conditional on integrated peer amendments, not promises of later alignment:
-
-- [Work Data Retention](20260921-work_data_retention_format.md): default-on admitted model I/O/native transcripts, separate privacy exclusions, exact-byte/prompt/tool/prefix coverage tests.
-- [Backup/Restore/Move](20260704-workspace_backup_export_import.md): minimal `v0.1.0` operations, common-cut writer coverage, durable capture exclusion, closure and restore tests.
-- [Operational Telemetry](20260731-operational_telemetry_standardization.md): journal-only durable-trace exception and bounded unverified marker validation/export tests.
-- [Worker-Reported Phase Markers](../decisions/20261019-worker_reported_phase_markers.md): the telemetry owner supplies the closed marker variant schema and projection.
-
-Qualify systemd versions, resource limits, all 27 dispositions and individual ablations through direct tests; this documentation supplies no runtime proof.
-
-Cutover uses one authorized pre-`v0.1.0` reset, without converters/legacy readers/dual writes/mixed deployments; subsequent continuity follows Core.
+- [NanoHost Trace Headers And Startup Link](../decisions/20261016-nanohost_trace_headers_and_startup_link.md)
+- [Durable Execution And Control Store](../decisions/20261019-durable_execution_and_control_store.md)
+- [Worker-Reported Phase Markers](../decisions/20261019-worker_reported_phase_markers.md)
+- [Control Store Mixed Writer Exception](../decisions/20261020-control_store_mixed_writer_exception.md)
+- [Independent Control Store Writers And Load References](../decisions/20261023-independent_control_store_writers_and_load_references.md)
+- [Native Admission Fairness](../decisions/20261025-native_admission_fairness.md)
+- [Inline Retained Work Bodies](../decisions/20261027-inline_retained_work_bodies.md)
+- [Refused Ledger Sidecar Residue](../decisions/20261110-refused_ledger_sidecar_residue.md)
+- [Private Active Capture Pin](../decisions/20261112-private_active_capture_pin.md)

@@ -13,7 +13,7 @@ It projects the canonical Core model without redefining root concepts, protocol 
 
 OpenKit is a workspace for delegating real work to agents.
 
-Users should be able to ask quick questions, delegate bounded tasks or durable goals, watch progress, intervene through explicit human-attention modes, collaborate precisely against work resources, and preserve useful outputs and knowledge.
+Users should be able to ask quick questions, delegate bounded tasks or durable goals, watch progress, intervene through explicit human-attention kinds, collaborate precisely against work resources, and preserve useful outputs and knowledge.
 
 OpenKit should not force every workspace, user, Skill, automation, or future product surface into one fixed workflow.
 
@@ -29,7 +29,7 @@ Workspace -> Thread -> Turn -> Item[]
 
 Agent workflow organizes that backbone into reusable mechanisms.
 
-Goal Mode is OpenKit's default workflow setup over those mechanisms: the person keeps the intent, one approved Plan version authorizes the work, and the Coordinator admits ordinary Tasks. Remote MCP's loop recipe remains a low-configuration channel over those same operations and does not advance a Goal by a step. That setup is optimized for low-configuration, reviewable worker-agent work, but it is not the only valid workflow shape. [Architecture](architecture.md#app-and-channel) owns the App and Channel boundary, including remote MCP over the same operations and the operator CLI as the administrator channel.
+Goal Mode is OpenKit's default workflow setup over those mechanisms: the person keeps the intent, one approved Plan version authorizes the work, and the Coordinator admits ordinary Tasks. [Remote MCP Loop Projection](#remote-mcp-loop-projection) states the channel rule. That setup is optimized for low-configuration, reviewable worker-agent work, but it is not the only valid workflow shape. [Architecture](architecture.md#app-and-channel) owns the App and Channel boundary.
 
 ## Principles
 
@@ -46,10 +46,10 @@ Goal Mode is OpenKit's default workflow setup over those mechanisms: the person 
 - Move work forward in bounded, reviewable steps. A worker step should produce observable items, artifacts, evidence, pending human attention, or a terminal state before the next step begins.
 - Deliver the accepted worker request itself. A Turn-owned worker input must preserve the exact Coordinator-composed request; routing summaries, dashboard projections, context summaries, and checkpoints cannot substitute for that request or prove its delivery.
 - Keep human decisions explicit. Plan approval, user input, sensitive action approval, review, retry, refinement, acceptance, and stop decisions must be visible and auditable.
-- Treat channels as projections. Web UI, remote MCP over the same operations, the operator CLI as the administrator channel, desktop apps, automations, and future integrations may operate the same workflow mechanisms, but they do not redefine them.
+- Treat channels as projections. Web UI, desktop apps, automations, and future integrations may operate the same workflow mechanisms, but they do not redefine them. [Remote MCP Loop Projection](#remote-mcp-loop-projection) states the remote MCP and administrator CLI rule.
 - Keep agent-private loops private until Core needs them. Tool retries, model self-reflection, private planner traces, and runtime-native task graphs should not become core records unless Core must schedule, retry, show, approve, audit, or attach artifacts to them.
 - Avoid a `Core Agent` concept by default. Workflow orchestration is a Core responsibility, not a separate canonical agent unless a future design proves that abstraction is necessary.
-- Delegated work is a tree, not a mesh ([decision](../decisions/20260929-delegated_work_is_a_tree.md)). Threads are its nodes and delegations its edges. Control, such as dispatching work, answering a pending request, or cancelling, flows only between a parent and its child through Core. Each scope has one orchestrator, which today is a person in Task Mode. Worker execution is always a leaf: a worker cannot spawn Threads, start other workers, or control a sibling. Read-only views of peers create no control edge.
+- Delegated work is a tree, not a mesh ([decision](../decisions/20260929-delegated_work_is_a_tree.md)). Threads are its nodes and delegations its edges. Control, such as dispatching work, answering a pending request, or cancelling, flows only between a parent and its child through Core. Each scope has one director. A person directs a Task. The Goal Coordinator directs a Goal. Worker execution is always a leaf: a worker cannot spawn Threads, start other workers, or control a sibling. Read-only views of peers create no control edge.
 
 ## Canonical Terms
 
@@ -101,14 +101,14 @@ Goal Mode is OpenKit's default workflow setup over those mechanisms: the person 
 
 This document owns:
 
-- user-facing work vocabulary, product modes, human-attention modes, grounded collaboration, deliverables, and active/long-running work semantics
+- user-facing work vocabulary, product modes, human-attention kinds, grounded collaboration, deliverables, and active/long-running work semantics
 - reusable workflow mechanisms for Core-led worker-agent work
 - workflow mode and recipe composition boundaries
 - default workflow setup semantics
 - planning and the human approval of one exact Plan version as workflow mechanisms, ordinary bounded Tasks, gate, decision, evidence, checkpoint, context compaction, handoff, retry, refinement, stop, and closeout semantics. This document does not own the Goal record or the person's approval record.
-- the relationship between workflow mechanisms, current Goal Mode, the remote MCP guide loop recipe as a channel that does not advance a Goal by a step, worker execution, artifacts, evidence, and review
+- the relationship between workflow mechanisms, current Goal Mode, worker execution, artifacts, evidence, and review. [Remote MCP Loop Projection](#remote-mcp-loop-projection) states the channel rule
 - the rule that prevents premature `TaskRun`-style core concepts
-- the concept-level meanings of `Judgement` and `Candidate Set` as the human ground truth for improvement
+- the concept-level meanings of `Judgement Grounding`, `Judgement`, `Candidate Set`, and `Improvement Input` as the human ground truth for improvement
 
 This document does not own:
 
@@ -171,7 +171,7 @@ Agent-private task graphs should stay private unless Core needs to schedule, ret
 
 ## Personal Workspace
 
-Each User receives a default personal Workspace. It is an ordinary Workspace with Task, Goal, Artifact, Sandbox, repository, and data-source capability under their existing owners. It cannot add members. User Memory belongs to the User independently of that Workspace. Existing Quick Chat data moves one way into the personal Workspace; the former capability restrictions end ([decision](../decisions/20261015-private_assistant_timeline_and_rolling_context.md)).
+Each User receives a default personal Workspace. It is an ordinary Workspace with Task, Goal, Artifact, Sandbox, repository, and data-source capability under their existing owners. It cannot add members. User Memory belongs to the User independently of that Workspace.
 
 Exact kinds, provisioning, migration, and client selection belong to implementation-facing contracts.
 
@@ -185,19 +185,19 @@ Users may explicitly publish selected personal conversation material to a shared
 
 Chat has no special result-card mechanism or proactive completion response. The Assistant dispatches requested work and answers status/result questions when the User asks. Existing Thread and Item projections expose that work ([decision](../decisions/20261015-private_assistant_timeline_and_rolling_context.md)).
 
-After `v0.1.0` and the private Timeline, team Workspaces may offer directly created shared Chat Threads. The Core Assistant is their only agent and acts as a Workspace role, without personal Memory, private Timeline input, or administration Tools. Each shared conversation has its own rolling context and uses the addressing member's authority. Whole-audience source admission and linked Task/Goal handoffs retain their existing boundaries ([decision](../decisions/20261015-shared_conversation_and_single_agent_threads.md)).
+A team Workspace does not offer a directly created shared Chat Thread. The Core Assistant is the only agent of a shared conversation and acts as a Workspace role, without personal Memory, private Timeline input, or administration Tools. Each shared conversation has its own rolling context and uses the addressing member's authority. Whole-audience source admission and linked Task/Goal handoffs retain their existing boundaries ([decision](../decisions/20261015-shared_conversation_and_single_agent_threads.md)).
 
 ## Internal Role Collaboration
 
 Agent Workflow coordinates internal Core roles without turning those roles into user-selectable worker agents.
 
-`architecture.md` owns the internal role definitions for Core Assistant, Workflow Coordinator, Knowledge Manager, and the future Task Evaluator.
+[Architecture](architecture.md#internal-core-roles) owns the internal role table.
 
 The Core Assistant may handle quick replies, clarification, simple state reads, and triage. When the request becomes bounded worker work, it should hand the workflow to the Workflow Coordinator instead of directly calling worker agents. When the request becomes a Goal, it calls the Goal owner's create operation.
 
 The Assistant chooses conversational mode within its admitted authority. Workflow Coordinator accepts only trusted explicit Task delegation, selects an eligible worker and composes the exact request without semantic reclassification; its outcomes are `worker_turn` and `blocked`. The mode service derives entry intent from the operation or accepted handoff, never from prose, and validates and applies effects under the existing admission and safety owners. Workflow Coordinator does not own Goal truth, a Goal Plan, or a Goal stop. It does not persist mode state, execute progression effects, or materialize and deliver worker context. The owning workflow boundary performs those effects through Core-owned records and services.
 
-The Knowledge Manager owns knowledge retrieval support and knowledge maintenance. Before a bounded step, the owning workflow boundary may ask the Knowledge Manager for relevant knowledge or source material and supply the authorized result to the Workflow Coordinator. The Knowledge Manager returns source-traceable material, exclusions, uncertainty, or proposals; the Coordinator owns semantic inclusion and composition, while the workflow boundary owns persistence, materialization, and delivery.
+The Knowledge Manager owns knowledge retrieval support and knowledge maintenance. Before a bounded step, the owning workflow boundary may ask the Knowledge Manager for relevant knowledge or source material and supply the authorized result to the Workflow Coordinator. The Knowledge Manager returns source-traceable material, exclusions, uncertainty, or proposals; the Workflow Coordinator owns semantic inclusion and composition, while the workflow boundary owns persistence, materialization, and delivery.
 
 Worker agents request additional knowledge through the MCP capability plane. Knowledge ask and tell use that plane and CapabilityCall evidence, and they route through the Knowledge Manager rather than letting the worker read the Knowledge Store directly. Full content-delivery acceptance remains separate. A selected Knowledge reference becomes worker-visible only when Core explicitly binds it into the worker input or a materialized Context Package; selection alone does not imply delivery.
 
@@ -222,9 +222,9 @@ Task Mode is a non-trivial work path. It should route to a Workflow Coordinator 
 
 Core should keep the routing decision explicit enough to explain why a request stayed in quick reply or moved into worker-agent workflow.
 
-Goal Mode may be operated by Web UI, remote MCP over the same operations, the operator CLI as the administrator channel, desktop channels, automations, or future integrations, but NanoCore remains the source of truth for Goal state. None of these channels advances a Goal by a step.
+A channel may operate Goal Mode. [Remote MCP Loop Projection](#remote-mcp-loop-projection) states that rule. NanoCore remains the source of truth for Goal state.
 
-The Goal is one continuous outcome, its work-intent cards, and immutable Plan versions. Existing Goal-owned data is removed with the new implementation. Records outside that ownership stay usable. [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) records the decision.
+The Goal is one continuous outcome, its work-intent cards, and immutable Plan versions. Records outside that ownership stay usable. [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) records the decision.
 
 ## Workflow Modes And Recipes
 
@@ -246,12 +246,12 @@ Goal Mode
   + ordinary Tasks inside that version
   + Action Center projections for human attention
   + artifacts and evidence bundles
-  + remote MCP guide as a low-configuration channel over the same operations, not a Goal step
+  + remote MCP guide as a channel. See Remote MCP Loop Projection.
 ```
 
 This setup is recommended when the user wants reviewable worker-agent work without custom workflow configuration.
 
-The built-in default setup combines one approved Plan version for a Goal, ordinary Tasks inside that version, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and remote MCP guide and operation calls over those same mechanisms. Those calls do not advance a Goal by a step. Its channels follow the [App and Channel boundary](architecture.md#app-and-channel). Approving the Plan version does not require a separate approval of each Task. An additional editorial review of Plan wording may be optional, and it never substitutes for the exact Plan approval.
+The built-in default setup combines one approved Plan version for a Goal, ordinary Tasks inside that version, Action Center projections, artifacts, evidence bundles, and workspace review and apply records. [Remote MCP Loop Projection](#remote-mcp-loop-projection) states the channel rule. Its channels follow the [App and Channel boundary](architecture.md#app-and-channel). Approving the Plan version does not require a separate approval of each Task. An additional editorial review of Plan wording may be optional, and it never substitutes for the exact Plan approval.
 
 That setup is a recommended composition of Core workflow mechanisms, not the definition of Agent Workflow itself.
 
@@ -273,9 +273,9 @@ The remote MCP guide provides setup guidance, safe workflow policy, operation or
 
 They do not own workflow state and must not bypass Core-owned workflow mechanisms, approval gates, user-input gates, artifacts, evidence, repository readiness when a Git source is selected, human decisions, or App API Action Center projections.
 
-The bundled CLI is a deterministic channel facade over public Core or App API contracts. It is separate from planned worker-side MCP capability supply, which belongs to Mediation.
+The bundled CLI is a deterministic channel facade over public Core or App API contracts. Worker-side MCP capability supply belongs to Mediation.
 
-The remote MCP guide's loop guidance is a workflow recipe for worker work in the default setup. It should drive one bounded worker step at a time, read workflow state after each step, present evidence, and ask the human before continuing when a gate or external side effect is involved. It does not advance a Goal by a step.
+A channel does not advance a Goal by a step. Remote MCP uses the same operations. The operator CLI is the administrator channel. The remote MCP guide's loop guidance is a workflow recipe for worker work in the default setup. It should drive one bounded worker step at a time, read workflow state after each step, present evidence, and ask the human before continuing when a gate or external side effect is involved.
 
 ## Planning
 
@@ -350,18 +350,18 @@ When exact continuation cannot be proved, preserving an interrupted attempt and 
 
 Human attention is any state the product should surface because human authorization, information, correction, review, or awareness is useful.
 
-OpenKit uses four composable product modes for human attention:
+OpenKit uses four human-attention kinds:
 
-| Mode | Stable product meaning |
+| Kind | Stable product meaning |
 | --- | --- |
 | Approval Gate | A pending authorization decision for safety, policy, budget, credential use, irreversible operations, or external side effects. The governed effect waits for it; the requesting work does not pause. |
 | Elicitation Gate | A pending answer to a question, missing input, planning choice, or recovery choice. It is not authorization. |
 | Steering Input | Non-terminal user input that corrects or extends active work only through a delivery contract accepted by the owning workflow. Unsupported active-work input is rejected rather than assigned an inferred delivery behavior. A Goal work-intent edit is recorded on the Goal and does not by itself change a running worker. |
 | Review And Acceptance | Human or agent evaluation of plans, artifacts, diffs, knowledge proposals, evidence, or outcomes that may lead to acceptance, refinement, redo, rejection, deferral, escalation, or stop. |
 
-Only Approval Gate and Elicitation Gate are pending human requests. Neither pauses a Turn or expires by time. A request is blocking only when the requesting agent ended its Turn while the request was outstanding and no later Turn has run, and its outcome reaches the agent on a later Turn, as `docs/core/protocol.md` defines. The four modes may compose without becoming four new Core objects or a parallel workflow engine.
+Only Approval Gate and Elicitation Gate are pending human requests. Neither pauses a Turn or expires by time. A request is blocking only when the requesting agent ended its Turn while the request was outstanding and no later Turn has run, and its outcome reaches the agent on a later Turn, as `docs/core/protocol.md` defines. The four kinds may compose without becoming four new Core objects or a parallel workflow engine.
 
-Action Center is a product and App API projection over pending human attention across these modes. Plan approval and completion acceptance appear as pending requests. It helps users find required attention but must not replace Thread narrative, Item history, or the owning decision records.
+Action Center is a product and App API projection over pending human attention across these kinds. Plan approval and completion acceptance appear as pending requests. It helps users find required attention but must not replace Thread narrative, Item history, or the owning decision records.
 
 Concrete gate fields, Item types, delivery policies, row kinds, actions, and API shapes belong to implementation-facing contracts.
 
@@ -412,15 +412,44 @@ A Workspace-only Artifact import or registration may omit an originating Thread 
 
 Deliverable, task, job, and goal are product-facing terms. A Deliverable normally projects one or more Artifacts plus Item-backed status or summary, and none of these labels creates parallel durable truth.
 
+## Judgement Grounding
+
+`Judgement Grounding` converts a human judgement into Agent input that is precise, localized, executable, and replayable. A person directs work by an assessment, a correction, or a selection on an exact target. The person does not have to restate that judgement in prose. General annotation and compare-driven feedback are not part of this contract. The [Core owners decision](../decisions/20261116-core_owners_for_vision_mechanisms.md) records why Core owns this concept.
+
+The four properties have these meanings:
+
+- Precise: the judgement names one exact target. The target is one exact version, one exact range in one exact revision, or one immutable Candidate Set.
+- Localized: when the judgement applies to a part of a resource, the target names that bounded part and retains its original content.
+- Executable: the accepted forms are assessment, correction, and selection.
+- Replayable: an accepted Judgement is immutable and retains its exact target and typed choice. A later step, a review, or an evaluation reads the same input after restart and after Workspace export.
+
+A Judgement starts no work. An explicit next-step submission carries the selected candidate as an exact pinned Artifact version. Other Judgement kinds become Agent input only through their owning contract. A later Judgement or a newer version MUST NOT change an input that a step already pinned. When the pinned content is missing or current admission fails, Core MUST block that input. Core MUST NOT substitute another candidate or version.
+
+Judgement Grounding uses the existing records and the four human-attention kinds. It adds no interaction kind, feedback log, workflow object, or universal Resource model. [Conversation And Grounded Collaboration](#conversation-and-grounded-collaboration) owns the product projection.
+
 ## Judgement And Candidate Set
 
-Human judgement on exact outputs and candidate selection provide the v0.1.0 foundation for improvement through ordinary work.
+Human judgement on exact outputs and candidate selection provide the basis for improvement through ordinary work.
 
 A `Judgement` records one human assessment of one exact target. It retains the authenticated actor, server-recorded time, request identity, kind, choice and optional note. The closed kinds are `accept`, `reject`, `correct`, `select` and `rate`. A judgement is immutable after acceptance. A later judgement preserves the earlier assessment rather than editing it. A judgement does not independently accept a proposal, change content or authorize an effect.
 
 A `Candidate Set` retains an ordered collection of at least two distinct exact Artifact-version references from one Workspace. Each reference includes its content digest. The set also retains its creator and creation time. Its identity and membership are immutable. A different membership creates a different set. A human selects one member through an attributable `select` judgement. Selection alone starts no work.
 
+Candidates come from ordinary work under the existing Thread and Turn rules. One Thread has no simultaneous Turns. A request for several candidates runs as parallel work in separate Threads, or as repeated work with the same configuration or with a different Skill version, model, or prompt. Each candidate is an exact Artifact version that its own execution produced. The Candidate Set records those versions after they exist. Candidate production adds no workflow mechanism, run object, or strategy record. The configuration that produced a candidate is descriptive provenance and grants no authority.
+
 The Evaluation Foundation specification owns the judgement record and the candidate set with its attributable selection, and keeps the record detail.
+
+### Improvement Inputs
+
+An `Improvement Input` is a retained record that an improvement proposal may cite. A proposal reads it through the owner of the record. No second ledger exists. A missing input stays a recorded gap and is never reconstructed. An input grants no authority. The contract of the proposal owner decides which inputs are admissible evidence. A Knowledge proposal accepts only the source references that the Knowledge contract admits. Evidence outside that set requires registered Source capture first. Current classes (not a closed set):
+
+- Judgements and Candidate Set selections
+- Review And Acceptance decisions
+- the ordered Item history of the judged work
+- the exact Agent setup and the delivered context of that work
+- measured usage
+
+An improvement proposal MUST cite the exact inputs that support it through their record owners. Acceptance of a proposal remains with the owner of the changed resource. Knowledge owns a Knowledge change. Agent Supply owns a Skill version. The Task Evaluator remains a reserved role without an evaluation model. The [Core owners decision](../decisions/20261116-core_owners_for_vision_mechanisms.md) records this term.
 
 ## Invariants
 
@@ -433,8 +462,10 @@ The Evaluation Foundation specification owns the judgement record and the candid
 - Conversation target and logical-model controls MUST remain independent product selections and MUST NOT expose or derive Provider routes, account slots, AgentSessions, Harnesses, Sandboxes, RuntimeTargets, or native processes.
 - A `New Shard + Worker` product action MUST project creation of a Task execution Thread and MUST NOT create a Shard record or parallel task lifecycle.
 - Once a workflow accepts an immutable execution request, that accepted record MUST own every task-specific worker-request fact. A coordinator, channel, caller payload, default, or mutable projection MUST NOT replace or reconstruct those accepted facts.
-- Human attention MUST use the four composable product modes without turning Action Center into a new authority.
+- Human attention MUST use the four human-attention kinds without turning Action Center into a new authority.
 - Grounded collaboration MUST preserve exact subject and version context through owning records without creating a hidden feedback log.
+- A Judgement MUST name one exact target. An explicit next-step submission that uses a selected candidate MUST pin that exact Artifact version. Core MUST NOT substitute another candidate or version when that input is unavailable.
+- Candidate production and improvement MUST use existing work records. They MUST NOT add a run object, a strategy record, or a second ledger. One Thread has no simultaneous Turns.
 - Work-produced Artifact mutations MUST remain Item-backed. A Workspace-only import or registration MAY omit Thread and Turn lineage only with explicit provenance; its first introduction into a Thread and every later work-produced mutation MUST create exact Item-backed lineage.
 - Redo and refinement MUST create new traceable work without mutating or deleting prior attempts; refinement MUST explicitly carry the selected prior result as context.
 - Accepted Steering Input MUST have one current owning delivery path and an authoritative outcome. If immediate receipt or durable later delivery cannot be proven, the input MUST NOT be accepted as Steering Input or represented as delivered.
@@ -449,7 +480,7 @@ The Evaluation Foundation specification owns the judgement record and the candid
 - The Core Assistant MUST NOT directly call worker agents for non-trivial work; it should route that work to the Workflow Coordinator.
 - Workflow execution MUST NOT bypass the Knowledge Manager or Core-governed knowledge boundary when worker context needs reusable knowledge.
 - The Knowledge Manager MUST NOT own the whole task workflow or silently update high-impact knowledge without the required review gate.
-- Worker agents MUST NOT read the Knowledge Store directly. Core MUST supply selected Knowledge through prepared context packages or, after the worker capability plane exists, through Core-governed capability and knowledge boundaries.
+- Worker agents MUST NOT read the Knowledge Store directly. Core MUST supply selected Knowledge through prepared context packages or through Core-governed capability and knowledge boundaries.
 - Context packages MUST remain data projections, not Internal Core Roles.
 - A channel MUST NOT advance workflow state by mutating worker runtime internals, storage internals, or agent-private state directly.
 - A worker agent MUST NOT be treated as the canonical owner of workflow state merely because it executed a step.

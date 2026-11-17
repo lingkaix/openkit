@@ -35,6 +35,6 @@ Revisit if direct mappings and documented hooks cannot preserve an already admit
 
 - [Pi AI Unified LLM Backend](../specs/20260708-pi_ai_unified_llm_backend.md): direct stock-IR mappings, native channel, reasoning projections and capability-based selection.
 - [LLM Gateway Responses API](../specs/20260526-llm_gateway_responses_api.md): public format capabilities, bounded feature admission and namespace projection.
-- [Pi AI Provider Gateway Adoption](../specs/20260703-pi_ai_provider_gateway_adoption.md): stock dependency, in-flight inference types and supported extension boundary.
-- [Capability Usage Gateway Foundation](../specs/20260704-capability_usage_gateway_foundation.md): shared usage producer without the disappearing public-payload accounting path.
+- [Pi AI Unified LLM Backend](../specs/20260708-pi_ai_unified_llm_backend.md#provider-adoption-rules): stock dependency, in-flight inference types and supported extension boundary.
+- [Capability Usage Gateway Foundation](../specs/20260703-audit_usage_evidence_records.md#capability-usage): shared usage producer without the disappearing public-payload accounting path.
 - [Work Data Retention Format](../specs/20260921-work_data_retention_format.md): admitted semantic sampling boundary and retained-record continuity.

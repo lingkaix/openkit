@@ -7,7 +7,7 @@ This document defines OpenKit mediation semantics for operation definition and i
 
 Mediation is the single interception base across OpenKit: operations and governed runtime capability paths are invoked across `<operation>@<stage>` mediation points, supplied to worker agents during execution, or projected as exact Tools to NanoCore-internal roles.
 
-This document owns the semantic definition and invocation procedure of an `Operation`, mediation points (`<operation>@<stage>`), the Capability Mediation Boundary, runtime capability access, `CapabilityCall`, gateway projection, internal-role Tool identity and admission, transformer selection, credential injection contracts, context access paths, gateway-mediated usage production for a `CapabilityCall`, routing, gateway audit metadata, rate limits, quotas, and provider/tool error normalization.
+This document owns the semantic definition and invocation procedure of an `Operation`, mediation points (`<operation>@<stage>`), the Capability Mediation Boundary, runtime capability access, `CapabilityCall`, gateway projection, internal-role Tool identity and admission, transformer selection, credential injection contracts, context access paths, gateway-mediated usage production for a `CapabilityCall`, routing, logical-model routing (`Logical Model`, `Model Route`, `Provider Profile`), gateway audit metadata, rate limits, `Budget`, quotas, and provider/tool error normalization.
 
 This document does not own agent supply declarations, reusable knowledge semantics, task-time context package semantics, global audit projection, permission policy, sandbox containment, or `UsageRecord`, usage units, usage attribution, and system-wide metering (`docs/core/evidence.md`).
 
@@ -47,7 +47,7 @@ The gateway is the target implementation projection for agent capabilities that 
 
 The gateway owns routing, transformer pipeline selection, credential injection contract, gateway audit metadata, usage metering, rate-limit hooks, budget checks, and upstream error normalization for gateway-mediated calls.
 
-Gateway interception MUST use the common NanoCore mediation contract: providers may observe, advise, gate or transform, with Policy authority required for gate/transform and a final current Policy check before effects. Safe input/output version references and durable invocation evidence reuse existing owners; no provider gains credentials or runtime authority from installation. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this Not Started unification, including unavailable timeout/circuit outcomes rather than fabricated permission decisions.
+Gateway interception MUST use the common NanoCore mediation contract: providers may observe, advise, gate or transform, with Policy authority required for gate/transform and a final current Policy check before effects. Safe input/output version references and durable invocation evidence reuse existing owners; no provider gains credentials or runtime authority from installation. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this unification, including unavailable timeout or circuit outcomes rather than fabricated permission decisions.
 
 ## Operation
 
@@ -95,7 +95,7 @@ The same policy decision may be enforced at multiple layers. Sandbox enforcement
 
 ## Capability Mediation Boundary
 
-A future capability mediation component may project Core capability services into a worker environment when the runtime cannot call those services directly.
+A capability mediation component projects selected Core capability services into a worker environment when the runtime cannot call those services directly. Another adapter may exist. This sentence does not assert that every adapter exists.
 
 The component is communication substrate, not the agent runtime, worker-control path, or business-logic owner.
 
@@ -184,7 +184,7 @@ In local deployments, the gateway may be a Core-local service, loopback endpoint
 
 In container or remote deployments, the gateway may be projected into the agent environment through a network proxy, runtime adapter, or managed service.
 
-Capability projection is independent from worker control. A direct worker-control connection MUST NOT imply that any capability route exists, and a future capability gateway MUST NOT become a control relay.
+Capability projection is independent from worker control. A direct worker-control connection MUST NOT imply that any capability route exists, and a capability gateway MUST NOT become a control relay.
 
 Agents should depend on stable capability routes, not provider-specific routing logic.
 
@@ -206,6 +206,20 @@ Agent capability routing may consider:
 Agents should see stable local or protocol-level endpoints instead of provider-specific routing logic.
 
 NanoCore-managed supply and the upward interface remain Gateway-mediated; separately authorized non-LLM REST grants retain their existing network and credential contracts.
+
+## Model Routing
+
+`Logical Model` is the stable model name that a product surface, an Agent setup, or an internal role selects. It hides the Provider, the provider-native model, and the account that serve it.
+
+`Provider Profile` is one authored supply entry for one model Provider. It holds the explicit model list. An endpoint, a credential reference, or an account binding depends on the Provider kind. Keyless profiles and subscription-bound profiles exist. [Core Concepts](core-concepts.md#coreserver) owns the scope that supplies it.
+
+`Model Route` is the ordered list of route members that can serve one Logical Model. Each member names exactly one Provider Profile and one provider-native model.
+
+The Gateway owns member selection, retry, and failover for a Logical Model. The capability mediation component in a worker environment does not own them. A Provider, an adapter, a runtime, or a worker MUST NOT add a second fallback path for NanoCore-managed inference. Where a route enables failover, the Gateway MAY move to another eligible member only before it releases output of the attempt to the caller ([Fault Tolerance](fault-tolerance.md#rules-by-fault-source)). The Logical Model and its contract stay fixed for the owning internal-role run or worker Turn. A different member MUST satisfy that fixed contract.
+
+Member availability is a current projection. Core computes it again for discovery, for each call, and after restart. A member whose supply is absent is unavailable. That state is not a configuration error, and it does not rewrite the route. A Logical Model with no available member stays a valid reference, and a request for it fails with a typed unavailable result. Core MUST NOT select a different Logical Model in its place.
+
+The `CapabilityCall` of the logical invocation retains the route lineage: each member that was unavailable at selection and each attempt. Product discovery shows the Logical Model only. Provider Profile, provider-native model, account, and member identity stay out of product discovery. The [Core owners decision](../decisions/20261116-core_owners_for_vision_mechanisms.md) records why Core owns these terms.
 
 ## Internal Role Tool Identity And Admission
 
@@ -266,7 +280,15 @@ Transformer decisions should be auditable without leaking secret values or sensi
 
 The gateway projection is the natural enforcement point for capability rate limits, usage budgets, provider quotas, and cost controls.
 
-Early implementations may omit some controls, but the capability call model must keep enough ownership context to add them later.
+An owner states any omitted rate or budget control in that owner's contract. The call model keeps enough ownership context for a later control.
+
+`Budget` is an authored limit on measured consumption inside one attributable scope, such as one capability route or one Turn. A Budget names its scope, its unit, and its limit. It uses the units and the attribution that [Evidence](evidence.md#usage-and-metering) owns. Core MUST NOT evaluate a Budget in one unit against a measurement in another unit. The [Core owners decision](../decisions/20261116-core_owners_for_vision_mechanisms.md) records why Mediation owns this term.
+
+Core is the only authority for a Budget. An executor, an external platform, an adapter, or a worker MUST NOT set, raise, or reset a Budget ([Architecture](architecture.md#compute-and-harness-neutrality)). Enforcement is a Policy projection at the mediation boundary. [Policy](policy.md) owns that authority.
+
+Each Budget's owning contract states the unit, the scope, the measuring producer, the enforcement point, the missing-measurement behavior, and the restart durability. A missing measurement is neither zero use nor exhaustion. The owning contract states whether new consumption is refused while its measurement is missing. The raw model output bound of a Turn refuses further inference. The owning contract states whether the measurement survives restart. A process-local counter is allowed. Core MUST NOT present a non-durable measurement as a durable limit.
+
+An exhausted Budget does not change accepted results. More work needs a new decision through [Human Attention](work-model.md#human-attention). A choice of scope, priority, or a permitted model is an Elicitation Gate. A decision that authorizes more spending is an Approval Gate. Core MUST NOT offer a generic override. A retry after exhaustion is a new authorized request.
 
 ## Usage Metering
 
@@ -280,6 +302,8 @@ Early implementations may omit some controls, but the capability call model must
 - Secret values MUST NOT appear in prompts, item payloads, context packages, audit records, usage records, or normal workspace files through the capability path.
 - Product-visible capability calls MUST produce or be referenced by item-backed events.
 - A disabled capability plane MUST expose no routes and MUST fail closed rather than infer access from worker supply, network reachability, or control connectivity.
+- The Gateway MUST be the only owner of member selection, retry, and failover for a Logical Model. Failover MUST NOT occur after the Gateway releases output of the attempt to the caller, and Core MUST NOT replace an unavailable Logical Model with a different one.
+- A Budget MUST have one scope, one unit, and one Core-owned limit. A missing or unknown measurement MUST NOT produce an exhaustion claim or a zero reading. An executor MUST NOT set, raise, or reset a Budget.
 - Non-gateway runtime, sandbox, storage, and workspace-sync measurement MUST follow the [Evidence](evidence.md#usage-and-metering) boundary and MUST NOT be represented as an agent-capability-mediated call unless it is one.
 
 ## Agent Capability vs Feature Discovery

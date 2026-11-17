@@ -8,62 +8,19 @@ aspect: mediation
 
 Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
 
-## Owns
+## Scope
 
-This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, the `gateway.jsonc` logical-model catalog, placement and Gateway projection of each logical model's context-management policy, model discovery, derived logical-model capabilities and model family, ordered private route planning, bounded pre-commit retries and failover, optional public cache-scope input, and the common public Gateway error envelope, redaction, and transport behavior. It also owns the routing rule that one route member references one Provider profile and that a subscription-backed Provider profile binds one explicit provider-subscription account slot.
+**Owns.** The public OpenAI-compatible Chat Completions and Responses surface, the `gateway.jsonc` logical-model catalog, context-management placement and projection, model discovery, derived capabilities and model family, ordered private route planning, bounded pre-commit retry and failover, optional public cache-scope input, and the public error envelope, redaction, and transport. One route member names one Provider profile. A subscription-backed profile binds one explicit account slot.
 
-## Does Not Own
+**Does not own.**
 
-This spec does not own provider transport, request, response, streaming, usage, cache, credential-input, or provider-error mapping, which belongs to `docs/specs/20260708-pi_ai_unified_llm_backend.md`; subscription account creation, login, refresh, logout, status, quota, or Vault persistence, which belongs to `docs/specs/20260721-provider_subscription_accounts.md`; context-compaction authority, lifecycle, item semantics, or quality gates, which belong to `docs/specs/20260902-agent_runtime_context_compaction.md`; durable capability and usage records; worker-side capability records; worker-runtime provenance; authenticated worker-inference identity binding; runtime cache-lineage specialization; policy evaluation; or `packages/protocol` schemas.
+- Provider transport, mapping, usage, cache hashing, credential input, and provider-error classification belong to [Pi AI Unified LLM Backend](20260708-pi_ai_unified_llm_backend.md).
+- Account creation, login, refresh, logout, status, quota, and Vault persistence belong to [Provider Subscription Accounts](20260721-provider_subscription_accounts.md).
+- Compaction authority, lifecycle, items, and quality gates belong to [Agent Runtime Context Compaction](20260902-agent_runtime_context_compaction.md).
+- Durable capability and usage records, worker capability records, worker-runtime provenance, worker-inference identity, runtime cache-lineage specialization, and policy evaluation stay with their owners.
+- `packages/protocol` does not copy this Gateway surface.
 
-## Core References
-
-- `docs/core/mediation.md`
-- `docs/core/vault.md`
-- `docs/core/policy.md`
-- `docs/core/evidence.md`
-
-Related specs:
-
-
-## Related Docs
-
-- `docs/specs/20260708-pi_ai_unified_llm_backend.md`
-- `docs/specs/20260721-provider_subscription_accounts.md`
-- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
-- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
-- `docs/specs/20260902-agent_runtime_context_compaction.md`
-
-## Summary
-
-NanoCore exposes the fixed agent-facing Gateway surface at `GET /v1/models`, `POST /v1/chat/completions`, and `POST /v1/responses`, plus `/health`. Route handling authenticates and authorizes the caller, resolves one logical model, selects one eligible private route member, derives a bounded cache scope, and delegates the Provider effect to the unified pi-ai dispatcher. The caller sees only the logical model ID and declared contract; Provider profile, provider-native model, account slot, and fallback lineage remain private except in authorized redacted audit and usage evidence.
-
-Codex and xAI subscription providers are not special Gateway backends. Their profiles use the same public routes and explicitly bind a server-owned account slot through provider-neutral OpenKit configuration. The unified backend resolves that slot before invoking pi-ai. Each public request maps once into stock pi-ai intermediate representation, and each result projects once into the requested public format under the [backend mapping contract](20260708-pi_ai_unified_llm_backend.md#request-routing-contract), without a public-format detour. The Gateway has no Codex app-server, `CODEX_HOME`, `auth.json`, or dedicated Codex client dependency in the clean target.
-
-## Goals / Non-goals
-
-### Goals
-
-- Preserve one OpenAI-compatible Gateway surface for API-key, subscription-backed, gateway, local, and custom providers.
-- Keep provider and model authority in authored OpenKit profiles rather than adapter discovery.
-- Present stable logical model IDs whose concrete Provider profile, provider-native model, and account may vary without changing the caller-visible contract.
-- Support deterministic ordered route members, bounded pre-commit transient retry, and optional failover for the classified failures accepted below.
-- Support declared endpoint families through direct stock-IR mappings and public projections without hiding semantic loss.
-- Require explicit account-slot binding for every subscription-backed provider profile.
-- Preserve cache-scope input and provider-reported cache evidence without exposing raw ownership identifiers.
-- Return stable redacted public errors before and after streaming begins.
-
-### Non-goals
-
-- Do not expose pi-ai, Codex app-server, or provider-private adapter vocabulary through public requests, responses, config, or diagnostics.
-- Do not copy Gateway request or response schemas into `packages/protocol`; this is an external provider-capability surface, not the UI-to-Core workflow protocol.
-- Do not admit Responses built-in tools, remote MCP, computer use, file input, image input outside the explicit native PNG/JPEG mapping below, or another unrepresentable modality merely because a stock adapter or native hook exists.
-- Do not expose subscription credentials, raw provider account ids, Vault references, authorization headers, or raw account quota responses.
-- Do not accept pasted subscription tokens through Gateway routes or provider profiles.
-- Do not expose or implement `POST /v1/completions`.
-- Do not reintroduce the superseded `/internal/v1/chat/completions` facade.
-- Do not implement weighted or randomized balancing, active health scoring, generic strategy plugins, fallback after public commit, or a guarantee that any fallback succeeds.
+**Core.** [Mediation](../core/mediation.md), [Vault](../core/vault.md), [Policy](../core/policy.md), and [Evidence](../core/evidence.md).
 
 ## Public HTTP Contract
 
@@ -75,19 +32,19 @@ The existing authenticated Gateway and Worker-local inference paths keep their c
 
 ### `POST /v1/chat/completions`
 
-The route accepts OpenAI-compatible Chat Completions requests with supported system, developer, user, assistant, and tool messages. Unknown fields may pass through only when the selected endpoint mapping can preserve them; an unsupported semantic requirement fails with a stable Gateway error instead of being silently dropped.
+The route accepts OpenAI-compatible Chat Completions requests with supported system, developer, user, assistant, and tool messages. The closed admission is `store` false-only, `stream_options` containing only boolean `include_usage`, and the restricted message fields and roles. An unknown semantic field is refused before credentials. An unsupported semantic requirement fails with a stable Gateway error instead of being silently dropped.
 
 Streaming uses OpenAI-compatible SSE chunks and terminates with `[DONE]`. If a provider failure occurs after headers begin, the stream emits the stable OpenKit error termination owned by this contract and never copies the upstream message or response body.
 
 ### `POST /v1/responses`
 
-The route accepts OpenAI-compatible Responses requests with `model`, `input`, optional `stream`, and supported passthrough fields. It returns a Responses projection directly from the selected pi-ai result or event stream under the [backend mapping contract](20260708-pi_ai_unified_llm_backend.md#request-routing-contract). Same-protocol native content that stock Context, call options or result blocks cannot represent uses the admitted native channel; the public response never depends on conversion through Chat Completions.
+The route accepts OpenAI-compatible Responses requests with `model`, `input`, and optional `stream`. The closed admission is `store` false-only, `include` empty or exactly `reasoning.encrypted_content`, `text.verbosity` of `low`, `medium`, or `high`, `reasoning.context` of `all_turns`, and `reasoning.summary` of `auto`, `concise`, `detailed`, `off`, `on`, or an admitted null. An unknown semantic field is refused before credentials. It returns a Responses projection directly from the selected pi-ai result or event stream under the [backend mapping contract](20260708-pi_ai_unified_llm_backend.md#backend-contract). Same-protocol native content that stock Context, call options or result blocks cannot represent uses the admitted native channel; the public response never depends on conversion through Chat Completions.
 
 Native Responses explicitly admits inline PNG/JPEG data URLs in user `input_image` content and complete `function_call_output.output` arrays containing text and images. The selected model's effective input modalities must include image input. Preserve image bytes, content order, instructions, text, Tool history and attributed reasoning. Preserve optional native image detail (`auto`, `low` or `high`) through the existing native channel. Existing request byte limits and final request admission still apply. Missing image capability, malformed inline encoding and unsupported image shapes fail with `unsupported_gateway_feature` before inference. This mapping adds no decoding, transcoding, state or lifecycle; the backend owner's native-channel lifecycle applies. Chat images, other roles, custom Tool output images, remote image URLs, file ids, other media and cross-protocol image mapping remain unsupported.
 
-Complete historical local-tool pairs may be admitted as non-callable context on a same-protocol native Responses request under the [backend owner's historical-pair contract](20260708-pi_ai_unified_llm_backend.md#codex-turn-state-continuity), even when their tool is absent from the current declarations. This changes neither current callable authority nor validation of new Provider calls. Gateway preserves the admitted structured history; it does not synthesize declarations, convert the pairs to prose, or discard them. A runtime-native textual summary request using ordinary Responses inputs is governed by ordinary request admission; its summarization purpose alone is not a forbidden Provider-native compaction control.
+Complete historical local-tool pairs may be admitted as non-callable context on a same-protocol native Responses request under the [backend owner's historical-pair contract](20260708-pi_ai_unified_llm_backend.md#compatibility), even when their tool is absent from the current declarations. This changes neither current callable authority nor validation of new Provider calls. Gateway preserves the admitted structured history; it does not synthesize declarations, convert the pairs to prose, or discard them. A runtime-native textual summary request using ordinary Responses inputs is governed by ordinary request admission; its summarization purpose alone is not a forbidden Provider-native compaction control.
 
-The backend owner's [Native Channel lifecycle](20260708-pi_ai_unified_llm_backend.md#native-channel) governs this request-derived, attempt-local validation, including retry, cancellation, recovery, restart and dependency failure. The exception introduces no durable record or migration. Its rationale is recorded in [Historical Tool Pairs And Release Hold](../decisions/20261008-historical_tool_pairs_and_release_hold.md).
+The backend owner's [Native Channel lifecycle](20260708-pi_ai_unified_llm_backend.md#backend-contract) governs this request-derived, attempt-local validation, including retry, cancellation, recovery, restart and dependency failure. The exception introduces no durable record or migration. Its rationale is recorded in [Historical Tool Pairs And Release Hold](../decisions/20261008-historical_tool_pairs_and_release_hold.md).
 
 The route consumes the exact `context_management: [{ type: "compaction", compact_threshold }]` control under `docs/specs/20260902-agent_runtime_context_compaction.md`. The authenticated execution policy is authoritative: the Gateway injects an omitted control for OpenKit compaction authority, rejects a supplied mismatch or any control under runtime-native authority before Provider dispatch, and never blindly forwards this OpenKit-owned operation to a Provider. A caller-supplied `compaction_trigger` input item or another Provider-native compaction control is rejected rather than passed through. A completed OpenKit compaction item remains in the Responses output and may be round-tripped as later input under that owner.
 
@@ -141,26 +98,7 @@ An otherwise authorized request without Workspace scope may dispatch. When Core 
 
 `DATA_ROOT/config/gateway.jsonc` is the sole authored Gateway configuration file. It is a strict versioned record with Gateway enablement, optional `defaultLogicalModelId`, and a non-empty identified logical-model catalog when enabled. The removed `server.jsonc.gateway`, `gatewayProviderId`, and `gatewayModel` fields are invalid and have no compatibility reader.
 
-Each logical model contains:
-
-```ts
-interface LogicalModelConfig {
-  id: string;
-  displayName: string;
-  routing?: { autoFailover: boolean };
-  contextManagement: Array<{
-    type: "compaction";
-    compactThreshold: number;
-  }>;
-  routes: Array<{
-    id: string;
-    providerProfileId: string;
-    providerModel: string;
-  }>;
-}
-```
-
-IDs are stable and unique within their owning collection. V1 requires exactly one context-management entry with the shape above; `docs/specs/20260902-agent_runtime_context_compaction.md` owns its threshold validation, immutable execution projection, and separation from physical model limits. The Provider's explicit model list and the authored logical routes admit model IDs. The pinned `@openkit/models-dev-catalog` snapshot is an optional inventory and metadata source, not an allowlist: an administrator may hand-author a third-party model ID, and missing catalog membership or family MUST NOT by itself reject configuration, discovery, default selection, or inference when the required maximum context is supplied. The configured provider-native ID is passed unchanged to its authorized endpoint; no catalog alias, vendor impersonation, or snapshot update is required to use it.
+`GatewayConfigSchema` and `GatewayLogicalModelSchema` in `packages/config-schema/src/gateway.ts` own the authored Gateway configuration and logical-model entries. IDs are stable and unique within their owning collection. `GatewayConfigSchema` also carries `titleLogicalModelId`, explicit `providerAccessShapes`, and a separate ordered transcription chain. The reader preserves a historical single transcription-member interpretation. Those fields are not extra logical chat models and they are not public Responses authority. V1 requires exactly one context-management entry with that schema's shape; `docs/specs/20260902-agent_runtime_context_compaction.md` owns its threshold validation, immutable execution projection, and separation from physical model limits. The Provider's explicit model list and the authored logical routes admit model IDs. The pinned `@openkit/models-dev-catalog` snapshot is an optional inventory and metadata source, not an allowlist: an administrator may hand-author a third-party model ID, and missing catalog membership or family MUST NOT by itself reject configuration, discovery, default selection, or inference when the required maximum context is supplied. The configured provider-native ID is passed unchanged to its authorized endpoint; no catalog alias, vendor impersonation, or snapshot update is required to use it.
 
 Capability and family values are not free-form Gateway configuration. Available effective Provider model metadata enriches a route's contract; missing optional metadata contributes only capabilities derived from the Provider endpoint-capability matrix without inventing reasoning, multimodal, tool-calling, or temperature support. Absent optional capability metadata is not a prohibition on a request shape the existing adapter can preserve: actual endpoint/request validation and upstream rejection remain authoritative. An explicitly configured internal-role capability requirement must appear in the derived effective capability set: endpoint-derived capabilities may satisfy endpoint requirements, while absent catalog flags cannot satisfy model-feature requirements. Ordinary model admission does not add such a requirement.
 
@@ -190,7 +128,7 @@ A new internal-role model turn or worker inference request may begin with a diff
 
 ### Failure Kinds And Advancement
 
-The pi-ai boundary produces one failure value under [the backend owner](20260708-pi_ai_unified_llm_backend.md#usage-errors-and-cancellation). Its `kind` has exactly the following values. This table is the sole enumeration and decides same-member retry and pre-commit failover eligibility.
+The pi-ai boundary produces one failure value under [the backend owner](20260708-pi_ai_unified_llm_backend.md#errors-and-failover). Its `kind` has exactly the following values. This table is the sole enumeration and decides same-member retry and pre-commit failover eligibility.
 
 | Kind | Meaning | Same-member retry | Failover when enabled |
 | --- | --- | --- | --- |
@@ -216,13 +154,13 @@ A streaming attempt commits when its first output event carrying text, reasoning
 
 A non-streaming attempt commits when its validated successful result is released to the caller. Before release, a thrown failure or terminal error result remains an attempt failure. No-output alone proves neither absence of upstream billing nor replay safety. If a Provider effect may already have started with an uncertain result, neither retry nor failover may repeat that effect.
 
-Before commit, the transient kinds admitted by the table may receive up to three same-member retries with exponential backoff, independently of `autoFailover`. This means one initial attempt plus at most three retries. One absolute request deadline covers all attempts and waits. A retry requires that no Provider effect may already have started and that the next delay fits the remaining deadline. A private buffer or absence of output alone does not supply that proof. The backoff delays and the `retry-after` ceiling are fixed Gateway constants, each small relative to the request deadline, so that retry waiting never consumes the time a backup needs. An exposed `retry-after` replaces the computed delay only when it is within that ceiling and fits the remaining deadline; a longer `retry-after` is not waited out, and the Gateway advances when failover is eligible or terminates. Other kinds are never retried unchanged. Cancellation aborts the active attempt or wait. Pi-ai retries stay unset under the backend owner. The fixed retry count and its reason are recorded in [the tier-routing decision record](../decisions/20261001-gateway_tier_routing_rulings.md).
+Before commit, the transient kinds admitted by the table may receive up to three same-member retries with exponential backoff, independently of `autoFailover`. This means one initial attempt plus at most three retries. One absolute request deadline covers all attempts and waits. A retry requires that no Provider effect may already have started and that the next delay fits the remaining deadline. A private buffer or absence of output alone does not supply that proof. The current defaults are a private buffer of `32768` bytes, a pre-commit deadline of `120000` ms, backoff of `1000`, `2000`, and `4000` ms, and a `retry-after` ceiling of `10000` ms. The deadline covers only pre-commit work. These constants stay small relative to the request deadline, so retry waiting never consumes the time a backup needs. An exposed `retry-after` replaces the computed delay only when it is within that ceiling and fits the remaining deadline; a longer `retry-after` is not waited out, and the Gateway advances when failover is eligible or terminates. Other kinds are never retried unchanged. Cancellation aborts the active attempt or wait. Pi-ai retries stay unset under the backend owner. The fixed retry count and its reason are recorded in [the tier-routing decision record](../decisions/20261001-gateway_tier_routing_rulings.md).
 
 Commit is a one-way request-local boundary, not a durable record. It is created with each attempt, can advance only from private to committed, and ends with that attempt's terminal outcome. Buffer bounds, dependency failure, and cancellation settle privately before commit or terminate the committed response. Deadline expiry settles only the pre-commit phase and never terminates a committed response. It cannot be reset, recovered, or reopened after failure or restart. Restart cannot replay a committed or uncertain attempt; later work is a new owning request.
 
 ### Codex Subscription Controls
 
-The [subscription account owner](20260721-provider_subscription_accounts.md#codex-credits-and-banked-resets) supplies the account settings, fresh quota observation and banked-reset operation. With Codex credits disabled, a successful observation no older than about one minute that shows a window at 100% produces a settled pre-dispatch `quota_exhausted` failure. Normal ordered failover applies. A failed, missing or stale observation does not refuse inference, and credits use defaults to disabled when the account setting is absent.
+The [subscription account owner](20260721-provider_subscription_accounts.md#codex-credits-and-banked-resets) supplies the account settings, fresh quota observation and banked-reset operation. With Codex credits disabled, a successful observation no older than `60000` ms (current default) that shows a window at `100%` produces a settled pre-dispatch `quota_exhausted` failure. Normal ordered failover applies. A failed, missing or stale observation does not refuse inference, and credits use defaults to disabled when the account setting is absent.
 
 Only after an actual settled quota failure and no successful eligible failover target may the Gateway ask an enabled account owner to consume one reset for an exhausted weekly window. A five-hour window never qualifies. The account owner serializes spending and guards one attempt per weekly window through its existing reset Audit. Only a confirmed reset permits one retry of that affected member, under the original deadline, cancellation and pre-commit bounds. Unknown reset results, committed or unsettled inference, and failed reset consumption never permit a retry. This exception adds no new routing strategy or general quota retry policy.
 
@@ -234,7 +172,7 @@ One `openkit.gateway/routeLineage` document on the logical invocation's Capabili
 
 ### Sealed Reasoning Handoff
 
-When Gateway returns a reasoning item, a new process-local item-to-member association records that item ID and the producing member’s key. The [compaction owner](20260902-agent_runtime_context_compaction.md#missing-invalid-stale-and-restarted-state) owns its payload-free entries, fixed entry ceiling, least-recently-used eviction, lifetime, and restart behavior. Forward opaque reasoning payloads, including `encrypted_content` and thinking signatures, unchanged only to the attributed member. Never relabel incoming reasoning as produced by the member about to be called.
+When Gateway returns a reasoning item, a new process-local item-to-member association records that item ID and the producing member’s key. The association ceiling is `4096` entries, a current default. The [compaction owner](20260902-agent_runtime_context_compaction.md#missing-invalid-stale-and-restarted-state) owns its payload-free entries, least-recently-used eviction, lifetime, and restart behavior. Forward opaque reasoning payloads, including `encrypted_content` and thinking signatures, unchanged only to the attributed member. Never relabel incoming reasoning as produced by the member about to be called.
 
 For another member or an unattributed item, apply the readable-text handoff: drop signature and ciphertext, preserve non-empty readable reasoning as ordinary assistant text, omit empty or redacted thinking, and omit the paired `fc_` function-call ID. History from before restart, eviction, or an external producer is unattributed. The response gains no field, digest, or member identity. A later Provider rejection remains its classified terminal failure. The decision and restart-loss consequence are recorded in [the tier-routing decision record](../decisions/20261001-gateway_tier_routing_rulings.md).
 
@@ -246,7 +184,7 @@ A reasoning logical model advertises `reasoningEffortLevels`, the intersection o
 
 The existing metadata owners create, update, remove, and activate options through revision-checked configuration and the pinned snapshot lifecycle. Discovery recomputes advertised levels from the active validated snapshot; rejected or stale edits retain the last-known-good snapshot, and missing options stay unknown rather than inferred. Supply changes can change the current intersection; stale discovery never authorizes a different logical model or mutates an admitted Turn or package. Restart rebuilds this projection from current supply. There is no independent level record, updater, retry, or recovery operation.
 
-Gateway validates a request's effort against the canonical enum before Provider effects, refusing unknown core values through the existing request-error contract. It passes that effort through to the selected member when supported. For a request bound to an admitted Turn, an explicit per-request effort, including a Worker's `reasoning.effort`, takes precedence over that Turn's recorded effort as projected through its immutable AEP and runtime binding, then the Provider default only if both are absent from the request and its recorded Turn. An absent Turn value does not imply an absent native request value: a runtime may carry its conversation's retained selection under [the effort-retention decision](../decisions/20261001-reasoning_effort_retention.md). The recorded effort may originate from the User's submission or the composed Agent default; Gateway does not recompute the current Agent default for that bound request. If the serving member lacks a requested level, use its nearest higher supported level in the canonical order; if it supports no level above the request, use its nearest lower supported level, which is its highest. The decision and its reason are recorded in [the native declaration and upward-fitting decision](../decisions/20261001-reasoning_effort_native_declaration_and_upward_fitting.md). This fitting changes neither authored routing nor the admitted Turn's effort and never selects a different logical model. A non-reasoning model drops the control. A reasoning member without declared options uses its Provider default without inventing an effective enum value.
+Gateway validates a request's effort against the canonical enum before Provider effects, refusing unknown core values through the existing request-error contract. It passes that effort through to the selected member when supported. For a request bound to an admitted Turn, an explicit per-request effort, including a Worker's `reasoning.effort`, takes precedence over that Turn's recorded effort as projected through its immutable AEP and runtime binding, then the Provider default only if both are absent from the request and its recorded Turn. An absent Turn value does not imply an absent native request value: a runtime may carry its conversation's retained selection under [the effort-retention decision](../decisions/20261001-reasoning_effort_retention.md). The recorded effort may originate from the User's submission or the composed Agent default; Gateway does not recompute the current Agent default for that bound request. If the serving member lacks a requested level, use its nearest higher supported level in the canonical order; if it supports no level above the request, use its nearest lower supported level, which is its highest. The decision and its reason are recorded in [the native declaration and upward-fitting decision](../decisions/20261001-reasoning_effort_native_declaration_and_upward_fitting.md). This fitting changes neither authored routing nor the admitted Turn's effort and never selects a different logical model. A non-reasoning model drops the control. A reasoning member without declared options uses its Provider default without inventing an effective enum value. A stock serializer that cannot express a handed disabled control sends no explicit disabled control. The lineage makes no claim about the remote outcome. That external difference is accepted.
 
 The existing private route lineage records requested and effective effort for each attempt, including unchanged and fitted choices. Requested effort records what the native request actually carried, including a retained runtime selection on a Turn with no recorded effort; it is not inferred from that Turn's absence or current Agent defaults. When the control is dropped or the Provider default is used, the effective value remains absent with that reason, not a fabricated level. Provider rejection retains the existing classified failure and commit rules; fitting adds no second retry policy. No effort-specific durable record, compatibility reader, or dual write exists.
 
@@ -262,30 +200,18 @@ Current schema evolution retains the shared `schemaVersion`, `requiredFeatures`,
 
 Gateway Provider resolution uses logical route members from `DATA_ROOT/config/gateway.jsonc` and Provider profiles from `DATA_ROOT/config/providers/*.provider.jsonc`. The selected member, profile readiness, endpoint capability, and exact Provider-native `models` list are dispatch authority; model or Provider discovery inside pi-ai is never authority.
 
-Provider profiles use OpenKit vocabulary only. A subscription-backed profile declares:
+`AuthoredProviderProfileSchema` in `packages/config-schema/src/provider.ts` owns the authored V1 profile and its retained `gateway`-to-`llm-gateway` normalization. `ProviderProfileSchema` owns the logical profile without retained-file framing. Endpoint and credential or account binding depend on `kind`. Schema acceptance is not dispatchability. Readiness omitted, `ready`, or `degraded` may run. `blocked`, `disabled`, and `unknown` refuse before credentials. Inline secret-like fields are forbidden. Every configured model still needs effective sourced positive context under the metadata rule above.
 
-```json
-{
-  "id": "codex-work",
-  "vendor": "openai-codex",
-  "kind": "oauth",
-  "extensions": {
-    "openkit": {
-      "subscriptionAccount": {
-        "accountSlotId": "work"
-      }
-    }
-  }
-}
-```
+A profile carries explicit native model supply plus the endpoint and credential or account binding admitted for its kind:
 
-Provider-family resolution normalizes `vendor` and `id` independently by trimming, lowercasing, and replacing hyphens with underscores. The recognized family keys are exactly `openai_codex` and `xai`. A recognized normalized `vendor` is authoritative; otherwise a recognized normalized `id` selects the family. If both values are recognized and select different families, the profile is invalid. `openai_codex` maps to subscription provider `openai-codex`, and `xai` maps to `xai`; the account extension never selects or overrides the family.
+- `direct` and `llm-gateway` may omit `baseUrl` when a known stock adapter supplies the endpoint. Dispatch still requires an explicitly resolved API key. A configured `secretRef` is resolved explicitly. An absent configured requirement makes the route unavailable.
+- `local` without `extensions.openkit.localBackend` may omit `baseUrl` when a known adapter supplies one. A synthetic custom adapter needs an endpoint. Keyless use is permitted when `secretRef` is absent. A supplied `secretRef` makes the credential required.
+- `local` with `extensions.openkit.localBackend` may omit authored `baseUrl` when the live local supply provides the model endpoint. The bound local supply rejects `secretRef`. The backend set is defined by `LocalBackendIdSchema` in `packages/config-schema/src/provider.ts`.
+- `custom` may omit `baseUrl` in the schema. A catalog miss needs an authored endpoint and sourced context. Keyless use is permitted without `secretRef`. The default synthetic API is Chat unless the profile states native Responses. An xAI miss keeps the Chat mapping.
+- Recognized `oauth` families `openai-codex` and `xai` forbid `baseUrl` and `secretRef` and require the strict `accountSlotId` extension. Dispatch selects that exact family and slot. It does not guess a default account. Several profiles may select one slot. One profile cannot select several. Conflicting recognized identities reject the profile.
+- Other `oauth` families do not receive an automatic subscription binding. The subscription extension is rejected. The general runtime credential predicate follows whether `secretRef` is present. The schema does not manufacture an adapter, a login, or an entitlement.
 
-A profile is subscription-backed only when its resolved family is recognized, `kind` is `oauth`, `extensions.openkit.subscriptionAccount` is the strict object `{ accountSlotId }`, and both `secretRef` and `baseUrl` are absent. A recognized-family OAuth profile without that extension is invalid, and the extension is forbidden on every non-OAuth or unrecognized-family profile. In particular, xAI `direct`, `llm-gateway`, and `custom` profiles remain ordinary API-key or provider configurations and must not enter provider-subscription account selection merely because their vendor or id normalizes to `xai`.
-
-A subscription-backed profile with an unknown slot, a provider-family mismatch, an unavailable Vault, or a non-resolvable credential fails closed before pi-ai. NanoCore does not guess a `default` account or any other default slot. Several profile instances may bind the same slot, while each profile binds at most one slot.
-
-Authored profiles may contain routing fields such as provider instance id, vendor, kind, display name, base URL where permitted, models, default model, endpoint capabilities, and the non-secret account-slot reference. They must not contain access tokens, refresh tokens, cookies, provider account ids, `auth.json`, authorization headers, or pi-ai credential payloads.
+A subscription-backed profile with an unknown slot, a provider-family mismatch, an unavailable Vault, or a non-resolvable credential fails closed before pi-ai. Non-oauth xAI profiles stay ordinary profiles. Gateway routes and profiles do not accept pasted subscription tokens. Profiles contain no access tokens, refresh tokens, cookies, provider account ids, `auth.json`, authorization headers, or pi-ai credential payloads. The Gateway has no Codex app-server, `CODEX_HOME`, `auth.json`, or dedicated Codex client. No compatibility alias, dual model meaning, direct worker Provider route, default-Provider dispatch branch, or intermediate account selector remains.
 
 The previous `extensions.openkit.codexOAuth.accountSlotId` field is removed in the same release as the generic field. No compatibility alias, default-slot inference, or automatic config rewrite is retained.
 
@@ -295,19 +221,11 @@ Pi-ai vendor-side fallback stays unset. This design adds no Provider-profile fie
 
 The Gateway MUST admit a third request category, `decision`, for Core gate participants. It carries a structured action and one closed question. Route capabilities MUST expose `decisions: native | bridged | unsupported`. The first native adapter uses OpenAI `POST /v1/decisions`, model `gpt-6-luna`, one `input_json` message and a `choice` question `verdict`: `allow`, `block` or `escalate`. It preserves returned probabilities, confidence or refusal.
 
-Any route with structured output MAY bridge the same question through a strict JSON schema. Missing support, refusal, malformed output, timeout and dependency failure MUST remain explicit and escalate under the calling gate. This is auxiliary model usage, counted as `decision`; the Turn's primary model does not select it. External client access is after v0.1.0. [Runtime Security](20261109-runtime_security.md) E9 owns the exact input, restrict-only mapping, cache, budget and qualification evaluation.
+Any route with structured output MAY bridge the same question through a strict JSON schema. Missing support, refusal, malformed output, timeout and dependency failure MUST remain explicit and escalate under the calling gate. This is auxiliary model usage, counted as `decision`; the Turn's primary model does not select it. The admitted surface is the private E9 path. Each exact effect and definition text is at most `8192` UTF-8 bytes, and the whole action is at most `128` KiB. Closed reason, failure, and metric shapes distinguish native allow probability from bridge confidence. A preselected mode never changes on failure. The current native classifier is restricted to OpenAI `gpt-6-luna` and no subscription; that restriction is not a guarantee for every bridge. [Runtime Security](20261109-runtime_security.md) E9 owns the operation schema, exact input, restrict-only mapping, cache, budget, and qualification evaluation.
 
 ## Provider Endpoint Capabilities
 
-Provider metadata includes:
-
-```ts
-{
-  chatCompletions: "native" | "bridged" | "unsupported",
-  responses: "native" | "bridged" | "unsupported",
-  decisions: "native" | "bridged" | "unsupported"
-}
-```
+`ProviderGatewayCapabilities` in `apps/nanocore/src/providers/profile-capabilities.ts` defines the per-surface capability matrix (`chatCompletions`, `responses`, and `decisions`).
 
 The matrix remains the routing source of truth for each public format. `native` declares that the selected member's exact upstream API supports the same protocol and can carry that format's admitted native features. `bridged` declares that the public format is served by the bounded stock-IR mappings and public projections below on another upstream API; it no longer declares conversion through another public format. `unsupported` makes the member ineligible for that public surface. Neither `native` nor `bridged` promises every feature in a protocol, and stock catalog discovery or hook availability cannot widen admission. Diagnostic booleans such as `supportsStreaming`, `supportsToolCalls`, and `supportsReasoning` are display hints only.
 
@@ -317,7 +235,7 @@ Member eligibility requires the declared public format, selected upstream API an
 
 ## Bridge Compatibility
 
-The existing `bridged` capability label describes bounded public-to-stock-IR mapping and direct public output projection, not a public-format conversion chain. The [backend owner](20260708-pi_ai_unified_llm_backend.md#request-routing-contract) defines stock adaptation, reasoning projections and the request-local native channel. The bounded mapping supports:
+The existing `bridged` capability label describes bounded public-to-stock-IR mapping and direct public output projection, not a public-format conversion chain. The [backend owner](20260708-pi_ai_unified_llm_backend.md#backend-contract) defines stock adaptation, reasoning projections and the request-local native channel. The bounded mapping supports:
 
 - text-only chat messages and Responses input items
 - `system` and `developer` instructions
@@ -339,7 +257,7 @@ The bounded mapping rejects the following shapes; a same-protocol native feature
 - structured content that cannot be reduced to text without semantic loss
 - non-function tool schemas, nested namespaces and deferred function declarations on a cross-protocol mapping
 
-The direct Responses mapping and projection preserve admitted function-call identity and arguments, text tool outputs, developer/system instructions and terminal streamed or non-streamed output across a complete tool round trip. Standard declarations use stock pi-ai Context and the direct Responses event projection without introducing an `additional_tools` item into the caller or provider payload. A namespace description, when present, is prepended to each member description so its instructions survive lowering. For a non-default namespace on a cross-protocol mapping, the public input mapping uses a deterministic stock function identity containing only ASCII letters, digits and underscores, at most 64 characters, and an exact request-local reverse mapping. The member description retains its original qualified name so the model can distinguish otherwise identical tools. It maps declarations and replayed function calls together and restores the original namespace and name on streamed and non-streamed output, including the terminal response. Same-named functions in different namespaces remain distinct. Collision checks span plain functions and every lowered namespace member. Non-function namespace children remain unsupported. On a cross-protocol mapping, mapping collisions, conflicting default-namespace aliases and undeclared or unmatched history fail before Provider access. Same-protocol native history follows the [backend owner's historical-pair admission contract](20260708-pi_ai_unified_llm_backend.md#codex-turn-state-continuity). Undeclared Provider output fails instead of inventing a callable identity. Incomplete streamed identities are withheld until they can be restored. The mapping is an ephemeral Gateway projection with no persistent registry and grants no tool execution authority. Upstream wire-name adaptation belongs to stock pi-ai. Same-protocol native namespace/custom-tool support retains its separate admission boundary under the backend owner, selected by exact API capability.
+The [backend contract](20260708-pi_ai_unified_llm_backend.md#backend-contract) owns mapping mechanics, historical pairs, and native namespace admission. On a cross-protocol mapping, a non-default namespace uses a deterministic stock function identity of ASCII letters, digits, and underscores, at most `64` characters, with an exact request-local reverse mapping. When a namespace is lowered, its description is prepended to each member description. A non-default member description also retains its original qualified name. Mapping collisions, conflicting default-namespace aliases, and undeclared or unmatched history fail before Provider access. The mapping is an ephemeral Gateway projection. It grants no Tool execution authority.
 
 ## Cache Scope
 
@@ -350,7 +268,7 @@ The direct Responses mapping and projection preserve admitted function-call iden
 3. an available server-owned scope derived from logical model ID, selected private route member, Provider profile and native model, the `(subscriptionProviderId, accountSlotId)` pair when subscription-backed, authorized Workspace, server-resolved thread, AgentSession, or session
 4. a request-scoped generated fallback
 
-Every resolved scope is normalized and hashed by the S42-owned resolver before provider-facing use. Raw Workspace, thread, subscription-provider, account-slot, session, prompt, credential, or user identifiers are not exposed. Both `subscriptionProviderId` and `accountSlotId` participate in the hash so equal slot ids under different providers or accounts cannot share provider cache or Codex turn-state continuity accidentally.
+The [backend Prompt Cache Contract](20260708-pi_ai_unified_llm_backend.md#backend-contract) hashes the resolved scope before provider-facing use. Raw identifiers are not exposed. The route authorizes the caller before it derives that scope.
 
 The route supplies resolved cache input to the unified backend; it does not decide an upstream header or cache mechanism. Cache effectiveness exists only when the provider reports cache-read or cache-write usage. Absence of those values means unknown, not a miss.
 
@@ -384,67 +302,27 @@ Provider-registry diagnostics preserve the public provider-profile `kind`, endpo
 
 The legacy `oauth.openaiCodexAccounts` diagnostics field is removed rather than renamed or generalized. Diagnostics do not project provider-subscription account state; the dedicated provider-subscription routes exclusively own provider inventory, account lifecycle, status, quota reads, and account observations. Authorized private route lineage remains Gateway evidence rather than account-state authority. Diagnostics never include credentials, raw account ids, Vault references, authorization headers, raw cache input, Codex turn state, raw quota responses, or pi-ai details.
 
-## Current Implementation Projection
+## Implementation
 
-NanoCore implements `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health` with server authentication, Gateway policy, `gateway.jsonc` logical-model loading, private Provider route resolution, ordered pre-output fallback, durable route attribution, prompt-cache resolution, stable errors, streaming, usage projection, and no retired internal facade. Public discovery and requests expose logical model IDs rather than Provider profiles or Provider-native model authority.
+- `apps/nanocore/src/llm/`
+- `apps/nanocore/src/`
+- `packages/config-schema/src/`
+- `apps/web/src/pwa/`
 
-The current logical-model schema contains `contextManagement` and validates it against each route (`packages/config-schema/src/gateway.ts`, `apps/nanocore/src/llm/logical-models.ts`), but the Responses route does not yet inject the control, execute the OpenKit compactor, or parse an OpenKit compaction item. The Responses gaps are explicit implementation gaps under `docs/specs/20260902-agent_runtime_context_compaction.md`; the existing `/v1/responses` route is not evidence that automatic context management is implemented.
+## Implementation Gaps
 
-Provider resolution now accepts only the provider-neutral `extensions.openkit.subscriptionAccount` binding for recognized subscription profiles, validates the exact slot and local credential before dispatch, and sends both Codex and xAI subscription requests through the unified pi-ai dispatcher. Codex Responses is native through stock pi-ai, xAI uses its reviewed model capability, subscription-provider and account-slot identity participate in the hashed cache scope, and stable pre-dispatch and post-start errors expose no provider-private data.
+- Public Responses compaction - The route validates context-management metadata and does not inject the control, execute the compactor, or round-trip an OpenKit compaction item. Internal-role compaction is a different path. - #812
+- Public Codex Gateway real-use evidence - An opt-in run has not proved one authenticated public Codex request, accepted streaming, a stable public envelope, and redaction. - #814
 
-Logical discovery and dispatch share one resolver, private Provider identities remain hidden, and ordered fallback is attributed per attempt. The routing switch, cross-family coherent contract, unavailable-member projection, shared request-local planner and executor, classified same-member retries, affirmative settlement evidence, absolute pre-commit deadline, one-way commit boundary, exhaustion `error.cause`, sealed-reasoning attribution, and tier templates are implemented. The Pi and DeepSeek supported-modality subsets remove the need for the three template backups that existed solely to narrow modality intersection; those backups have been removed. Gateway reasoning-effort validation, bound-inference precedence, fitting, requested/effective effort lineage, `/v1/models` effort levels, and dropping effort for a model without reasoning are implemented. Effective effort records the canonical control handed to the pi-ai backend; a stock serializer that cannot express a handed disabled control, such as Ant Ling or a Chat Completions compatibility profile without effort forwarding, sends no explicit disabled control, and the lineage makes no claim about the remote outcome. That external difference is accepted rather than handled ([decision](../decisions/20261002-external_provider_behavior_accepted.md)). The durable route-lineage document, single CapabilityCall start before the route plan, single logical finish, and pre-dispatch refusal of reused caller request IDs are implemented. Internal-role Provider calls and Worker inference recompute availability per call and leave unselected a current member whose known context or output limit is below the admitted contract: the run's contract for an internal role, and the Turn's AEP route model parameters for Worker inference.
+## Decisions
 
-## Accepted Design
-
-The Hono route layer remains thin: authenticate, authorize, validate, resolve one logical model, derive cache scope, start the one CapabilityCall when attribution applies before the route plan runs, ask the planner for an ordered candidate list and execute its eligible private members, call one unified Provider dispatcher, and normalize the public response. Subscription account selection is a Provider-resolution input, not a backend branch. All Provider-native behavior remains behind the S42 pi-ai adapter boundary.
-
-## Rollout / Migration Plan
-
-The clean cutover owned by this specification together with `docs/specs/20260721-provider_subscription_accounts.md` and `docs/specs/20260708-pi_ai_unified_llm_backend.md` is implemented: `gateway.jsonc` owns logical IDs and ordered routes, Server Gateway Provider/model defaults and public Provider ownership are deleted, and worker plus internal-role inference use the same resolver. No compatibility alias, dual model meaning, direct worker Provider route, default-Provider dispatch branch, or intermediate account selector remains.
-
-The Gateway and provider-subscription account cutover preserves the name `vault.bootstrap-codex-auth`; [Vault And Secret Injection](20260703-vault_secret_injection.md#harness-subscription-logins) owns its human-only actual-User Login acquisition and the harness credential-delivery contract. Gateway provider-subscription accounts retain their separate ownership and inference contract.
-
-## Testing Strategy / Acceptance Criteria
-
-- L1 route and resolution tests prove authentication order, logical-model and context-management validation, catalog-enriched capability intersection, admission of exact hand-authored IDs with missing model or family metadata, cross-family and unknown-family multi-route admission with shared-or-null family projection, ordered member eligibility, provider-neutral slot binding, no default-slot guess, bounded pre-commit failover, no post-commit retry, exact subscription pre-dispatch errors, stable cache priority, and absence of a Provider-specific backend branch. A regression must observe an uncatalogued configured default in public discovery and an inference dispatch retaining its exact upstream model ID.
-- L1 mapping tests prove direct public-to-stock-IR input and stock-result-to-public output for both formats, the accepted readable reasoning and native-channel boundaries, and refusal of every unrepresentable shape before Provider access. Native PNG/JPEG acceptance observes unchanged user and function-result image bytes, instructions, text/Tool/reasoning history and final admission on the actual stock HTTP payload. A text-only selected model must make no Provider request.
-- L2 contract tests prove public Chat Completions, Responses, logical models, SSE, error, usage, route-attempt attribution, and redaction behavior across API-key and subscription-backed profiles, including non-`2xx` JSON rather than SSE for every pre-start terminal failure.
-- L3 black-box tests prove two logical models can dispatch through different Provider profiles on the same `/v1/*` routes, one logical model can advance across two subscription-account profiles on an admitted pre-commit failure when failover is enabled, discovery advertises only dispatchable logical IDs, and overlapping account slots remain isolated.
-- L3 opt-in real-provider evidence proves one authenticated public Codex Gateway request per run, accepted streaming behavior, stable public envelopes, and redaction.
-- L5 smoke proves NanoCore serves the Gateway without Codex app-server, `CODEX_HOME`, `auth.json`, or ambient credentials.
-
-Historical-pair acceptance additionally requires:
-
-- The admission regression replays the retained Gateway request body through real dispatcher and client admission. Complete historical function and custom call/result pairs are admitted without current declarations, with both empty message-anchored declarations and absent top-level declarations. A stock-adapter payload capture shows intact item identities, order, names, canonical default-namespace aliases and distinct named namespaces, arguments or custom input, and outputs; callable declarations remain empty, the summary input is unchanged, and dispatch uses ordinary Responses.
-- Missing calls or results, orphan results, result-before-call order, duplicate or ambiguous identities, mismatched kinds, names or namespaces, conflicting present declarations or discovered definitions, invalid search results, malformed arguments, status or output, unknown required fields and unsupported tool types are refused before any Provider invocation. Existing declared-history and client-search round trips retain declaration validation and ordered discovered-definition activation; undeclared history never activates search tools.
-- Through the stock parser, a newly emitted call to a historical-but-undeclared tool or a wholly unknown tool terminates unsuccessfully with zero executable tool dispatch in streaming and non-streaming modes. A namespace supplied only at completion receives completed-identity validation, an allowed declared call succeeds, and history in one namespace never authorizes another. Same-member opaque reasoning and existing cross-member and post-restart readable handoff remain unchanged; these observations make no cache-effectiveness claim.
-
-Acceptance requires the fixed route surface, exact logical-model authority with optional catalog enrichment, validated context-management placement and Responses projection under its separate owner, honest capability and known-or-null model-family preservation, stable public envelopes, explicit generic account binding, bounded ordered pre-commit failover under its routing setting, native Codex Responses through pi-ai, xAI subscription inference through pi-ai, hashed route-aware cache scope, Provider-reported cache evidence, no concrete Provider or account leakage, and no Provider-specific backend branch.
-
-Additional routing acceptance requires:
-
-- Omitted routing preserves retained configuration behavior; explicit false selects only the primary, and a failed or unavailable primary never promotes or attempts a backup.
-- Mixed-family members with unequal known limits and modalities project the coherent contract, preserve explicit false and unknown metadata, and launch through the AEP without requiring deep equality. A member missing a pinned capability is never attempted.
-- Removed, logged-out, disabled, absent, delisted, or missing-API-key supply produces named warning diagnostics on successful reload, preserves logical and route IDs, and hides only models with no available member. Restored supply re-enters the authored order after validation.
-- Thrown errors and first terminal error events drive the same advancement rule; bounded same-member retries stop at three, deadline or cancellation, respect long retry guidance without early retry, and run with failover disabled too.
-- Lifecycle events and worker-inference heartbeat stay private until commit; first reasoning and tool output commit as text does. Non-stream terminal errors remain private failures. Buffer exhaustion never publishes a failure as success, and committed or uncertain effects are never replayed.
-- Every closed failure kind has representative normalization and advancement cases. Request-terminal kinds remain typed, exhaustion cause is the terminating attempt's kind, and selection-only failures appear in private lineage without fabricated Provider attempts.
-- Same-member reasoning round trips preserve the opaque payload; cross-member, evicted, external, and post-restart items use readable-text handoff and omit paired function-call IDs. The payload-free association stays within its fixed entry ceiling under sustained traffic, and eviction produces readable-text handoff rather than an error. No returned field exposes member identity.
-- Each new Provider call starts again at the first available member without cooldown. Vendor-side fallback stays unset. Shipped templates use the Tier Templates owner and leave initialized Data Roots unchanged.
-
-## Risks & Mitigations
-
-- A generic account field could hide provider mismatch; provider-family derivation and slot-pair validation fail closed.
-- Ordered failover and transient retry could duplicate effects or output; the commit boundary and replay-safety rule constrain both, and private lineage records each attempt, retry, selection-time unavailability, and known usage.
-- Native and bridged endpoint behavior could diverge; explicit capability values and focused contract tests preserve observable semantics.
-- Cache hints could be mistaken for authority; authorization precedes scope derivation and the resolver hashes only accepted inputs.
-- Provider failures could leak subscription details; fixed schemas and redaction tests keep public errors generic.
-- Removing the old config field breaks current internal profiles; same-release fixture updates and explicit re-login follow the repository's clean-target rule.
-
-## Links
-
-- `docs/specs/20260708-pi_ai_unified_llm_backend.md`
-- `docs/specs/20260721-provider_subscription_accounts.md`
-- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
-- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
-- `docs/specs/20260902-agent_runtime_context_compaction.md`
+- [Sandbox Telemetry And Public Gateway Boundary](../decisions/20261015-sandbox_telemetry_and_public_gateway_boundary.md)
+- [Gateway Tier Routing Rulings](../decisions/20261001-gateway_tier_routing_rulings.md)
+- [Missing API Key Member Unavailable](../decisions/20261002-missing_api_key_member_unavailable.md)
+- [Reasoning Effort Rulings](../decisions/20261001-reasoning_effort_rulings.md)
+- [Reasoning Effort Retention](../decisions/20261001-reasoning_effort_retention.md)
+- [Reasoning Effort Native Declaration And Upward Fitting](../decisions/20261001-reasoning_effort_native_declaration_and_upward_fitting.md)
+- [Worker API Type Freedom](../decisions/20261017-worker_api_type_freedom.md)
+- [External Provider Behavior Accepted](../decisions/20261002-external_provider_behavior_accepted.md)
+- [Gateway Converges On Pi AI IR](../decisions/20261006-gateway_converges_on_pi_ai_ir.md)
+- [Historical Tool Pairs And Release Hold](../decisions/20261008-historical_tool_pairs_and_release_hold.md)

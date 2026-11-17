@@ -41,7 +41,7 @@ App API may expose sign-in, invitation, and profile endpoints, but those endpoin
 
 User is also the subject of personal persistent preferences. A personal Agent, profile, logical-model, or applicable internal-role preference is scoped to that User and the addressed Workspace, wins over the Workspace and Server defaults for that User, and never rewrites either shared scope. Core Concepts owns the cross-scope precedence and composition relationship; Identity owns the User subject and attribution of the preference.
 
-`WorkspaceMember` is a user's membership in one workspace. Membership is currently defined for users. The accepted direction is that an agent woken into or joining a Workspace, including a worker and the product Coordinator, also becomes a member with its own permission scope under the Policy Kernel, so current membership design must not preclude agent members ([decision](../decisions/20260924-agents_are_workspace_members.md)).
+`WorkspaceMember` is a user's membership in one workspace. An agent principal is not a membership row. The accepted direction is that an agent woken into or joining a Workspace, including a worker and the product Coordinator, also becomes a member with its own permission scope under the Policy Kernel, so membership design must not preclude agent members ([decision](../decisions/20260924-agents_are_workspace_members.md)).
 
 `Role` is a named membership or policy grouping. Role semantics belong to permission policy.
 
@@ -67,17 +67,17 @@ Every inbound credential MUST select exactly one principal and MUST NOT add auth
 
 All inbound credential kinds MUST appear in one management list and surface for their supported issuance, listing, rotation, revocation and expiry operations, over their existing stores. This includes the User's own AuthSessions and run credentials. Durable credential secrets MUST remain opaque, hashed and verified online. Sandbox credentials MUST stay short-lived, run-bound and in memory; ending the run revokes them. Existing User Tokens retain their principal binding.
 
-Outbound secrets remain in [Vault](vault.md). Channel participants map through the verified sender identity and receive no Token. External-person principals have no default grant; their activation is after v0.1.0. The [Security](security.md) charter coordinates these rules.
+Outbound secrets remain in [Vault](vault.md). Channel participants map through the verified sender identity and receive no Token. External-person principals have no default grant. The [Security](security.md) charter coordinates these rules.
 
 ### Implicit Local Human
 
-The implicit local human is one ordinary canonical User in the existing Core users authority. A fresh local deployment allocates its `usr` UUIDv7 once under the existing single-writer initialization and User transaction boundary. Local actor, ownership, personal-Workspace and recovery consumers resolve that recorded User. A fixed textual singleton or separate lookup registry supplies no identity authority ([accepted D4 realization](../decisions/20261015-identifier_owner_declarations.md)).
+The implicit local human is one ordinary canonical User in the existing Core users authority. A fresh local deployment allocates its `usr` UUIDv7 once under the existing single-writer initialization and User transaction boundary. Local actor, ownership, personal-Workspace and recovery consumers resolve that recorded User. A fixed textual singleton or separate lookup registry supplies no identity authority ([Identifier Owner Declarations](../decisions/20261015-identifier_owner_declarations.md)).
 
 Restart requires exactly one consistent recorded local User and reuses its ID. Updates, disabled state and retained history preserve that identity under the existing User lifecycle. Missing or ambiguous local authority on an initialized deployment fails the critical local-identity phase before recovery. Startup must not mint a replacement or select an unrelated User.
 
 Only the existing fresh-deployment initialization boundary permits first allocation. An empty lookup on a used deployment does not prove that boundary. If existing authority cannot prove fresh initialization, fail closed. This rule creates no initialization marker or durable registry.
 
-Server mode creates no implicit local User. An explicitly authorized pre-stable staged reinstall may initialize a fresh local deployment; startup failure grants no reset authority. Demo Workspace and Thread records use fixture-owned canonical allocations. Tests may inject canonical IDs without making them product defaults. Acceptance requires one allocation, stable identity after reopen, unchanged local permissions, and refusal of missing or duplicate authority after initialization. There is no separate local-identity lifecycle.
+Server mode creates no implicit local User. An explicitly authorized pre-stable reset may initialize a fresh local deployment; startup failure grants no reset authority. Demo Workspace and Thread records use fixture-owned canonical allocations. Tests may inject canonical IDs without making them product defaults. Acceptance requires one allocation, stable identity after reopen, unchanged local permissions, and refusal of missing or duplicate authority after initialization. There is no separate local-identity lifecycle.
 
 ## Typical Record Areas
 
@@ -90,7 +90,7 @@ active
 disabled
 ```
 
-`disabled` preserves the stable User identity and historical references while denying new authentication and authority. V1 exposes no re-enable or hard-delete transition; adding either requires an accepted owning specification before implementation.
+`disabled` preserves the stable User identity and historical references while denying new authentication and authority. The lifecycle exposes no re-enable or hard-delete transition; adding either requires an accepted owning specification before implementation.
 
 `WorkspaceMember` record areas include workspace ID, user ID, membership status, policy attributes, invitation reference, joined time, removed time, and revision.
 

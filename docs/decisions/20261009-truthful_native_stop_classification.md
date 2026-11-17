@@ -42,7 +42,7 @@ Revisit the route if exact incident evidence establishes that truthful classific
 - [Worker Turn Reliability Envelope](../specs/20260531-worker_turn_reliability_envelope.md#stop-reason-contract) owns StopReason definitions and [canonical closeout](../specs/20260531-worker_turn_reliability_envelope.md#worker-turn-envelope).
 - [Worker Runtime Communication Model](../specs/20260629-worker_runtime_communication_model.md#adapter-normalized-stop-outcomes) owns the private adapter-normalization seam.
 - [OpenCode Worker Adapter](../specs/20260716-opencode_worker_adapter.md#native-output-mapping), [Pi Worker Adapter](../specs/20260716-pi_worker_adapter.md#native-output-mapping), [DeepSeek Worker Adapter](../specs/20260930-deepseek_worker_adapter.md#native-output-mapping), and [Codex Worker Adapter](../specs/20260716-codex_worker_adapter.md#native-output-mapping) own their native evidence mappings.
-- [Task Mode Worker Delegation](../specs/20260704-task_mode_worker_delegation.md#summary) preserves one bounded attempt and its no-automatic-retry rule.
+- [Task Mode Worker Delegation](../specs/20260704-task_mode_worker_delegation.md#decision) preserves one bounded attempt and its no-automatic-retry rule.
 - [Goal](../specs/20261002-goal.md#coordinator-role) already owns Coordinator admission of ordinary Tasks; its design is unchanged.
 - [Durable Scheduler Design](../specs/20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup) keeps cancellation precedence, exclusion, and cleanup authority; its design is unchanged.
 - [Release Management](../specs/20260829-release_management.md) retains its existing candidate acceptance and release gates in addition to this hold.

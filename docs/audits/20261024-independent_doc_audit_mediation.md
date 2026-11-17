@@ -9,7 +9,7 @@ This non-authorizing record holds the mediation group of the [independent docume
 
 - Group base SHA: `314f72fe2e62864b34eb30a155488c4507b80553` (`main` on 2026-10-24). Issue #440 had no comments and held no group in this scope. The policy group's later correction of `20260930-pending_requests.md:334` (commit `d29957e`) is the text that the MCP line 231 edit follows.
 - Core document: `docs/core/mediation.md`.
-- Specifications: `20261002-operation_definition.md` (OD), `20260703-worker_agent_capability.md` (WAC), `20260704-capability_usage_gateway_foundation.md` (CUG), `20260704-worker_mcp_tool_supply.md` (MCP), `20260526-llm_gateway_responses_api.md` (GW), `20260703-pi_ai_provider_gateway_adoption.md` (PIA), `20260708-pi_ai_unified_llm_backend.md` (PIU), `20260721-provider_subscription_accounts.md` (PSA), and `20261018-nanocore_interception_and_information_consolidation.md` (ICP).
+- Specifications: `20261002-operation_definition.md` (OD), `20260703-worker_agent_capability.md` (WAC), `20260704-capability_usage_gateway_foundation.md` (CUG), `20260704-worker_mcp_tool_supply.md` (MCP), `20260526-llm_gateway_responses_api.md` (GW), `20260703-pi_ai_provider_gateway_adoption.md` (PIA), `20260708-pi_ai_unified_llm_backend.md` (PIU), `20260721-provider_subscription_accounts.md` (PSA), and `20260703-policy_enforcement_mapping.md` (ICP).
 - G3 inspection: five read-only inspector contexts (MD-OD for OD and WAC; MD-CUG for CUG and MCP; MD-LLM for GW, PIA, and PIU; MD-PSA for PSA; MD-ICP for ICP). They read code only and ran no tests. The auditor verified each kept finding against the code.
 - Hand-offs received: `20260704-worker_mcp_tool_supply.md:231` from the policy group, and `20260703-worker_agent_capability.md:114,378` from the vault group. All three are resolved below.
 
@@ -100,7 +100,7 @@ The inventory tool compared each changed file with the group base. Normative sen
 | `20260526-llm_gateway_responses_api.md` (GW) | 105 unchanged | 0 | 255 unchanged, 2 added | 40 unchanged | 29 unchanged |
 | `20260703-pi_ai_provider_gateway_adoption.md` (PIA) | 22 unchanged | 0 | 54 unchanged, 5 removed (old pin, integrity, `gitHead` and its value), 4 added | 20 unchanged | 2 unchanged, 1 added |
 | `20260721-provider_subscription_accounts.md` (PSA) | 187 unchanged | 6 unchanged | 504 unchanged | 38 unchanged | 10 unchanged |
-| `20261018-nanocore_interception_and_information_consolidation.md` (ICP) | 49 unchanged | 0 | 56 unchanged, 1 added | 17 unchanged | 25 unchanged |
+| `20260703-policy_enforcement_mapping.md` (ICP) | 49 unchanged | 0 | 56 unchanged, 1 added | 17 unchanged | 25 unchanged |
 
 Every changed sentence is in an implementation projection, a summary of current state, a status sentence, or a sentence that a later accepted record decides. The MCP Policy binding bullet now follows the claim order and dispositions of Pending Requests; no other design rule changed.
 

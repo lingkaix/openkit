@@ -30,7 +30,7 @@ Complete every unsettled NanoHost runtime predicate after the predecessor exhaus
 - [`docs/specs/20260716-codex_worker_adapter.md`](../../specs/20260716-codex_worker_adapter.md)
 - [`docs/specs/20260716-opencode_worker_adapter.md`](../../specs/20260716-opencode_worker_adapter.md)
 - [`docs/specs/20260716-pi_worker_adapter.md`](../../specs/20260716-pi_worker_adapter.md)
-- [`docs/specs/20260715-openshell_disposable_cell_lifecycle.md`](../../specs/20260715-openshell_disposable_cell_lifecycle.md)
+- `20260715-openshell_disposable_cell_lifecycle.md`
 - [`docs/specs/20260629-worker_runtime_communication_model.md`](../../specs/20260629-worker_runtime_communication_model.md)
 
 ## Historical Evidence And Immutable Boundaries

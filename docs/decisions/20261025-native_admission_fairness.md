@@ -33,4 +33,4 @@ Revisit with measured service or memory failure that the existing admitted-input
 
 ## Affected Owners
 
-The governing rule is [Durable Execution And Control Store, DX Write And Space Budget](../specs/20261019-durable_execution_and_control_store.md#dx-write-and-space-budget). [Capability Usage Gateway Foundation](../specs/20260704-capability_usage_gateway_foundation.md) retains contact, original receipt, usage and unknown-outcome ownership. Qualification preserves physical commit counts, crash cuts, bounded drain, sibling service and exact reopen.
+The governing rule is [Durable Execution And Control Store, DX Write And Space Budget](../specs/20261019-durable_execution_and_control_store.md#write-and-space-budget). [Capability Usage Gateway Foundation](../specs/20260703-audit_usage_evidence_records.md#capability-usage) retains contact, original receipt, usage and unknown-outcome ownership. Qualification preserves physical commit counts, crash cuts, bounded drain, sibling service and exact reopen.

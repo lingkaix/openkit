@@ -2,86 +2,29 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-09-30
 aspect: mediation
 ---
 # Worker Agent Capability
 
-## Summary
+This specification owns the worker-facing capability plane, its selected MCP projection, the `openkit-work` Tool identities, and the Budget baseline.
 
-This spec defines the target design for worker-facing agent capabilities beyond the current LLM gateway.
+## Scope
 
-The clean target keeps logical `capability.local` and `inference.local` bindings as distinct worker-local APIs. The latter has the adapter-owned fixed URL `http://127.0.0.1:17892/inference/v1`; the AEP carries no native URL. Sandbox Integration projects them onto `/capabilities/*` and `/inference/*` over the sandbox's one standard HTTP/2 session inside one stock RelayStream; worker control remains `/worker-control/*`. Each family retains a distinct token or reference, scope, payload and concurrency bounds, flow control, retry and failure semantics, usage, and audit. Worker agents should not directly discover, install, authenticate, or route privileged services. NanoCore retains capability semantics while the NanoHost owns only the outer transport projection.
+This specification owns loopback credential mint, attribution, drain, destruction, and digest persistence. It owns the three executable MCP operations and the built-in Work Tools.
 
-## Owns
+It does not own Knowledge semantics or notebook governance. [Knowledge](../core/knowledge.md) and the context-package owner keep them.
 
-- The worker-facing agent capability plane and its gateway projection.
-- Runtime capability families, catalog entries, request lineage, and capability-call summaries.
-- The relationship between the `capability.local` projection, worker-local `inference.local`, their distinct route credentials, and durable capability, usage, and audit records.
-- Gateway-mediated MCP, knowledge, external API, network, vault-mediated credential use, LLM, artifact, and diagnostic capability boundaries.
-- Capability error normalization, rate-limit hooks, budget hooks, metering hooks, and audit hooks for worker-facing capability calls.
-- The identity, schemas, and semantics of the built-in `openkit-work` tools `work_input_request`, `work_peer_list`, `work_peer_read`, `work_source_read`, `work_source_search`, `work_source_view`, and `work_artifact_submit`.
+It does not own Vault storage or secret bytes. [Vault](../core/vault.md) owns them.
 
-## Does Not Own
+It does not own pending-request lifecycle. [Pending Requests](20260930-pending_requests.md) owns it.
 
-- Agent supply declarations or agent manifest authoring.
-- Worker control liveness, commands, event append, or final status.
-- Knowledge semantics, notebook governance, or context package assembly.
-- Vault storage or raw secret material.
-- Global audit projection outside gateway-mediated capability calls.
-- Non-gateway runtime, sandbox, storage, or workspace-sync metering.
-- Runtime-internal sub-agent provenance, trusted worker-inference session binding, and runtime cache lineage.
-- End-user remote MCP interface behavior.
-- The pending request lifecycle and delivery, owned by [Pending Requests](20260930-pending_requests.md).
-- Tools and MCP servers configured inside the worker's Sandbox, which are the worker's own and are not capability calls.
-- Runtime Epoch lifecycle, RelayStream carriage, Sandbox Integration, and outer route transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+It does not own outer carriage. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns RelayStream and route transport.
 
-## Core References
+It does not own runtime-origin provenance. [Worker Runtime Sub-Agent Provenance](20260711-worker_runtime_subagent_provenance.md) owns it.
 
-- `docs/core/mediation.md`
-- `docs/core/agent-supply.md`
-- `docs/core/agent-session.md`
-- `docs/core/communication.md`
-- `docs/core/knowledge.md`
-- `docs/core/vault.md`
-- `docs/core/evidence.md`
+Core: [Mediation](../core/mediation.md), [Agent Supply](../core/agent-supply.md), [AgentSession](../core/agent-session.md), [Communication](../core/communication.md), [Evidence](../core/evidence.md).
 
-## Goals
-
-- Define the worker agent capability boundary and its gateway projection.
-- Add MCP, knowledge, external API, network proxy, vault-mediated credential use, and generic tool calls to the capability model.
-- Keep the existing LLM gateway as a specialized OpenAI-compatible endpoint while aligning it with the same capability records.
-- Define durable `CapabilityCall` ownership and lineage.
-- Make capability access policy-controlled, metered, auditable, and catalog-backed.
-
-## Non-goals
-
-- Do not absorb or replace the end-user remote MCP interface.
-- Do not expose NanoCore internals or database access to workers.
-- Do not let workers install or replace NanoCore-hosted or catalog capability implementations. External traffic follows [Sandbox](../core/sandbox.md) and [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md): Gateway-required integrations remain mediated, while admitted public non-LLM grants and separately authorized non-LLM REST grants retain their respective network and credential contracts. Neither direct route creates NanoCore-managed MCP supply or an upward control route. Worker-owned tools and MCP configuration inside the Sandbox are not this prohibition.
-- Do not define provider-specific API payload schemas except for gateway envelopes.
-- Do not make `inference.local` a generic capability endpoint.
-- Do not add a direct sandbox-to-NanoCore route, a second control path, or more than the current one active worker slot.
-
-## Background
-
-`docs/core/mediation.md` defines the conceptual boundary. `docs/specs/20260802-nanohost_runtime_and_transport.md` fixes the transport projection: Sandbox Integration exposes worker-local `capability.local` and `inference.local` while carrying `/capabilities/*` and `/inference/*` alongside, but semantically separate from, `/worker-control/*`.
-
-This contract defines the non-LLM worker agent capability boundary; the current selected-MCP slice and deferred families are distinguished below.
-
-## Current Implementation Projection
-
-The current worker capability plane implements only the three selected-MCP operations `mcp.list-servers`, `mcp.list-tools`, and `mcp.call-tool`. The built-in `openkit-generative` and `openkit-work` supply is appended to every package, so every package emits those exact enabled routes. Sandbox Integration carries the separately authenticated capability family, the Codex adapter projects selected servers at `http://127.0.0.1:17892/capabilities/mcp/:serverId`, and NanoCore owns the MCP gateway, policy, schema, usage, and audit path. The Pi, OpenCode and DeepSeek adapters also project selected servers. NanoCore dispatches `work_input_request`, `work_peer_list`, `work_peer_read`, `work_source_read`, `work_source_search`, `work_source_view` and `work_artifact_submit` through the existing authenticated MCP route and capability ledger. Peer handles are stateless, scoped to the calling Turn and current binding, and are not persisted. Peer reads reuse the product Turn and Item schemas with bounded paging and current Workspace and Thread audience checks. Static Skill supply and unselected MCP catalog entries grant no callable route.
-
-The protocol and storage foundations remain: `packages/worker-protocol` defines `WorkerCapabilityCallSummary` as a transcript/import summary schema, `packages/protocol` defines product-level `CapabilityCall`, `UsageRecord`, and `AuditEvent`, and the shared usage ledger supports LLM and MCP producers. A worker-reported summary is evidence for import and does not prove that NanoCore offered or executed a capability call; only the NanoCore-owned gateway records do.
-
-The generic public LLM gateway and the worker-inference path are independent of this narrowly enabled MCP capability plane. Runtime provenance remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; its historical production proof does not by itself prove the MCP capability path.
-
-The selected-MCP implementation remains pending real-Codex L6 acceptance and release closure under `docs/specs/20260704-worker_mcp_tool_supply.md`. The built-in repository target below uses that existing MCP family; it does not create an App API tunnel or a general external-network capability.
-
-Network egress, external API routing, generic future credential classes, the full Capability Catalog, baseline rate-limit and budget enforcement, transformer-pipeline routing, Knowledge and artifact routes, and broader diagnostics remain future implementation work under this accepted contract.
-
-Server capability flags exposed through NanoCore metadata and consumed by `packages/core-client/src/capabilities.ts` are feature discovery flags. They are not worker agent capability declarations.
+Workers do not install or replace a NanoCore-hosted capability implementation. Gateway-required integrations stay mediated. An admitted public non-LLM grant keeps its network and credential contract under [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md) and [Sandbox](../core/sandbox.md). That direct route creates no NanoCore-managed MCP supply and no upward control route. A Tool or MCP server that the worker configures inside its Sandbox is not a capability call.
 
 ## Decision
 
@@ -99,19 +42,19 @@ http://127.0.0.1:17892/inference/v1
 
 The logical `capability.local` binding carries selected OpenKit capability calls, while the logical `inference.local` binding carries OpenAI-compatible inference calls through the fixed loopback URL above. Shared HTTP/2 carriage does not merge their authority or behavior: each family authenticates its own token or reference and preserves its own payload, concurrency, flow-control, retry, failure, usage, and audit contract.
 
-The first route projection may use family-specific routes such as `/knowledge/search` and `/knowledge/read` because they are easier for runtime-native clients and policy schemas to type. A generic `POST /calls` route is optional future work, not the first canonical requirement.
+The first route projection may use family-specific routes such as `/knowledge/search` and `/knowledge/read` because they are easier for runtime-native clients and policy schemas to type. A generic `POST /calls` route is not a requirement of this contract.
 
-A resident runtime outlives the per-Turn inference and capability route tokens, so it never receives them ([decision](../decisions/20260930-resident_request_attribution.md)). At `session.open` NanoCore mints one session loopback credential per route family, inference and capability, and delivers them to the Harness, which gives them to the runtime host as bearers for the fixed loopback endpoints. Sandbox Integration authenticates a loopback credential, maps it to its AgentSession and family, and forwards the request under the route token of the Turn bound to that AgentSession when the request arrives; the request is attributed to, and authorized as, that Turn. With no Turn bound, every request is refused. At a Turn's terminal barrier Integration drains that AgentSession's in-flight requests for at most 10 seconds, cuts the rest and refuses their results, and only then clears the Turn's route tokens. `session.close` destroys both loopback credentials. NanoCore persists only the SHA-256 digests of the two loopback credentials with the binding and keeps no raw value after the `session.open` dispatch. A transport loss or a NanoCore restart may adopt the exact surviving binding under the proof contract in [AgentSession Continuity](20260704-agent_session_continuity.md); Integration keeps the credentials, so the resident runtime is untouched. A binding that cannot be proved exactly is closed or fenced, and a successor resumes the native conversation. The collection check compares those digests as [Workspace Synchronization](20260703-workspace_synchronization.md) defines. This specification owns the loopback credentials' mint, attribution, drain, destruction, and the persistence of their digests; other owners link here rather than restate them. Upstream route tokens still rotate every Turn. The scheme does not fence generations: work from an earlier Turn that sends a request after a later Turn binds acts with the later Turn's authority, which the engineer accepted.
+A resident runtime outlives the per-Turn inference and capability route tokens, so it never receives them ([decision](../decisions/20260930-resident_request_attribution.md)). At `session.open` NanoCore mints one session loopback credential per route family, inference and capability, and delivers them to the Harness, which gives them to the runtime host as bearers for the fixed loopback endpoints. Sandbox Integration authenticates a loopback credential, maps it to its AgentSession and family, and forwards the request under the route token of the Turn bound to that AgentSession when the request arrives; the request is attributed to, and authorized as, that Turn. With no Turn bound, every request is refused. At a Turn's terminal barrier Integration drains that AgentSession's in-flight requests for at most the current default of 10 seconds, cuts the rest and refuses their results, and only then clears the Turn's route tokens. The current default aggregate of resident Worker sessions is 20. Each session remains single-flight. [Runtime Scheduling Scale](20260703-durable_scheduler_design.md#scale-limits) owns scale. This specification does not set one global active slot. `session.close` destroys both loopback credentials. NanoCore persists only the SHA-256 digests of the two loopback credentials with the binding and keeps no raw value after the `session.open` dispatch. A transport loss or a NanoCore restart may adopt the exact surviving binding under the proof contract in [AgentSession Continuity](20260704-agent_session_continuity.md); Integration keeps the credentials, so the resident runtime is untouched. A binding that cannot be proved exactly is closed or fenced, and a successor resumes the native conversation. The collection check compares those digests as [Workspace Synchronization](20260703-workspace_synchronization.md) defines. This specification owns the loopback credentials' mint, attribution, drain, destruction, and the persistence of their digests; other owners link here rather than restate them. Upstream route tokens still rotate every Turn. The scheme does not fence generations: work from an earlier Turn that sends a request after a later Turn binds acts with the later Turn's authority, which the engineer accepted.
 
 ## Capability Families
 
-The accepted target capability routes and supply categories are listed below. They are not the retained `CapabilityCall.family` enum; [Capability Usage Gateway Foundation](20260704-capability_usage_gateway_foundation.md#gatewaycallcontext) owns that closed vocabulary.
+The accepted target capability routes and supply categories are listed below. They are not the retained `CapabilityCall.family` enum; [Audit, Usage, And Evidence Records](20260703-audit_usage_evidence_records.md#gatewaycallcontext) owns that closed vocabulary.
 
 - `mcp`: call an MCP tool exposed through NanoCore.
 - `knowledge.retrieval`: search governed knowledge and source indexes.
 - `knowledge.read`: read selected knowledge pages, source summaries, or derived representations.
-- `external-api`: call a configured external API through a provider profile. Deferred beyond V1.
-- `network`: access an allowed network target through a proxy policy. Deferred beyond V1.
+- `external-api`: call a configured external API through a provider profile. This family is not callable.
+- `network`: access an allowed network target through a proxy policy. This family is not callable.
 - `vault.use`: use a vault-mediated credential without exposing the secret value where possible. Logical provider declarations and the Codex auth JSON runtime-file reference are separate implementation mechanisms; non-transient OpenShell provider materialization is currently fail-closed, persistent Worker images reject runtime-file materialization, and none of these paths makes this future gateway route active.
 - `llm`: call an LLM through the AEP-resolved backend-local or trusted worker-inference gateway path.
 - `artifact.read`: read declared artifacts as context.
@@ -147,7 +90,7 @@ Catalog source records should be file-system-first or manifest-backed where poss
 
 ## Request Envelope
 
-The future thin worker client supplies through the separately authenticated capability route:
+The accepted future non-MCP generic capability envelope supplies a capability request through the separately authenticated capability route:
 
 - capability call id or idempotency key
 - worker sequence when emitted by the shim
@@ -155,6 +98,8 @@ The future thin worker client supplies through the separately authenticated capa
 - input payload
 - content digests for large payload references
 - request timestamp
+
+Selected MCP uses its admitted MCP request artifacts. Server listing accepts exactly `{}` and rejects any other property. Server Tools use MCP requests. Their request identity comes from the native MCP id. This list does not add fields to those requests. A generic `POST /calls` route is not mandatory.
 
 NanoCore derives authoritative workspace, thread, turn, AgentSession, package-snapshot, capability-id, and family context from the authenticated package session, selected route, and resolved catalog. Worker-supplied lineage is never authority.
 
@@ -217,7 +162,7 @@ When that resource family is cut over, the accepted target applies. Built-in wor
 
 The initial Kernel/native-UI profile selects one built-in `openkit-generative` MCP descriptor through the existing immutable AEP supply boundary. This identity is reserved for the Core-owned adapter and cannot be replaced by a Workspace command, arbitrary remote URL, or Plugin with the same display name. It offers only implemented selected operation-specific tools derived from the [Kernel](20260908-generative_kernel_data_operations.md) definitions, including its Light App catalog definitions, the [Generative UI](20260908-generative_ui_interaction.md) definitions and the supported Vault request definitions, using their shared strict request/result schemas. MCP tool names follow the [Operation Definition naming rule](20261002-operation_definition.md#names) of the [Agent-Facing Naming decision](../decisions/20261017-agent_facing_naming.md): each dot becomes an underscore and hyphens remain hyphens; the descriptor checks uniqueness. This resource family is cut over, so the accepted target under Built-In Tool Derivation applies.
 
-Until this resource family is cut over, the authenticated package session resolves actor, Workspace, Thread, Turn, AgentSession and selected tools, claimed scope must agree and cannot override this context, and the gateway invokes the owning Core command directly. Before and after cutover, the built-in projection preserves request ID, exact operation authorization, Audit and CapabilityCall lineage, limits, and result admission, and never recursively calls its own MCP HTTP endpoint. When the family is cut over, those bound inputs and the execution seam follow Built-In Tool Derivation. No data-root mount, SQLite handle, shell command, capability family, per-app MCP process, or revival of the deleted user-facing stdio MCP package is introduced. Native UI resources are resolved by the authenticated Core/Web resource path; this slice does not add a Worker `resources/read` family. Missing implementation/selection is unavailable and is not advertised as callable. The accepted user-facing agent channel is remote MCP over the same operations under [Remote MCP Interface](20261002-remote_mcp_interface.md). The first-release user-facing Skill package is retired; the retained administrator CLI is generated at `skills/openkit-ops/scripts/openkit` and ships inside `openkit-ops` under [Agent Operator Skill](20260910-agent_operator_skill.md). Remote MCP and this administrator CLI are separate projections of the shared operations, distinct from selected Worker MCP supply. Arbitrary internal-agent MCP loading remains deferred.
+Until this resource family is cut over, the authenticated package session resolves actor, Workspace, Thread, Turn, AgentSession and selected tools, claimed scope must agree and cannot override this context, and the gateway invokes the owning Core command directly. Before and after cutover, the built-in projection preserves request ID, exact operation authorization, Audit and CapabilityCall lineage, limits, and result admission, and never recursively calls its own MCP HTTP endpoint. When the family is cut over, those bound inputs and the execution seam follow Built-In Tool Derivation. No data-root mount, SQLite handle, shell command, capability family, per-app MCP process, or revival of the deleted user-facing stdio MCP package is introduced. Native UI resources are resolved by the authenticated Core/Web resource path; this slice does not add a Worker `resources/read` family. Missing implementation/selection is unavailable and is not advertised as callable. The accepted user-facing agent channel is remote MCP over the same operations under [Remote MCP Interface](20261002-remote_mcp_interface.md). The first-release user-facing Skill package is retired; the retained administrator CLI is generated at `skills/openkit-ops/scripts/openkit` and ships inside `openkit-ops` under [Agent Operator Skill](20260910-agent_operator_skill.md). Remote MCP and this administrator CLI are separate projections of the shared operations, distinct from selected Worker MCP supply. Arbitrary internal-agent MCP loading is outside this contract.
 
 ### Scheduled Poll Event Admission
 
@@ -230,9 +175,9 @@ The reserved built-in `openkit-work` target is supplied to every worker AgentSes
 - **`work_peer_list`** lists the other AgentSessions currently in the worker's own Sandbox, as opaque peer handles with their Agent and runtime, and, where the calling Turn's responsible user may read the peer's Thread, its title and whether a Turn is active. Handles are not AgentSession ids and are valid only within the calling Turn.
 - **`work_peer_read`** reads one peer's bounded, product-safe projection: its recent Turns with their status and trigger, and its recent product Items (messages, plans, tool-call summaries, and status), paged and redacted as an ordinary product read. It returns only what the calling Turn's responsible user may currently read of that Thread; a peer whose Thread that user cannot read is listed only by handle, Agent, and runtime, and reading it fails `peer_not_found`. It never returns native runtime state, AgentSession identity, restricted raw evidence, or credentials, and it creates no control edge: it does not wake, steer, answer, or cancel the peer.
 
-**`work_source_read`** previews or reads one exact `sourceFiles` or `knowledgeSelections` entry in the current accepted [Worker Context Package](20260703-worker_context_package.md#bounded-model-projection), selected only by its stable inventory `packagePath`. It reads the retained UTF-8 original or retained PDF text representation. A selected Knowledge path reads the exact selected Notebook commit through the canonical authorized Notebook reader, with its separate page digest. It never reads a caller-selected host path or current replacement body. S39 owns byte and line defaults, representation and revision-bound range continuation, source size, omitted ranges, UTF-8 boundaries, coverage and serialized envelope bounds. A descriptor or unavailable representation has no usable read cursor. Each call rechecks the live Turn, current scheduler credential, source access and receiving audience before disclosure. This projection creates no source identity, access grant, receipt or delivery lifecycle.
+**`work_source_read`** previews or reads one exact `sourceFiles` or `knowledgeSelections` entry in the current accepted [Worker Context Package](20260703-worker_context_package.md#bounded-model-projection), selected only by its stable inventory `packagePath`. It reads the retained UTF-8 original or retained PDF text representation. A selected Knowledge path reads the exact selected Notebook commit through the canonical authorized Notebook reader, with its separate page digest. It never reads a caller-selected host path or current replacement body. The context-package owner sets byte and line defaults, representation and revision-bound range continuation, source size, omitted ranges, UTF-8 boundaries, coverage, and serialized envelope bounds. A descriptor or unavailable representation has no usable read cursor. Each call rechecks the live Turn, current scheduler credential, source access and receiving audience before disclosure. This projection creates no source identity, access grant, receipt or delivery lifecycle.
 
-**`work_source_search`** searches one exact retained PDF text representation selected through the same current source admission as `work_source_read`. Lexical, exact and line-bounded regex results preserve original and representation identity, processor and PDF-page locators. Search opens no unselected source and includes at most twenty bounded snippets within the complete result envelope. Incomplete text-layer coverage remains incomplete; no hit count proves absence in images or unprocessed pages. The domain-free Retrieval Kernel owns matching, not source authorization or PDF parsing.
+**`work_source_search`** searches one exact retained PDF text representation selected through the same current source admission as `work_source_read`. Lexical, exact and line-bounded regex results preserve original and representation identity, processor and PDF-page locators. Search opens no unselected source and includes at most the current default of 20 bounded snippets within the complete result envelope. The `openkit-work` argument schemas own search, peer-read, and source-path bounds. Those bounds are not Budget counters. Incomplete text-layer coverage remains incomplete; no hit count proves absence in images or unprocessed pages. The domain-free Retrieval Kernel owns matching, not source authorization or PDF parsing.
 
 **`work_source_view`** explicitly requests one bounded image from the same accepted source inventory and current authority. It admits static PNG/JPEG originals or one explicitly selected, one-based PDF page. An optional integer crop uses original image pixels or the rotated selected-page raster at 72 dpi. The bounded processor returns one JPEG and truthful original, page, crop, processor configuration and delivered-digest facts. Success uses standard MCP text and image content blocks. It must preserve the image through the stock runtime carrier; metadata-only structured content must not replace it. Current Worker, source and destination authority are checked again after processing and before disclosure. Missing, corrupt, unsupported or revoked sources return a value-free unavailable result. The operation creates no durable source, cache, grant, receipt or new lifecycle. [Bounded Media Processors](20260713-work_resource_interaction_model.md#bounded-media-processors) owns processor bounds; complete request media admission remains separate.
 
@@ -240,7 +185,7 @@ The reserved built-in `openkit-work` target is supplied to every worker AgentSes
 
 Success is `isError: false` with the durable Artifact id in structured and text content, after the Artifact, its exact reference Item, version-1 Review, and command receipt exist. The ordinary Artifact read can immediately inspect the committed result while the Turn remains active. It records neither pending declaration nor completion acceptance. Exact accepted request replay returns the same id without capture; changed input returns `idempotency_key_conflict`. Proved missing or invalid paths, malformed media type, invalid UTF-8 or JSON, credential matches, and size refusals return actionable product-safe Tool errors without publication for that call. A later corrected call uses a new request and may succeed in the same healthy Turn. Busy capture admission is a typed bounded refusal, not a durable queue. Missing comparison evidence, uncertain capture, or incomplete publication fails closed as `recovery_required` or the existing effect's unknown outcome, never fabricated success. Cancellation or sealing rechecks admission before publication; committed Artifacts remain, and uncommitted captures write nothing. Capability timeouts do not establish absence of an Artifact; exact receipt and public read establish the outcome. The existing Integration drain and independent heartbeat/cancellation continue unchanged.
 
-Same-Sandbox relatedness is an interim boundary, replaced when relatedness must cross Sandboxes or depend on permissions. Asking a peer a question is deferred. Each call records one `CapabilityCall`. Errors are `secret_input_not_supported`, `request_limit_reached`, `turn_not_active`, `capability_denied`, `idempotency_key_conflict`, and `peer_not_found` when the handle does not name a current co-resident. Acceptance requires the seven Work-owned Tools plus the two Knowledge Manager Tools supplied under [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) in discovery. Explicit image viewing must preserve actual cropped pixels, selected PDF-page pixels, provenance and the image carrier. Revocation before disclosure must withhold image and identity; processor refusal must clean staging before storage release. Synchronous submission must return only after its complete durable tuple and receipt and preserve replay, corrected-call, quota, credential, and seal predicates. A peer read must have no effect on the peer. `work_input_request` must neither stop the Turn nor close the AgentSession.
+Same-Sandbox relatedness is the boundary. Relatedness that crosses Sandboxes, or that depends on another permission, is outside this contract. Asking a peer a question is outside this contract. Each call records one `CapabilityCall`. Errors are `secret_input_not_supported`, `request_limit_reached`, `turn_not_active`, `capability_denied`, `idempotency_key_conflict`, and `peer_not_found` when the handle does not name a current co-resident. Acceptance requires the seven Work-owned Tools plus the two Knowledge Manager Tools supplied under [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) in discovery. Explicit image viewing must preserve actual cropped pixels, selected PDF-page pixels, provenance and the image carrier. Revocation before disclosure must withhold image and identity; processor refusal must clean staging before storage release. Synchronous submission must return only after its complete durable tuple and receipt and preserve replay, corrected-call, quota, credential, and seal predicates. A peer read must have no effect on the peer. `work_input_request` must neither stop the Turn nor close the AgentSession.
 
 ## MCP Schema Retention Baseline
 
@@ -272,7 +217,7 @@ Raw MCP request or response payloads should not be durable by default. If a task
 
 ## Knowledge Gateway
 
-Under the accepted target, Knowledge capability calls are retrieval and read operations, not direct notebook access. Current Workflow Coordinator paths can record selected Knowledge references in delegation metadata, but they do not automatically bind those references or material into the AEP or worker turn. The current narrowly enabled MCP capability plane does not expose Knowledge operations.
+Under the accepted target, Knowledge capability calls are retrieval and read operations, not direct notebook access. Current Workflow Coordinator paths can record selected Knowledge references in delegation metadata, but they do not automatically bind those references or material into the AEP or worker turn. The direct `knowledge.retrieval` and `knowledge.read` families are not callable. `knowledge_ask`, `knowledge_tell`, and a selected source read are separate `openkit-work` operations.
 
 `knowledge.retrieval` returns ranked, redacted candidates with source references and reasons.
 
@@ -342,7 +287,22 @@ Minimum unit classes:
 - tool call count for MCP and tool routes
 - normalized cost estimate when provider pricing is known
 
-Gateway policy may start with hard limits only. A denied call must return `capability_rate_limited` or `capability_budget_exceeded`, and it should still create a denied `CapabilityCall` plus audit evidence when the request reached authenticated policy evaluation. Process-local counters are acceptable for the first implementation, but the call shape must not block durable `UsageRecord` and audit persistence later.
+A denied call that reached authenticated policy evaluation returns `capability_rate_limited` or `capability_budget_exceeded` and records a denied CapabilityCall plus audit evidence. That enforcement is the baseline. It is not implemented. The raw-output bound does not implement it.
+
+Request count is one baseline unit. Durable CapabilityCall rows record calls. One internal successful unmetered LLM fallback emits one request UsageRecord. That record is not an all-calls limiter. A committed row survives restart. No request-rate gate exists. A missing measurement is neither zero use nor unused quota.
+
+LLM input, output, and total tokens are adapter-reported measurements. Total is a fallback and is not added to detailed input and output. A recorded attributed UsageRecord survives restart. Unreported generation before a crash is not recovered. No pre-dispatch token gate exists. Missing reported usage is not zero use and is not exhaustion.
+
+Cache-read and cache-write tokens are optional provider-reported values on that same UsageRecord. An explicit reported zero may be retained. An absent value stays absent. A written record survives restart. Cache-lineage equality proves routing intent only. It does not prove a cache hit. No cache-lineage Budget gate exists.
+
+Normalized cost is the adapter-reported cost total, emitted in USD when the provider reports it. A recorded attributed measurement survives restart. An unknown price or an unobserved generation has no reconstructed cost row. The measurement is not billing settlement. No cost gate exists.
+
+A contacted MCP Tool emits quantity 1, category `tool`, unit `tool_calls`, and source `mcp-gateway-request-dispatched`. The shared recorder writes that measurement only when the Tool is contacted. A committed equivalent measurement survives restart. A denial before contact is not a measured Tool effect. A pending approval is not a contacted call. Missing usage is not unused quota. No tool-call allowance gate exists.
+
+Source, artifact, and network byte movement have no single retained Budget counter. Raw-output bytes, per-file publication bounds, and per-operation caps keep their own owners. No generic byte Budget survives restart. Independently retained sizes survive under those owners.
+
+Gateway diagnostics keep request counts and token totals per provider, model, and endpoint in process memory. The map is rebuilt empty after restart. It is not a UsageRecord and not a Budget counter. Its reset does not restore capacity. A retained UsageRecord stores the resolved provider model separately from the logical model id. An equivalent usage lookup preserves the record id. A complete ledger does not prove Budget enforcement or unobserved billed output.
+
 
 ## Error Model
 
@@ -360,63 +320,39 @@ The deferred capability routes target the following stable OpenKit codes; curren
 
 The worker receives an actionable error without raw upstream secrets or backend internals. A call that requires approval is not an error code: it returns a pending result under [Pending Requests](20260930-pending_requests.md), with `isError: true` because the tool has not executed. A current MCP call that cannot be approved returns `mcp-denied`; the deferred capability routes target `capability_policy_denied`.
 
-## Resolved Decisions
-
-- Worker-facing capabilities use one governed worker-local capability API at `capability.local`, projected by Sandbox Integration onto `/capabilities/*` with a capability token distinct from inference and worker control.
-- Worker-local `inference.local` remains an LLM endpoint, not a generic capability endpoint, and Sandbox Integration projects it onto `/inference/*` with its own inference token and complete AEP and execution-attempt binding.
-- Family-specific routes are acceptable for the first worker capability projection. They must still produce canonical `CapabilityCall` semantics.
-- `knowledge.*` is the canonical family name. The older `memory.*` implementation projection has been removed without compatibility aliases.
-- Capability catalog sources should remain manifest- or file-system-first, while the AEP stores the resolved per-session projection.
-- Knowledge search and read calls are not item-visible by default. They become item-visible only through a `knowledge-injection` Item, a tool-call Item, worker-output citation, or explicit product projection.
-- Process-local LLM gateway usage diagnostics are not durable usage records.
-- MCP schema evidence should retain schema references, versions, and digests plus redacted call summaries; raw MCP payload retention is opt-in governed evidence, not the default.
-- The first rate-limit and budget model should enforce request, token, byte, tool-call, and normalized-cost units at gateway policy boundaries, with denied calls producing stable errors and audit-capable records.
-
-## Deferred / Future Work
-
-- Extend the existing Sandbox Integration `capability.local` projection with thin worker clients for the initial Knowledge, artifact, and diagnostic route families without restoring a sidecar or creating a second control path.
-- Add worker capability routes for external API, network, and future typed tool calls after those roadmap areas are activated.
-- Add generic vault-mediated capability routes for credential classes not covered by the current non-capability Codex auth JSON runtime-file reference, which persistent Worker images do not materialize.
-- Add capability catalog schema and resolution records that distinguish canonical catalog sources from AEP snapshots.
-- Implement the baseline rate-limit and budget model with stable denied or error records.
-- Decide whether a generic `POST /calls` endpoint is worth adding after family-specific routes stabilize.
-
 ## Worker Turn Trigger Source
 
 A native Worker admission retains its known cause in the existing Protocol Turn trigger source. Direct Worker input uses user-input, a mode-selected Task handoff uses handoff, and recurring or scheduled-event admission uses automation. These values describe the entry mechanism, not the acting identity. Actor attribution, authorization, scheduler identity and event lineage retain their existing owners.
 
 Only native admission context supplies this metadata. A model or public input cannot select it. Reusing a canonical Turn preserves its recorded trigger source, including absence; replay and restart do not infer or rewrite missing history. This adds no record, source value, execution state, repair or recovery lifecycle.
 
-## Testing Strategy
 
-- Catalog resolution tests for worker AEP snapshots.
-- MCP gateway tests with a fake MCP server.
-- Knowledge search and read policy tests.
-- Vault-mediated external API tests that prove secrets are not exposed to workers.
-- Lineage mismatch tests that fail closed.
-- Usage and audit tests proving every successful and denied call leaves records.
-- Error normalization tests for invalid input, oversized input, and upstream failures.
+## Implementation
 
-## Risks & Mitigations
+- `apps/nanocore/src/runtime/`
+- `apps/nanocore/src/llm/`
+- `apps/nanocore/src/capability/`
+- `packages/worker-protocol/src/`
+- `packages/worker-shim/src/`
+- `packages/protocol/src/`
+- `packages/config-schema/src/`
 
-- Risk: The gateway becomes a generic remote procedure call surface. Mitigation: all operations must be catalog entries with schemas and policy.
-- Risk: MCP supply bypasses policy through native config files. Mitigation: generate the runtime-native MCP config of the NanoCore-managed external and built-in projection from gateway catalog entries only. Worker-owned MCP configuration inside the Sandbox is the worker's own and is not replaced by that projection.
-- Risk: Workers exfiltrate data through allowed external APIs. Mitigation: use operation-scoped provider profiles and audit target summaries.
-- Risk: `inference.local` drifts away from the capability model. Mitigation: persist LLM gateway calls as capability calls even if the wire API remains OpenAI-compatible.
+## Implementation Gaps
 
-## Links
+- Gateway request-rate and concurrency Budget - No gate consumes request measurements - #282
+- Gateway token Budget - No pre-dispatch token gate exists - #283
+- Gateway byte, tool-call, and cost Budgets - No gate consumes those measurements - #774
+- A generalized Capability Catalog across families - Selected MCP supply is not that catalog - #330
+- Policy-bound request transformers - Schema checks are not a transformer stage - #285
+- `external-api` capability family - The family is not callable - #323
+- Metered network capability family - The family is not callable - #284
+- Generic Vault capability route - No such route is active - #774
+- Diagnostic capability family - No separate diagnostic route is active - #774
 
-- `docs/core/mediation.md`
-- `docs/core/agent-supply.md`
-- `docs/core/communication.md`
-- `docs/core/knowledge.md`
-- `docs/core/vault.md`
-- `docs/core/evidence.md`
-- `docs/specs/20260526-llm_gateway_responses_api.md`
-- `docs/specs/20261002-operation_definition.md`
-- `docs/specs/20260629-worker_runtime_communication_model.md`
-- `docs/specs/20260703-worker_context_package.md`
-- `docs/specs/20260703-vault_secret_injection.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
-- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
+## Decisions
+
+- [Resident Request Attribution](../decisions/20260930-resident_request_attribution.md)
+- [Public Endpoints By Admitted Grant](../decisions/20260930-public_endpoints_by_admitted_grant.md)
+- [Identifier Derivation And Import Allocations](../decisions/20261016-identifier_derivation_and_import_allocations.md)
+- [Identifier Owner Declarations](../decisions/20261015-identifier_owner_declarations.md)
+- [Agent-Facing Naming](../decisions/20261017-agent_facing_naming.md)

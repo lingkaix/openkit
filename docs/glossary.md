@@ -113,7 +113,7 @@ Use the fixed phrase for the meaning you intend. A bare word is acceptable only 
 | --- | --- | --- |
 | Intent Epoch in new text | Collides with product epochs | Intent Revision |
 | ledger | Discussion slang with no defined meaning here | round record, change record, or the specific file |
-| G1, G2, D1, D2, D3, O1 | Codes from the 2026-09-22 pilot, meaningless outside it | the question itself, such as caller burden |
+| G1, G2, D1, D2, D3, O1 when the same document does not define them | Pilot or local codes with no definition in that document | the question itself, such as caller burden |
 | copilot | Names a position, not a function | delegate |
 | advisor | Not a role; folded into the Consultant | Consultant with a capability stance |
 | verifier as a role | Removed role | reviewer or auditor |

@@ -1,36 +1,31 @@
 ---
 status: Accepted
-implementation: Partial
 kind: mechanism
+implementation: Partial
 aspect: vault
 ---
 # Vault And Secret Injection
 
-## Summary
+This specification owns the NanoCore Vault record model (`VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse`), resolved Worker credential access declarations, secret injection visibility and delivery channels across Gateway, Provider, and Worker runtime paths, harness subscription Logins, and credential rotation, replacement, revocation, and stale-session rules.
 
-This spec defines the target vault and secret injection model for NanoCore and governed workers.
+## Scope
 
-The clean target is simple: normal config, manifests, item logs, knowledge, artifacts, and worker-visible diagnostics carry secret references and grants only. NanoCore secret values live in its encrypted-file Vault backend, and every injection path is explicit, scoped, revocable, and audited.
+### Owns
 
-## Owns
+- `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse` record requirements, resolved Worker credential access declarations (`AgentEnvironmentCredentialDeclarationSchema`), list-driven resolution, and fallback rules across injection visibility categories (`InjectionVisibilitySchema`), AEP/capability/Audit linkage, and injected-credential revocation and stale-session semantics.
+- NanoCore control-plane custody of all Vault records while Workers consume only concrete runtime affordances (provider placeholders, sandbox-local files, process environment variables, or outbound helper channels), with placement-neutral protection attestation on the execution port and native storage/mount mechanics kept outside product and port schemas.
+- `encrypted-file` as the sole current Vault backend kind in both local and server modes, distinct from LLM Gateway provider-subscription accounts (`docs/specs/20260721-provider_subscription_accounts.md`, which are not harness Logins or a second Vault backend; any other provider entitlement requires its own accepted owner) and distinct from session loopback credentials (`docs/specs/20260703-worker_agent_capability.md`).
+- Host-managed Codex Login selection and outbound carriage boundary (`docs/specs/20260716-codex_worker_adapter.md`, retiring historical Codex auth-file uploads, Server singletons, and runtime-file grant projections without migration, and adding no harness self-refresh lease/write-back path, subscription token responder, credential store, daemon, queue, retry engine, poller, or token cache while Pi and OpenCode use Gateway inference), built-in Worker MCP request-only surface (exposing only `vault.grant-request` and request-state read with bound execution lineage and no issue operation, material field, or App API bearer), and Sandbox compromise-domain boundaries (co-resident AgentSessions in one Sandbox share one compromise domain unless separated by compatibility and placement owners, with Worker-readable `runtime-env` and static `runtime-file` paths treated as explicit high-risk grants and no arbitrary runtime secret fetch, generic secret-editing UI, custom native Provider profile administration, or bespoke compatibility path).
 
-- Vault reference, grant, injection plan, injection receipt, and vault-use record requirements.
-- Secret injection visibility categories for gateway, backend, and worker runtime paths.
-- How provider credentials, MCP credentials, external API credentials, repository credentials, runtime account slots, and explicit credential files are represented without storing secret values in normal records.
-- The contract between vault references, Agent Environment Package snapshots, Agent Capability calls, worker runtime materialization, and audit events.
-- Revocation and stale-session semantics for injected credentials.
+### Does Not Own
 
-## Does Not Own
+- Concrete encrypted-file storage, master-key handling, and backend inventory in `docs/specs/20260704-vault_backend_implementation.md`, or Permission Policy and enforcement points in `docs/specs/20260629-openkit_policy_model.md` and `docs/specs/20260703-policy_enforcement_mapping.md`.
+- Derived OpenShell provider profiles, instances, and `_provider_*` policy layers (which are derived backend objects, never public or durable OpenKit product authority) and generic HTTP bearer refresh mechanics in `docs/specs/20260703-openshell_mechanism_internalization.md`.
+- Full `AgentEnvironmentPackage` envelope in `docs/specs/20260616-agent_environment_package.md` and authored Agent Manifest credential requirements and `workspace.jsonc` bindings in `docs/specs/20260703-agent_manifest_aep_resolution.md`.
+- Runtime Epoch lifecycle, Sandbox termination, carrier mount realization, cleanup, and transport in `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+- Workspace export, backup, restore, MOVE, and Vault re-binding workflows in `docs/specs/20260704-workspace_backup_export_import.md` (beyond the Vault reference/grant safety constraints and `imported-history` provenance rules defined here).
 
-- Concrete encrypted vault backend implementation.
-- Permission policy itself.
-- Sandbox containment rules beyond credential visibility.
-- Provider-native auth payload formats.
-- Agent Capability routing unrelated to credential use.
-- Runtime Epoch lifecycle, sandbox termination, cleanup, and transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
-- Workspace export, backup, restore, MOVE, and Vault re-binding workflows, which belong to `docs/specs/20260704-workspace_backup_export_import.md`; this spec owns only Vault-reference and grant safety constraints plus unbound-import semantics.
-
-## Core References
+### Core
 
 - `docs/core/vault.md`
 - `docs/core/policy.md`
@@ -39,426 +34,223 @@ The clean target is simple: normal config, manifests, item logs, knowledge, arti
 - `docs/core/agent-session.md`
 - `docs/core/storage.md`
 - `docs/core/evidence.md`
+- `docs/core/architecture.md`
+- `docs/core/work-model.md`
 
-## Goals
+## Records
 
-- Define vault records and secret-reference ownership.
-- Define grant, injection, receipt, and audit semantics.
-- Support provider credentials, MCP server credentials, external API credentials, repository credentials, and runtime account slots.
-- Keep secrets out of prompts, item logs, knowledge, artifacts, AEP snapshots, and normal config files.
-- Make secret visibility explicit before a worker starts.
+Secret material (`SecretMaterial`) never appears in ordinary configuration, manifests, `AgentEnvironmentPackage` (AEP) snapshots, prompts, item logs, Knowledge, Artifacts, evidence bundles, or diagnostics; resolved declarations carry only references and non-secret metadata, and public operations, exports, and readback (`vault.grant-list`, `vault.injection-plan-list`, `vault.injection-receipt-list`, `vault.use-list`, `vault.server-use-list` in `packages/app-api-schemas/src/vault-injection.ts` and `packages/app-api-schemas/src/vault-admin.ts`) expose only their schema-admitted non-secret metadata and never expose raw secrets, provider placeholder values, authorization headers or payloads, raw credential file contents, host temporary paths, native handles, or unrestricted target locations.
 
-## Non-goals
+Canonical `VaultGrant` is the sole credential use authority while `VaultReference` is the stable non-secret identity of backend secret material; `VaultInjectionPlan` (the non-secret pre-effect intent record for a `VaultInjection`), `VaultInjectionReceipt` (written only after a downstream sink effect completes, never on denied, failed, interrupted, or unproved attempts), `VaultUse` (the audit-linked evidence record for a successful or failed backend reference resolution, which does not by itself prove downstream sink completion), and `AuditEvent` never create, extend, recover, or substitute for a `VaultGrant`. Every new independently issued `VaultGrant` (including the replacement produced by `vault.grant-narrow`) and fresh `VaultReference` allocates its ID via the shared Protocol `UUIDv7` generator (`docs/specs/20261021-protocol_identifiers_and_enums.md`) at first allocation without bypassing replay or current-authority checks.
 
-- Do not define the encrypted-file format or master-key handling owned by `docs/specs/20260704-vault_backend_implementation.md`.
-- Do not store plaintext secret values in SQLite or workspace files.
-- Do not let workers request arbitrary secrets by name.
-- Do not expose raw secret material through App API, end-user CLI, Web UI, logs, or diagnostics.
-- Do not treat environment-variable shortcuts as the long-term vault model.
+### Reference Shape
 
-## Concepts
+`vault_references` (`apps/nanocore/src/storage/schema/vault-references.ts`, decoded by `apps/nanocore/src/storage/vault-native-codecs.ts`) stores non-secret reference metadata in `core.sqlite`. Owner scope determines metadata ownership and the authorizing policy domain. The admitted backend kind is `encrypted-file`, and the stored locator is redacted.
 
-`VaultReference` is a non-secret stable reference to secret material.
+For harness subscription Logins, one User-owned `VaultReference` represents one Login refresh family (`referenceId` is the family identity and `currentVersion` is material generation; idempotent creation never overwrites existing Login metadata), and multiple Logins may represent one upstream provider account while NanoCore owns their material, refresh, and lifecycle:
 
-`VaultGrant` records that a subject, session, capability, or provider path may use a vault reference.
+- The explicit Codex Login subtype is valid only on a User-owned reference with a canonical User ID. `loginAccountId` is the trusted non-secret provider account equality key, and a null credential writer means Core generation `0`. Ordinary references keep the Login columns null. Partial, unknown-provider, non-boolean, or contradictory ownership rows fail closed.
+- Logins of one provider account share one allowance, so quota exhaustion applies across all Logins of that account; quota observations on the Login record require source, timestamp, quota window, and binding/material generation, while missing or failed reads remain `unknown` (`null`) with no separate quota store, cache, or poller.
+- `vault.login-list` (`ListVaultLoginsResponseSchema` / `VaultLoginViewSchema` in `packages/app-api-schemas/src/vault-admin.ts`) takes an empty request and returns only the caller's own explicit Logins. Unknown observations are returned as null. The response does not expose the provider account equality key, backend locators, or secret material.
 
-`VaultInjection` is the umbrella lifecycle for one governed secret injection, from an approved pre-effect plan through resolution and a completed sink effect.
+### Grant Shape
 
-`VaultInjectionPlan` is the non-secret pre-effect record of how a granted secret may be made available. It is not use authority or evidence that injection happened.
+`vault_grants` (`apps/nanocore/src/storage/schema/vault-grants.ts`, projected for Workspaces by `WorkspaceVaultGrantSchema` in `packages/app-api-schemas/src/vault-injection.ts`) is the retained grant. Issuance is required and immutable. `VaultGrantIssuance` and grant status stay that schema's closed sets:
 
-`VaultInjectionReceipt` is the non-secret record that a planned injection completed successfully. Denied, failed, interrupted, and unproven attempts have no receipt.
+- **Provenance (`issuance`)**: Under [Identifier Derivation And Import Allocations](../decisions/20261016-identifier_derivation_and_import_allocations.md), only the current-deployment issuer writes `issuance: "target"` when creating a new authorized grant. `importWorkspaceVaultGrants` writes `imported-history` and ignores any source claim of `target`; ordinary portable Workspace import is absent and remints no grants, while portable exports (`docs/specs/20260704-workspace_backup_export_import.md`) may carry non-secret Vault record history without secret material. Current-format validators reject missing, unknown, or contradictory `issuance` without defaulting to `target`, and updates, duplicate-ID handling, reference rebinding, restarts, or re-exports never upgrade `imported-history` to `target`.
+- **Lifetimes and lineage**: Retained grant lifetime is `VaultGrantLifetime`. A longer lifetime requires stronger policy. Every reviewed grant issuance (User Login consent in the issuing caller's User database; Workspace and Server administrative branches in the Workspace/Core database) crosses its definition's actual Policy stages and links the resulting single final mediated `PermissionDecision` on the grant, preserving exact request, approval, requester, actual issuer, and decider lineage without fabricating historical decisions; restricted Worker Login quarantine similarly records a User-owned `PermissionDecision` and `AuditEvent` correlating the actual Worker, responsible human, grant, material generation, Workspace, Turn, and Core failure class without adding a notification scope. A human-authenticated grant request retains its initiating credential identity, and later same-Agent/responsible-user Thread reads of a retained Worker request preserve original issuance lineage while keeping the Pending Request and issued `VaultGrant` distinct.
 
-`VaultUse` is the current audit-linked evidence record for a successful or failed secret-reference resolution. It is not proof that a downstream sink completed.
+### Plan, Receipt, And Use Records
 
-`VaultAudit` remains a future consolidated projection and has no current schema, service, table, or public record.
+- **`VaultInjectionPlan` (`WorkspaceVaultInjectionPlanSchema`, `vault_injection_plans` in `apps/nanocore/src/storage/vault-native.ts`)**: A package declaration's plan identity is `plan_<packageSnapshotId>_<declarationId>`. Plan intent is immutable: an exact creation replay returns the stored plan with its original `createdAt` and current `status`, and a repeated `planId` with different immutable content fails without mutation.
+- **`VaultInjectionReceipt` (`WorkspaceVaultInjectionReceiptSchema`, `vault_injection_receipts`)**: Receipt identity is `receipt_<packageSnapshotId>_<declarationId>`, or helper `receipt_<requestUuid>`. For `runtime-file` bindings (`WorkerCredentialFileBindingSchema` / `WorkerCredentialReceiptSchema` in `packages/config-schema/src/worker-credentials.ts`), the plan's `backendCapabilityRequirement` and the receipt's `backendSummary` record the placement-neutral required protection and the realized protection attestation, without a carrier record. For `sandbox-provider` (`backend-provider`) bindings, a receipt is written only after native placement proves the exact current material generation and effective-policy protection equality (`apps/nanohost/src/openshell_provider_delivery.rs`). For `runtime-env`, secret values never enter AEP snapshots, summaries, logs, commands, transcripts, diagnostics, or retained Harness state. For an administrator MCP discovery preview, the AgentSession and capability-call identities are null, and `auditEventId` MUST reference a successful Core `administration.mcp-discovery-preview.delivery` event with an actual user actor, a non-null invocation ID, the exact `grantId`, and the exact `planId` (`packageSnapshotId` null, `capabilityId` `mcp.list-tools`, `injectionVisibility` `gateway-only`). A missing or mismatched Audit link is refused. Original completion fields are immutable. Advancing `revocationStatus` never proves material recall. Exact receipt creation replay returns the stored receipt with its current `revocationStatus`, treating null and omitted nullable fields as equal, and rejects changed immutable content.
+- **`VaultUse` and audit-first projections (`apps/nanocore/src/vault/vault-use-records.ts`)**: Server-scoped rows home in `core.sqlite` (`vault.server-use-list`) and Workspace-scoped rows in `workspace.sqlite` (`vault.use-list`). A use records the resolution outcome without secret material or locators, and a failed lookup does not require the `vault_references` row to exist. Item-visible projections stay bounded non-secret status. Detailed lineage stays in Audit and receipt readback.
 
-`SecretMaterial` is the actual credential value. It never belongs in normal OpenKit records.
+## Credential Access Declarations
 
-## Ownership Scopes
+### Declaration Shape And Composition
 
-Vault references may be:
+Workers cannot fetch arbitrary secrets or Vault references by name at runtime. Instead, NanoCore resolves a complete, list-driven declaration set (`AgentEnvironmentCredentialsSchema`, `AgentEnvironmentCredentialDeclarationSchema`, and `AgentEnvironmentCredentialRequirementSchema` in `packages/config-schema/src/agent-environment.ts`, which own the wire/config field sets and recursive raw-secret guard without a separate three-visibility subset or illustrative example schema) before any native Worker work begins (`apps/nanocore/src/runtime/agent-environment.ts`):
 
-- server-scoped
-- user-scoped
-- workspace-scoped
+- **Authored requirements, Workspace bindings, and cross-scope rules**:
+  - Authored declaration access names (`id`, `requirementId`) are selectors for recorded canonical `VaultGrant` and `VaultReference` identities, never well-known entity IDs.
+  - A Server Agent Manifest that directly names a `VaultGrant` may name only a Server-scope grant whose `VaultReference` is also Server-scoped. A reusable Agent Manifest declares a stable `requirementId` (`required: true` by default), and `workspace.jsonc` (`credentialBindings`) binds that `requirementId` to one Workspace-scope target-issued `VaultGrant` during composition (`docs/specs/20260703-agent_manifest_aep_resolution.md`), allowing the same Manifest to resolve to different grants across Workspaces. Each immutable AEP retains at most one resolved grant per requirement, and any later replacement composes a new AEP at a Turn boundary without mutating a retained AEP.
+  - Cross-scope credential use requires an explicit exact grant and current source/destination checks (never a copied reference ID or owner scope alone). Using a personal credential requires a User-owned `VaultReference` and an explicit accepted cross-scope consuming grant; for harness Logins, eligible use is limited to the attributed User's own Login or an explicit reviewed Workspace share while preserving User reference ownership.
+  - Authored Provider profiles and server configuration use `secretRef` (`vault://<referenceId>` or `env:<VAR>`) as their sole credential path (`vaultRef` and `grantRef` belong to internal Vault/injection records), reject inline secrets (API keys, bearer/refresh tokens, authorization headers, raw OAuth account IDs, raw auth files) and URL `baseUrl` userinfo, and reject the removed `extraHeaders` and `extraBody` fields as unknown fields without compatibility handling.
+- **Discriminated visibility union**: `AgentEnvironmentCredentialVisibilitySchema` owns the closed visibility set. `codex-login` requires `requirementId`. Each branch's required members are:
+  - `sandbox-provider`: requires `provider` (`AgentEnvironmentCredentialProviderSchema`).
+  - `runtime-file`: requires a canonical `/sandbox/...` target path (`WORKER_RUNTIME_CREDENTIAL_FILE_PATH_SCHEMA` in `packages/config-schema/src/worker-credentials.ts`), forbidding parent traversal, control characters, and `/sandbox/openkit`.
+  - `runtime-env`: requires `targetEnvVarName` (`WORKER_CREDENTIAL_ENV_NAME_PATTERN`).
+  - `runtime-token`: requires consumer `codex-login` or `credential-helper`. The helper branch carries exact helper target metadata (`CREDENTIAL_HELPER_TARGET_SCHEMA`) for `git`, `docker`, `aws`, `kubernetes`, or `google`.
+  - `external-handle`: requires consumer `ssh-agent`.
+- **Complete-list pre-launch validation**:
+  - NanoCore composes and validates the entire declaration and binding list before any native Worker work. An optional unbound requirement (`required: false`) stays absent and is recorded as unavailable without inventing a grant; any missing, duplicate, wrong-Agent, wrong-Workspace, wrong-scope, inactive, expired, revoked, or target-incompatible required binding refuses readiness before secret resolution or backend effects.
+  - Duplicate declaration `id`s, duplicate `requirementId`s, duplicate Workspace bindings, duplicate `targetEnvVarName`s, duplicate `targetPath`s, or conflicting Provider `instanceId`s within one package are rejected.
+  - Every resolved declaration requires an active canonical `VaultGrant` with `issuance: "target"` (imported-looking grants, UUID version/shape, reference rebinding, or historical approvals never authorize effects), an active target `VaultReference` with matching owner scope and identity, unexpired lifetime, an `allowedInjectionPaths` entry matching the declaration visibility, and selected-backend support for enforcing that visibility.
+  - Every non-null grant `userId`, `workspaceId`, `targetAgentId`, `targetAgentSessionId`, or `targetCapabilityId` must match the exact current execution fact (`null` adds no constraint for that dimension and bypasses no other check). Manifest backend `requiredCapabilities` and static Skill/MCP supply IDs do not prove a callable capability route: the launch-time package declaration resolver rejects any grant with a non-null `targetCapabilityId`, while the selected MCP Gateway (`apps/nanocore/src/runtime/worker-mcp-gateway.ts`) separately verifies per-call current authority and admits only `mcp.list-tools` or `mcp.call-tool` targets matching the exact operation.
+  - Workspace-lifetime grants require explicit Policy: the direct administrator issuer (`vault.grant-create` in `packages/app-api-schemas/src/vault-admin.ts`) records the requesting administrator in Audit and may leave `policyDecisionId` and `approvalId` `null`, whereas reviewed issuance (`vault.grant-issue`) retains required `PermissionDecision` and `Approval` lineage; optional `approvalId` (which when non-null must use the target-issued namespace, never `apr_imported_`, and pair with a non-null `policyDecisionId`) and `policyDecisionId` are immutable issuance lineage and are never re-run as a use-time approval workflow.
 
-The scope determines who owns the reference metadata and which policy domain must authorize use.
+### Supported Grant Request And Review
 
-Cross-scope use must be explicit. Shared Server MCP credentials follow the exact binding and grant checks in [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md#shared-server-origin-and-vault-use). Server-owned Provider resolution follows Provider Credentials below.
+The reviewed grant workflow (`vault.grant-request`, `vault.grant-request-list`, `approval.respond`, and `vault.grant-issue` in `apps/nanocore/src/vault/vault-grant-requests.ts`) captures exact non-secret terms—reference scope, lifetime, injection visibility, optional Agent/AgentSession/Gateway capability targets, and optional future expiry—across three supported branches while keeping all other credential classes, lifetimes, and sinks unavailable (a request never contains secret material, backend locators, free-text secrets, or use authority, and a Server grant changes no catalog binding and authorizes no Workspace-origin declaration):
 
-A Server Agent Manifest that directly names a `VaultGrant` may name only a Server-scope grant whose reference is also Server-scoped. A reusable Manifest declares a stable credential `requirementId` without a grant identity, and `workspace.jsonc` binds that requirement to one Workspace-scope target-issued grant during authored composition. The same Manifest may therefore resolve to different secret material, accounts, and permissions in different Workspaces, while a missing required binding fails before worker launch. A grant from another Workspace, an unbound requirement, or a matching string in a different scope never becomes usable by reference alone. For Codex Login only, this authored binding names the required credential and its preferred grant. At a new Turn boundary, the governed replacement path below may resolve another currently eligible grant for that same requirement into a new AEP. Each AEP retains exactly one grant for the requirement; a retained AEP is never edited.
+1. **Workspace references**: Workspace lifetime with `gateway-only`, explicit GitHub `runtime-env`, or explicit high-risk static `runtime-file` visibility (where `runtime-file` cannot name a Gateway capability target and requires explicit `runtime-file` injection permission).
+2. **Server shared-MCP references (`mcp-credential`)**: Server lifetime and `gateway-only` visibility; use still requires the exact current Server-origin canonical binding under `docs/specs/20260704-worker_mcp_tool_supply.md#shared-server-origin-and-vault-use`.
+3. **Reviewed User Codex Login sharing**: Admits an active User Codex Login for a Workspace-owned, Workspace-lifetime `runtime-token` grant while preserving User `VaultReference` ownership. The request has no caller-selected owner or upstream account field, requires the attributed User's current ownership (or Administrator Eligibility) plus destination and requester authority (an ordinary Workspace bearer conveys no personal consent), and allows a Worker to request its attributed User's Login under its exact current package and lineage without general Worker User-scope entry or foreign-owner routing.
 
-The accepted selection and persistent-preference rationale is recorded in [Login Preference And New-Turn Selection](../decisions/20261111-login_preference_new_turn_selection.md).
+## Delivery Channels
 
-Personal preference alone does not rewrite a Workspace credential binding or supply secret authority. In v0.1.0, only a currently authorized deployment administrator may persistently change the preferred grant through the existing `runtime.file-update` and successful `runtime.reload` path. The existing file-publication authority-change Audit records the actor, Workspace, Agent requirement, old and new grant ids, and Kernel authorization outcome in the existing Audit shape; it introduces no PermissionDecision family. Ordinary Users, Workspace members and agents have no configuration-write authority for this change; they retain automatic replacement and authorized sharing, withdrawal or revocation of their own grants. A user-specific credential still needs its own User-scope reference and an explicit cross-scope grant accepted by the owning credential declaration contract.
+Durable injection visibility is `InjectionVisibilitySchema` in `packages/app-api-schemas/src/vault-injection.ts`. `gateway-only` stays inside NanoCore and is never exposed to a Worker runtime. `backend-provider` is the durable form of declaration `sandbox-provider` and attaches a Sandbox Provider proxy that uses a Worker-visible placeholder. Non-Worker-visible paths are preferred: `sandbox-provider` is the default declaration shape for external HTTP API credentials when a Worker CLI can pass a placeholder in a header, Basic auth value, query parameter, or URL path, while Worker-readable `runtime-file` and `runtime-env` paths are explicit fallbacks requiring stronger explicit authority and Audit without claiming endpoint-scoped secrecy. Any raw static `runtime-file`, derived file, or `runtime-env` material readable by a Worker can be copied by that Worker; the explicit high-risk grant (`runtime-file` or `runtime-env`, never a generic reference or other injection permission) records the user's acceptance of that risk without claiming an anti-copy mechanism.
 
-## Secret Backend
+`WorkerGovernanceMaterializationContext` (`apps/nanocore/src/runtime/worker-governance-backend.ts`) keeps backend-private `runtime-env`, `sandbox-provider`, and `runtime-file` supply separate from redacted materialization summaries and AEP snapshots. Resolved secret material travels only through backend-private supply: `runtime-file` and `sandbox-provider` package preparation stays reference-only, and governed `vault.binding-deliver` obtains final combined Policy `allow` and rechecks admitted authority before audited Vault resolution and at the placement effect after asynchronous preparation without placing material or authority callbacks into operation inputs, AEPs, or retained records. Each channel is governed by its own implementation and activation state on `main`:
 
-NanoCore has one current Vault backend kind: `encrypted-file`. Local and server modes use the same backend contract and storage boundary; there is no deployment-mode selector, alternate backend, or runtime fallback. Concrete ciphertext, authenticated metadata, and master-key handling belong to `docs/specs/20260704-vault_backend_implementation.md`.
+| Channel / visibility | Implemented on `main` | Activation and remaining boundary |
+| --- | --- | --- |
+| Authored Provider `secretRef` (`env:` or `vault://<referenceId>`, Core-only) | Yes: configured `env:` resolver (`apps/nanocore/src/providers/registry.ts`) and audited Server Vault resolver (`vault-credential-resolver.ts`) | Wired in all deployment modes; never Worker-visible, creates no Worker grant/receipt, and is not a second Vault backend. |
+| Worker MCP `gateway-only` (Workspace origin) | Yes: catalog/grant checks, plan, audited resolve, and transport delivery receipt (`apps/nanocore/src/runtime/worker-mcp-gateway.ts`) | Wired; material stays at the Gateway stdio/HTTP sink with per-call current authority and transport certainty. |
+| Server shared-MCP `gateway-only` (`mcp-credential`) | Yes: Server family administration and current Server-origin crossing (`apps/nanocore/src/vault/server-mcp-authority.ts`) | Wired for canonical Server-origin shared-MCP bindings only. |
+| Administrator MCP discovery preview (`gateway-only`) | Yes: human-only preview plan, `VaultUse`, and delivery Audit/receipt (`apps/nanocore/src/administration/mcp-discovery-preview.ts`) | Wired for explicit temporary preview with `null` Worker lineage and no retained tool output or future execution authority. |
+| `runtime-env` (`visibility: "runtime-env"`) | Yes: generic declaration resolution, session-static native child env carriage, and receipt after native-start ack | Wired; Worker-visible high-risk fallback, session-static per resident binding, with successor replacement at next Turn and immediate close on revocation. |
+| Placement-neutral `runtime-file` deliver, replace, and revoke (`visibility: "runtime-file"`) | Yes: reference-only preparation, governed delivery, same-inode native replacement, protection attestation, and revoke/fence (`apps/nanohost/src/credential_carrier.rs`) | Wired through Vault binding operations and NanoHost; full-service LOAD qualification remains tracked by `#604` / `#480`. |
+| Static `sandbox-provider` -> durable `backend-provider` initial delivery | Yes: reference-only preparation, generated OpenShell profile/instance from configured access shape, full effective-policy equality check, and canonical receipt (`apps/nanohost/src/openshell_provider_delivery.rs`) | Wired for initial static attachment (`provider-attachments` and `credential-placeholder` advertised); real-host qualification tracked by `#604`. |
+| Existing static `sandbox-provider` in-place replacement | No: static `replace` explicitly refuses (`apps/nanocore/src/runtime/worker-governance-turn-executor.ts`, `apps/nanohost/src/epoch_coordinator.rs`) | Requires a new explicit placement request; dynamic in-place Provider replacement remains a gap (`#604`). |
+| Generic HTTP bearer Gateway-delegated refresh (`oauth2_refresh_token`, `oauth2_client_credentials`, `google_service_account_jwt`) | Component adapters, policy comparison, and normalization exist (`apps/nanohost/src/openshell_provider_refresh.rs`) | Dormant: no production dispatcher, delegation approval flow, or refresh collector calls them (`#604`). |
+| On-demand credential helpers (`git`, `docker`, `aws`, `kubernetes`, `google`; `visibility: "runtime-token"`, `consumer: "credential-helper"`) | Yes: five bounded native protocol adapters (`packages/worker-shim/src/credential-helper-protocols.ts`) and fresh governed outbound exchange (`apps/nanocore/src/runtime/credential-helper-exchange.ts`) | Wired over existing outbound Worker-control carriage and `vault.binding-deliver`; full-service qualification tracked by `#604`. |
+| Restricted SSH agent facade (`visibility: "external-handle"`, `consumer: "ssh-agent"`) | Yes: Session-owned native socket, identity listing, and Core-side Vault signing (`packages/worker-shim/src/credential-helper-agent.ts`) | Wired over the helper channel with no private-key export; full-service qualification tracked by `#604`. |
+| Codex host-managed access token and native same-family refresh (`visibility: "runtime-token"`, `consumer: "codex-login"`) | Selection, exchange, native adapter, refresh, and observation/Thread writers exist (`apps/nanocore/src/runtime/harness-login-exchange.ts`) | Dormant (not production-activated): default App installs no Login handler and returns `worker_login_unavailable` `503` (`#604`). |
+| User Login acquisition (`vault.bootstrap-codex-auth`), metadata (`vault.login-*`), reviewed sharing, and withdrawal (`vault.grant-withdraw`) | Yes: fixed actual-User operations, stock Codex refresh check, and redacted `VaultLoginViewSchema` (`apps/nanocore/src/vault/vault-operation-implementations.ts`) | Callable metadata and sharing foundation; Web Account publication and production harness activation remain gated (`#604`, `#708`). |
 
-Provider login flows may produce credential material and runtime-issued credentials may be injected through governed paths, but neither is a separate NanoCore Vault backend category. The LLM Gateway's Codex and xAI subscription credentials share the encrypted-file backend through their distinct server-owned references. Harness subscription Logins use the User-owned contract below. Another provider, including Claude, may reuse that storage only after a separate accepted entitlement and provider contract authorizes the provider path.
+### Server Shared-MCP Projection
 
-## Harness Subscription Logins
+- **Authored Provider `secretRef` resolution**: Authored Provider `env:` credential references are allowed in every deployment mode as operator-authored server configuration, resolved only inside NanoCore and never Worker-visible ([Reserved Audit Question Rulings](../decisions/20261031-reserved_audit_question_rulings.md); not a Vault backend). For an authored Server-owned Provider `secretRef: vault://<referenceId>`, NanoCore resolves the Server-owned reference in Server scope and records a Server `VaultUse` row without creating a Worker grant or injection receipt, while LLM Gateway admission still checks current caller and Workspace authority.
+- **Workspace and Server shared-MCP `gateway-only` delivery**: NanoCore resolves MCP credentials through catalog-bound `VaultGrant`s into bounded Gateway stdio environment or HTTP header/query sinks (`apps/nanocore/src/runtime/worker-mcp-gateway.ts`), never delivering plaintext credential-bearing MCP commands to a Worker. The Server reference/grant scope supports only the `mcp-credential` family under `docs/specs/20260704-vault_backend_implementation.md#server-shared-mcp-secret-administration` and `docs/specs/20260704-worker_mcp_tool_supply.md#shared-server-origin-and-vault-use`, requiring the exact current Server-origin canonical catalog binding, a target-issued Server-lifetime `gateway-only` grant, and responsible consuming actor checks (recording Server `VaultUse` in Core with consuming Workspace and capability-call lineage in Audit; a Workspace binding, copied identifier, or plan/receipt never supplies Server authority).
+- **Administrator MCP discovery preview**: Under `docs/specs/20260907-mcp_catalog_management.md#explicit-bounded-discovery-preview`, explicit temporary administrator discovery preview is a `gateway-only` human consumer of existing exact-scope MCP grants (admitting only the Server MCP family for Server preview) with `null` Agent, AgentSession, AEP, and capability-call fields, the actual administrator as audited actor, optional capability target matching `mcp.list-tools`, and fresh active reference/version, backend, expiry, `issuance: "target"`, and revocation checks before resolution and after discovery. Its plan, `VaultUse`, and transport-certainty receipt never imply that a tool executed, that preview output was retained, or that a receipt can be reused as future authority.
 
-A Login is one User-owned VaultReference refresh family for a harness's own subscription services and quota. Several Logins may represent one provider account. NanoCore owns their material, refresh and lifecycle. The existing LLM Gateway provider-subscription accounts retain their separate ownership and inference contract; they are not harness Logins.
+### Sandbox-Provider Visibility
 
-The existing `vault.bootstrap-codex-auth` operation acquires a Codex harness Login for the actual human User through the existing User Policy, PermissionDecision and Audit owners. Core refreshes the submitted credential through the stock Codex provider, verifies the provider-scoped account equality, and stores only the refreshed material under that User. Its result is the existing redacted Login projection. It creates no Workspace grant and does not change Gateway provider-subscription accounts. Production activation, quota observations, Thread affinity and full-service delivery qualification remain pending.
+Declaration `visibility: "sandbox-provider"` maps to durable `backend-provider` visibility (`apps/nanocore/src/runtime/provider-credential-binding.ts`, `apps/nanohost/src/openshell_provider_delivery.rs`):
 
-Prerelease upgrade: The existing vault.bootstrap-codex-auth operation now acquires a human-owned User Login. Rerun acquisition as the actual human using authJsonBase64 through existing secret stdin. The obsolete optional expiresAt is removed: requests containing it fail existing strict validation. No field is silently ignored, no replacement grant or lifetime field is added, and historical Server material is not promoted or migrated.
+- Launch preparation is reference-only; Provider credential material enters backend-private context only during authorized governed delivery (`apps/nanocore/src/runtime/worker-governance-turn-executor.ts`), where NanoHost creates or updates the deterministic generated OpenShell profile and instance from NanoCore-owned access-shape definitions (`docs/specs/20260703-openshell_mechanism_internalization.md`, with no arbitrary public/custom profile import) and attaches the instance to the exact Sandbox after proving complete typed effective-policy equality.
+- The Worker process receives only the placeholder environment variable for `provider.credentialKey` and passes it in an HTTP header, Basic auth header, query parameter, or URL path segment, which the Gateway proxy resolves to the real credential at outbound forwarding time.
+- Static placeholder exposure is `Sandbox x attached Provider` plus effective policy enforcement—never endpoint- or binary-scoped static secrecy—and plans and receipts MUST record `backend-provider` exposure honestly without claiming endpoint-scoped static placement. Replacing material behind an already attached `sandbox-provider` credential may take effect in place only through a proved native dynamic replacement operation.
 
-A Worker may use Logins owned by its attributed user and Logins explicitly shared to its Workspace through existing grants. Any Workspace member may use a shared Login through current authorization. A shared Sandbox has no finer per-member quota accounting. Sharing and unsharing reuse grant creation, narrowing and revocation; ownership never changes implicitly.
+### Runtime File Visibility
 
-The User owner can withdraw a Workspace grant on that User-owned reference after leaving the Workspace. `vault.grant-withdraw` has fixed User admission and an explicit Workspace mutation target; it reuses the existing grant revocation and runtime closure owners. Its necessity is that the Workspace-scoped `vault.grant-revoke` cannot admit a departed owner. Current canonical User authority, exact reference ownership and grant linkage are mandatory at the deciding native boundary. A currently usable administrator credential retains Administrator Eligibility and its actual actor attribution. Withdrawal grants no Workspace content access, creates no membership, and exposes only the existing redacted grant result. Metadata revocation precedes runtime closure; unproved closure retains the existing recovery-required outcome and never promises recall of copied material.
+Declaration `visibility: "runtime-file"` maps to durable `runtime-file` visibility under [Ephemeral Worker Credential Carrier](../decisions/20261031-ephemeral_worker_credential_carrier.md) (`packages/config-schema/src/worker-credentials.ts`, `apps/nanohost/src/credential_carrier.rs`):
 
-Every Login lifecycle action uses the existing Vault operation family, unified operation definition and operation-by-stage insertion points, Policy, PermissionDecision, Audit and result. Observation inspection, quarantine, release and binding replacement reuse existing operations where possible. A new operation requires a necessity statement identifying the missing capability. The uniform agent operation surface and Skill interface expose references, observations and receipts only. Material never crosses that surface. The built-in automatic replacement is an ordinary caller of these same operations with the same checks.
+- Each placement-neutral file binding is `WorkerCredentialFileBindingSchema`, at most `32` bindings per `WorkerCredentialBindingsSchema`. The target is a canonical `/sandbox/...` read-only file. Required protection (`WORKER_CREDENTIAL_FILE_REQUIREMENT`) is ephemeral, outside retained storage, excluded from capture, and excluded from export. Backup inherits the retained-storage exclusion. Any placement that cannot realize every required protection is refused before native work without downgrading protection.
+- NanoCore records a `VaultInjectionReceipt` only after verified complete private supply AND an exact `WorkerCredentialReceiptSchema` attestation matching the binding and `materialVersion`.
+- Live `runtime-file` replacement rewrites the exact live binding in place (in NanoHost, via same-inode host rewrite on the `0700` `tmpfs` source so the Worker's read-only single-file mount observes the new bytes without reallocation or remount); replacement is non-atomic to concurrent readers, and its receipt proves the updated file view rather than consumer reload or restart.
+
+### Runtime-Env And Honey Credentials
+
+- **`runtime-env` visibility**: Declaration `visibility: "runtime-env"` maps to durable `runtime-env` visibility and merges the resolved secret into the target native child process environment under `targetEnvVarName`, requiring an explicit `runtime-env` grant rather than Sandbox-wide or inferred injection. Values travel only with the private `session.open` native child launch, are validated by the shim independently of the inference route (refusing missing or mismatched values before spawning), and record a `VaultInjectionReceipt` only after native-start acknowledgement.
+- **Honey credentials (`docs/specs/20261109-runtime_security.md#deception-and-a1-containment-e12`, `apps/nanocore/src/auth/run-bound-access-token-native.ts`)**: Honey credentials use existing visibility paths and ordinary plans/receipts: Vault provisions a unique inert value while Identity retains the hash of its zero-grant, run-bound inbound credential linked by request/execution lineage, granting no useful permission, never reaching a model, workspace record, or log, and adding no new credential kind or honey store.
+
+### On-Demand Credential Channels
+
+On-demand credential helpers (`visibility: "runtime-token"` with `consumer: "credential-helper"`, and `visibility: "external-handle"` with `consumer: "ssh-agent"`) ride the existing authoritative outbound Worker-control carriage and AgentSession-local Integration endpoint (`apps/nanocore/src/runtime/credential-helper-exchange.ts`, `apps/nanocore/src/vault/credential-helper-use.ts`):
+
+- Every helper request requires fresh `vault.use` and `vault.binding-deliver` authorization against the exact admitted current package binding, never fetches arbitrary references by name, never reuses a receipt as authority, and never places secret material on the public operation surface.
+- Five bounded native protocol adapters share the helper transport (`packages/worker-shim/src/credential-helper-protocols.ts`): `git` credential helper (`get`/`store`/`erase` framing, applying only admitted operation/target effects), `docker` credential helper (`get`/`erase` only, refusing `store` before parsing secret input), `aws` `credential_process`, `kubernetes` `ExecCredential`, and `google` executable-sourced external-account credentials, with no metadata listener or Docker socket.
+- The restricted SSH agent facade (`packages/worker-shim/src/credential-helper-agent.ts`, `credential-ssh-agent.ts`) exposes a Session-owned native socket permitting only identity listing and approved signing performed inside NanoCore through Vault, never exporting private keys or allowing general agent administration.
+
+### Harness Subscription Logins
+
+- **Shared Login quota and ownership boundary**: A Workspace-shared Codex Login has no finer per-member Sandbox quota isolation, and grant creation, narrowing, withdrawal, or revocation never silently transfers `VaultReference` ownership.
+- **Host-managed Codex access tokens (`visibility: "runtime-token"`, `consumer: "codex-login"`)**: Under `docs/specs/20260716-codex_worker_adapter.md#host-managed-subscription-login`, Codex uses host-managed access tokens over outbound Worker carriage under fresh `vault.use` authorization: NanoCore is the sole refresher and the refresh token never enters the Sandbox (`loginAccountId` is bounded to `<= 256` characters without NUL/CR/LF and access tokens to `<= 65,536` UTF-8 bytes without NUL before storage or delivery in `apps/nanocore/src/vault/codex-login-refresh.ts`). Activation refreshes the selected target, commits its Vault successor, and rechecks the current grant and generation before native activation.
+
+## Lifecycle
+
+Every Login and credential-binding lifecycle action—including built-in automatic selection and replacement—uses the existing Vault operation family, unified operation definitions, operation-by-stage Policy/`PermissionDecision`/Audit interception, and reference-only uniform agent and Skill surface; secret material never crosses that surface, and no privileged replacement or repair path exists. Reusable requirement bindings, per-Workspace grant resolution, shared declaration resolution, and backend-private materialization operate as the single standard launch contract (retiring historical hard-coded Codex auth-file and fixed-ID helper branches without a compatibility reader).
 
 ### Private Login Metadata Operations
 
-The explicit optional `login` subtype of the existing VaultReference is `{ provider: 'codex', accountId, quarantined }`. `accountId` is a trusted producer's non-secret provider-scoped equality key, not an account hint or another account entity. Only a User-owned reference with a canonical User identity may carry it. Ordinary references omit the subtype; neither secret kind nor Gateway subscription metadata implies a Login. Three nullable scalar columns on the existing Core reference row retain it: all-null means ordinary, and partial, unknown-provider, non-Boolean or contradictory ownership records refuse. The existing reference id is the refresh family and `currentVersion` remains material generation. Idempotent creation never replaces existing metadata. This adds one Core migration and no User table, account registry or material producer.
-
-The following fixed-User JSON operations use `vault.admin`, the existing operation-by-stage interception, PermissionDecision and Audit, and the actual caller's User home. Local human, User session and currently usable administrator admission keep their existing limits. Worker and Coordinator User entry remain excluded except for the Core-confirmed quarantine case below. Administrator actions retain the actual administrator, never impersonate the affected owner. Necessary operation identities are:
-
-- `vault.login-list` takes an empty object and inspects only the caller's own explicit Logins. Its necessity is that Workspace reference inventory cannot express independent personal inventory. Each redacted result contains `referenceId`, `provider`, `status`, `currentVersion`, `quarantined` and `observations: null`; null means unknown. It exposes no upstream account identity, backend locator or material.
-- `vault.login-quarantine` takes only `referenceId`. Its necessity is a restriction on selection without revoking material, reference or grants.
-- `vault.login-release` takes only `referenceId`. Its necessity is clearing that restriction on the same refresh family. Release does not prove health, reset quota, repair refresh, grant use or activate a binding.
-
-Both mutations return the same redacted Login projection. Ordinary caller-initiated mutations require an active explicit User Codex Login owned by the actual caller, or current Administrator Eligibility. They change only quarantine and the existing update timestamp; repeating the requested state is inert. They preserve identity, ownership, status, material generation, backend data and grants. Revoked, unbound and ordinary references cannot be promoted. For ordinary mutations, native publication repeats the current credential, exact owner or administrator and the complete selected reference facts after FIFO admission. Awaited Policy work cannot preserve stale authority. List retains read posture; mutations retain write posture, including read-only credential refusal. Metadata works with a locked backend and invokes no material or runtime effect.
-
-Core-confirmed permanent refresh failure permits one restricted Worker invocation of the existing `vault.login-quarantine` operation. Core must perform the refresh and classify its observed failure as permanent. A Worker report, request-specific error, transient failure, cancellation or unknown result supplies no such authority. Core correlates that failure with the exact consuming package, declaration, reviewed runtime-token grant, Login family and material generation. The Worker cannot select a different family or reuse the failure for another invocation. Current canonical authority and exact generation must still match after awaited work and at native publication. Missing, stale or mismatched facts produce a typed refusal without quarantine.
-
-The [Core-confirmed quarantine decision](../decisions/20261110-core_confirmed_login_quarantine.md) authorizes this restriction through the narrow built-in rule in [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md). The actual Worker remains the caller and Policy subject, with its original responsible human and process lineage. Reviewed runtime-token consent supplies the use basis; it grants no other `vault.admin` action. Workspace Policy cannot widen this rule. Release remains restricted to the actual owner or current administrator. Coordinator entry remains excluded.
-
-This invocation uses the ordinary quarantine mediation stages, a separate PermissionDecision and the existing native publication checks. Its decision and Audit belong to the Login owner's existing User scope. They identify the actual Worker, grant, material generation, correlated Workspace and Turn, and Core failure class. User-scope Audit keeps its User ownership. The existing Login state and notification path provide owner visibility without a new notification scope. If no existing notification path is available, record that gap in an issue labelled `after-v0.1.0`. Quarantine does not complete the failed binding, publish a delivery receipt, or prove native Login activation. The existing incomplete and unknown outcome rules below apply independently to quarantine and the failed binding.
-
-The existing physical writer's covering FULL acknowledgement precedes success. Core mutation, User PermissionDecision and User completion Audit remain separate existing effect domains. Lost acknowledgement or later Audit failure reports an incomplete or unknown outcome; inspect current state before another request. There is no automatic retry, compensation, cross-database atomicity claim or new receipt family. Completion observation cannot veto a known result.
-
-The metadata and reviewed-sharing foundation includes actual-User Codex Login acquisition through `vault.bootstrap-codex-auth`; a production harness runtime consumer remains pending. Its public Web disposition is unpublished under [R115](../roadmap.md), pending real Codex harness activation and the Account-surface projection. It does not claim activation, refresh, runtime delivery or full-service qualification. Future consumers must enforce current quarantine, grant and material generation. Observation acquisition must retain the source, time, window and binding/material generation rules below.
-
-### Reviewed User Login Sharing
-
-The existing `vault.grant-request`, `approval.respond` and `vault.grant-issue` workflow admits an explicit active User Codex Login for a Workspace-owned, Workspace-lifetime `runtime-token` grant. Reference ownership remains User. The request has no caller-selected owner identity or upstream account field. It requires the attributed User's current ownership or current Administrator Eligibility and current destination and requester authority. An ordinary Workspace bearer conveys no personal consent. A Worker may request its attributed User's Login under its exact current package and lineage; this does not introduce general Worker User-scope entry or foreign-owner consent routing.
-
-The actual owner or current administrator approves the exact captured terms. Issue consumes that same approved intent once. Quarantine is preserved and does not prevent sharing; it still prevents later selection. Sharing neither resolves material nor activates a harness, refreshes a Login or proves health. The explicit grant accepts the existing Worker copying risk.
-
-Every reviewed grant issue, including the existing Workspace and Server administrative branches, crosses its definition's actual Policy stages. The existing specialized decision producer is replaced in place by one final mediated PermissionDecision. Its grant link names that actual decision. User Login consent uses the actual issuing caller's User decision and Audit home; the existing administrative branches use the Workspace home. The original request, approval, requester, actual issuer and captured decider remain linked without inventing a prior mediated human-approval decision or changing retained historical records. Current actor, destination, requester and complete reference facts are rechecked after awaited Policy and after native FIFO admission. The original single-use claim remains a reservation and precedes final authorization; a Policy refusal settles that claim through the existing execution-error path. Covering FULL acknowledgement and unknown-settlement rules remain; separate User, Core and request commits do not imply cross-database atomicity.
+- **Actual-human Login acquisition (`vault.bootstrap-codex-auth`)**: Acquires a User-owned Codex harness Login for the caller's User scope through User Policy, `PermissionDecision`, and Audit (`apps/nanocore/src/vault/vault-operation-implementations.ts`, `codex-login-refresh.ts`). Core refreshes the submitted `authJsonBase64` (supplied via secret stdin) through the stock Codex provider, verifies provider-scoped account equality, stores only the refreshed material under that User, and returns the redacted `VaultLoginViewSchema` (`VaultAdminBootstrapCodexAuthJsonResponseSchema`), creating no Workspace grant, changing no LLM Gateway provider-subscription account, rejecting the removed `expiresAt` field under strict validation, and promoting no historical Server singleton.
+- **Personal inventory, quarantine, and release (`vault.login-list`, `vault.login-quarantine`, `vault.login-release`)**: These fixed-User JSON operations use `vault.admin` admission and the caller's User database (preserving truthful administrator attribution under Administrator Eligibility and excluding Worker and Coordinator User entry except for the single Core-confirmed Worker quarantine rule below). `vault.login-quarantine` (`VaultLoginReferenceRequestSchema`) restricts selection on that Login refresh family without revoking material, reference, or grants; `vault.login-release` clears that restriction on the same family without proving health, resetting quota, repairing refresh, granting use, or activating a binding. Ordinary caller-initiated mutations require an active explicit User Codex Login owned by the caller (or Administrator Eligibility), change only `quarantined` and `updatedAt` (repeating the current state is inert), preserve identity, ownership, status, material generation, backend data, and grants, and refuse revoked, unbound, or ordinary references.
+- **Consent withdrawal (`vault.grant-withdraw`)**: A User reference owner can withdraw a Workspace grant on their User-owned reference—even after leaving the Workspace—via `vault.grant-withdraw`, which combines fixed User admission with an explicit Workspace mutation target because Workspace-scoped `vault.grant-revoke` cannot admit a departed owner.
 
 ### Selection And Activation
 
-Selection is a pure function over authorized eligible reference identities, observations, the Thread binding, a trigger and the current time. It returns keep, target or unavailable. Keep Thread affinity while the current Login works. On revocation, quota exhaustion, another error or explicit user replacement, resolve a target at a new Turn boundary through a new AEP. Selection first checks the authored preferred grant when it is eligible, then the attributed User's own Logins, then Workspace-shared Logins. If the preferred Login is ineligible, the replacement Audit records the fixed reason it was skipped and the normal order applies. Both classes require a current exact Workspace consuming grant issued for the addressed target. Ownership of a reference does not confer use authority. Skip quarantined, exhausted or refresh-busy Logins. Busy means conflicting refresh ownership, not concurrent access-only use. No eligible target produces an explicit blocked status.
-
-Selection is internal to activation, not a separate public operation. Explicit replacement changes the authored binding’s preferred grant persistently through the existing authorized configuration owner and its current Policy decision and Audit. The change takes effect for Turns composed from the snapshot installed by the successful reload. A saved file alone is not an active preference; queued dispatch that captured an earlier snapshot keeps that snapshot under the existing snapshot/currentness contract. Already-composed AEPs keep their exact grant. There is no one-shot target input or pending-target handoff. Automatic activation and activation after such a change use the same generic binding replacement operation under its current Policy decision and Audit, against the already-selected new plan. Its expected predecessor receipt supplies correlation, never renewed authority or a different target choice. The selected target must resolve one exact grant and satisfy the same eligibility and authorization checks. Optional quota observations on the existing Login lifecycle and the private affinity and per-reference departure clock on the canonical Thread owner are introduced with their first real writers: actual quota observation and actual activation or replacement. A selection proposal advances neither an active binding nor its departure clock.
-
-The fixed re-entry cooldown is 60 seconds and never retains an unusable Login. Logins of one provider account share one allowance, so exhaustion applies to all its Logins. Observations use existing Login lifecycle metadata: source, time, quota window and binding/material generation. Missing observations and failed reads remain unknown. There is no quota store, cache or poller. Codex quota updates and a bounded rate-limit read at use or a trigger supply observations.
-
-Activation must refresh the selected target, commit its Vault successor, recheck the current grant and generation, and only then activate it. A dead refresh quarantines only that refresh family. Request-specific errors do not quarantine it. An in-flight request keeps its outgoing Login attribution. After replacement, discard ambiguous late notifications; never splice responses or replay tools.
-
-Codex uses host-managed access tokens through the outbound Worker carriage under fresh vault.use authorization. NanoCore remains the sole refresher; the refresh token never enters the Sandbox. Concurrent Sandboxes may use one Login. The adapter supplies the next same-family refresh answer or reauthenticates with a governed replacement at the next Turn boundary. v0.1.0 does not switch Login families within an in-flight native refresh. Resolve by the exact binding reference, never by an account hint alone. Before private material storage or delivery, Codex account identities are bounded to 256 characters without NUL/CR/LF and access tokens to 65,536 UTF-8 bytes without NUL. Cross-account Thread continuation must be qualified on the selected Codex runtime or refused with a typed blocked result. A retained native Thread requires proof of its actual current account or trusted predecessor correlation tied to its previous exact AEP and receipt; a target account alone cannot prove continuity. Sealed reasoning is never rewritten.
-
-The v0.1.0 scope has no harness self-refresh lease or write-back path and no subscription token responder. Pi and OpenCode use Gateway inference and need no harness subscription Login. Claude and Grok harness credential adapters remain deferred. The general on-demand helper and generic HTTP bearer channels are defined by [Worker Credential Access Declarations](20260709-worker_credential_access_declarations.md#on-demand-credential-channels) and [OpenShell Mechanism Internalization](20260703-openshell_mechanism_internalization.md#generic-http-bearer-release-scope).
-
-## Reference Shape
-
-A vault reference should carry:
-
-- reference id
-- owner scope
-- display name
-- secret kind
-- backend kind
-- backend locator, redacted where needed
-- rotation metadata
-- status
-- sensitivity
-- allowed use domains
-- created and updated timestamps
-
-It must not carry the secret value.
-
-## Grant Shape
-
-A new independently issued VaultGrant, including the replacement produced by grant narrowing, uses the shared `grant` UUIDv7 allocator at its existing first-allocation seam. Narrowing retains its current transaction, source revocation, constraints and explicit binding-update requirement. The replacement identity does not replace the existing replay or current-authority checks.
-
-A vault grant should carry:
-
-- grant id
-- required immutable issuance provenance (`target` or `imported-history`)
-- vault reference id
-- subject summary
-- owner scope
-- target workspace id when applicable
-- target agent id or AgentSession id when applicable
-- target capability id when applicable
-- allowed injection paths
-- lifetime
-- policy decision id
-- approval id when required
-- status
-- created and expires timestamps
-
-The canonical VaultGrant carries required immutable closed-core `issuance`, with values `target` and `imported-history` ([accepted provenance decision](../decisions/20261016-identifier_derivation_and_import_allocations.md)). This field records provenance within the existing grant, without a second grant, state machine or registry. Only the existing current-deployment issuer writes `target` when it independently creates a new authorized grant. `importWorkspaceVaultGrants` writes `imported-history` and ignores a source claim of target issuance. Ordinary Workspace import does not call it. Export preserves retained issuance and does not upgrade it. Missing, unknown or contradictory issuance fails closed. Record updates and duplicate-ID handling MUST NOT change or upgrade issuance. UUID kind/version, reference rebinding and source Approval or decision IDs cannot promote history. Use requires a new normally authorized target-issued grant. Retention, revocation, expiry and historical status remain unchanged.
-
-Before remote mutation, secret resolution, injection plan/receipt creation or AEP injection selection, resolve the canonical grant. Require `issuance=target` on the canonical grant in addition to the existing current-authority, active-status, scope, lifetime, constraint, reference and required-lineage checks. Keep `approvalId` and `policyDecisionId` as lineage under the existing Vault rule; do not re-run or reconstruct Approval at use time. The field alone grants no use and changes neither the issuer nor permission lifecycle. The separate Approval reserved-identity rule remains unchanged. This stateless check creates no request lifecycle.
-
-The required field needs the applicable protocol and record/portable schema version change. Current-format validators reject missing or unknown provenance rather than accepting an older import shape or defaulting to `target`. Acceptance must prove that an imported active-looking grant remains unusable before and after restart, reference rebind and re-export, including a grant without `approvalId`. Missing issuance must fail closed. A new independently authorized target grant must remain usable, including when its issuer permits no `approvalId`.
-
-Nullable grant identity and target fields have exact constraint semantics. A non-null `userId`, `workspaceId`, `targetAgentId`, `targetAgentSessionId`, or `targetCapabilityId` restricts use to the exact matching current execution fact, while `null` adds no constraint for that dimension and never bypasses owner-scope, reference-identity, policy, lifetime, or injection-path validation.
-
-An AEP credential declaration may consume a grant only when NanoCore can prove every non-null constraint from the package being resolved. Manifest backend `requiredCapabilities` and static Skill or MCP supply ids are not callable capability proof. When the current AEP capability plane is disabled or does not contain the exact active capability route, a non-null `targetCapabilityId` must fail closed before any injection plan, receipt, vault use, secret resolution, or backend-private sink effect.
-
-Immediately before material leaves the Vault backend or an injection sink is invoked, a Workspace-attributed use applies the current-authority predicate from `docs/specs/20260715-multi_user_workspace_system.md` with `vault.use`, the authenticated request actor or owning AEP `scope.triggerActor`, and the exact active target-matching target-issued VaultGrant as the effect authority. Every non-null grant constraint must match the current execution. The grant is the durable result of its issuance policy; optional `approvalId` and `policyDecisionId` fields are immutable lineage and not another use-time decision owner. If `approvalId` is non-null, it must use the target-issued namespace and the same grant must carry a non-null `policyDecisionId`, but use-time enforcement does not re-run or reconstruct the Approval workflow. A null or stale responsible user, removed membership, role or policy denial, inactive or imported grant, missing required lineage, or target mismatch permits no resolution or injection. The existing audited wrapper may write a redacted failed `VaultUse` and AuditEvent, but neither record becomes authority. Material already injected through a runtime file or environment cannot be recalled atomically. Credential or grant revocation terminates the affected sandbox at the next governed boundary; if deletion cannot be proved, the NanoHost invalidates the complete Runtime Epoch and holds capacity until fresh-empty readiness. NanoCore accepts no stale-authority publication, and cleanup never proves recall of material already exposed. An already-submitted worker-native request may finish under the explicit bounded compromise in the multi-user specification. This rule adds no mutable AEP, dynamic revocation protocol, session state, or recovery workflow.
-
-Grant lifetimes:
-
-- `capability-call`
-- `turn`
-- `agent-session`
-- `workspace`
-- `server`
-
-Longer lifetimes require stronger policy.
-
-## Supported Grant Request And Review
-
-A supported secret-use request captures exact non-secret terms for an existing grant issuer. Workspace references support Workspace lifetime and Gateway-only, explicit GitHub runtime-env or explicit high-risk static runtime-file visibility. A static file request cannot name a Gateway capability target and requires the exact runtime-file injection permission; the existing Policy/PermissionDecision and responsible-human review remain mandatory. The current shared-MCP Server reference family supports Server lifetime and Gateway-only visibility. Terms include the reference scope, exact lifetime, optional exact Agent, AgentSession and Gateway capability targets, and optional future expiry. The explicit User Codex Login branch described in Reviewed User Login Sharing adds Workspace/runtime-token terms while keeping User reference ownership. Other credential classes, lifetimes and sinks remain unavailable. A Server grant changes no catalog binding and authorizes no Workspace-origin declaration; use still requires the exact current Server-origin binding under the shared-MCP owner. A request never carries material, a backend locator, a free-text secret answer or a grant of authority.
-
-The existing Pending Request owns the request, exact command intent, responsible user, decision, cancellation, claim, delivery and restart state. A trusted Worker request retains its actual raising Turn, Agent and AgentSession. It may name a reference selected by its exact immutable package, or its attributed User’s explicit Codex Login under Reviewed User Login Sharing; that exception still verifies the exact current package and requester lineage. Gateway requests carry the exact current canonical MCP server and credential-slot binding, matching the package catalog digest and reference scope. A Server request requires a Server-origin selection; a Workspace declaration or copied identifier cannot qualify. Other Worker requests, outside that attributed-User Login exception, require a Workspace reference already declared in that package. A human request requires current metadata read authority from the existing reference owner. Unavailable or foreign selections return one redacted refusal before reference lookup. A human-authenticated request retains its actual initiating credential identity. Request identities deduplicate exact open requests; changed terms remain distinct. Current same-Agent and responsible-user Thread authority may read the retained Worker request on a later execution binding; this does not revive the original session or replace the original issuance lineage. The request and its actual issued VaultGrant remain separate records.
-
-The responsible user or a currently usable administrator may review, deny or withdraw the request under the Pending Request owner. Granting the existing Workspace/Server administrative effect additionally requires current usable administrator authority. The explicit User Login sharing branch instead requires the current reference owner or a currently usable administrator; the actual decider and issuer remain truthful. Exact disclosure includes every requested restriction and explicitly identifies Worker-visible material. A decision alone issues no VaultGrant, resolves no material, changes no binding and proves no injection.
-
-The supported issue command consumes one approved exact intent through the existing synchronous re-evaluation and claim boundary. Before claim, it rechecks the original requester, the actual deciding credential, current Workspace and Thread access, mandatory Kernel authority, supported terms, future expiry and exact active Core/backend reference agreement. The winning existing claim remains a reservation, then every issuer branch crosses actual Policy interception before publication. Only its final allow can authorize the grant; a refusal settles the reservation through the existing execution-error path. A refused request cannot issue a grant. A successful issue creates one target-issued VaultGrant with Approval and PermissionDecision lineage and initiating-human Audit. Narrowing uses the existing revoke-and-replace owner, and the consuming binding must be updated explicitly.
-
-A claimed issue cannot execute again. A known local failure records execution-error; an interrupted or unproved Core write remains outcome-unknown. Restart never fabricates a grant or retries an issue. After an unknown response, the user inspects the Pending Request, grant inventory and linked Audit. Denial, withdrawal, invalidation, stale authority, expired terms, missing lineage and changed request terms produce no grant or material resolution. The existing request owner publishes and delivers decisions; delivery proves neither grant issuance nor secret use.
-
-Acceptance requires synthetic requests through the public and trusted Worker seams, exact late review, denial and withdrawal, one issue under exact replay, refusal after requester or deciding-credential revocation, explicit replacement binding, restart without reissue, and absence of material from requests, Items, Audit and responses. Existing sink tests separately prove backend resolution, successful delivery receipts and failed or unknown completion without a receipt.
-
-## Current Implementation Projection
-
-Explicit User-owned Login metadata, actual-human Codex acquisition, owner consent withdrawal, reviewed Workspace sharing and the pure default selector are implemented. Production activation, quota observations, Thread affinity and Codex host-managed replacement remain pending. The existing Gateway subscription accounts are unchanged. Generic helper carriage and delegated HTTP bearer refresh are also pending. The landed file-binding carrier remains subject to full-service qualification; this projection does not claim that qualification.
-
-The current implementation includes:
-
-- `packages/config-schema/src/agent-environment.ts` defines AEP vault references and grants. `VaultReference.kind` currently supports `secret-ref`, `runtime-ref`, and `grant-ref`. `VaultGrant.scope` currently supports `agent-session`, `turn`, and `workspace`.
-- `apps/nanocore/src/vault/vault-references.ts` stores first-slice durable non-secret `VaultReference` metadata in `core.sqlite` through the `vault_references` table. This stores reference id, owner scope, display name, secret kind, backend kind, redacted backend locator, status, current version, and timestamps; it does not store secret material.
-- `apps/nanocore/src/vault/vault-grants.ts` stores first-slice durable non-secret `VaultGrant` metadata in `core.sqlite` through the `vault_grants` table. This stores grant id, vault reference id, owner scope, target workspace/user ids, issuance, subject summary, target agent/session/capability ids, allowed injection path classes, lifetime, policy decision id, approval id, status, and timestamps; it does not store secret material or injection receipts.
-- `apps/nanocore/src/vault-injection-plans.ts` stores durable non-secret `VaultInjectionPlan` metadata through the `vault_injection_plans` table, and `apps/nanocore/src/vault-injection-receipts.ts` stores durable non-secret `VaultInjectionReceipt` metadata through the `vault_injection_receipts` table.
-- Workspace-scoped grant, plan, and receipt metadata are currently exposed through `POST /api/app/operations/vault.grant-list`, `POST /api/app/operations/vault.injection-plan-list`, and `POST /api/app/operations/vault.injection-receipt-list`, plus the `WorkspaceVaultInjectionPlan`, `ListWorkspaceVaultInjectionPlansResponse`, `WorkspaceVaultInjectionReceipt`, and `ListWorkspaceVaultInjectionReceiptsResponse` public types, the matching `client.operations['vault.injection-plan-list']` and `client.operations['vault.injection-receipt-list']` methods, and the remote MCP and administrator CLI `vault.grant-list`, `vault.injection-plan-list`, and `vault.injection-receipt-list` operations.
-- `apps/nanocore/src/vault/vault-use-records.ts` stores first-slice durable non-secret `VaultUse` metadata through the `vault_use_records` table. Server-scope rows home in `core.sqlite`; workspace-scope rows home in `workspace.sqlite`. The record stores use id, owner scope, workspace id when applicable, vault reference id, material version when known, backend kind, resolving path, linked grant/plan/receipt ids, actor ids, outcome, failure code, audit event id, and timestamp; it does not store secret material or backend secret locators, and it does not require the referenced vault row to exist so failed resolutions can be recorded. Server-scoped rows are exposed through `POST /api/app/operations/vault.server-use-list`, `client.operations['vault.server-use-list']`, and the remote MCP and administrator CLI `vault.server-use-list` operation; workspace-scoped rows are exposed through `POST /api/app/operations/vault.use-list`, `client.operations['vault.use-list']`, and the remote MCP and administrator CLI `vault.use-list` operation. Authorization for both surfaces follows the owning matrix in `docs/specs/20260704-vault_backend_implementation.md`.
-- Agent Manifests may declare reusable `requirementId` credentials, and each Workspace Agent binding maps them to that Workspace's concrete VaultGrant. The production worker-turn executor carries resolved runtime-env credentials through NanoHost to backend-private sinks and implements governed protected runtime-file bindings on persistent Worker images (`apps/nanocore/src/runtime/turn-executor-factory.ts`); required missing bindings and sink failures fail closed, and the worker resolver writes a receipt only after successful sink completion.
-- The AEP schema recursively rejects raw secret-bearing fields such as `apiKey`, `clientSecret`, `secret`, `token`, and `password`.
-- Provider profile and server config schemas reject inline provider secrets and URL userinfo. The removed `extraHeaders` and `extraBody` fields have no consumer and are rejected as unknown fields without a compatibility path; configured credentials require `secretRef`.
-- Provider credential resolution supports `env:` secret references for first-slice local and server deployment, and NanoCore now resolves provider `secretRef: vault://<referenceId>` through the server vault backend with a non-secret `VaultUse` row on resolve success or typed failure. The OpenAI-compatible LLM Gateway routes, including `/v1/chat/completions`, use the same audited resolver for vault-backed provider credentials.
-- Diagnostics and App API response schemas include raw-secret guards and redacted markers for secret references.
-- Boot diagnostics now project the initial locked-vault state as degraded readiness and name `vault.read`, `vault.use`, and `secret.inject` as blocked operations until a concrete backend is unlocked.
-- NanoCore has one internal `VaultBackend` implementation, `encrypted-file`, for `store`, `resolve`, `rotate`, `revoke`, and `listReferences`; both local and server composition use that locked encrypted-file state at `DATA_ROOT/server/vault/`. Config, App API, storage, import, OpenAPI, and bundled-client projections admit only `encrypted-file`, and the prior Keychain backend, backend selector, platform adapters, alternate-backend literals, and dedicated tests are deleted. The backend validates the strict server-owned provider-slot projection, authenticates ownership, creation time, expiration, and provider-slot metadata as associated data, rejects entry, state, version, temporary-file, and symlink disagreement during ordinary operations, permits only attributable revoke cleanup, and enforces an owner-only exact-`0600` raw key file whose canonical path remains outside `DATA_ROOT`. Server-admin-authorized vault status, unlock, lock, server VaultUse readback, failed-unlock rate limiting, audited resolution, explicit cross-scope grants, and persistent revocation cascades are implemented. Codex Login acquisition uses the separate fixed actual-User Policy and Audit scope.
-- OpenShell worker materialization no longer uploads host runtime configuration directly. Runtime-env declarations resolve through the shared audited worker resolver and materialize through NanoHost backend-private sinks. The executor writes receipts after accepted submission when a binding opens. The generic runtime-file path prepares references only, then performs governed audited resolution and placement delivery. Its successful receipt requires exact realized-protection evidence; full-service qualification remains pending. Sandbox-provider declarations remain fail-closed before provider or sandbox effects because the AEP does not yet carry the exact Providers v2 endpoint and binary policy. The existing Codex bootstrap operation now creates only an actual-User harness Login and no runtime-file grant; historical Server material is not promoted. Real host-managed activation remains pending and is not qualified by this generic carrier. The accepted target sends default GitHub writes through existing MCP gateway-only injection. The public issuer creates gateway-only grants with optional exact supported targets; an omitted capability target remains unconstrained. The selected MCP consumer checks each non-null target against the current execution. Grant material resolves only at the Gateway sink and never enters the Worker package. Local fixture coverage does not establish live vendor hosting acceptance. The current revocation projection distinguishes completed gateway-only use from runtime material whose removal is unproved. This projection is not authority, a new completion fact or proof that exposed material was recalled. Secret values remain absent from AEP snapshots, public materialization records, exports, logs, and product records. Codex Login acquisition allocates its VaultReference through the shared Protocol allocator. It creates no VaultGrant and performs no historical Server singleton lookup or promotion.
-
-The provider-neutral subscription account manager and its `account.json` storage and binding lifecycle, pi-ai login, refresh, and logout path, and reviewed provider-pair cleanup remain incomplete under `docs/specs/20260721-provider_subscription_accounts.md`; the encrypted-file backend now supplies their required authenticated inventory and revoke mechanisms without implementing account authority. The supported request/review projection uses the existing command-intent Pending Request and current grant issuers. Broader grant-policy editing, other ownership/lifetime projections, a policy-equivalent non-transient OpenShell provider attachment path, and audited backend resolution wiring for future credential-use classes remain incomplete, so this spec is `Partial`.
-
-The current fields are implementation schema choices for the Agent Environment Package slice. They do not replace the conceptual ownership scopes, grant lifetimes, injection plans, receipts, and audit-linked vault-use records defined by this spec.
-
-The request operations are `vault.grant-request`, `vault.grant-request-list` and `vault.grant-issue`. They share the current JSON, Core Client, remote MCP and administrator CLI projections. The existing built-in Worker MCP supply exposes only request and current-state read, with bound execution identity and the existing response ceiling. Workers receive no issue operation, material field or App API bearer. The issuer requires current readable metadata and existing reference authority; it records the actual approved request, deciding credential and PermissionDecision lineage before any later secret use. Server shared-MCP plan and receipt list operations expose the existing completion evidence separately from Server VaultUse resolution links. Web uses the same operations for exact review and transient material administration.
-
-## Injection Visibility
-
-Injection paths must declare visibility:
-
-- `gateway-only`: secret is used by NanoCore and never exposed to worker runtime.
-- `backend-provider`: backend attaches the credential to a provider without exposing it to the process where possible.
-- `runtime-env`: worker process sees an environment variable.
-- `runtime-file`: worker process sees a mounted credential file.
-- `runtime-token`: worker process receives a short-lived token.
-- `external-handle`: worker receives a handle that an external system validates.
-
-The preferred path is `gateway-only`. Worker-visible paths require stronger policy and audit.
-
-Honey credentials in [Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) use these existing visibility paths and ordinary plans/receipts. Vault provisions a unique inert value; Identity retains the hash of its zero-grant, run-bound inbound credential. Existing request/execution lineage links provisioning and delivery. The value grants no useful permission and never reaches a model, ordinary workspace record or log. Reading injected material alone is not a trip; exact cryptographic presentation at an owned verifier is. Expiry and revocation use existing credential/grant owners. Already injected material remains subject to ordinary stale-session and runtime closure rules; no new credential kind, honey store or recall guarantee is created.
-
-## Vault Injection Plan
-
-An injection plan should carry:
-
-- plan id
-- grant id
-- package snapshot id
-- capability id when applicable
-- injection visibility
-- target path or env var name when visible to runtime
-- expiration behavior
-- revocation behavior
-- redaction rule
-- backend capability requirement
-
-The AEP snapshot may reference injection plans and grants, but it must not include secret values.
-
-A plan identity binds its original grant, package snapshot, capability, visibility, runtime targets, expiration and revocation behavior, redaction rule and backend requirement. An exact creation replay returns the stored plan, including its original creation time and current lifecycle status. A repeated identity with different immutable content fails without mutation. A replay clock does not replace the original creation fact. Lifecycle changes use their existing owners and cannot change plan intent.
-
-## Vault Injection Receipt
-
-An injection receipt should carry:
-
-- receipt id
-- plan id
-- grant id
-- AgentSession id or capability call id; an administrator-only MCP discovery receipt instead requires the exact successful human delivery Audit link defined below
-- backend summary
-- injected at timestamp
-- expires at timestamp
-- revocation status
-- audit event id
-
-The receipt is written only after the sink effect completes successfully. For a static runtime-file sink, complete private supply and an exact placement attestation of the required ephemeral, read-only, retained-storage/capture/export exclusion must both succeed; a successful upload alone is insufficient. Authorization refusal, backend resolution failure, sink failure, interruption, or an unproven completion may emit redacted `VaultUse` or audit evidence but MUST NOT create a receipt. The receipt remains immutable evidence and never becomes authority for a later injection.
-
-The receipt id, successful completion fact, original plan and grant linkage, AgentSession or capability-call lineage, backend summary, injection time, original expiry and original audit linkage are immutable. `revocationStatus` and other explicitly owned lifecycle projections may advance after completion, but they do not alter the original completion fact, rewrite lineage, or prove that exposed material was recalled.
-
-An exact receipt creation replay returns the stored receipt with its current revocation projection. A repeated identity with different immutable content fails without changing any receipt. Creation replay cannot advance or restore lifecycle status and cannot count as another successful injection. An omitted nullable field and explicit null have the same identity meaning.
-
-## Lifecycle And Failure Rules
-
-- `VaultGrant` is the use authority. A plan, receipt, `VaultUse`, or audit event MUST NOT create, extend, recover, or substitute for a grant.
-- A plan is created after current grant and target validation and before backend resolution or sink invocation. A failed attempt may leave the plan as truthful pre-effect history.
-- Backend resolution writes one `VaultUse` success or typed failure. Successful resolution alone does not prove injection completion.
-- Rotation preserves the reference identity and advances backend material version. New injection attempts use the current version unless an explicitly selected prior version remains inside backend grace; past grace, resolution fails as expired.
-- Revocation blocks future resolution and advances dependent plan lifecycle status without changing the plan's original identity, intent, target, grant lineage, or creation fact. A receipt is marked `stale-session` only when already injected runtime material may remain reachable; the existing runtime lifecycle owns stopping or recycling that environment. A completed gateway-only injection never exposed material to a Worker runtime, so grant or reference revocation projects its active receipt as `revoked`. Other paths remain `stale-session` when removal is unproved. Missing or inconsistent plan linkage is unknown reachability and cannot justify a recall claim. These cascades preserve an already non-active receipt projection and every original completion field.
-- Expiry is checked at each governed use or sink boundary. `expiresAt`, expiration behavior, and stored status are durable facts, not a claim that a background process advances statuses automatically.
-- Missing or stale authority, missing lineage, target mismatch, backend lock or unavailability, revoked material, expired material, and integrity disagreement fail closed with product-safe diagnostics. They create no receipt and authorize no automatic repair.
-- If an interruption leaves sink completion unproven, NanoCore MUST NOT infer success from the plan or fabricate a receipt. Existing runtime inspection or teardown establishes safety; a later injection requires current authority.
-- Replacing material behind an already attached OpenShell sandbox-provider may take effect immediately only through the backend's proved dynamic replacement operation. Runtime-file replacement is a governed effect on an exact live binding under the required protection. Its receipt proves the replacement file view; consumer reload or restart behavior belongs to the consumer profile and is not implied by that receipt. Runtime-env declarations remain session-static inside a resident binding. A changed declaration or value enters a later immutable AEP and a successor AgentSession at the next Turn. That successor resumes the retained native conversation under [Worker Credential Access Declarations](20260709-worker_credential_access_declarations.md). No replacement Thread, product-visible restart action, or mutable AEP is created.
-- A raw static runtime-file is an explicit high-risk Worker-visible grant, like runtime-env. Any raw static file, derived file or environment material readable by a Worker can be copied; the explicit grant is the user's acceptance of that risk. Tier 1 channels avoid this exposure; no mechanism against copying is added. Its required protection and generic deliver/replace/revoke contract follow [Worker Credential Access Declarations](20260709-worker_credential_access_declarations.md#runtime-file-visibility). No new durable carrier record is created. Revocation denies new uses and closes the affected binding; unproved removal preserves the existing execution fence and leaves the receipt stale.
-- A Sandbox is the containment boundary. Different AgentSessions in one Sandbox may receive different resolved credential declarations and process-local projections, but this contract creates no stronger mandatory intra-Sandbox isolation; users who require separate trust or accounts that must not share one compromise domain select separate Sandboxes through the ordinary compatibility and placement owners.
-- Confirmed or unexcluded sandbox containment loss makes every potentially reachable injected credential stale. New resolution and injection stop immediately; the affected Turn and AgentSession are interrupted; the complete Runtime Epoch is invalidated through its existing owner; and no unaccepted output is published. Potentially exposed references and material versions are routed to the existing revoke or rotation owner according to their backend capability and policy, without storing secret material in the containment evidence. Cleanup does not prove recall, and a later use requires current authority and fresh containment.
-
-## Receipt Visibility Projection
-
-Injection receipts are audit-first records.
-
-Item-visible projection should be limited to non-secret operational status:
-
-- credential use requested
-- approval required
-- credential use granted or denied
-- credential unavailable
-- credential injected through a named non-secret visibility class
-- session stale or degraded because revocation cannot affect an already-running process
-
-Audit-only receipt detail includes:
-
-- vault reference id
-- vault grant id
-- injection plan id
-- injection receipt id
-- backend locator summary
-- target path, environment variable name, token handle, or credential-injection detail
-- policy decision id
-- approval id
-- revocation status
-- exact timestamps and retention metadata
-
-Product diagnostics may cite receipt ids, grant ids, visibility class, policy decision id, and redacted backend summaries. They must not show secret values, raw provider tokens, raw account identifiers, raw credential file contents, authorization headers, or unrestricted target paths.
-
-## Provider Credentials
-
-Authored provider profiles and server config use `secretRef` as their only credential path. `vaultRef` and `grantRef` belong to internal vault and injection records, not provider config.
-
-Provider `baseUrl` values must not contain URL username or password userinfo. The consumer-free `extraHeaders` and `extraBody` fields are removed from authored provider config, and current schemas must reject them as unknown fields without compatibility handling.
-
-Provider instances must never contain:
-
-- API keys
-- bearer tokens
-- refresh tokens
-- authorization headers
-- raw OAuth account ids
-- raw auth files
-
-For an authored Server-owned Provider, NanoCore resolves its Server-owned reference in Server scope and records `VaultUse`. This path creates no Worker grant or injection receipt. Gateway admission still checks current caller and Workspace authority. Grant-based credential injection retains the grant, plan, and successful-receipt requirements above.
-
-## MCP Credentials
-
-MCP servers may need credentials through environment variables, headers, or OAuth.
-
-NanoCore must resolve MCP credentials through vault grants and generate a runtime-specific MCP config that references the injection path, not the raw secret value.
-
-Workers must not receive an MCP server command that includes plaintext credentials.
-
-## Worker Runtime Credentials
-
-Worker-visible credentials are allowed only when the target runtime cannot function through gateway-only or backend-provider injection.
-
-The worker AEP must declare:
-
-- why the worker must see the credential
-- how long it is valid
-- where it is visible
-- how it is revoked
-- which policy decision allowed it
-- which audit event records it
-
-## Revocation
-
-Revocation should support:
-
-- disable future use
-- revoke grant
-- revoke short-lived token
-- stop or recycle affected worker sessions
-- mark sessions stale
-- rotate backend material when supported
-
-If revocation cannot affect an already-running process, NanoCore must mark the session stale or degraded and explain the limitation.
-
-## Resolved Decisions
-
-- Normal config, manifests, AEP snapshots, item logs, knowledge, artifacts, diagnostics, and protocol payloads carry secret references, grants, or redacted markers only.
-- Inline provider secrets and URL userinfo are not allowed in provider profiles or server config. The consumer-free `extraHeaders` and `extraBody` fields are removed and rejected as unknown fields without compatibility handling; authored credentials use `secretRef` only.
-- Authored Provider `env:` credential references are allowed in every mode as operator-authored server configuration, resolved only inside NanoCore and never Worker-visible ([Q-194 ruling](../decisions/20261031-reserved_audit_question_rulings.md)). They are not a Vault backend. Provider `secretRef: vault://<referenceId>` is the implemented Vault-backed provider credential shape.
-- Workspace exports may include non-secret `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse` history at the exact paths owned by the portability specification, but must not export secret material or treat any imported row as target access authority. Ordinary portable Workspace import is absent and does not remint grants. Retained grants keep immutable `issuance=imported-history` when `importWorkspaceVaultGrants` wrote them; that provenance remains non-authorizing after rebind, restart and re-export. Fresh authorization creates a distinct target-issued grant before use, subject to the Grant Shape predicate above.
-- Workspace-lifetime grants are allowed only through explicit policy and should be reserved for stable gateway or provider paths. Worker-visible credential paths should default to shorter lifetimes.
-- Worker-visible secret material requires an explicit issuance decision under current Policy. For the supported direct issuer, the authorized administrator explicitly requests the exact grant, and Audit records that actor. Its `policyDecisionId` and `approvalId` may be null. Request/review issuance retains its required PermissionDecision and Approval lineage. Other Worker-visible paths should require human approval unless Workspace Policy preauthorizes the exact low-risk path. Every use still validates the canonical grant and current authority.
-- Explicit OpenShell Codex auth file uploads have been removed. The existing Codex bootstrap operation acquires only an actual-User Login; its historical Server reference and runtime-file grant projection is retired without migration. It is not the accepted end state for Codex harness subscription access.
-- Injection receipts are audit-first. Item-visible projection is limited to non-secret status and stale/degraded session explanations.
-- The encrypted-file backend choice and mechanics are owned by `docs/specs/20260704-vault_backend_implementation.md`. This spec owns the reference, grant, injection, receipt, visibility, and audit contract rather than the concrete file format.
-
-## Deferred / Future Work
-
-- Extend audited vault-use wiring to remaining MCP routing and any future runtime-file credential classes.
-- Add remaining grant approval and stale-session projections; runtime revocation follows affected-sandbox termination and unproved-deletion epoch invalidation without adding a Vault-owned cleanup lifecycle.
-
-## Server Shared-MCP Projection
-
-The existing Server reference/grant scope supports only the bounded shared-MCP administration and Gateway crossing defined by [Vault Backend Implementation](20260704-vault_backend_implementation.md#server-shared-mcp-secret-administration) and [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md#shared-server-origin-and-vault-use). Those owners define the exact current canonical binding, target-issued Server-lifetime Gateway-only grant and responsible consuming actor checks. A Workspace binding, copied identifier or plan/receipt cannot supply Server authority. Plans, successful receipts, visibility-aware revocation and immutable completion keep their existing owner and meanings. Server VaultUse belongs to Core; its linked Audit keeps the consuming Workspace and call lineage. No new visibility, lifetime, grant class or credential storage is added by this projection.
-
-## Testing Strategy
-
-- Schema tests for references, grants, plans, and receipts.
-- Redaction tests proving secrets do not appear in config, AEP snapshots, item logs, audit summaries, or diagnostics.
-- Gateway-only provider tests.
-- Runtime-env injection tests with explicit policy approval.
-- Revocation tests that mark affected sessions stale, terminate the affected sandbox, and invalidate the epoch when deletion cannot be proved.
-- MCP credential materialization tests.
-- Cross-scope grant denial tests.
-- Provider-subscription custody tests proving NanoCore persists Codex and xAI credentials only through their Vault references and never creates, reads, or retains a provider-specific credential home.
-
-## Risks & Mitigations
-
-- Risk: Local env shortcuts become de facto production vaults. Mitigation: label env-backed secrets as development only unless deployment policy explicitly allows them.
-- Risk: Workers leak runtime-env secrets. Mitigation: prefer gateway-only and short-lived runtime tokens.
-- Risk: A provider authentication adapter retains a second credential copy outside Vault. Mitigation: NanoCore persists subscription credentials only through Vault and forbids provider-specific credential homes.
-- Risk: Grants outlive their intended task. Mitigation: default to turn or capability-call lifetime.
-
-## Links
-
-- `docs/core/vault.md`
-- `docs/core/policy.md`
-- `docs/core/mediation.md`
-- `docs/core/storage.md`
-- `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260629-openkit_policy_model.md`
-- `docs/specs/20260703-worker_agent_capability.md`
-- `docs/specs/20260703-audit_usage_evidence_records.md`
-- `docs/specs/20260802-nanohost_runtime_and_transport.md`
-
-### Administrator MCP Discovery Delivery
-
-The explicit temporary preview under [MCP Catalog Management](20260907-mcp_catalog_management.md#explicit-bounded-discovery-preview) is a Gateway-only human consumer of existing exact-scope MCP grants. It has no Agent, AgentSession, AEP or capability-call identity; these fields remain null. The actual current administrator is the audited actor. Agent/session restrictions cannot match this consumer; an optional capability restriction must equal `mcp.list-tools`. Existing active reference/version, backend identity, expiry, imported-authority and revocation checks remain required before resolution and after discovery. Server preview admits only the Server MCP credential family. An injection plan records this discovery delivery intent, VaultUse records resolution, and a receipt records only actual transport delivery under the existing certainty rules; no record means a tool executed, a preview result was retained, or future execution was authorized. A new explicit preview resolves under current authority again and never reuses an old delivery receipt as permission.
-
-Administrator preview receipts keep AgentSession and capability-call fields null and require their existing `auditEventId` to identify a successful Core `administration.mcp-discovery-preview.delivery` event with an actual user actor, non-null invocation id, exact grant id and exact injection-plan resource. The linked plan has no AEP, capability `mcp.list-tools`, Gateway-only visibility and the exact MCP Gateway backend requirement. Missing, wrong-actor, wrong-plan or wrong-grant Audit refuses receipt creation. This additive attribution branch does not relax Worker receipt lineage or make Audit an injection authority.
+- **Pure Login selector (`apps/nanocore/src/vault/login-selection.ts`, `apps/nanocore/src/runtime/harness-login-selection.ts`)**: Selection is a pure function over authorized eligible reference IDs, observations, Thread binding, trigger, and current time returning `keep`, `target`, or `unavailable`. It preserves working Thread affinity while the current Login works, and on revocation, quota exhaustion, error, or explicit replacement resolves a target at a new Turn boundary into a new AEP: checking the authored preferred grant first (recording a fixed skip reason in replacement Audit when ineligible), then the attributed User's own Logins, then Workspace-shared Logins. Both classes require a current active target-issued Workspace consuming grant (reference ownership alone confers no use authority); the selector skips quarantined, quota-exhausted, or refresh-busy Logins (where busy means conflicting refresh ownership, not concurrent access use) and returns a blocked status when none is eligible.
+- **Cooldown, persistent preference, and governed replacement ([Login Preference And New-Turn Selection](../decisions/20261111-login_preference_new_turn_selection.md))**:
+  - The Login re-entry cooldown is `60 seconds` (`apps/nanocore/src/storage/native-thread-login.ts`, private Thread departure map bounded to `256` entries) and never retains an unusable current Login.
+  - Persistent changes to the preferred grant in `workspace.jsonc` use the deployment-administrator `runtime.file-update` and successful `runtime.reload` path (`apps/nanocore/src/config/runtime-config-files.ts`), recording actor, Workspace, Agent requirement, old and new grant IDs, and Kernel authorization outcome in the file-publication Audit shape without a new `PermissionDecision` family; ordinary Users, Workspace members, and agents have no configuration-write authority (`#711`), a saved file alone is not an active preference, and queued dispatch that captured an earlier snapshot keeps that snapshot.
+  - Selection is internal to activation rather than a separate public operation: both automatic replacement and post-reload preferred-grant replacement invoke the same governed binding-replacement operation under current Policy/Audit against the selected new plan, using the expected predecessor receipt for correlation only (with no one-shot target input or pending-target handoff). Same-family native refresh answers in-flight refreshes without switching Login families mid-Turn; switching families occurs only at a new Turn boundary via governed replacement resolved by the exact binding reference (never by an account hint alone).
+
+### Plan, Rotation, Replacement, And Revocation
+
+- **Reviewed grant request, approval, and single-use issue (`vault.grant-request`, `approval.respond`, `vault.grant-issue`)**:
+  - The Pending Request owner (`docs/specs/20260930-pending_requests.md`) owns request intent, deduplication of identical open terms, claim, cancellation, delivery, and restart state. A trusted Worker request binds its raising Turn, Agent, AgentSession, and immutable package (admitting only a package-declared Workspace reference, a Server-origin canonical MCP binding matching package catalog digest, or the attributed User's Codex Login), and a human request requires current metadata read authority, returning a single redacted refusal before reference lookup on unavailable or foreign selections.
+  - The responsible user or a currently usable administrator reviews, denies, or withdraws the request (Workspace/Server administrative grants require current administrator authority; User Login sharing requires the reference owner or current administrator) after exact disclosure of every restriction and any Worker-visible exposure; a review decision alone issues no grant, resolves no material, and changes no binding.
+  - Before `vault.grant-issue` claims an approved intent, it rechecks the original requester, actual deciding credential, current Workspace and Thread access, Kernel authority, supported terms, future expiry, and active Core/backend reference agreement; the winning claim reserves the intent, crosses actual Policy interception, and on final `allow` consumes the approved intent once to issue one target-issued `VaultGrant` with linked `Approval`, `PermissionDecision`, and initiating-human `AuditEvent` (for User Login sharing, preserving quarantine without resolving material, refreshing, or activating a harness; `vault.grant-narrow` revokes and replaces, requiring an explicit binding update).
+- **Plan-before-Use-before-Receipt sequence**: One shared declaration resolver and `VaultUseAuditedBackend` wrapper (`apps/nanocore/src/runtime/agent-environment.ts`, `apps/nanocore/src/vault/vault-use-audited-backend.ts`) create the `VaultInjectionPlan` after current grant and target validation and before backend resolution or sink invocation (leaving the plan as truthful pre-effect history if a later step fails), write one `VaultUse` row for the resolution outcome, and persist a `VaultInjectionReceipt` only after the backend-private sink completes.
+- **Rotation, live replacement, and revocation**:
+  - Material rotation preserves `VaultReference` identity and advances `currentVersion` (`N+1`), using the current version for new injections while allowing explicit prior-version resolution only inside the backend's configured rotation grace (`rotationGraceMs`, current default `0 ms` in `apps/nanocore/src/vault/vault-encrypted-file-backend.ts`) and failing as `version-expired` past grace.
+  - For `runtime-file` bindings, `vault.binding-deliver` supplies admitted bindings at execution-port submission, `replace` updates the exact live placement, `revoke` runs during cancel/release or as a standalone operation (all applying to every file binding—including static key rotation and user credential replacement—independently of subscription Login selection), and inspection (`vault.injection-plan-list`, `vault.injection-receipt-list`) never resolves or exposes secret material.
+  - `runtime-env` credentials are session-static inside a resident binding: any changed `runtime-env` declaration or value, any other changed credential declaration at a post-Turn barrier, or any newly added `sandbox-provider` declaration not materialized by the running Integration enters a new immutable AEP and launches a successor AgentSession at the next Turn boundary that resumes the retained native conversation (`docs/specs/20260704-agent_session_continuity.md`) without creating a replacement Thread or mutable AEP (unless the backend proves in-place attach for a new `sandbox-provider` declaration).
+  - Revocation immediately blocks future resolution, revokes the grant or short-lived token, advances dependent plan status without altering original plan intent, interrupts and closes any affected resident `runtime-env`, `runtime-file`, or `sandbox-provider` binding, projects active `gateway-only` receipts as `revoked` (since material never entered a Worker runtime), marks other active runtime receipts `stale-session` with an explicit limitation explanation when already exposed process/file material cannot be recalled atomically or runtime removal is unproved, and rotates or destroys backend material when supported.
+
+## Failure And Recovery
+
+- **Pre-launch all-or-nothing refusal and non-secret error codes**: When any required credential declaration fails validation, authorization, resolution, or placement, NanoCore refuses readiness and MUST NOT partially launch the Worker with the remaining declarations; dependent runtime effects remain blocked, cleaned up, or fenced. Failures return stable non-secret codes (such as `credential_declaration_invalid`, `vault_grant_not_found`, `vault_grant_inactive`, `vault_grant_expired`, `vault_reference_inactive`, `credential_visibility_not_allowed`, `backend_credential_visibility_unsupported`, `vault_locked`, and `credential_materialization_failed` alongside the typed `VaultBackend` codes in `docs/specs/20260704-vault_backend_implementation.md`).
+- **Use-time authority recheck and no-receipt on failure**:
+  - Immediately before material leaves the Vault backend or a sink is invoked, every Workspace-attributed use re-applies the current-authority predicate (`docs/specs/20260715-multi_user_workspace_system.md`) with `vault.use`, the authenticated request actor or owning AEP `scope.triggerActor`, and the exact active target-matching `issuance: "target"` `VaultGrant`. Grant and credential expiry is checked at each governed use or sink boundary (`expiresAt`, `expirationBehavior`, and stored `status` are durable facts rather than a background status-transition daemon).
+  - A `null` or stale responsible user, removed Workspace membership, role/policy denial, inactive or `imported-history` grant, missing required lineage, target mismatch, backend lock or unavailability, revoked/expired material, or integrity disagreement performs zero material resolution or sink injection.
+  - Whenever a failure occurs after grant lookup, `VaultUseAuditedBackend` records a redacted typed failure `VaultUse` row (and `AuditEvent`) without secret material. Neither a failed `VaultUse` nor a pre-effect `VaultInjectionPlan` ever becomes use or repair authority, and a backend resolution failure, sink failure, or interrupted/unproved sink completion NEVER writes a `VaultInjectionReceipt` or authorizes automatic repair.
+- **Runtime closure, carrier fencing, honey presentation, and containment loss**:
+  - On credential or grant revocation, NanoCore and NanoHost terminate or close the affected binding/Sandbox at the next governed boundary (for `runtime-file` bindings, NanoHost owns private carrier allocation, presentation, verified import, same-inode rewrite, and removal, and any unproved placement or removal completion closes or fences the binding before further work). If Sandbox deletion cannot be proved, NanoHost invalidates the complete Runtime Epoch and holds capacity until fresh-empty readiness; an already-submitted Worker-native request may finish only under the explicit bounded compromise in `docs/specs/20260715-multi_user_workspace_system.md` without mutable AEPs, dynamic revocation protocols, or claims of recalling exposed material.
+  - Reading injected honey credential material alone is not a trip; only exact cryptographic presentation at an owned verifier (`apps/nanocore/src/auth/run-bound-access-token-native.ts`) trips containment, while expiry, revocation, stale-session, and runtime closure follow existing owners without a recall guarantee.
+  - Confirmed or unexcluded Sandbox containment loss immediately stops new resolution and injection, interrupts the affected Turn and AgentSession, invalidates the complete Runtime Epoch through its owner, withholds unaccepted outputs, and routes potentially exposed references and material versions to the revoke/rotation owner without storing secret material in containment evidence.
+- **Reviewed grant issue, Login metadata, withdrawal, and Core-confirmed quarantine failures**:
+  - In `vault.grant-issue`, the single-use claim reservation precedes final Policy authorization; current actor, destination, requester, and complete reference facts are rechecked after awaited Policy and native FIFO admission, and a Policy refusal settles the reservation through `execution-error`. A claimed issue never executes again: a known local failure records `execution-error`, an interrupted or unproved Core write remains `outcome-unknown` (requiring Pending Request, grant inventory, and Audit inspection without restart fabrication or retry), and denial, withdrawal, invalidation, stale authority, expired terms, missing lineage, or changed terms produce no grant or material resolution (Pending Request decision delivery proves neither grant issuance nor secret use).
+  - On `vault.grant-withdraw`, native execution repeats current canonical User or administrator authority, exact `VaultReference` ownership, and grant linkage with truthful actor attribution, granting no Workspace membership or content access and returning only the redacted grant result; metadata revocation precedes runtime closure, unproved closure retains `recovery_required`, and no recall of copied material is promised.
+  - For `vault.login-list`, `vault.login-quarantine`, and `vault.login-release`, native publication repeats the current credential, exact owner or administrator, and complete selected reference facts after awaited Policy work and FIFO admission, preserving read vs write posture (including read-only credential refusal on mutations) and operating while the Vault backend is locked without material or runtime effects. On Login metadata and reviewed-grant native writes, the physical writer's covering `FULL` acknowledgement precedes success; Core mutation, User `PermissionDecision`, and User completion Audit remain separate effect domains without cross-database atomicity, so a lost acknowledgement or later Audit failure reports an incomplete or `unknown` outcome requiring current-state inspection without automatic retry or compensation.
+  - Under [Core-Confirmed Login Quarantine](../decisions/20261110-core_confirmed_login_quarantine.md) (`docs/specs/20260703-policy_enforcement_mapping.md`), only an actual Core-performed permanent Login refresh failure (`apps/nanocore/src/vault/codex-login-refresh.ts`) authorizes one restricted Worker invocation of `vault.login-quarantine` (a Worker report, request-specific error, transient failure, cancellation, or unknown result supplies no quarantine authority). Core correlates that failure with the exact consuming package, declaration, reviewed `runtime-token` grant, Login refresh family, and material generation, rechecking current canonical authority and generation after awaited work and at native publication (mismatched or stale facts fail closed without quarantine; the Worker remains caller/Policy subject with original responsible human and process lineage, cannot select another family or reuse the failure, and Coordinator entry remains excluded). A permanent refresh failure quarantines only its Login refresh family while request-specific errors do not; an in-flight request keeps its outgoing Login attribution, and after replacement any ambiguous late notifications are discarded without splicing responses or replaying tools.
+
+## Acceptance
+
+- **L1/L2 schema, resolver, and redaction verification**:
+  - L1 schema and redaction checks verify branch-required fields, duplicate IDs/targets, secret-shaped inline fields, invalid target paths/env vars, and invalid visibility across `AgentEnvironmentCredentialDeclarationSchema`, and prove that secret values, provider placeholder values, host temporary paths, and raw credential file contents are absent from config, AEP snapshots, item logs, Audit summaries, diagnostics, and App API readback independently of the runtime mechanism.
+  - Table-driven L1 resolver checks vary grant `userId`, `workspaceId`, `targetAgentId`, `targetAgentSessionId`, and `targetCapabilityId` constraints and prove that every mismatch, expired/inactive grant, `imported-history` grant (before and after restart, reference rebind, and re-export), or disallowed visibility leaves backend-private sinks, plans, receipts, and `VaultUse` empty.
+  - L2 contract checks verify that generated JSON, OpenAPI, Core Client, remote MCP, and CLI projections expose only non-secret metadata, and that synthetic public and trusted Worker grant-review requests prove late review, denial and withdrawal, single-issue under exact replay, refusal after requester or deciding-credential revocation, explicit replacement binding, restart without reissue, and receipt creation only after completed sink effects.
+- **L3 black-box, composition, neutrality, and lifecycle verification**:
+  - Black-box and composition checks verify that generic supported consumers use the shared declaration resolver with no retired Codex auth-file compatibility branch, that the same reusable Agent Manifest `requirementId` resolves to different Workspace-scope grants across two Workspaces (failing before effects when a required binding is absent and exposing the same non-secret worker target), that `gateway-only` Provider/MCP materialization, `runtime-env` explicit approval, and cross-scope grant denial hold, and that NanoCore persists Codex and xAI provider-subscription credentials only through owned `VaultReference`s without a provider-specific credential home.
+  - NanoCore black-box acceptance exercises the neutral placement contract through the existing fake execution backend, plus independent same-inode and file-view, consumer-reload, successor-resume, and cleanup proofs. The same checks verify dynamic in-place replacement of an already attached `sandbox-provider` credential once implemented (`#604`).
+- **Real-environment and full-service qualification (`#604`, `#480`)**:
+  - Full-service `runtime-file` protection, delivery, same-inode replacement, revocation, cleanup, and retained-storage/capture/export exclusion LOAD qualification (`#604`, `#480`).
+  - End-to-end Codex host-managed Login handler installation, native refresh, and cross-account retained native Thread continuation qualification (proving actual current account or trusted predecessor AEP/receipt correlation without rewriting sealed reasoning, or refusing with a typed blocked result; `#604`).
+  - Real-OpenShell L6 story verification proving a Sandbox uses a `sandbox-provider` placeholder to call an external HTTP API while NanoCore records the canonical plan, receipt, `VaultUse`, and redacted evidence chain (`#604`).
+
+## Implementation
+
+- Vault operations, Login selection/refresh, helper use, and audited backend wrapper: `apps/nanocore/src/vault/`, `apps/nanocore/src/administration/`, `apps/nanocore/src/providers/`.
+- AEP credential declaration resolver, MCP Gateway, helper/Login exchange, and Turn execution: `apps/nanocore/src/runtime/`, `apps/nanocore/src/auth/`.
+- Retained Vault reference, grant, plan, receipt, and Thread Login storage schemas and native codecs: `apps/nanocore/src/storage/`, `apps/nanocore/src/storage/schema/`.
+- NanoHost ephemeral file carrier and OpenShell Provider delivery: `apps/nanohost/src/`.
+- Worker-shim native helper protocol adapters and SSH agent facade: `packages/worker-shim/src/`.
+- Credential declaration, file-binding, and App API schemas: `packages/config-schema/src/`, `packages/app-api-schemas/src/`, `packages/protocol/src/`.
+
+## Implementation Gaps
+
+- Production Codex harness Login handler activation, native quota/affinity/departure serving, Web Account and production Login publication, and cross-account native Thread continuation qualification - User Login acquisition, metadata, selector, and native exchange/observation writers exist, but default App composition installs no Login handler (`worker_login_unavailable` `503`) and Web Account publication and real-native qualification are not active - #604
+- Dynamic in-place replacement of an already attached static `sandbox-provider` (`backend-provider`) credential - Initial static Provider delivery and live `runtime-file` replacement are implemented, but static Provider `replace` explicitly refuses and requires a new placement request - #604
+- Generic HTTP bearer Gateway-delegated refresh (`oauth2_refresh_token`, `oauth2_client_credentials`, `google_service_account_jwt`), refresh-status collection, and full-service `runtime-file` / helper / Provider real-environment qualification - Helper/SSH channels and initial static Provider delivery are wired, while delegated refresh adapters are dormant with no production dispatcher or collector and full-service LOAD/L6 qualification remains open - #604, #480
+- Owner-visible notification for Core-confirmed Worker Login quarantine (`vault.login-quarantine`) - Quarantine decision and User-scope Audit exist, but owner-visible notification is not wired - #708
+- Public `WorkspaceVaultGrantSchema` lifetime enum alignment with retained `VaultGrantLifetime` (`agent-session` / `server` vs `session` / `until-revoked`) - Retained and public grant lifetime enums differ - #632
+- Ordinary-user audited preferred-Login configuration update path - Persistent preferred-grant updates currently require deployment-administrator `runtime.file-update` and `runtime.reload` - #711
+- Audited `VaultUse` producer coverage across remaining uncovered MCP and runtime credential boundaries - Shared-MCP, file, helper, and static Provider resolvers emit `VaultUse`, while remaining uncovered boundary cases stay open - #352
+- Consolidated `VaultAudit` read projection - Individual `VaultUse`, plan, receipt, and `AuditEvent` owners exist; no consolidated `VaultAudit` projection is implemented - #350
+- Separate `VaultReference` rotation, sensitivity, and allowed-use-domain columns - Enforced through grant and backend owners rather than separate columns on `vault_references` - #810
+- Direct AEP credential declaration explanation fields (why, validity, revocation, decision, and Audit links on every resolved AEP declaration) - Split across `AgentEnvironmentCredentialDeclarationSchema`, `VaultGrant`, `VaultInjectionPlan`, and `VaultUse` rather than carried directly on every resolved AEP declaration - #810
+- Shorter default grant lifetimes (`turn` or `capability-call`) for direct Worker-visible credential grant creation - Direct Workspace grant creation currently issues `workspace`-lifetime grants for supported sinks - #810
+
+## Decisions
+
+- [Hosting Through Gateway MCP](../decisions/20261002-hosting_through_gateway_mcp.md)
+- [Identifier Derivation And Import Allocations](../decisions/20261016-identifier_derivation_and_import_allocations.md)
+- [Disabled Backend Provider Refresh Scope](../decisions/20261016-disabled_backend_provider_refresh_scope.md)
+- [Ephemeral Worker Credential Carrier](../decisions/20261031-ephemeral_worker_credential_carrier.md)
+- [Reserved Audit Question Rulings](../decisions/20261031-reserved_audit_question_rulings.md)
+- [Core-Confirmed Login Quarantine](../decisions/20261110-core_confirmed_login_quarantine.md)
+- [Login Preference And New-Turn Selection](../decisions/20261111-login_preference_new_turn_selection.md)
