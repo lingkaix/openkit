@@ -165,7 +165,6 @@ export async function createDemoStore(
   const store = new FsStore(storeOptions);
   await store.ensureQuickChatWorkspace(fixtureUserId);
   await seedDemoWorkspace(store, fixtureUserId, knowledge);
-  await retainDemoSharedConversation(store, fixtureUserId);
   return store;
 }
 
@@ -219,8 +218,11 @@ export async function retainSharedAssistantTurn(
   );
 }
 
-/** Marks the Demo conversation as an existing shared conversation so later Assistant writes stay admitted. */
-async function retainDemoSharedConversation(store: FsStore, userId: string): Promise<void> {
+/** Explicitly restores the empty completed Assistant history used by retained Demo conversation fixtures. */
+export async function retainDemoSharedConversation(
+  store: FsStore,
+  userId = FIXTURE_LOCAL_USER_ID
+): Promise<void> {
   const demo = createDemoWorkspaceForUser(userId);
   if (
     store

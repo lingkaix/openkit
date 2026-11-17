@@ -54,6 +54,7 @@ import { confirmContextDefaultsForApp } from '../test-support/context-defaults.j
 import {
   createDemoStore,
   createDemoWorkspaceForUser,
+  retainSharedAssistantTurn,
   seedDemoWorkspace,
   seedRetainedPersonalWorkspace,
 } from '../test-support/demo-store.js';
@@ -1802,6 +1803,13 @@ describe('terminal failed-start product recovery', () => {
             ['completed', 'failed', 'cancelled', 'interrupted'].includes(turn.status)
           )
       ).toBe(true);
+      // This case continues the original shared Thread after worker recovery, without reusing its session.
+      await retainSharedAssistantTurn(
+        f.store,
+        'ws_00000000-0000-7000-8000-000000000001',
+        f.threadId,
+        LOCAL_USER_ID
+      );
       const executor = new SimulatedTurnExecutor({ coreDb: f.coreDb });
       const createResponses = vi.fn<PiAiGatewayClient['createResponses']>().mockResolvedValue({
         id: 'response_recovered_thread',

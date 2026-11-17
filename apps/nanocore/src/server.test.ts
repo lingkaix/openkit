@@ -87,6 +87,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
+import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import * as workerCoordinator from './internal-agents/worker-coordinator.js';
 import type { KnowledgeNotebook } from './knowledge/notebook.js';
@@ -7138,68 +7139,70 @@ describe('nanocore server', () => {
     }
   });
 
-  it('keeps model interpretation on the private Timeline without keyword worker effects', async () => {
-    const cases = [
-      { input: 'Read the supplied paragraph and reply with its title.', clarifies: false },
-      { input: 'Summarize the supplied paragraph.', clarifies: false },
-      { input: 'What is OpenKit?', clarifies: false },
-      { input: 'Help.', clarifies: false },
-      { input: 'Do it.', clarifies: false },
-      { input: 'Read it.', clarifies: false },
-      { input: 'Can you help with this?', clarifies: false },
-      { input: 'What should I do?', clarifies: false },
-      { input: 'Implement the focused worker fix.', clarifies: false },
-      { input: 'Plan a multi-step release goal for NanoCore.', clarifies: false },
-      { input: 'Search the web for NanoCore release notes.', clarifies: false },
-      { input: 'Browse an external URL for NanoCore docs.', clarifies: false },
-      { input: 'Google NanoCore release notes.', clarifies: false },
-      { input: 'Retry the previous worker task.', clarifies: false },
-      { input: 'Review the previous worker output.', clarifies: false },
-      { input: 'Refine the previous result.', clarifies: false },
-      { input: 'Hand off this work to another worker.', clarifies: false },
-      { input: 'Do not read issue 110 of lingkaix/openkit.', clarifies: false },
-      { input: 'I read issue 110 yesterday.', clarifies: false },
-      { input: 'The word read appears in the supplied paragraph.', clarifies: false },
-      { input: 'Explain what read means.', clarifies: false },
-      { input: 'What does fetch mean?', clarifies: false },
-      { input: 'Can you read?', clarifies: false },
-      {
-        input:
-          'The example instruction is "Read issue 110 of lingkaix/openkit and reply with its title."',
-        clarifies: false,
-      },
-    ] as const;
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId,
-    });
-    const executor = new FakeTurnExecutor();
-    const prompts: string[] = [];
-    const app = await createApp(
-      {
+  it.each([
+    { input: 'Read the supplied paragraph and reply with its title.', clarifies: false },
+    { input: 'Summarize the supplied paragraph.', clarifies: false },
+    { input: 'What is OpenKit?', clarifies: false },
+    { input: 'Help.', clarifies: false },
+    { input: 'Do it.', clarifies: false },
+    { input: 'Read it.', clarifies: false },
+    { input: 'Can you help with this?', clarifies: false },
+    { input: 'What should I do?', clarifies: false },
+    { input: 'Implement the focused worker fix.', clarifies: false },
+    { input: 'Plan a multi-step release goal for NanoCore.', clarifies: false },
+    { input: 'Search the web for NanoCore release notes.', clarifies: false },
+    { input: 'Browse an external URL for NanoCore docs.', clarifies: false },
+    { input: 'Google NanoCore release notes.', clarifies: false },
+    { input: 'Retry the previous worker task.', clarifies: false },
+    { input: 'Review the previous worker output.', clarifies: false },
+    { input: 'Refine the previous result.', clarifies: false },
+    { input: 'Hand off this work to another worker.', clarifies: false },
+    { input: 'Do not read issue 110 of lingkaix/openkit.', clarifies: false },
+    { input: 'I read issue 110 yesterday.', clarifies: false },
+    { input: 'The word read appears in the supplied paragraph.', clarifies: false },
+    { input: 'Explain what read means.', clarifies: false },
+    { input: 'What does fetch mean?', clarifies: false },
+    { input: 'Can you read?', clarifies: false },
+    {
+      input:
+        'The example instruction is "Read issue 110 of lingkaix/openkit and reply with its title."',
+      clarifies: false,
+    },
+  ] as const)(
+    'keeps model interpretation on the private Timeline without keyword worker effects: $input',
+    async ({ input, clarifies }) => {
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const coreDb = createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
         coreDb,
-        store,
-        turnExecutor: executor,
-        ...chatAnsweringProvider(prompts),
-      },
-      false,
-      true
-    );
-    try {
-      for (const [variantIndex, { input, clarifies }] of cases.entries()) {
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId,
+      });
+      const executor = new FakeTurnExecutor();
+      const prompts: string[] = [];
+      const app = await createApp(
+        {
+          coreDb,
+          store,
+          turnExecutor: executor,
+          ...chatAnsweringProvider(prompts),
+        },
+        false,
+        true
+      );
+      try {
         const label = `model interpretation "${input}"`;
         prompts.length = 0;
-        const thread = await store.createThread(
+        const thread = await openAssistantTimeline(
+          store,
           workspaceId,
-          `Model interpretation ${variantIndex}`
+          LOCAL_USER_ID,
+          'Model interpretation'
         );
         expect(
           store.listThreadTurns(workspaceId, thread.id),
-          `${label}: fresh Thread starts with no Turns`
+          `${label}: fresh Timeline starts with no Turns`
         ).toHaveLength(0);
         expect(executor.startContexts, `${label}: baseline worker starts`).toHaveLength(0);
         const response = await app.request(
@@ -7210,7 +7213,7 @@ describe('nanocore server', () => {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: conversationRequest({
-                requestId: `0190f4c8-0000-7000-8000-0000000006${String(variantIndex).padStart(2, '0')}`,
+                requestId: '0190f4c8-0000-7000-8000-000000000600',
                 input,
               }),
             }
@@ -7236,11 +7239,11 @@ describe('nanocore server', () => {
             ),
           `${label}: no keyword worker effects`
         ).toHaveLength(0);
+      } finally {
+        coreDb.sqlite.close();
       }
-    } finally {
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('refuses explicit Task when no worker is ready without worker effects', async () => {
     const coreDb = createCoreDb(false);
@@ -7292,7 +7295,7 @@ describe('nanocore server', () => {
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001'
         )
-      ).toMatchObject([{ agentId: 'quick-chat', status: 'completed' }]);
+      ).toHaveLength(0);
       expect(store.listCommandRequests()).toHaveLength(0);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()

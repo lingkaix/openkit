@@ -47,7 +47,11 @@ import {
   createAppWithWorkspaceAuthority,
 } from './test-support/app.js';
 import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
-import { createDemoStore, retainSharedAssistantTurn } from './test-support/demo-store.js';
+import {
+  createDemoStore,
+  retainDemoSharedConversation,
+  retainSharedAssistantTurn,
+} from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -401,6 +405,7 @@ describe('quick chat app API', () => {
         rmSync(dataRoot, { recursive: true, force: true });
       });
       const store = await createDemoStore({ dataRoot });
+      await retainDemoSharedConversation(store);
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -649,6 +654,7 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = await createDemoStore({ dataRoot });
+    await retainDemoSharedConversation(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -738,6 +744,7 @@ describe('quick chat app API', () => {
         rmSync(dataRoot, { recursive: true, force: true });
       });
       const store = await createDemoStore({ dataRoot });
+      await retainDemoSharedConversation(store);
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1116,7 +1123,7 @@ describe('quick chat app API', () => {
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001'
       )
-    ).toMatchObject([{ agentId: 'quick-chat', status: 'completed' }]);
+    ).toEqual([]);
     expect(
       store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', threads[0]!.id)
     ).toEqual([]);
@@ -1212,6 +1219,7 @@ describe('quick chat app API', () => {
       request: Parameters<PiAiGatewayClient['createResponses']>[1];
     }> = [];
     const store = await createDemoStore({ dataRoot });
+    await retainDemoSharedConversation(store);
     const app = createAppWithWorkspaceAuthority(
       await confirmContextDefaultsForApp({
         ...createQuickChatProviderOptions(),
@@ -1383,6 +1391,7 @@ describe('quick chat app API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
+    await retainDemoSharedConversation(store);
     const otherThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Unrelated conversation'
@@ -1562,6 +1571,7 @@ describe('quick chat app API', () => {
     ensureLocalUser(coreDb);
     onTestFinished(() => coreDb.sqlite.close());
     const store = await createDemoStore({ dataRoot });
+    await retainDemoSharedConversation(store);
     const calls: Array<{
       request: Parameters<PiAiGatewayClient['createResponses']>[1];
     }> = [];
@@ -1994,6 +2004,7 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = await createDemoStore({ dataRoot });
+    await retainDemoSharedConversation(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -2111,6 +2122,8 @@ describe('quick chat app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    await retainDemoSharedConversation(store);
     try {
       const prompts: string[] = [];
       const app = createAppWithWorkspaceAuthority(
@@ -2118,7 +2131,7 @@ describe('quick chat app API', () => {
           ...createQuickChatProviderOptions(),
           dataRoot,
           coreDb,
-          store: await createDemoStore({ dataRoot }),
+          store,
           turnExecutor: new ThrowingTurnExecutor(),
           llmPiAiClient: asPiAiGatewayClientDouble({
             createResponses: async (_provider, request) => {
@@ -2260,6 +2273,7 @@ describe('quick chat app API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
+    await retainDemoSharedConversation(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -2596,6 +2610,7 @@ describe('quick chat app API', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = await createDemoStore({ dataRoot });
+    await retainDemoSharedConversation(store);
     const callProvider = vi.fn(async () => providerAnswer('OpenKit is a shared agent workspace.'));
     recordWorkspaceOwnerMembership({
       coreDb,

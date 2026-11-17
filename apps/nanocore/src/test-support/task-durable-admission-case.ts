@@ -14,6 +14,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
+import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import type { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { listThreadPendingRequests } from '../runtime/pending-requests.js';
@@ -237,6 +238,11 @@ export async function assertTaskDurableAdmissionResponse({
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: 'th_00000000-0000-7000-8000-000000000001',
   };
+  if (entry === 'assistant') {
+    scope.threadId = (
+      await openAssistantTimeline(store, scope.workspaceId, scope.actorId, 'Admission Timeline')
+    ).id;
+  }
   const token =
     entry === 'remote-mcp'
       ? createOpenKitAccessTokenRecord(coreDb, {
@@ -270,8 +276,8 @@ export async function assertTaskDurableAdmissionResponse({
               operation: 'task.start',
               input: {
                 ...body,
-                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-                threadId: 'th_00000000-0000-7000-8000-000000000001',
+                workspaceId: scope.workspaceId,
+                threadId: scope.threadId,
               },
             },
           },
@@ -281,8 +287,8 @@ export async function assertTaskDurableAdmissionResponse({
       ...operationRequest(
         command,
         {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: scope.workspaceId,
+          threadId: scope.threadId,
         },
         {
           method: 'POST',

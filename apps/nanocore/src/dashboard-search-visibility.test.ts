@@ -14,6 +14,7 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
+import { retainSharedAssistantTurn } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -414,6 +415,9 @@ describe('dashboard and search Thread audiences', () => {
         if (scope === 'server-admin') {
           exposeUnavailableAudience = false;
           const receiving = await store.createThread(workspace.id, 'Attachment audience');
+          // Preserve the shared receiving audience while reaching source admission under #752.
+          await retainSharedAssistantTurn(store, workspace.id, receiving.id, userId);
+          const receivingTurns = store.listThreadTurns(workspace.id, receiving.id);
           const attached = await app.request(
             ...operationRequest(
               'conversation.submit',
@@ -432,7 +436,7 @@ describe('dashboard and search Thread audiences', () => {
           );
           expect(attached.status, await attached.clone().text()).toBe(409);
           expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });
-          expect(store.listThreadTurns(workspace.id, receiving.id)).toEqual([]);
+          expect(store.listThreadTurns(workspace.id, receiving.id)).toEqual(receivingTurns);
           const source = store.getArtifact(workspace.id, ownArtifactId);
           store.createArtifact({
             ...source,

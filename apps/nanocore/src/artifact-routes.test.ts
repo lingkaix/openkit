@@ -38,7 +38,7 @@ import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, retainSharedAssistantTurn } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -791,6 +791,17 @@ describe('Core artifact routes', () => {
           'ws_00000000-0000-7000-8000-000000000001',
           'Reference internal evidence'
         );
+        // Retained shared history reaches the whole-audience artifact check under #752.
+        await retainSharedAssistantTurn(
+          store,
+          'ws_00000000-0000-7000-8000-000000000001',
+          receivingThread.id,
+          'usr_00000000-0000-7000-8000-000000000001'
+        );
+        const receivingTurns = store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          receivingThread.id
+        );
         const attached = await app.request(
           ...operationRequest(
             'conversation.submit',
@@ -816,7 +827,7 @@ describe('Core artifact routes', () => {
         expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });
         expect(
           store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', receivingThread.id)
-        ).toHaveLength(0);
+        ).toEqual(receivingTurns);
         const threads = await app.request('/api/app/operations/thread.dashboard', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

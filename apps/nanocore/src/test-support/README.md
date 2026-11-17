@@ -4,6 +4,8 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 
 ## Boundaries
 
+- `demo-store.ts` imports an empty Demo conversation. Tests that continue retained shared Assistant history call `retainSharedAssistantTurn` for that exact Thread, or explicitly call `retainDemoSharedConversation` when their legacy Demo history has an empty completed reply; unrelated inventory, ordering, revision and refusal fixtures remain empty. New Assistant requests use the canonical private Timeline.
+
 - `store.ts` initializes the native Core schema before constructing a Store in an explicit fixture data root. Initialization leaves existing databases unchanged. The caller owns root cleanup and must close the native writer before removing or replacing database files.
 
 `store.ts.setTestWorkspaceRevision` is a fixed physical-corruption fixture for an existing Workspace after genuine owner setup. It changes only that Workspace's persisted revision, creates no lifecycle, receipt or Audit, and exposes no SQL or handle. Callers exclude real writers and restore the original revision in `finally`.

@@ -1170,7 +1170,7 @@ describe('SimulatedTurnExecutor', () => {
       const admission = new FileStorageAdmission(
         coreDb.dataRoot,
         () => 2_000_000n,
-        () => 16_000_000n
+        () => 256_000_000n
       );
       const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission: admission });
       const executions = vi.spyOn(executor, 'startTurn');
@@ -1335,7 +1335,7 @@ describe('SimulatedTurnExecutor', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const capacity = 16_000_000n;
+    const capacity = 256_000_000n;
     let configuredReserve = 2_000_000n;
     const admission = new FileStorageAdmission(
       coreDb.dataRoot,
@@ -2695,7 +2695,7 @@ describe('SimulatedTurnExecutor', () => {
     const admission = new FileStorageAdmission(
       coreDb.dataRoot,
       () => 2_000_000n,
-      () => 16_000_000n
+      () => 256_000_000n
     );
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission: admission });
     const executions = vi.spyOn(executor, 'startTurn');

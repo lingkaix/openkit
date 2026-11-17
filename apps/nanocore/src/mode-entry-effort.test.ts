@@ -305,7 +305,7 @@ describe('reasoning effort admission and replay', () => {
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001'
         )
-      ).toMatchObject([{ agentId: 'quick-chat', status: 'completed' }]);
+      ).toEqual([]);
       expect(store.listCommandRequests()).toEqual([]);
     }
   );

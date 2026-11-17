@@ -20,6 +20,7 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
+import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import type { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
@@ -458,6 +459,11 @@ export const taskTerminalReplayCloseoutOwnership: (input: {
     ownerUserId: scope.actorId,
     workspaceId: scope.workspaceId,
   });
+  if (entry === 'assistant') {
+    scope.threadId = (
+      await openAssistantTimeline(store, scope.workspaceId, scope.actorId, 'Closeout Timeline')
+    ).id;
+  }
   const command = entry === 'assistant' ? 'conversation.submit' : 'task.start';
   const submit = () =>
     Promise.resolve(
