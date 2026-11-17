@@ -47,6 +47,7 @@ import {
   VAULT_SERVER_MCP_COMMANDS,
   vaultCredentialWriterOf,
 } from '../storage/vault-native-codecs.js';
+import { assertCoreMayRotateCredentialFamily } from '../vault/credential-writer.js';
 import {
   isCurrentServerMcpMaterial,
   isServerMcpGrant,
@@ -557,6 +558,7 @@ export function createServerMcpOperationImplementations(
         'vault_reference',
         async () => {
           const { vault, value: current } = currentBackendReference(input.referenceId);
+          assertCoreMayRotateCredentialFamily(current);
           const result = vault.rotate({ referenceId: input.referenceId, material: input.material });
           const updated = projectReference(
             await getControlStoreWorkerClient().vault(coreDb!, 'reference-advance', {

@@ -1,0 +1,316 @@
+import type { PolicyDocumentV1 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const kernel = vi.hoisted(() => ({
+  requester: { member: true, administrator: false },
+  authors: new Set<string>(),
+  operations: [] as string[],
+}));
+
+// The requester's real Kernel decides on synthetic current facts; only fact reading is replaced.
+vi.mock('../runtime/worker-credential-authority.js', async () => {
+  const { evaluatePolicyKernel } = await vi.importActual<
+    typeof import('../policy/workspace-access.js')
+  >('../policy/workspace-access.js');
+  return {
+    readVaultRequesterAuthority: (
+      _coreDb: unknown,
+      workspaceId: string,
+      _requester: unknown,
+      operation: string,
+      mutating: boolean,
+      delegatedRefresh?: { readonly allows: (userId: string) => boolean }
+    ) => {
+      kernel.operations.push(operation);
+      const responsibleUserId = 'usr_00000000-0000-7000-8000-0000000000a2';
+      const decision = evaluatePolicyKernel({
+        facts: {
+          userId: responsibleUserId,
+          activeUser: true,
+          administrator: kernel.requester.administrator,
+          credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+        },
+        target: {
+          kind: 'workspace',
+          workspaceId,
+          active: true,
+          membership: kernel.requester.member ? 'member' : null,
+        },
+        operation,
+        mutating,
+        ...(delegatedRefresh ? { delegatedRefresh } : {}),
+      });
+      return { decision, facts: { workspaceId, operation, responsibleUserId } };
+    },
+  };
+});
+vi.mock('../auth/operation-authorizer.js', () => ({
+  currentWorkspaceAuthority: (
+    _coreDb: unknown,
+    _workspaceId: string,
+    actor: { id: string },
+    operation: string
+  ) => (operation === 'vault.delegate-refresh' && kernel.authors.has(actor.id) ? {} : null),
+}));
+
+const { readDelegatedRefreshAuthority } = await import('./delegated-refresh-authority.js');
+const { validatePolicyDocument } = await import('../policy/statements.js');
+
+const workspaceId = 'ws_00000000-0000-7000-8000-0000000000d1';
+const owner = { kind: 'workspace' as const, workspaceId };
+const allowance = {
+  id: 'delegated-refresh-allow',
+  kind: 'permission' as const,
+  author: { kind: 'human' as const, id: 'usr_00000000-0000-7000-8000-0000000000a1' },
+  authority: { kind: 'human' as const, userId: 'usr_00000000-0000-7000-8000-0000000000a1' },
+  authoredAt: '2026-11-15T00:00:00.000Z',
+  state: 'active' as const,
+  lifetime: { anchor: { owner, kind: 'workspace' as const, id: workspaceId } },
+  scope: {
+    subjects: [{ kind: 'human' as const, id: 'usr_00000000-0000-7000-8000-0000000000a2' }],
+    actions: ['vault.delegate-refresh'],
+    resources: [
+      {
+        kind: 'container' as const,
+        container: { owner, kind: 'workspace' as const, id: workspaceId },
+      },
+    ],
+  },
+  effect: 'allow' as const,
+  grant: { kind: 'ordinary' as const },
+};
+const document = (statements: unknown[]) =>
+  ({ schemaVersion: 1, statements }) as unknown as PolicyDocumentV1;
+// Production reads only an admitted document, so every case passes Policy admission first.
+const read = (statements: unknown[], now?: Date) =>
+  readDelegatedRefreshAuthority({
+    coreDb: {} as never,
+    workspaceId,
+    requester: {
+      kind: 'public',
+      actor: {
+        kind: 'session',
+        userId: 'usr_00000000-0000-7000-8000-0000000000a2',
+        sessionId: 'session',
+      },
+      actorRef: { kind: 'user', id: 'usr_00000000-0000-7000-8000-0000000000a2' },
+    },
+    document: validatePolicyDocument(document(statements)),
+    ...(now ? { now } : {}),
+  });
+
+beforeEach(() => {
+  kernel.requester = { member: true, administrator: false };
+  kernel.authors = new Set(['usr_00000000-0000-7000-8000-0000000000a1']);
+  kernel.operations = [];
+});
+
+describe('vault.delegate-refresh authority', () => {
+  it('refuses an administrator requester without an authored allowance', () => {
+    kernel.requester = { member: false, administrator: true };
+    expect(read([])).toBeUndefined();
+    // The statement names another human, so the administrator's own half has no allowance.
+    expect(
+      read([
+        {
+          ...allowance,
+          scope: {
+            ...allowance.scope,
+            subjects: [{ kind: 'human', id: 'usr_00000000-0000-7000-8000-0000000000a3' }],
+          },
+        },
+      ])
+    ).toBeUndefined();
+  });
+
+  it('accepts an administrator requester with an explicit allowance naming them', () => {
+    kernel.requester = { member: false, administrator: true };
+    expect(read([allowance])).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('evaluates only the delegated right, never vault.use in its place', () => {
+    read([allowance]);
+    expect(kernel.operations).toEqual(['vault.delegate-refresh']);
+  });
+
+  it('denies by default when no exact authored allowance names the responsible human', () => {
+    expect(read([])).toBeUndefined();
+    expect(
+      read([
+        {
+          ...allowance,
+          scope: {
+            ...allowance.scope,
+            subjects: [{ kind: 'human', id: 'usr_00000000-0000-7000-8000-0000000000a3' }],
+          },
+        },
+      ])
+    ).toBeUndefined();
+  });
+
+  it('accepts one exact allowance from an author who still holds the right', () => {
+    const first = read([allowance]);
+    expect(first).toMatch(/^sha256:[0-9a-f]{64}$/);
+    // Any change to the deciding statement changes the rechecked revision.
+    expect(read([{ ...allowance, authoredAt: '2026-11-15T00:00:01.000Z' }])).not.toBe(first);
+  });
+
+  it('refuses when membership, author authority or the statement lifetime is not current', () => {
+    kernel.requester = { member: false, administrator: false };
+    expect(read([allowance])).toBeUndefined();
+    kernel.requester = { member: true, administrator: false };
+    kernel.authors.clear();
+    expect(read([allowance])).toBeUndefined();
+    kernel.authors.add('usr_00000000-0000-7000-8000-0000000000a1');
+    const lifetime = { ...allowance.lifetime, notAfter: '2026-11-15T01:00:00.000Z' };
+    expect(read([{ ...allowance, lifetime }], new Date('2026-11-15T00:30:00.000Z'))).toBeDefined();
+    expect(
+      read([{ ...allowance, lifetime }], new Date('2026-11-15T01:00:00.000Z'))
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['inactive', { state: 'inactive' }],
+    [
+      'other Workspace',
+      {
+        lifetime: {
+          anchor: {
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-0000000000d2' },
+            kind: 'workspace',
+            id: 'ws_00000000-0000-7000-8000-0000000000d2',
+          },
+        },
+        scope: {
+          ...allowance.scope,
+          resources: [
+            {
+              kind: 'container',
+              container: {
+                owner: {
+                  kind: 'workspace',
+                  workspaceId: 'ws_00000000-0000-7000-8000-0000000000d2',
+                },
+                kind: 'workspace',
+                id: 'ws_00000000-0000-7000-8000-0000000000d2',
+              },
+            },
+          ],
+        },
+      },
+    ],
+  ])('ignores an admitted %s statement', (_name, change) => {
+    expect(() => validatePolicyDocument(document([{ ...allowance, ...change }]))).not.toThrow();
+    expect(read([{ ...allowance, ...change }])).toBeUndefined();
+  });
+
+  it.each([
+    ['prohibit', { effect: 'prohibit' }],
+    ['agent author', { author: { kind: 'agent', id: 'agent' } }],
+    [
+      'mismatched authority',
+      { authority: { kind: 'human', userId: 'usr_00000000-0000-7000-8000-0000000000a3' } },
+    ],
+    [
+      'extra action',
+      { scope: { ...allowance.scope, actions: ['vault.delegate-refresh', 'vault.use'] } },
+    ],
+    ['other action', { scope: { ...allowance.scope, actions: ['vault.use'] } }],
+    [
+      'agent subject',
+      { scope: { ...allowance.scope, subjects: [{ kind: 'agent', id: 'agent' }] } },
+    ],
+    ['finite uses', { lifetime: { ...allowance.lifetime, uses: 1 } }],
+    [
+      'other Workspace resource',
+      {
+        scope: {
+          ...allowance.scope,
+          resources: [
+            {
+              kind: 'container',
+              container: {
+                owner: {
+                  kind: 'workspace',
+                  workspaceId: 'ws_00000000-0000-7000-8000-0000000000d2',
+                },
+                kind: 'workspace',
+                id: 'ws_00000000-0000-7000-8000-0000000000d2',
+              },
+            },
+          ],
+        },
+      },
+    ],
+  ])('never reads a non-exact %s statement because admission refuses it', (_name, change) => {
+    expect(() => read([{ ...allowance, ...change }])).toThrow();
+  });
+});
+
+describe('human delegated-refresh allowance admission', () => {
+  it('keeps every other human allow on the existing Tool-condition refusal', () => {
+    expect(() =>
+      validatePolicyDocument(
+        document([{ ...allowance, scope: { ...allowance.scope, actions: ['workspace.read'] } }])
+      )
+    ).toThrow('Human Tool conditions require exact Workspace Tool scope without finite uses.');
+  });
+
+  // rc.9-to-stable freeze: an rc.9-admitted human Tool condition admits byte-identically.
+  it('admits an rc.9-shape Policy document byte-identically', () => {
+    // Canonical member order, as rc.9 admission already re-emits statements in schema order.
+    const rc9 = JSON.stringify(
+      document([
+        {
+          id: 'tool-approval',
+          author: allowance.author,
+          authority: allowance.authority,
+          authoredAt: allowance.authoredAt,
+          scope: {
+            subjects: allowance.scope.subjects,
+            actions: ['tool.use'],
+            resources: [{ kind: 'mcp-tool', workspaceId, serverId: 'server', toolName: 'tool' }],
+          },
+          lifetime: allowance.lifetime,
+          kind: 'permission',
+          state: 'active',
+          effect: 'require_approval',
+          grant: { kind: 'ordinary' },
+        },
+      ])
+    );
+    const admitted = validatePolicyDocument(JSON.parse(rc9));
+    expect(JSON.stringify(admitted)).toBe(rc9);
+    expect(policyDigest(admitted)).toBe(policyDigest(JSON.parse(rc9)));
+  });
+
+  it('admits the exact Workspace allowance', () => {
+    expect(validatePolicyDocument(document([allowance])).statements).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'extra action',
+      { scope: { ...allowance.scope, actions: ['vault.delegate-refresh', 'vault.use'] } },
+    ],
+    ['finite uses', { lifetime: { ...allowance.lifetime, uses: 1 } }],
+    [
+      'agent subject',
+      { scope: { ...allowance.scope, subjects: [{ kind: 'agent', id: 'agent' }] } },
+    ],
+    [
+      'Tool resource',
+      {
+        scope: {
+          ...allowance.scope,
+          resources: [{ kind: 'mcp-tool', workspaceId, serverId: 'server', toolName: 'tool' }],
+        },
+      },
+    ],
+  ])('refuses a human allow with %s', (_name, change) => {
+    expect(() => validatePolicyDocument(document([{ ...allowance, ...change }]))).toThrow(
+      'Human delegated-refresh allowance requires one exact Workspace scope.'
+    );
+  });
+});

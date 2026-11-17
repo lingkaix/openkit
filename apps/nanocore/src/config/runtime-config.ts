@@ -11,6 +11,7 @@ import type {
   RuntimeConfigStatus,
 } from '@openkit/app-api-schemas';
 import {
+  BLOCKED_DELEGATED_REFRESH_STRATEGIES,
   type GatewayConfig,
   GatewayConfigSchema,
   type InternalRoleProfilesConfig,
@@ -436,6 +437,16 @@ export function loadRuntimeConfig(
         });
       }
     }
+  }
+  // #604: a rotating-family refresh shape stays parseable; its delivery refuses before effects.
+  for (const shape of gatewayConfig.providerAccessShapes ?? []) {
+    if (shape.refresh && BLOCKED_DELEGATED_REFRESH_STRATEGIES.includes(shape.refresh.strategy))
+      gatewayDiagnostics.push({
+        code: 'credential_delegation_blocked',
+        message: `Provider access shape ${shape.id} cannot delegate refresh: rotating-family recovery is unproved.`,
+        severity: 'warning',
+        source: 'DATA_ROOT/config/gateway.jsonc',
+      });
   }
   try {
     assertConfiguredModelsHaveKnownContext(providerLoadResult.providerRegistry, gatewayConfig);

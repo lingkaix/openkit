@@ -32,6 +32,7 @@ export type OperationPolicy =
   | 'tool.use'
   | 'turn.run'
   | 'vault.admin'
+  | 'vault.delegate-refresh'
   | 'vault.use'
   | 'workspace.configure'
   | 'workspace.export'

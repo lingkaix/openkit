@@ -25,6 +25,7 @@ const EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS = {
   'tool.use': 'ar:tool-use',
   'turn.run': 'ar:turn-run',
   'vault.admin': 'ar:vault-admin',
+  'vault.delegate-refresh': 'ar:vault-delegate-refresh',
   'vault.use': 'ar:vault-use',
   'workspace.configure': 'ar:workspace-configure',
   'workspace.export': 'ar:workspace-export',
@@ -60,6 +61,7 @@ describe('Workspace current-fact Policy projection', () => {
           'deployment.recover',
           'invitation.respond',
           'administration.configuration.apply',
+          'vault.delegate-refresh',
           'workspace.export',
         ].includes(value)
     )) {
@@ -79,11 +81,111 @@ describe('Workspace current-fact Policy projection', () => {
     'deployment.recover',
     'invitation.respond',
     'administration.configuration.apply',
+    'vault.delegate-refresh',
     'workspace.export',
     'repo.push',
     'unknown.operation',
   ])('does not grant nonmember rights or unknown operation %s', (operation) => {
     expect(evaluatePolicyKernel({ facts, target, operation, mutating: false }).effect).toBe('deny');
+  });
+
+  // Gateway refresh delegation is default-deny for membership; administrators are the root
+  // authority that may extend it only through authored Policy.
+  it.each(['owner', 'member'] as const)(
+    'keeps vault.delegate-refresh out of the %s baseline while vault.use stays granted',
+    (membership) => {
+      const currentTarget = { ...target, membership };
+      expect(
+        evaluatePolicyKernel({
+          facts,
+          target: currentTarget,
+          operation: 'vault.use',
+          mutating: true,
+        }).effect
+      ).toBe('allow');
+      const delegated = evaluatePolicyKernel({
+        facts,
+        target: currentTarget,
+        operation: 'vault.delegate-refresh',
+        mutating: true,
+      });
+      expect(delegated.effect).toBe('deny');
+      expect(delegated.reasons).toContainEqual(
+        expect.objectContaining({ code: 'missing-privilege' })
+      );
+      expect(
+        evaluatePolicyKernel({
+          facts: { ...facts, administrator: true },
+          target: currentTarget,
+          operation: 'vault.delegate-refresh',
+          mutating: true,
+        }).effect
+      ).toBe('allow');
+    }
+  );
+
+  describe('delivery of vault.delegate-refresh (#604)', () => {
+    const named =
+      (...userIds: string[]) =>
+      (userId: string) =>
+        userIds.includes(userId);
+    const human = (userId: string, administrator: boolean, allows: (userId: string) => boolean) =>
+      evaluatePolicyKernel({
+        facts: { ...facts, userId, administrator },
+        target,
+        operation: 'vault.delegate-refresh',
+        mutating: true,
+        delegatedRefresh: { allows },
+      });
+
+    it('extends a member only through an allowance naming that member', () => {
+      expect(human('current-member', false, named('current-member')).effect).toBe('allow');
+      expect(human('current-member', false, named('other-member')).effect).toBe('deny');
+    });
+
+    it('requires an allowance for administrators too, while their authoring right stays', () => {
+      expect(human('administrator', true, named()).effect).toBe('deny');
+      expect(human('administrator', true, named('administrator')).effect).toBe('allow');
+      const authoring = evaluatePolicyKernel({
+        facts: { ...facts, userId: 'administrator', administrator: true },
+        target,
+        operation: 'vault.delegate-refresh',
+        mutating: true,
+      });
+      expect(authoring.effect).toBe('allow');
+    });
+
+    it('refuses an Integration whose terminal issuer is not named, even when its owner is', () => {
+      const integration = (allows: (userId: string) => boolean, issuerAdministrator: boolean) =>
+        evaluatePolicyKernel({
+          binding: {
+            principal: { kind: 'integration', id: 'client', responsibleUserId: 'owner' },
+            principalOwnerUserId: 'owner',
+            token: {
+              tokenId: 'token',
+              ownerUserId: 'owner',
+              scope: 'workspace',
+              workspaceIds: [target.workspaceId],
+            },
+          },
+          operation: 'vault.delegate-refresh',
+          native: { workspaceScoped: true, mutating: true },
+          target,
+          userKernel: human('owner', false, allows),
+          issuerChain: [
+            {
+              principal: { kind: 'user', id: 'issuer' },
+              active: true,
+              kernel: human('issuer', issuerAdministrator, allows),
+            },
+          ],
+        }).effect;
+      // The issuer lost administrator eligibility but stays a member: the owner's allowance alone
+      // never supplies the issuer's half of the intersection.
+      expect(integration(named('owner'), false)).toBe('deny');
+      expect(integration(named('owner'), true)).toBe('deny');
+      expect(integration(named('owner', 'issuer'), false)).toBe('allow');
+    });
   });
 
   it('treats membership and current administrator as alternatives without an owner privilege tier', () => {

@@ -13,7 +13,7 @@ Keep backend-Provider attachment and delegated refresh disabled in the current r
 
 The engineer's 2026-10-31 credential-delivery ruling accepts Provider placeholders and delegated refresh for generic HTTP bearer credentials in v0.1.0. This supersedes the release exclusion above when the existing attachment, explicit delegation, exact-effective-policy-equality, redaction and canonical-evidence prerequisites land together. Until then, the implementation remains disabled; removing the empty polling service remains valid.
 
-The [mechanism owner](../specs/20260703-openshell_mechanism_internalization.md#generic-http-bearer-release-scope) defines the accepted contract and dependency blocker. The scope contains no subscription token responder. Codex uses host-managed tokens; LLM Gateway subscription accounts retain their separate owner. No harness self-refresh lease or write-back path is built in v0.1.0.
+The [mechanism owner](../specs/20260703-openshell_mechanism_internalization.md#generic-http-bearer-release-scope) defines the accepted contract and dependency blocker. The #604 writer cut adds the retained `VaultReference.credentialWriter`, the default-deny `vault.delegate-refresh` right and configuration refresh intent; `oauth2_refresh_token` stays blocked until whole-family recovery is proven. The scope contains no subscription token responder. Codex uses host-managed tokens; LLM Gateway subscription accounts retain their separate owner. No harness self-refresh lease or write-back path is built in v0.1.0.
 
 ## Reason
 
