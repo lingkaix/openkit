@@ -1339,6 +1339,9 @@ pub struct EpochCoordinator {
     /// Lets a fixture settle deletion for the named test sandbox without a gateway `SandboxRef`.
     #[cfg(test)]
     fixture_settle_named_sandbox: bool,
+    /// Injects a storage-owner refusal before any native Sandbox effect.
+    #[cfg(test)]
+    pub(crate) fixture_storage_failure: Option<&'static str>,
 }
 
 /// Wakes the outer session when the member monitor has decided to fence.
@@ -2303,6 +2306,8 @@ impl EpochCoordinator {
             collection_test_sandbox: None,
             #[cfg(test)]
             fixture_settle_named_sandbox: false,
+            #[cfg(test)]
+            fixture_storage_failure: None,
         })
     }
 
@@ -2407,6 +2412,7 @@ impl EpochCoordinator {
                 collection_scan_root: root.join("scans"),
                 collection_test_sandbox: Some("sandbox-one".into()),
                 fixture_settle_named_sandbox: false,
+                fixture_storage_failure: None,
             },
             worktree,
         )
@@ -2486,6 +2492,10 @@ impl EpochCoordinator {
         image_digest: &str,
         request: &StorageAttachmentRequest,
     ) -> Result<Vec<StorageMount>, &'static str> {
+        #[cfg(test)]
+        if let Some(error) = self.fixture_storage_failure {
+            return Err(error);
+        }
         let layout = self.persistent_volumes.inspect_image(image_digest)?;
         self.persistent_volumes.attach(sandbox_id, request, &layout)
     }

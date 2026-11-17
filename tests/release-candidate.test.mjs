@@ -211,7 +211,7 @@ test('a new Git commit with an identical tree invalidates the old platform recor
 });
 
 for (const platform of ['linux/amd64', 'linux/arm64'])
-  for (const fail of [false, 'base', 'derivation'])
+  for (const fail of [false, 'seed', 'base', 'derivation'])
     test(`actual candidate platform driver ${fail ? `refuses failed ${fail}` : 'records successful'} ${platform} digest smoke`, (t) => {
       const directory = mkdtempSync(join(tmpdir(), 'openkit-candidate-driver-'));
       t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -219,17 +219,57 @@ for (const platform of ['linux/amd64', 'linux/arm64'])
       const digest = `sha256:${'d'.repeat(64)}`;
       const log = join(directory, 'calls.log');
       const output = join(directory, 'observations');
+      const extractor = join(directory, 'seed-extractor');
+      writeFileSync(
+        join(directory, 'cargo'),
+        `#!${process.execPath}
+const fs = require('node:fs');
+fs.appendFileSync(process.env.CALLS, JSON.stringify({args:['cargo', ...process.argv.slice(2)]})+'\\n');
+console.log(JSON.stringify({reason:'compiler-artifact', target:{name:'nanohost'}, profile:{test:true}, executable:${JSON.stringify(extractor)}}));
+`,
+        { mode: 0o755 }
+      );
+      writeFileSync(
+        extractor,
+        `#!${process.execPath}
+const fs = require('node:fs');
+const source = fs.readFileSync(process.env.OPENKIT_WORKER_SEED_ARCHIVE, 'utf8').trim();
+fs.appendFileSync(process.env.CALLS, JSON.stringify({args:['extract', source]})+'\\n');
+if (process.env.FAIL_SMOKE === 'seed' && source.endsWith(':/sandbox/.')) process.exit(43);
+console.log('test result: ok. 1 passed;');
+`,
+        { mode: 0o755 }
+      );
+      // Only the privilege boundary is doubled; the production shell check still exports and validates each target.
+      writeFileSync(
+        join(directory, 'sudo'),
+        `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.CALLS, JSON.stringify({args:['sudo', ...args]})+'\\n');
+if (args.shift() !== '-n') process.exit(44);
+const result = require('node:child_process').spawnSync(args[0], args.slice(1), {stdio:'inherit'});
+process.exit(result.status ?? 45);
+`,
+        { mode: 0o755 }
+      );
       writeFileSync(
         join(directory, 'docker'),
         `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CALLS, JSON.stringify({args, platform:process.env.DOCKER_DEFAULT_PLATFORM, from:args[0]==='build'?fs.readFileSync(require('node:path').join(args.at(-1),'Dockerfile'),'utf8').split('\\n')[0]:undefined})+'\\n');
-if (args[0] === 'run' && (process.env.FAIL_SMOKE === 'base' || (process.env.FAIL_SMOKE === 'derivation' && args.some(a=>a.startsWith('openkit/worker-common-derived-smoke:'))))) process.exit(42);
-if (args[0] === 'image') console.log(JSON.stringify([{Config:{Labels:{
-'org.opencontainers.image.source':'https://github.com/example/openkit',
-'org.opencontainers.image.revision':process.env.GITHUB_SHA,
-'org.opencontainers.image.version':'0.1.0-rc.99'}}}]));
+if (args[0] === 'run') {
+  if (process.env.FAIL_SMOKE === 'base' || (process.env.FAIL_SMOKE === 'derivation' && args.some(a=>a.startsWith('openkit/worker-common-derived-smoke:')))) process.exit(42);
+} else if (args[0] === 'image') {
+  if (args.includes('--format')) console.log(JSON.stringify({'/workspace':{}, '/sandbox':{}, '/openkit/threads':{}}));
+  else console.log(JSON.stringify([{Config:{Labels:{
+    'org.opencontainers.image.source':'https://github.com/example/openkit',
+    'org.opencontainers.image.revision':process.env.GITHUB_SHA,
+    'org.opencontainers.image.version':'0.1.0-rc.99'}}}]));
+} else if (args[0] === 'create') console.log('seed-container-fixture');
+else if (args[0] === 'cp') console.log(args[2]);
+else if (!['pull','build','rm'].includes(args[0])) process.exit(46);
 `,
         { mode: 0o755 }
       );
@@ -273,23 +313,60 @@ if (args[0] === 'image') console.log(JSON.stringify([{Config:{Labels:{
         .split('\n')
         .map((line) => JSON.parse(line));
       const argv = calls.map((c) => c.args);
-      assert.deepEqual(argv.filter((args) => args[0] === 'run')[0], [
-        'run',
-        '--rm',
+      const seedCreate = calls.find((c) => c.args[0] === 'create');
+      assert.deepEqual(seedCreate.args, [
+        'create',
+        '--pull=never',
         '--network=none',
+        '--read-only',
         `ghcr.io/example/openkit-worker-common@${digest}`,
-        'openkit-worker-common-base-smoke',
       ]);
-      assert.equal(calls.find((c) => c.args[0] === 'run').platform, platform);
-      if (fail !== 'base') {
-        assert.equal(
-          calls.find((c) => c.args[0] === 'build').from,
-          `FROM ghcr.io/example/openkit-worker-common@${digest}`
-        );
-        assert.equal(argv.filter((args) => args[0] === 'run').length, 2);
-        assert.ok(
-          argv.filter((args) => args[0] === 'run').every((args) => args.includes('--network=none'))
-        );
+      assert.equal(seedCreate.platform, platform);
+      const targets =
+        fail === 'seed'
+          ? ['/openkit/threads', '/sandbox']
+          : ['/openkit/threads', '/sandbox', '/workspace'];
+      const sources = targets.map((target) => `seed-container-fixture:${target}/.`);
+      assert.deepEqual(
+        argv.filter((args) => args[0] === 'cp'),
+        sources.map((source) => ['cp', '--archive', source, '-'])
+      );
+      assert.deepEqual(
+        argv.filter((args) => args[0] === 'extract').map((args) => args[1]),
+        sources
+      );
+      assert.ok(
+        argv.some(
+          (args) =>
+            args[0] === 'rm' &&
+            args.includes('--volumes') &&
+            args.at(-1) === 'seed-container-fixture'
+        ),
+        'seed container and volumes are removed after success or refusal'
+      );
+      if (fail === 'seed') {
+        assert.equal(argv.filter((args) => args[0] === 'run' || args[0] === 'build').length, 0);
+      } else {
+        assert.deepEqual(argv.filter((args) => args[0] === 'run')[0], [
+          'run',
+          '--rm',
+          '--network=none',
+          `ghcr.io/example/openkit-worker-common@${digest}`,
+          'openkit-worker-common-base-smoke',
+        ]);
+        assert.equal(calls.find((c) => c.args[0] === 'run').platform, platform);
+        if (fail !== 'base') {
+          assert.equal(
+            calls.find((c) => c.args[0] === 'build').from,
+            `FROM ghcr.io/example/openkit-worker-common@${digest}`
+          );
+          assert.equal(argv.filter((args) => args[0] === 'run').length, 2);
+          assert.ok(
+            argv
+              .filter((args) => args[0] === 'run')
+              .every((args) => args.includes('--network=none'))
+          );
+        }
       }
       const file = join(output, `worker-common-${platform.split('/')[1]}.json`);
       assert.equal(existsSync(file), !fail);
@@ -300,7 +377,13 @@ if (args[0] === 'image') console.log(JSON.stringify([{Config:{Labels:{
           conclusion: 'success',
         });
       assert.ok(
-        !argv.some((args) => args.includes('create') || args.includes('--tag')),
+        // Release Management permits stopped seed containers, but release tag/index assignment stays with promotion.
+        !argv.some(
+          (args) =>
+            ['tag', 'push', 'manifest'].includes(args[0]) ||
+            args.includes('--tag') ||
+            (args[0] === 'buildx' && args[1] === 'imagetools' && args[2] === 'create')
+        ),
         'a platform build/smoke cannot promote tags'
       );
     });

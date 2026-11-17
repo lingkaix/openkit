@@ -58,6 +58,7 @@ fi
 docker_run_args=(run --rm)
 if [[ "$(read_image_field kind)" == "worker" ]]; then
   docker_run_args+=(--network=none)
+  bash scripts/docker/check-worker-seed.sh "${tag}"
 fi
 docker "${docker_run_args[@]}" "${tag}" "${smoke_command}"
 

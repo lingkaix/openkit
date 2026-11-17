@@ -123,11 +123,18 @@ RUN apt-get update \
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 
+# Keep pinned package-manager supply outside retained homes, including sanitized native environments.
 RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} from "node:crypto"; const r=await fetch("https://registry.npmjs.org/corepack/-/corepack-0.36.0.tgz"); if(!r.ok) throw Error("Corepack download failed"); const b=Buffer.from(await r.arrayBuffer()); if(createHash("sha512").update(b).digest("hex")!=="4a2889b01859a9d0623c74c497a393dec012ad1aca21c61340cb15197c7a104fe033c5853306237885fc4edf11894e08bf627a2db4fc2a919f08eb01a51581ff") throw Error("Corepack checksum mismatch"); fs.writeFileSync("/tmp/corepack.tgz",b);' \
-  && npm install -g --offline --ignore-scripts --no-audit --no-fund /tmp/corepack.tgz \
+  && NPM_CONFIG_CACHE=/tmp/corepack-npm-cache npm install -g --offline --ignore-scripts --no-audit --no-fund /tmp/corepack.tgz \
+  && rm -rf /tmp/corepack-npm-cache \
   && rm /tmp/corepack.tgz \
   && corepack enable \
-  && corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
+  && COREPACK_HOME=/opt/corepack corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
+  && for command in corepack pnpm pnpx; do \
+    rm "/usr/local/bin/${command}"; \
+    printf '#!/bin/sh\nexport COREPACK_HOME="${COREPACK_HOME:-/opt/corepack}"\nexec node /usr/local/lib/node_modules/corepack/dist/%s.js "$@"\n' "${command}" > "/usr/local/bin/${command}"; \
+    chmod 0755 "/usr/local/bin/${command}"; \
+  done \
   && pnpm --version
 
 RUN set -eux; \
@@ -204,6 +211,8 @@ RUN /usr/sbin/groupmod --new-name sandbox node \
   && uv venv --python "${PYTHON_VERSION}" /opt/openkit/venv \
   && uv pip install --python /opt/openkit/venv/bin/python --no-build --no-deps --require-hashes -r /usr/local/lib/openkit/python-tools.txt \
   && uv cache clean \
+  && rm -rf /sandbox/.cache/uv /sandbox/.cache/mise \
+    /sandbox/.local/bin /sandbox/.local/share/mise /sandbox/.local/state/gh \
   && printf '%s\n' \
     'export PATH="/opt/openkit/venv/bin:/usr/local/bin:/usr/bin:/bin"' \
     'export VIRTUAL_ENV="/opt/openkit/venv"' \

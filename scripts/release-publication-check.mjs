@@ -149,6 +149,18 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     files[file] = blob;
     for (const match of bytes.matchAll(/\bscripts\/[a-zA-Z0-9_./-]+\.(?:mjs|sh|py)\b/g))
       pending.add(match[0]);
+    // Worker smoke now executes this same-checkout Rust extractor as publication code.
+    if (file === 'scripts/docker/check-worker-seed.sh') {
+      for (const native of [
+        'Cargo.toml',
+        'Cargo.lock',
+        'mise.toml',
+        'src/main.rs',
+        'src/persistent_volume.rs',
+        'src/filesystem_capacity.rs',
+      ])
+        pending.add(`apps/nanohost/${native}`);
+    }
     if (!/\.(?:mjs|js)$/.test(file)) continue;
     for (const match of bytes.matchAll(
       /(\bfrom\s*|\bimport\s*(?:\(\s*)?|\bnew URL\(\s*)['"](\.[^'"]+)['"]/g

@@ -1281,6 +1281,14 @@ jobs:
           cache-from: type=gha,scope=release-candidate-${{ matrix.id }}-${{ matrix.architecture }}
           cache-to: type=gha,mode=max,scope=release-candidate-${{ matrix.id }}-${{ matrix.architecture }}
           outputs: type=image,name=${{ steps.image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+      - name: Set up the pinned NanoHost seed-check toolchain
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        if: matrix.kind == 'worker'
+        with:
+          cache: false
+          working_directory: apps/nanohost
+          install_args: rust
+
       - name: Smoke and record the exact registry platform digest
         env:
           IMAGE_ID: ${{ matrix.id }}
@@ -1407,6 +1415,13 @@ jobs:
           push: false
           cache-from: type=gha,scope=worker-smoke-${{ matrix.id }}-${{ runner.arch }}
           cache-to: type=gha,mode=max,scope=worker-smoke-${{ matrix.id }}-${{ runner.arch }}
+
+      - name: Set up the pinned NanoHost seed-check toolchain
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          working_directory: apps/nanohost
+          install_args: rust
 
       - name: Run worker image smoke
         env:

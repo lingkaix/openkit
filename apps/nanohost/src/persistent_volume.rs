@@ -18,6 +18,9 @@ use sha2::{Digest, Sha256};
 /// Fixed execution-host root retained independently of Runtime Epoch roots.
 pub const PERSISTENT_VOLUME_ROOT: &str = "/var/lib/openkit/nanohost-work";
 
+/// Definite seed refusal after the stopped container and staging are removed.
+pub(crate) const IMAGE_SEED_REJECTED: &str = "persistent storage image seed failed";
+
 const METADATA_NAME: &str = "identity.json";
 const MAX_TARGETS: usize = 32;
 const MAX_SEED_ENTRIES: u64 = 1_000_000;
@@ -831,13 +834,7 @@ impl PersistentVolumeStore {
         }
         let copied = self.docker_extract_seed(&container, &binding.target, &staging);
         let removed = self.docker_status(&["rm", "--volumes", &container]);
-        let root_mode = match (copied, removed) {
-            (Ok(root_mode), Ok(())) => root_mode,
-            _ => {
-                let _ = fs::remove_dir_all(&staging);
-                return Err("persistent storage image seed failed");
-            }
-        };
+        let root_mode = settle_seed_copy(copied, removed, &staging)?;
         if validate_seed_tree(&staging).is_err() {
             let _ = fs::remove_dir_all(&staging);
             return Err("persistent storage seed rejected");
@@ -995,7 +992,7 @@ impl PersistentVolumeStore {
         container: &str,
         target: &str,
         staging: &Path,
-    ) -> Result<u32, &'static str> {
+    ) -> Result<u32, SeedCopyFailure> {
         let source = format!("{container}:{target}/.");
         let mut child = self
             .docker_command()
@@ -1004,19 +1001,11 @@ impl PersistentVolumeStore {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|_| "private Docker seed copy failed")?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("private Docker seed copy failed")?;
+            .map_err(|_| SeedCopyFailure::CopyFailed)?;
+        let stdout = child.stdout.take().ok_or(SeedCopyFailure::CopyFailed)?;
         let staging = staging.to_path_buf();
         let extractor = thread::spawn(move || extract_seed_archive(stdout, &staging));
-        let status = wait_child(&mut child, DOCKER_TIMEOUT);
-        let extracted = extractor
-            .join()
-            .map_err(|_| "private Docker seed extraction failed")?;
-        status.map_err(|_| "private Docker seed copy failed")?;
-        extracted.map_err(|_| "private Docker seed extraction failed")
+        finish_seed_extraction(&mut child, extractor, DOCKER_TIMEOUT)
     }
 
     fn docker_command(&self) -> Command {
@@ -1026,6 +1015,54 @@ impl PersistentVolumeStore {
             format!("unix://{}", self.docker_socket.display()),
         );
         command
+    }
+}
+
+/// Keeps a normal archive refusal distinct from backend failure and an unwound extractor.
+#[derive(Debug, PartialEq, Eq)]
+enum SeedCopyFailure {
+    /// The bounded extractor returned a refusal after a successful Docker copy.
+    ArchiveRefused,
+    /// Docker spawn, stdout acquisition, completion or timeout was not successful.
+    CopyFailed,
+    /// The extractor did not return a classified result.
+    ExtractorPanicked,
+}
+
+/// Waits for both copy participants before classifying their observed outcomes.
+fn finish_seed_extraction(
+    child: &mut Child,
+    extractor: thread::JoinHandle<io::Result<u32>>,
+    limit: Duration,
+) -> Result<u32, SeedCopyFailure> {
+    let status = wait_child(child, limit);
+    let extracted = extractor
+        .join()
+        .map_err(|_| SeedCopyFailure::ExtractorPanicked)?;
+    status.map_err(|_| SeedCopyFailure::CopyFailed)?;
+    extracted.map_err(|_| SeedCopyFailure::ArchiveRefused)
+}
+
+/// A classified archive refusal is effect-local only after both disposable resources are gone.
+fn settle_seed_copy(
+    copied: Result<u32, SeedCopyFailure>,
+    removed: Result<(), &'static str>,
+    staging: &Path,
+) -> Result<u32, &'static str> {
+    match (copied, removed) {
+        (Ok(root_mode), Ok(())) => Ok(root_mode),
+        (Err(cause), Ok(())) => {
+            fs::remove_dir_all(staging).map_err(|_| "persistent storage seed cleanup uncertain")?;
+            Err(match cause {
+                SeedCopyFailure::ArchiveRefused => IMAGE_SEED_REJECTED,
+                SeedCopyFailure::CopyFailed => "private Docker seed copy failed",
+                SeedCopyFailure::ExtractorPanicked => "private Docker seed extraction failed",
+            })
+        }
+        (_, Err(_)) => {
+            let _ = fs::remove_dir_all(staging);
+            Err("persistent storage seed cleanup uncertain")
+        }
     }
 }
 
@@ -2774,6 +2811,141 @@ pub(crate) mod tests {
             fs::metadata(root.join("data/hard")).unwrap().ino()
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Extraction refusal must not hide a seed container or unremoved staging tree.
+    #[test]
+    fn seed_refusal_is_definite_only_after_container_and_staging_cleanup() {
+        for container_removed in [true, false] {
+            let root = temporary_root();
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("partial"), b"not published").unwrap();
+            let removed = if container_removed {
+                Ok(())
+            } else {
+                Err("docker rm failed")
+            };
+            assert_eq!(
+                settle_seed_copy(Err(SeedCopyFailure::ArchiveRefused), removed, &root),
+                Err(if container_removed {
+                    IMAGE_SEED_REJECTED
+                } else {
+                    "persistent storage seed cleanup uncertain"
+                }),
+            );
+            assert!(!root.exists());
+        }
+        let missing_staging = temporary_root();
+        assert_eq!(
+            settle_seed_copy(Err(SeedCopyFailure::CopyFailed), Ok(()), &missing_staging),
+            Err("persistent storage seed cleanup uncertain"),
+        );
+    }
+
+    /// Real child completion and thread joins must not turn panic or timeout into archive refusal.
+    #[test]
+    fn seed_copy_boundary_preserves_panic_timeout_and_backend_failure_after_cleanup() {
+        use std::os::unix::process::ExitStatusExt;
+
+        for case in ["archive-refusal", "panic", "timeout", "copy-failure"] {
+            let root = temporary_root();
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("partial"), b"not published").unwrap();
+            let mut child = if case == "timeout" {
+                Command::new("/bin/sleep").arg("60").spawn().unwrap()
+            } else {
+                Command::new(if case == "copy-failure" {
+                    "false"
+                } else {
+                    "true"
+                })
+                .spawn()
+                .unwrap()
+            };
+            let staging = root.clone();
+            let extractor = thread::spawn(move || {
+                if case == "panic" {
+                    panic!("injected extractor unwind");
+                }
+                // This is the real extractor's unsupported-record refusal, not the Host sentinel.
+                let uid = unsafe { libc::geteuid() };
+                let gid = unsafe { libc::getegid() };
+                let archive = tar_header("refused", b'x', 0, 0o600, uid, gid, None);
+                let result = extract_seed_archive(Cursor::new(archive), &staging);
+                assert_eq!(
+                    result.as_ref().unwrap_err().to_string(),
+                    "extended seed metadata rejected"
+                );
+                result
+            });
+            let copied = finish_seed_extraction(
+                &mut child,
+                extractor,
+                if case == "timeout" {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(5)
+                },
+            );
+            let status = child.try_wait().unwrap().expect("copy child is reaped");
+            if case == "timeout" {
+                assert_eq!(
+                    status.signal(),
+                    Some(libc::SIGKILL),
+                    "the deadline killed the live copy child"
+                );
+            }
+            assert_eq!(
+                copied,
+                Err(match case {
+                    "archive-refusal" => SeedCopyFailure::ArchiveRefused,
+                    "panic" => SeedCopyFailure::ExtractorPanicked,
+                    _ => SeedCopyFailure::CopyFailed,
+                })
+            );
+            assert_eq!(
+                settle_seed_copy(copied, Ok(()), &root),
+                Err(match case {
+                    "archive-refusal" => IMAGE_SEED_REJECTED,
+                    "panic" => "private Docker seed extraction failed",
+                    _ => "private Docker seed copy failed",
+                })
+            );
+            assert!(
+                !root.exists(),
+                "successful cleanup must preserve the failure cause"
+            );
+        }
+    }
+
+    /// The image smoke supplies each Docker archive; ordinary tests use a valid USTAR fixture.
+    #[test]
+    fn worker_image_volume_seed() {
+        let root = temporary_root();
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = if let Some(path) = std::env::var_os("OPENKIT_WORKER_SEED_ARCHIVE") {
+            extract_seed_archive(File::open(path).expect("Docker seed archive"), &root)
+        } else {
+            let mut archive = Vec::new();
+            append_tar_entry(
+                &mut archive,
+                &tar_header(
+                    "./",
+                    b'5',
+                    0,
+                    0o755,
+                    unsafe { libc::geteuid() },
+                    unsafe { libc::getegid() },
+                    None,
+                ),
+                &[],
+            );
+            archive.extend_from_slice(&[0_u8; TAR_BLOCK_BYTES * 2]);
+            extract_seed_archive(Cursor::new(archive), &root)
+        };
+        fs::remove_dir_all(root).unwrap();
+        result.expect("Worker VOLUME must pass the production NanoHost seed extractor");
     }
 
     #[test]

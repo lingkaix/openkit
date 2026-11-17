@@ -78,6 +78,12 @@ fn is_definite_import_failure(command: &PolledEffectCommand, error: &str) -> boo
             || error == epoch_coordinator::REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE)
 }
 
+/// Only the storage owner's proved-clean seed refusal can settle without ending the Epoch.
+fn is_definite_seed_failure(command: &PolledEffectCommand, error: &str) -> bool {
+    command.kind == RuntimeEffectKind::CreateSandbox
+        && error == persistent_volume::IMAGE_SEED_REJECTED
+}
+
 /// Parsed and verified NanoHost outer-session deployment inputs.
 struct NanoHostSessionInputs {
     rendezvous_url: String,
@@ -1326,7 +1332,9 @@ async fn run_sessions(
                                     ));
                                 }
                                 Err(_error)
-                                    if is_definite_import_failure(&command, _error) || matches!(
+                                    if is_definite_import_failure(&command, _error)
+                                        || is_definite_seed_failure(&command, _error)
+                                        || matches!(
                                         command.kind,
                                         RuntimeEffectKind::AcquireImage
                                             | RuntimeEffectKind::BuildImage
@@ -1759,6 +1767,161 @@ mod tests {
             serde_json::json!({"VALID": "contains\0nul"}),
         ] {
             assert!(parse_sandbox_environment(Some(&rejected)).is_err());
+        }
+    }
+
+    /// A clean seed refusal settles once and continues; cleanup uncertainty still fences the Host.
+    #[tokio::test]
+    async fn seed_refusal_keeps_the_session_only_after_proved_cleanup() {
+        use tokio::net::TcpListener;
+
+        for clean in [true, false] {
+            let root = std::env::temp_dir().join(format!(
+                "nanohost-seed-session-{}-{clean}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let inputs = loopback_session_inputs(
+                &root,
+                &format!("http://{}", listener.local_addr().unwrap()),
+            );
+            let (mut coordinator, _) =
+                crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root);
+            coordinator.fixture_storage_failure = Some(if clean {
+                crate::persistent_volume::IMAGE_SEED_REJECTED
+            } else {
+                "persistent storage seed cleanup uncertain"
+            });
+            coordinator.fixture_invalidation_reports(&root);
+            let members = coordinator.fixture_invalidation_requester();
+            let (continued_tx, continued_rx) = tokio::sync::oneshot::channel();
+            let mut peer = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut connection = h2::server::handshake(socket).await.unwrap();
+                let mut command_issued = false;
+                let mut result_seen = false;
+                let mut followup_create_poll = false;
+                let mut continued = Some(continued_tx);
+                while let Some(request) = connection.accept().await {
+                    let (request, mut respond) = request.unwrap();
+                    let path = request.uri().path().to_string();
+                    let mut body = request.into_body();
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk.unwrap();
+                        body.flow_control().release_capacity(chunk.len()).unwrap();
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    let payload = if path.ends_with("/session/admit") {
+                        Some(serde_json::json!({
+                            "connectionGeneration": 1, "deploymentId": "deployment-main",
+                            "identityId": "integration_nanohost_main", "mayCarryWork": true, "role": "authoritative"
+                        }))
+                    } else if path.ends_with("/sandbox.create/result") {
+                        assert!(clean, "uncertain cleanup cannot publish a definite result");
+                        assert!(!result_seen, "exactly one failed-create result");
+                        assert_eq!(
+                            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                            serde_json::json!({"requestId": "a".repeat(64), "failureCode": "effect_failed"})
+                        );
+                        result_seen = true;
+                        None
+                    } else if path.ends_with("/sandbox.create") && !command_issued {
+                        command_issued = true;
+                        let fixture: serde_json::Value =
+                            serde_json::from_str(include_str!("core-effect-command-fixture.json"))
+                                .unwrap();
+                        Some(
+                            fixture
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .find(|entry| entry["kind"] == "sandbox.create")
+                                .unwrap()["command"]
+                                .clone(),
+                        )
+                    } else {
+                        if result_seen && path.ends_with("/sandbox.create") {
+                            // Empty polling is allowed; it never reissues the accepted command.
+                            followup_create_poll = true;
+                        } else if result_seen
+                            && followup_create_poll
+                            && let Some(tx) = continued.take()
+                        {
+                            // A further request proves the Host consumed the empty create response.
+                            let _ = tx.send(());
+                        }
+                        None
+                    };
+                    let response = http::Response::builder()
+                        .status(if payload.is_some() { 200 } else { 204 })
+                        .header(
+                            crate::nanocore_session::NANOHOST_TRANSPORT_REVISION_HEADER,
+                            crate::nanocore_session::NANOHOST_TRANSPORT_REVISION.trim(),
+                        )
+                        .body(())
+                        .unwrap();
+                    let mut stream = respond.send_response(response, payload.is_none()).unwrap();
+                    if let Some(payload) = payload {
+                        stream
+                            .send_data(
+                                bytes::Bytes::from(serde_json::to_vec(&payload).unwrap()),
+                                true,
+                            )
+                            .unwrap();
+                    }
+                }
+            });
+            let host = super::run_sessions(
+                inputs,
+                coordinator,
+                None,
+                tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT,
+            );
+            tokio::pin!(host);
+            if clean {
+                tokio::select! {
+                    biased;
+                    result = &mut peer => {
+                        result.expect("seed peer assertions must propagate");
+                        panic!("seed peer ended before healthy continued polling");
+                    }
+                    result = &mut host => panic!("clean seed refusal ended the Host: {}", result.unwrap_err()),
+                    continued = tokio::time::timeout(Duration::from_secs(5), continued_rx) => continued.expect("continued poll").unwrap(),
+                }
+                assert!(!root.join("fence-started").exists());
+                members
+                    .send(Some(crate::epoch_coordinator::EpochFault::MemberExited(
+                        None,
+                    )))
+                    .unwrap();
+            }
+            let outcome = tokio::time::timeout(Duration::from_secs(5), &mut host).await;
+            peer.abort();
+            match peer.await {
+                Ok(()) => {}
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => panic!("seed peer assertion failed: {error}"),
+            }
+            let failure = outcome.unwrap().unwrap_err();
+            let super::NanoHostRunFailure::OuterSession(failure) = failure else {
+                panic!("outer failure expected")
+            };
+            assert_eq!(
+                failure.disposition(),
+                crate::nanocore_session::OuterSessionDisposition::Terminal
+            );
+            assert_eq!(
+                failure.reason(),
+                if clean {
+                    "nanohost epoch member failed"
+                } else {
+                    "persistent storage seed cleanup uncertain"
+                }
+            );
+            assert!(root.join("fence-started").exists());
+            std::fs::remove_dir_all(root).unwrap();
         }
     }
 

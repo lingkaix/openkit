@@ -132,6 +132,39 @@ test('publication proof includes every moved job and image-construction input', 
   }
 });
 
+test('publication proof binds the production Worker seed checker and its native inputs', () => {
+  const r = repository({ moved: true });
+  writeFileSync(
+    path.join(r.root, 'scripts/docker/smoke-image.sh'),
+    'bash scripts/docker/check-worker-seed.sh image\n'
+  );
+  writeFileSync(
+    path.join(r.root, 'scripts/docker/check-worker-seed.sh'),
+    'cargo test --manifest-path apps/nanohost/Cargo.toml\n'
+  );
+  mkdirSync(path.join(r.root, 'apps/nanohost/src'), { recursive: true });
+  const native = [
+    'Cargo.toml',
+    'Cargo.lock',
+    'mise.toml',
+    'src/main.rs',
+    'src/persistent_volume.rs',
+    'src/filesystem_capacity.rs',
+  ].map((file) => `apps/nanohost/${file}`);
+  for (const file of native) writeFileSync(path.join(r.root, file), '# fixture native input\n');
+  r.git('add', '.');
+  r.git('commit', '-m', 'add production seed gate');
+  const proved = r.git('rev-parse', 'HEAD');
+  const before = publicationInputsAt(r.root, proved);
+  for (const file of native) {
+    assert.ok(before.files[file], file);
+    writeFileSync(path.join(r.root, file), '# changed native input\n');
+    r.git('add', file);
+    r.git('commit', '-m', 'change seed gate native input');
+    assert.notEqual(publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256, before.sha256);
+  }
+});
+
 test('publication proof binds the admission and attestation gate instructions, not only their scripts', () => {
   const r = repository();
   const scan =
