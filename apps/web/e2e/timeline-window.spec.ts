@@ -19,6 +19,47 @@ import { startIsolatedWebStack } from './_lib/servers.js';
 const shotsDir =
   process.env.OPENKIT_E2E_SHOTS_DIR ?? join(tmpdir(), 'openkit-e2e-shots', 'timeline-window');
 
+/** Fonts and two frames, so the pre-prepend anchor is not a fallback line box. */
+async function settleFontsAndFrames(page: Page) {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        void document.fonts.ready.then(() => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+      })
+  );
+}
+
+/**
+ * The older page is in the document. Wait until anchor restoration has held
+ * the same screen top for two frames.
+ */
+async function settleRestoredAnchor(page: Page, id: string) {
+  await page.evaluate(async (entryId) => {
+    const read = () => {
+      const entry = document.querySelector<HTMLElement>(
+        `[data-timeline-entry="${CSS.escape(entryId)}"]`
+      );
+      return entry?.getBoundingClientRect().top ?? null;
+    };
+    const frame = () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    let previous = read();
+    let stable = 0;
+    for (let attempt = 0; attempt < 120 && stable < 2; attempt += 1) {
+      await frame();
+      const next = read();
+      if (previous != null && next != null && Math.abs(next - previous) <= 0.5) stable += 1;
+      else stable = 0;
+      previous = next;
+    }
+    if (stable < 2) throw new Error(`prepend anchor ${entryId} did not settle`);
+  }, id);
+}
+
 /** Records layout shift for each document, ignoring shifts caused by input. */
 async function armLayoutShift(page: Page) {
   await page.addInitScript(() => {
@@ -385,6 +426,18 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
       const scroller = page.locator('[data-timeline-scroll]');
       const earlier = page.getByRole('button', { name: 'Load earlier' });
       await expect(earlier).toBeVisible();
+      await settleFontsAndFrames(page);
+      const olderPage = page.waitForResponse((response) => {
+        if (!response.url().includes('/api/app/operations/thread.timeline') || !response.ok()) {
+          return false;
+        }
+        try {
+          const body = response.request().postDataJSON() as { cursor?: string } | null;
+          return body?.cursor === 'earlier-1';
+        } catch {
+          return false;
+        }
+      });
       const before = await scroller.evaluate((node) => {
         node.scrollTop = 0;
         const top = node.getBoundingClientRect().top;
@@ -396,9 +449,11 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
           top: entry?.getBoundingClientRect().top ?? 0,
         };
       });
+      await olderPage;
       await expect
         .poll(async () => page.locator('[data-timeline-entry]').count())
         .toBeGreaterThan(31);
+      await settleRestoredAnchor(page, before.id);
       const afterTop = await page.evaluate((id) => {
         const entry = document.querySelector<HTMLElement>(
           `[data-timeline-entry="${CSS.escape(id)}"]`

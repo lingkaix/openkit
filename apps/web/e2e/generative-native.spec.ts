@@ -242,7 +242,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     ).snapshot;
     expect(environmentPackage.observability.captureCoverage).toEqual({
       scope: 'server',
-      value: 'off',
+      value: 'on',
     });
     const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
     const registration = workerControlGateway.registerSession(environmentPackage, {
