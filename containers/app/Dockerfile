@@ -156,7 +156,7 @@ ENTRYPOINT ["tini", "--", "/usr/local/bin/openkit-app-entrypoint"]
 FROM runtime-base AS sbom
 ARG TARGETARCH
 ARG OPENKIT_SOURCE_COMMIT
-COPY scripts/install-security-tools.mjs scripts/security-tools.json scripts/security-scan.mjs scripts/release-sbom.mjs /tmp/openkit-security-tools/
+COPY scripts/install-security-tools.mjs scripts/security-tools.json scripts/security-scan.mjs scripts/release-sbom.mjs scripts/release-sbom-names.mjs /tmp/openkit-security-tools/
 RUN node /tmp/openkit-security-tools/install-security-tools.mjs --tool syft --directory /tmp/security-bin
 RUN --network=none --mount=from=runtime-base,target=/image-root,ro \
     export PATH="/tmp/security-bin:${PATH}" \

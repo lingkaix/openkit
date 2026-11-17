@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
@@ -72,6 +72,87 @@ test('every tag-push publication CLI evaluates its module graph and refuses miss
         1,
         `${invocation} must refuse cleanly, not exit ${result.status}`
       );
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+/** Node script entries an image build runs from a directory populated only by COPY scripts/... */
+function imageScriptInvocations() {
+  const invocations = [];
+  for (const image of ['app', 'test-env', 'workers']) {
+    const stages = new Map();
+    let copied = new Map();
+    const lines = readFileSync(join(process.cwd(), 'containers', image, 'Dockerfile'), 'utf8')
+      .replace(/\\\n/gu, ' ')
+      .split('\n');
+    for (const line of lines) {
+      const from = line.match(/^FROM\s+(\S+)(?:\s+AS\s+(\S+))?/iu);
+      if (from) {
+        copied = new Map([...(stages.get(from[1]) ?? new Map())].map(([k, v]) => [k, new Set(v)]));
+        if (from[2]) stages.set(from[2], copied);
+        continue;
+      }
+      const copy = line.match(/^COPY\s+((?:--(?!from)\S+\s+)*)(.+)$/iu);
+      if (copy) {
+        const paths = copy[2].trim().split(/\s+/u);
+        const target = paths.pop();
+        if (target.endsWith('/') && paths.every((path) => /^scripts\/[\w.-]+$/u.test(path)))
+          copied.set(target, new Set([...(copied.get(target) ?? []), ...paths]));
+        continue;
+      }
+      if (!/^RUN\s/iu.test(line)) continue;
+      for (const match of line.matchAll(
+        /\bnode[ \t]+(\/\S*\/)([\w.-]+\.mjs)(?:[ \t]+([a-z][a-z-]*)\b)?/gu
+      ))
+        if (copied.has(match[1]))
+          invocations.push({
+            name: [match[2], match[3]].filter(Boolean).join(' '),
+            label: `${image} ${match[1]}${match[2]}`,
+            sources: [...copied.get(match[1])],
+          });
+    }
+  }
+  return invocations;
+}
+
+test('every image-built script entry loads from exactly its copied scripts', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'openkit-image-cli-entry-'));
+  const missing = join(directory, 'missing');
+  // Each probe refuses before any download, external tool or output write.
+  const probes = {
+    'download-native-client-tools.mjs': [],
+    'install-security-tools.mjs': ['--cli-probe'],
+    'release-sbom.mjs rootfs': [
+      ...['rootfs', '--root', missing, '--id', 'app', '--platform', 'linux/amd64'],
+      ...['--output', join(missing, 'sbom.cdx.json')],
+    ],
+  };
+  try {
+    const invocations = imageScriptInvocations();
+    assert.ok(
+      invocations.some(({ name }) => name === 'release-sbom.mjs rootfs'),
+      'the App inventory stage must stay observable'
+    );
+    for (const [index, { name, label, sources }] of invocations.entries()) {
+      assert.ok(probes[name], `${label} needs a probe`);
+      const copy = join(directory, String(index));
+      mkdirSync(copy);
+      for (const source of sources)
+        copyFileSync(join(process.cwd(), source), join(copy, basename(source)));
+      const result = spawnSync(
+        process.execPath,
+        [join(copy, name.split(' ')[0]), ...probes[name]],
+        {
+          cwd: directory,
+          encoding: 'utf8',
+          env: { PATH: missing, HOME: directory },
+          timeout: 60000,
+        }
+      );
+      assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND|unsettled top-level await/u, label);
+      assert.equal(result.status, 1, `${label} must refuse cleanly, not exit ${result.status}`);
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
