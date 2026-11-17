@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: process
 date: "2026-11-09"
 ---
@@ -243,18 +243,18 @@ Security tools are supply-chain targets too. The March 2026 Trivy compromise ill
 ## Current Implementation Projection
 
 - `.github/workflows/ci.yml`:
-  - `test-image` stops pushing on `pull_request`;
-  - `pr-check` and the `main` path gain the security checks;
-  - the release candidate and release jobs gain the image scan, SBOMs and attestations;
-  - one new scheduled workflow does the daily rescan.
-- `lefthook.yml` pre-commit and `check:repo` call a new `check:security` script. The tools are pinned in `containers/test-env/Dockerfile`.
-- The existing operation/route descriptors gain source-only owner/switch metadata. `check:repo` gains mounted-route/projection coverage; runtime Policy retains enforcement. This is an acceptance-phase implementation requirement, not a current check claim.
-- `scripts/release-safety.mjs`: `SECRET` moves to a shared module.
-- `pnpm-workspace.yaml` gains `minimumReleaseAge`, `strictDepBuilds` and `blockExoticSubdeps: true`.
+  - `test-image` does not run on `pull_request`, so it pushes no image from one;
+  - `pr-check` and the `main` path run `scripts/check-security.mjs`;
+  - in the release workflow, `release-security` scans every candidate image digest, `attest-release-images` attests the candidate subjects, `github-release` generates the SBOMs and attests every released subject, and `verify-release` checks them;
+  - `.github/workflows/security.yml` runs the daily diagnostic rescan of the latest release images.
+- `lefthook.yml` pre-commit calls `check:security --staged`. `check:repo` runs the workflow lint and the supply-chain rule test, not `check:security`. The tools are pinned with checksums in `scripts/security-tools.json` and installed in `containers/test-env/Dockerfile`.
+- The existing operation/route descriptors carry source-only owner/switch metadata (`packages/app-api-schemas/src/operation-definitions.ts`). Mounted-route/projection coverage runs as a NanoCore test (`apps/nanocore/src/policy/operation-exposure-coverage.test.ts`); its `check:repo` step remains an acceptance-phase implementation requirement, not a current check claim. Runtime Policy retains enforcement.
+- `scripts/release-safety.mjs` imports the shared `CREDENTIAL_PATTERN` from `scripts/credential-patterns.mjs`.
+- `pnpm-workspace.yaml` sets `minimumReleaseAge`, `strictDepBuilds` and `blockExoticSubdeps: true`.
 - Image builds:
-  - `containers/workers/Dockerfile`: a lock file for runtime-supply, with scripts disabled;
-  - `containers/app/Dockerfile`: a verified rustup installer and the embedded SBOM.
-- `scripts/release-preflight.mjs` gains the scan predicate and the workflow lint.
+  - `containers/workers/Dockerfile` installs runtime-supply from its lock file with scripts disabled;
+  - `containers/app/Dockerfile` verifies the rustup installer by checksum and embeds the SBOM.
+- `scripts/release-preflight.mjs` runs the workflow lint. The `release-preflight` job also runs `scripts/check-security.mjs --release` over all lock files and the tagged tree; the `release-security` job runs `scripts/release-security.mjs` on each candidate image digest.
 - After v0.1.0, the App update helper's `prepare` gains attestation verification ([#690](https://github.com/lingkaix/openkit/issues/690)).
 - Repository settings (engineer): private vulnerability reporting, push protection, dependency alerts, rulesets.
 

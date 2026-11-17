@@ -14,6 +14,7 @@ This non-authorizing record summarizes the independent documentation audit that 
 - Goals: G1 product vision to design, G2 Core against specifications, G3 specifications against implementation, G4 specification organization, and G5 writing rules under [Documentation Writing](../writing.md).
 - Branch: the session's designated branch is `audit/independent-docs-ag29v9`. The engineer's instruction named `audit/independent-docs-<yyyymmdd>`; the session harness fixed the branch name, so the date form was not used.
 - Supplement: a second audit session ran the same instruction from its own base and stopped when it found this audit. On the engineer's direction it added its unique findings: the [supplement record](20261025-independent_doc_audit_supplement.md) and the [G1 probe record](20261023-independent_doc_audit_g1_probe.md).
+- Round 2: on 2026-11-15 the engineer directed the audit of every remaining document. Round 2 covers the five released groups, the documents added after the base SHA, the periphery group, the archive check, and the root `AGENTS.md`. Its base SHA is `3cd345759782795e388abd73974a8f2aa8ea7ec0` (`main` on 2026-11-15), and each group record states its own group base. Its branch is `audit/independent-docs-20261115`, created from `main`, because the round-1 records had already landed on `main`.
 
 ## Inventory At The Base SHA
 
@@ -23,6 +24,14 @@ This non-authorizing record summarizes the independent documentation audit that 
 - `docs/specs/` root: 101 dated specifications, `README.md`, and `AGENTS.md`.
 - `docs/specs/retired/` and `docs/specs/superseded/`: 67 files for the archive check.
 - Evidence only: 235 files under `docs/decisions/`, 176 files under `docs/changes/`, the files under `docs/audits/`, and the two OKF snapshots.
+
+At the round-2 base SHA, `git ls-files` lists:
+
+- `docs/core/`: 23 files. The new aspect document is `security.md`.
+- `docs/specs/` root: 104 dated specifications. The new ones are `20261108-conversation_timeline.md`, `20261109-development_security.md`, and `20261109-runtime_security.md`. No active specification was removed.
+- `docs/specs/retired/` and `docs/specs/superseded/`: the same 67 files.
+- Periphery: one new package guide, `packages/knowledge-ui/README.md`.
+- Evidence only: 254 files under `docs/decisions/`, 177 files under `docs/changes/`, and 39 files under `docs/audits/`.
 
 ## Coverage Ledger
 
@@ -49,11 +58,12 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/agent-session.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
 | `docs/core/knowledge.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/core/generative-apps.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
-| `docs/core/storage.md` | storage | open, pending (#440 released) | — |
-| `docs/core/runtime-model.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/core/fault-tolerance.md` | fault-tolerance | open, pending (#440 released) | — |
-| `docs/core/evidence.md` | evidence | open, pending (#440 released) | — |
-| `docs/core/work-model.md` | work-model | open, pending (#440 released) | — |
+| `docs/core/storage.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/core/runtime-model.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/core/fault-tolerance.md` | fault-tolerance | audited (round 2) | [fault-tolerance](20261115-independent_doc_audit_fault_tolerance.md) |
+| `docs/core/evidence.md` | evidence | audited (round 2) | [evidence](20261115-independent_doc_audit_evidence.md) |
+| `docs/core/work-model.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/core/security.md` | security | audited (round 2) | [security](20261115-independent_doc_audit_security.md) |
 
 ### Active Specifications
 
@@ -141,37 +151,42 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260711-evaluation_harness_design.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/README.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/AGENTS.md` | process | audited (proposals only) | [process](20261025-independent_doc_audit_process.md) |
-| `docs/specs/20260703-storage_layout_record_ownership.md` | storage | open, pending (#440 released) | — |
-| `docs/specs/20261018-file_storage_and_knowledge_packages.md` | storage | open, pending (#440 released) | — |
-| `docs/specs/20260801-nanohost_workspace_data_boundary.md` | storage | open, pending (#440 released) | — |
-| `docs/specs/20260921-work_data_retention_format.md` | storage | open, pending (#440 released, named) | — |
-| `docs/specs/20260704-workspace_backup_export_import.md` | storage | open, pending (#440 released, named) | — |
-| `docs/specs/20260802-nanohost_runtime_and_transport.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/specs/20260703-durable_scheduler_design.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/specs/20260703-runtime_scheduling_scale.md` | runtime-model | open, pending (#440 released, named) | — |
-| `docs/specs/20260531-worker_turn_reliability_envelope.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/specs/20260711-worker_runtime_subagent_provenance.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/specs/20261019-durable_execution_and_control_store.md` | fault-tolerance | open, pending (#440 released, named) | — |
-| `docs/specs/20260703-audit_usage_evidence_records.md` | evidence | open, pending (#440 released) | — |
-| `docs/specs/20260731-operational_telemetry_standardization.md` | evidence | open, pending (#440 released) | — |
-| `docs/specs/20260704-chat_mode_assistant.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20260704-task_mode_worker_delegation.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20260531-human_attention_intervention_model.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20260713-work_resource_interaction_model.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20261017-evaluation_foundation.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20261002-goal.md` | work-model | open, pending (#440 released, named) | — |
-| `docs/specs/20260902-agent_runtime_context_compaction.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20260831-unified_conversation_composer.md` | work-model | open, pending (#440 released) | — |
+| `docs/specs/20260703-storage_layout_record_ownership.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20261018-file_storage_and_knowledge_packages.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20260801-nanohost_workspace_data_boundary.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20260921-work_data_retention_format.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20260704-workspace_backup_export_import.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20260802-nanohost_runtime_and_transport.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20260703-durable_scheduler_design.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20260703-runtime_scheduling_scale.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20260531-worker_turn_reliability_envelope.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20260711-worker_runtime_subagent_provenance.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20261019-durable_execution_and_control_store.md` | fault-tolerance | audited (round 2) | [fault-tolerance](20261115-independent_doc_audit_fault_tolerance.md) |
+| `docs/specs/20260703-audit_usage_evidence_records.md` | evidence | audited (round 2) | [evidence](20261115-independent_doc_audit_evidence.md) |
+| `docs/specs/20260731-operational_telemetry_standardization.md` | evidence | audited (round 2) | [evidence](20261115-independent_doc_audit_evidence.md) |
+| `docs/specs/20260704-chat_mode_assistant.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260704-task_mode_worker_delegation.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260531-human_attention_intervention_model.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260713-work_resource_interaction_model.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20261017-evaluation_foundation.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20261002-goal.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260902-agent_runtime_context_compaction.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260831-unified_conversation_composer.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20261108-conversation_timeline.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20261109-development_security.md` | security | audited (round 2) | [security](20261115-independent_doc_audit_security.md) |
+| `docs/specs/20261109-runtime_security.md` | security | audited (round 2) | [security](20261115-independent_doc_audit_security.md) |
 
 ### Archive Check
 
-The 67 files under `docs/specs/retired/` and `docs/specs/superseded/` receive the archive check only: lifecycle metadata, `current-guidance` targets, and inbound links. State: not completed. The engineer ended the audit after the open groups; a preliminary read-only result is under Remaining Work.
+The 67 files under `docs/specs/retired/` and `docs/specs/superseded/` receive the archive check only: lifecycle metadata, `current-guidance` targets, and inbound links. State: completed in round 2 with no finding ([archive check](20261115-independent_doc_audit_archive.md)).
 
 ## Phase 0 Grouping
 
 ### Group Order
 
 Open groups run first in dependency order, then the held groups after a release in #440, then the periphery group: foundation, contract-evolution, architecture, protocol, communication, identity, policy, vault, mediation, agent-supply, sandbox, agent-session, knowledge, generative-apps, process; held: storage, runtime-model, fault-tolerance, evidence, work-model; last: periphery.
+
+Round 2 order: storage, runtime-model, fault-tolerance, evidence, work-model, and the new security group; then the periphery group, the archive check, and the root `AGENTS.md` reading. Inspectors of later groups may read while an earlier group is open, but only one group is open for writing at a time.
 
 The `process` group has no Core home. Its eight specifications own engineering, verification, release, and documentation methods, and `docs/core/` owns product semantics only. This is recorded as finding P0-G2-01 below.
 
@@ -194,6 +209,12 @@ The `process` group has no Core home. Its eight specifications own engineering, 
 | knowledge | `apps/nanocore/src/knowledge/`, `apps/nanocore/src/knowledge-*.ts`, `apps/nanocore/src/memory-operations.ts`, `apps/nanocore/src/retrieval-*.ts`, `packages/retrieval-kernel`, `apps/nanocore/src/context/` |
 | generative-apps | `apps/nanocore/src/generative-kernel/`, `apps/nanocore/src/generative-ui/`, `apps/web/src/generative/` |
 | process | `tests/`, `stories/`, `scripts/`, `.github/workflows/` |
+| storage (round 2) | `apps/nanocore/src/storage/`, `apps/nanocore/src/lib/store.ts`, `apps/nanocore/drizzle/`, `packages/storage`, `apps/nanocore/src/workspace-*.ts`, `apps/nanohost/src/workspace_collect.rs`, `apps/nanohost/src/persistent_volume.rs` |
+| runtime-model (round 2) | `apps/nanohost/src/`, `apps/nanocore/src/runtime/`, `apps/nanocore/src/boot/`, `apps/nanocore/src/scheduler-records.ts`, `packages/worker-shim`, `packages/worker-protocol` |
+| fault-tolerance (round 2) | `apps/nanocore/src/storage/`, `apps/nanocore/src/runtime/`, `apps/nanocore/src/boot/` |
+| evidence (round 2) | `apps/nanocore/src/audit-events.ts`, `apps/nanocore/src/capability/`, `apps/nanocore/src/telemetry*.ts`, `apps/nanocore/src/diagnostics/`, `apps/nanocore/src/evidence-bundles.ts`, `apps/nanohost/src/telemetry.rs` |
+| work-model (round 2) | `apps/nanocore/src/thread-*.ts`, `apps/nanocore/src/turn-*.ts`, `apps/nanocore/src/goal-*.ts`, `apps/nanocore/src/action-center.ts`, `apps/nanocore/src/evaluation-*.ts`, `apps/nanocore/src/artifact-*.ts`, `apps/nanocore/src/internal-agents/`, `apps/nanocore/src/context/`, `apps/web/src/` |
+| security (round 2) | `apps/nanocore/src/security/`, `.github/workflows/security.yml`, `.github/workflows/release-promotion.yml`, `scripts/`, `SECURITY.md` |
 
 Inspectors locate exact files at each group base SHA; the map above is a starting point, not a claim of completeness.
 
@@ -218,6 +239,8 @@ Each row is finding P0-G4-NN. The chosen home decides only the audit group; it c
 | P0-G4-13 | `20260711-scheduler_recurring_event_triggers.md` | `core-concepts.md` (`TriggerSource`), `runtime-model.md` | foundation: the schedules are trigger sources of Turn admission. |
 | P0-G4-14 | `20260831-unified_conversation_composer.md` | `work-model.md`, `communication.md` | work-model (held): the targets are product work modes. |
 | P0-G4-15 | `20261020-compute_neutrality_target.md` | `architecture.md`, `sandbox.md` | architecture: `architecture.md` owns Compute And Harness Neutrality. |
+| P0-G4-16 | `20261108-conversation_timeline.md` (round 2) | `work-model.md` (Thread, Turn, Task, Goal, and conversation semantics), `architecture.md` (the Web product surface) | work-model: the timeline presents work-model objects, and its Does Not Own section defers publication to the Web projection. |
+| P0-G4-17 | `20261109-development_security.md` (round 2) | `security.md` (finding classes and response), the `process` family (`kind: process`) | security: the Security charter names its finding concepts and response classes. |
 
 ### Phase 0 Finding
 
@@ -268,6 +291,7 @@ The engineer ended the audit on 2026-10-25 after the fifteen open groups. Counts
 - Questions: Q-01 to Q-170; 8 were withdrawn after review, so 162 remain for the engineer.
 - G4: one section move in the foundation group (FND-G4-01); no archive transition was made.
 - Supplement: corrections in 30 Core documents and specifications, issues #522 to #529 (one blocking candidate), questions Q-171 to Q-202, and a G1 probe with 296 findings compared one by one against these records. Totals: 69 `doc-audit` issues, 18 blocking candidates, and 194 open questions.
+- Round 2 (2026-11-15, base `3cd345759`): 30 ledger rows audited (the 26 released rows and the four rows added after the round-1 base), so every one of the 129 Core documents and active specifications is audited. Eight records: one per group (storage, runtime-model, fault-tolerance, evidence, work-model, security, periphery), each with an independent Reviewer verdict, and the archive check. Corrections in 27 files under `docs/core/` and `docs/specs/` (4 Core documents, 23 specifications) and in 36 guides under `docs/`, `apps/` and `packages/`. Issues #723 to #747 (25 issues, 11 blocking candidates), with comments on #732 and #740. Questions Q-203 to Q-265; Q-218, Q-235 and Q-245 were withdrawn after review, so 60 remain. The archive check found no defect. Totals after round 2: 94 `doc-audit` issues, 29 blocking candidates, and 254 open questions.
 
 ## Remaining Work
 
@@ -295,6 +319,22 @@ The engineer stopped the audit after the open groups. This list states what the 
 9. Before triage, recheck the 69 `doc-audit` issues against current `main`, and group the open questions into a decision sheet so that one rule answers each repeated family.
 
 After the mediation group, `main` added `providerModel` to `20260704-capability_usage_gateway_foundation.md` (audited by the mediation group) and to the held `20260703-audit_usage_evidence_records.md`. The close-out recheck found the field in `apps/nanocore/src/capability/usage-ledger.ts` and the Gateway, and the mediation corrections still apply. No new finding. The held Audit specification was read only as the owner that issue #514 cites.
+
+Round 2 status of this list, at the round-2 base:
+
+- Items 1 to 3 are done: the five released groups and the new security group have their records, the [periphery record](20261115-independent_doc_audit_periphery.md) covers item 2 and the item-7 periphery hand-off, and the [archive check record](20261115-independent_doc_audit_archive.md) covers item 3. Each item-1 hand-off is closed in its group record.
+- Item 4 is done: the root `AGENTS.md` reading below gives Questions Q-263 to Q-265.
+- Items 5, 6 and 9 now include the round-2 questions and issues. Item 8 now includes the round-2 writing questions (Q-214, Q-221, Q-224, Q-229, Q-244, Q-249 and Q-259), which the audit put under the round-1 delegated sweeps Q-01, Q-23, Q-28 and Q-189 and did not rewrite.
+
+## Root AGENTS.md Reading
+
+Round 2 read the root `AGENTS.md` at the round-2 base without editing it. It has the six owned top-level sections, 2,145 words against the 2,200-word ceiling, and seven completion questions, each with a clause ID and an expected answer (AUTHORITY-002). The two Chinese meta-instructions are the ones LANG-001 permits. The audit found three proposals; each is a question for the engineer, because only the engineer may change this file.
+
+## Round 2 Deviations
+
+- More than one group was open for writing at a time. The runtime-model, fault-tolerance, evidence and work-model corrections were made in the working tree before the storage commit, and the periphery corrections before the security commit. Each commit staged only its own group's files, and each Reviewer read only its group's diff.
+- All groups used the fixed round-2 base SHA without a rebase per group. During the round, `main` advanced ten commits. Four of them change documentation: a new Vault writer paragraph and a deletion fence sentence in `apps/nanocore/src/storage/README.md`, a test secret literal in `docs/cookbooks/docker-app.md`, one new row in the retained format register, and the `check-security.mjs` paragraph in `scripts/README.md`. They post-date the base and are not audited here; no audited claim depends on them, and the branch merges with `main` without a conflict.
+- The periphery corrections were committed once before their independent review (`4c8c9ab22`), because the session requires committed and pushed work at each stop. The next periphery commit carries the review results.
 
 ## Issues Opened
 
@@ -369,10 +409,37 @@ After the mediation group, `main` added `providerModel` to `20260704-capability_
 | #527 `[internal-agent] A Tool-returned image fails the run instead of surviving the Gateway round trip` | supplement (architecture) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
 | #528 `[opencode] The adapter does not configure the V2 tool output limits or image resizing` | supplement (agent-session) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
 | #529 `[opencode] Each Turn reads the whole native conversation under one 16 MiB and 20-page bound, so a long Thread can stop accepting Turns` | supplement (agent-session) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary (recovery effect) |
+| #723 `[workspace-export] The V3 verifier does not reject the removed workspace.json path, record-owned name or defaults, a config without a name, or the legacy Knowledge Proposal and Review paths` | storage (round 2) | ST-BEI-03, -04 | ordinary |
+| #724 `[work-observations] The observation reader admits a ts value without milliseconds` | storage (round 2) | ST-WDR-10 | low |
+| #725 `[nanohost] Token slot selection does not check the file owner and follows symbolic links` | runtime-model (round 2) | RT-NRT-B-06 | blocking candidate (credentials) |
+| #726 `[worker-turn] Remove the unproduced waiting_for_user checkpoint stage and the pending_user_turn command kind` | runtime-model (round 2) | RT-WTR-01, -05, WM-HAI-07 | low |
+| #727 `[telemetry] The worker-kind set omits the deepseek adapter and keeps claude-code, which has no adapter` | evidence (round 2) | EV-OTS-05 | low |
+| #728 `[task-mode] The Thread dashboard always returns an empty taskInputs list` | work-model (round 2) | WM-TMD-01 | low |
+| #729 `[work-model] Remove unproduced public members: escalated-to-goal Task state and Thread material activeDelivery` | work-model (round 2) | WM-TMD-03, WM-WRI-B-01 | low |
+| #730 `[chat-mode] Persistence failure returns chat_mode_failed instead of chat_mode_persistence_failed` | work-model (round 2) | WM-CMA-02 | low |
+| #731 `[storage] Workspace restore and MOVE ignore the configured file reserve` | work-model (round 2) | WM-WRI-A-02 | blocking candidate (recovery) |
+| #732 `[work-data] Capture Coverage Workspace and Task overrides, continuous-output segmentation, and the config.model observation are not implemented` | storage (round 2) | ST-WDR-01, -04, -09, M4-G36 | blocking candidate (retained data format), enhancement |
+| #733 `[action-center] Checkpoint rows lack the request-guidance and disabled resume actions, and the secret-question row uses another reason` | work-model (round 2) | WM-HAI-03, -08 | low |
+| #734 `[nanohost] The NanoHost listener admits /api/worker-capabilities/* directly, outside the family dispatch` | runtime-model (round 2) | RT-NRT-B-01 | blocking candidate (security) |
+| #735 `[nanohost] SandboxCompatibilityKey does not carry the declared Harness set, the Integration version or the sensitivity class` | runtime-model (round 2) | RT-NRT-A-04 | blocking candidate (security) |
+| #736 `[auth] The sign-in limiter, the trusted proxy hop count and the sign-in failure event are not implemented` | security (round 2) | SE-RSEC-01, -02 | blocking candidate (security) |
+| #737 `[security] server.config.update, channel.pairing.bind, channel.pairing.unbind and auth.revoked-credential-presented have no producer` | security (round 2) | SE-RSEC-02, -03, EV-AUE-07 | blocking candidate (security) |
+| #738 `[security] The persistent "pause agent work" setting is not implemented` | security (round 2) | SE-RSEC-04 | blocking candidate (security) |
+| #739 `[channels] Discord shows the question text of an automation security request instead of the fixed text` | security (round 2) | SE-RSEC-05 | blocking candidate (security) |
+| #740 `[security] The external-influence bit does not carry into Knowledge and Memory revisions` | security (round 2) | SE-RSEC-06 | blocking candidate (retained data format, security) |
+| #741 `[audit] The runtime.epoch.invalidate and runtime.epoch.ready recorders have no production caller` | evidence (round 2) | EV-AUE-02 | low |
+| #742 `[telemetry] The stage-duration histogram samples process-local wrappers, not ended journal stage-steps` | evidence (round 2) | EV-OTS-03 | low |
+| #743 `[chat-mode] The Assistant has no selected Gateway vendor MCP repository read Tool` | work-model (round 2) | WM-CMA-04 | low to medium |
+| #744 `[composer] The Goal target wire kind is goal-coordinator, but the Composer specification fixes goal-orchestrator` | work-model (round 2) | WM-UCC-01 | low |
+| #745 `[task-mode] The direct Task request and its input hash use modelId, but the Task Mode specification fixes logicalModelId` | work-model (round 2) | WM-TMD-05 | low |
+| #746 `[goal] A Coordinator request cannot continue a Goal Task on a new Turn` | work-model (round 2) | WM-GOAL-03, M7-G18 | low to medium |
+| #747 `[ci] Exposure owner and switch coverage does not run in check:repo or on pull requests` | security (round 2) | SE-DSEC-02 | blocking candidate (security) |
 
 ## Decisions Awaiting Engineer Approval
 
 None. The audit made no archive transition and needed no decision record.
+
+Round 2: none. The archive check made no transition, and no group needed a decision record.
 
 ## Questions For The Engineer
 
@@ -390,6 +457,27 @@ Each question states the context and evidence, the options, the recommendation w
 - Context: Better Auth owns password credentials and sessions (`20260628-nanocore_config_identity_contract.md`), and pi-ai owns the subscription credential serialization stored in the Vault (`20260721-provider_subscription_accounts.md`). A rebuild in another stack cannot open those retained records (theme G1-CR-T5).
 - Options: (A) Record each such format in the retained format register as externally owned, with its pinned dependency version and the continuity rule that applies to it. (B) Specify the bytes in OpenKit documents. (C) Accept that a rebuild resets these records.
 - Recommendation: A. It states the obligation where retained formats are already inventoried, and it does not copy a third-party format into prose.
+- Meanwhile: no change.
+
+### Q-263. Must an implementation change update its specification projection in the same change?
+
+- Context: OM-009 requires the local guide update when an app or package changes, and says that an implementation-only change edits no normative document. It does not name the specification's `implementation` value or its Current Implementation Projection, which are non-normative. Round 2 found these projections stale after code changes: `20261109-development_security.md` said `Not Started` for implemented work (SE-DSEC-01), and the credential declaration, Worker-control and NanoHost projections said that implemented channels and `turn.steer` were not implemented. It also found 127 guide findings, most of them stale claims, although OM-009 already requires guide updates.
+- Options: (A) Add to OM-009 that an implementation change updates the affected specification's `implementation` value and implementation projection in the same change. (B) Keep OM-009 and rely on audits.
+- Recommendation: A, because a projection that no change owns drifts, and the addition is about fifteen words within the ceiling.
+- Meanwhile: no change to `AGENTS.md`.
+
+### Q-264. Does the completion question for focused checks need its own clause ID?
+
+- Context: `[CHECK-019]` labels both the Build Loop rule on focused checks and the Completion Gate question on their evidence. Every other clause ID in the file is unique, and each other gate question has its own ID.
+- Options: (A) Give the gate question its own ID. (B) State that a gate question may reuse the ID of the rule it checks, and apply that to every gate question.
+- Recommendation: A, because one ID that names two clauses makes a citation ambiguous.
+- Meanwhile: no change.
+
+### Q-265. Must the owner that AUTH-001 identifies be accepted?
+
+- Context: AUTH-001 says "identify the owner under `docs/core/` or `docs/specs/`". A `Draft` specification proposes a contract and is in `docs/specs/` too (Documentation Model). Accepted owners delegate current rules to the Draft durable execution and control store specification (Question Q-222).
+- Options: (A) Write "identify the accepted owner". (B) Keep the wording and answer Q-222 alone.
+- Recommendation: A, because a Draft has no design authority, and one added word closes the gap.
 - Meanwhile: no change.
 
 ### Questions Recorded In Group Records
@@ -598,3 +686,66 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-200 | supplement | Image promotion and release manifest keys | Release Management owns them |
 | Q-201 | supplement | Web inventory source and roadmap owners | Definition catalog; open items only |
 | Q-202 | supplement | Web scope of the monthly UTC Automations cadence | Amend the Web contract |
+| Q-203 | storage | Storage layout tree and file wording after the control-store authority | Rewrite to the current physical families |
+| Q-204 | storage | A corrupt User database and process boot | Contain the failure to that User |
+| Q-205 | storage | The Task-to-Goal explanation Item row | Remove the row unless a Goal owner needs it |
+| Q-206 | storage | Light App table layout | Correct SLR to the code layout |
+| Q-207 | storage | Retention window of `restricted-raw` | Keep the access rule; remove the window wording |
+| Q-208 | storage | Owner of the storage lease | Ordinary Policy grants; FSK owns the record |
+| Q-209 | storage | Knowledge package archive details | Format rules for reader rules only |
+| Q-210 | storage | Light App package envelope in the backup specification | Remove the Owns entry |
+| Q-211 | storage | The eleven-root pin and NWB implementation state | Define or remove the label; set the state |
+| Q-212 | storage | Long Knowledge page paths in the export archive | Admit PAX path records |
+| Q-213 | storage | Restore into a later release after `v0.1.0` | Normal upgrade path after restore |
+| Q-214 | storage | Storage writing cleanups | Delegated sweep |
+| Q-215 | storage | Credential declaration projection | Correct it per channel and activation state (applied meanwhile by the periphery group) |
+| Q-216 | runtime-model | Scheduler queue bound | Fixed bound of 20 |
+| Q-217 | runtime-model | Owner of idle Sandbox retirement | NRT |
+| Q-218 | runtime-model | Withdrawn (issue #735) | Withdrawn |
+| Q-219 | runtime-model | Heartbeat delay bound margin | State the margin as a difference |
+| Q-220 | runtime-model | First NanoHost Token issuance slot | `A` is the default |
+| Q-221 | runtime-model | Runtime-model writing cleanups | Delegated sweep |
+| Q-222 | fault-tolerance | Draft control-store specification and current work | Accept DECS with a per-section status |
+| Q-223 | fault-tolerance | Authority that selects the admitted configuration revision | Database heads |
+| Q-224 | fault-tolerance | Fault-tolerance writing cleanups | Delegated sweep |
+| Q-225 | evidence | Owner of the lifecycle stage vocabulary | OTS; DECS maps step kinds |
+| Q-226 | evidence | Quarantine `restricted-evidence` as a retention class | Map it to `restricted-raw` |
+| Q-227 | evidence | Legal hold set and release | No writer in `v0.1.0`; the class is reserved |
+| Q-228 | evidence | AUE field lists and recovery events | Mark the field lists as target |
+| Q-229 | evidence | Evidence writing cleanups | Delegated sweep |
+| Q-230 | work-model | Closed Chat routing outcome set | Align the lists with the code |
+| Q-231 | work-model | Chat Thread addressing the Knowledge Manager | The Knowledge Manager opens its own Thread |
+| Q-232 | work-model | Shared conversation after `v0.1.0` | Gate creation off for `v0.1.0` |
+| Q-233 | work-model | Task handoff defaults | The code adopts the direct-Task defaults |
+| Q-234 | work-model | Closed Action Center row kind set | Code set; remove unproduced kinds |
+| Q-235 | work-model | Withdrawn (issue #746) | Withdrawn |
+| Q-236 | work-model | Coordinator revision of the person's Goal intent | Exclude the Coordinator |
+| Q-237 | work-model | Review `read_goal_id` column | A derived index column |
+| Q-238 | work-model | Knowledge Manager and Gateway compaction | Shared-loop compaction; ACC names `previousSummary` |
+| Q-239 | work-model | Composer interface contract | UCC adopts the code interface |
+| Q-240 | work-model | Owner of dictation | UCC, as a Composer input |
+| Q-241 | work-model | Refusal for input to a busy Thread | One `thread_busy` refusal |
+| Q-242 | work-model | Timeline registry values and hide delay | The table follows the code |
+| Q-243 | work-model | One-way Quick Chat data move | Record the ruling; remove the sentence |
+| Q-244 | work-model | Work-model writing cleanups | Delegated sweep |
+| Q-245 | security | Withdrawn (issue #747) | Withdrawn |
+| Q-246 | security | Evidence and security events | Evidence names security events |
+| Q-247 | security | Release gate rule in Core | Keep it as a Core principle |
+| Q-248 | security | Further retained values in RSEC | Scope the sentence; name `security.containment` |
+| Q-249 | security | Security writing cleanups | Delegated sweep |
+| Q-250 | security | Release jobs with attestation permissions | Name the release and promotion jobs |
+| Q-251 | periphery | Deployment target judgment without a single slot | Rest it on the active-Turn bound |
+| Q-252 | periphery | Toolchain counts and the Retrieval Kernel Rust pin | Correct and name every pin |
+| Q-253 | periphery | Roadmap item R102 | Keep open until #245 |
+| Q-254 | periphery | Pilot plan route logs | Remove the pilot statement |
+| Q-255 | periphery | Researcher contract leading words | Add them |
+| Q-256 | periphery | Retrieval Kernel notice digest | Relabel as P08 input |
+| Q-257 | periphery | Live steer qualification gate | Amend WCP to name the checks |
+| Q-258 | periphery | Periphery naming and placement corrections | Keep them |
+| Q-259 | periphery | Restated facts in guides and unchecked guide paths | One sweep; extend the check |
+| Q-260 | periphery | Private systemd maintenance gate in the host reservation | Amend the reservation |
+| Q-261 | periphery | Glossary rule against D-labels | Narrow the row |
+| Q-262 | periphery | Release cookbook R2 CI hold instruction | Remove it if the hold ended |
+| Q-263 | round 2 (AGENTS.md) | Specification projection updates with implementation changes | Add to OM-009 |
+| Q-264 | round 2 (AGENTS.md) | Duplicate CHECK-019 clause ID | Own ID for the gate question |
+| Q-265 | round 2 (AGENTS.md) | Accepted owner in AUTH-001 | Write "accepted owner" |

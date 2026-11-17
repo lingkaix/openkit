@@ -70,7 +70,7 @@ These terms have no classic equivalent that says the same thing. Each is marked 
 | Capability tier: frontier, standard, fast | Abstract model capability used by role contracts instead of model names. | Agent coordination | docs/change-execution.md |
 | Bounded task contract | The dispatch a primary writes for a fast-tier delegate: inputs, writable paths, completion check, prohibitions, and return shape. | Agent coordination | docs/documentation-model.md |
 | Context budget | The part of its context window a primary spends; a side task whose detail the main line does not need is delegated so that only its conclusion and evidence pointers return. | Agent coordination | docs/change-execution.md |
-| Consumer closure | The complete set of places that consume a symbol, file, or record, found before it is changed or removed. | Change and review | docs/roles/builder.md, docs/roles/reviewer.md |
+| Consumer closure | The complete set of places that consume a symbol, file, or record, found before it is changed or removed. | Change and review | docs/roles/auditor.md, docs/specs/20260719-verification_calibration.md |
 | Rebuild test | The documentation criterion that an agent could rebuild a conforming system from the documents after the implementation is deleted; a rebuild probe samples it. | Documentation | docs/specs/20260719-verification_calibration.md |
 | Decision record | One file under docs/decisions/ recording a durable decision and its reason. | Documentation | docs/documentation-model.md |
 | Specification kind | One of concept, boundary, mechanism, topology, or process. | Specifications | docs/documentation-model.md |

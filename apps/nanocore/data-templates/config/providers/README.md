@@ -1,6 +1,6 @@
 # Provider Templates
 
-These templates are copied into `OPENKIT_DATA_ROOT/config/providers/` when missing. Opt-in examples and the custom placeholder are installed as non-loadable `.example` files; they are not active Provider profiles.
+These templates are copied into `OPENKIT_DATA_ROOT/config/providers/` when missing. On copy, each Provider template's `secretRef` receives a newly allocated Vault reference; the `vault://provider_*` values below are the template source values. Opt-in examples and the custom placeholder are installed as non-loadable `.example` files; they are not active Provider profiles.
 
 ## Templates
 
@@ -30,7 +30,7 @@ The adjacent `gateway.jsonc` ships exactly `free`, `flash`, `smart`, and `pro`, 
 
 The pinned snapshot lists zero input/output prices for all `free` members; credentials and account access are still required by their Provider. Luna and Flash serve the daily-work tier, Sol and Sonnet the middle tier, and Astra and Opus the flagship tier. Free is text-only; the other tiers' intersected input contracts support text, image and PDF. Pi and DeepSeek project text/image to their native models and report omitted PDF in bounded adapter diagnostics; Codex and OpenCode retain the complete contract. The tier members are not narrowed to accommodate a runtime's modality subset. All members declare reasoning and tool calling. These are template choices from the pinned inventory, not measured latency or quality guarantees.
 
-Each threshold reserves every member's full known maximum output within its context window, including unavailable members; the focused shipped-template tests check the effective metadata and coherent contracts. Fresh credential-free configuration completes safe reload without an error diagnostic; missing API keys do not currently determine member availability, and reload warnings follow the existing resolver. A successful setup or reload does not prove upstream credentials or live inference. Creating the matching Vault references prepares Core access. Later template changes never overwrite existing authored Data Root files.
+Each threshold reserves every member's full known maximum output within its context window, including unavailable members; the focused shipped-template tests check the effective metadata and coherent contracts. Fresh credential-free configuration completes safe reload without an error diagnostic; a missing API key makes its member unavailable with `provider_api_key_missing`, and reload warnings follow the existing resolver. A successful setup or reload does not prove upstream credentials or live inference. Creating the matching Vault references prepares Core access. Later template changes never overwrite existing authored Data Root files.
 
 The custom OpenAI-compatible template is operator-defined and intentionally has no upstream `models.dev` provider id. Its placeholder model has no real context limit; adding a fabricated limit to satisfy startup validation is not a supported activation procedure.
 

@@ -7,7 +7,7 @@ This cookbook owns the **workflow**. The **stack** it targets (React, Zustand, R
 ## Policy
 
 - Lean on agents as much as possible. A human states intent and performs final fidelity review; agents do the intake, reference selection or design authoring, doc reconciliation, implementation, and verification in between. Frame-backed work adds a human design-finalization gate before implementation.
-- Keep the Web UI a projection over stable NanoCore/App API contracts. If a requested design needs a capability the kernel does not yet support, **stop and go protocol-first**: `docs/specs` → `packages/protocol` → `apps/nanocore` → `apps/web`, per the root `AGENTS.md`. Do not design UI for capabilities the kernel cannot back.
+- Keep the Web UI a projection over stable NanoCore/App API contracts. If a requested design needs a capability the kernel does not yet support, **stop and go protocol-first**: `docs/specs` → `packages/protocol` → `apps/nanocore` → `apps/web`, per `apps/nanocore/AGENTS.md` and the [Web UI rebuild stack specification](../specs/20260710-web_ui_rebuild_stack.md). Do not design UI for capabilities the kernel cannot back.
 - The design source of truth is split by design: **`DESIGN.md` owns durable intent** (IA, layout, interaction, accessibility rules), accepted specifications own behavior, and **Claude Design supplies living visual/interactive references**. Its board inventory is non-exhaustive: a surface may be frame-backed by one finalized frame or reference-backed by a composition of existing boards, tokens, themes, primitives, layout and density rules, states, and accessibility guidance.
 - Consume the server only through `@openkit/core-client` sub-clients. Follow test-first development.
 

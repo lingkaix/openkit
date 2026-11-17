@@ -386,13 +386,13 @@ Multiple observations under one Item or one `turnId` are ordered by observation-
 
 **Definition.** Observation `ret` uses only the Core closed set from `docs/core/storage.md` (`Retention Classes`): `ephemeral-diagnostic`, `turn-evidence`, `workspace-audit`, `restricted-raw`, `legal-hold`. Agent features introduce no sixth class on observation rows. Quarantine currently types `retentionClass` as `restricted-evidence` | `workspace-audit` | `legal-hold` (`packages/app-api-schemas/src/workspace-sync.ts:448`); evidence bundles already use `restricted-raw` (`packages/app-api-schemas/src/evidence-bundles.ts:26-31`). Whether quarantine `restricted-evidence` is the same class as `restricted-raw` is a pending admission of `docs/core/storage.md`. Until that owner admits a mapping, observation rows MUST NOT emit `restricted-evidence`.
 
-**Exclusions.** Do not add `restricted-evidence` to this format's `ret` vocabulary. Do not apply `ret` to protocol Items; Item visibility is type plus Permissions. Do not infer that the closed retention set forbids a separate audience vocabulary; visibility and retention are different concerns, and this spec does not introduce an audience field. `ret` on a row is that row's class; a referenced blob's class is the target owner's. `ret` MUST NOT be rewritten to `workspace-audit` merely to keep a blob. `legal-hold` MAY cover an otherwise ordinary main fact and then blocks compaction or deletion until released; it does not authorize access (`docs/core/storage.md`, `Agent Data Retention And Deletion`).
+**Exclusions.** Do not add `restricted-evidence` to this format's `ret` vocabulary. Do not apply `ret` to protocol Items; Item visibility is type plus Policy. Do not infer that the closed retention set forbids a separate audience vocabulary; visibility and retention are different concerns, and this spec does not introduce an audience field. `ret` on a row is that row's class; a referenced blob's class is the target owner's. `ret` MUST NOT be rewritten to `workspace-audit` merely to keep a blob. `legal-hold` MAY cover an otherwise ordinary main fact and then blocks compaction or deletion until released; it does not authorize access (`docs/core/storage.md`, `Agent Data Retention And Deletion`).
 
 **Authority.** Core owns the vocabulary and any quarantine fold. This spec assigns only Core tokens on observation rows. `restricted-raw` constrains access, not capture eligibility or a special demonstrated-need window. Owning record specifications and existing operator policy assign retention; no token change or sixth class is introduced.
 
 **Lifecycle.** Set at write. Same `type` MAY carry different `ret` for permitted in-row metadata (for example ordinary versus secret-bearing tool identity); stdout and other bodies remain separately owned external content under B′, not an in-row class split of the same bytes. Days-in-window are operational knobs, not format constants.
 
-**Failure.** Mixing restricted raw body into a long-term row violates B′. Retention never grants visibility or access. Permissions and hold remain independent of `ret`.
+**Failure.** Mixing restricted raw body into a long-term row violates B′. Retention never grants visibility or access. Policy and hold remain independent of `ret`.
 
 **Acceptance.** A retention sweeper reads `ret` from the header. No observation row uses a class outside the five Core tokens.
 
@@ -637,7 +637,7 @@ For a current canonical file representation, publication remains the observation
 
 Implementation alignment remains `Partial`. Existing collectors/importers must neither be described as absent nor treated as complete. This documentation change does not implement the default-on native exchange/content-addressed target.
 
-The pre-replacement file representation writes the immutable coverage binding into `turn.json`, which its owner rewrites on every persist. This is pre-reset implementation detail, not the target commit point. No compatibility writer or reader remains after reset.
+The current implementation commits the immutable coverage binding as the `captureCoverage` field of the Turn record in `control_turns`. No `turn.json` writer or reader remains.
 
 - `apps/nanocore/src/llm/model-capture.ts` binds existing Core or Workspace databases to an admitted Turn, records environment metadata, and conditionally captures selected pre-adapter requests and normalized semantic response events. That filtering/buffering does not prove lossless upstream or translated Worker-facing exchange retention.
 - `apps/nanocore/src/storage/work-observations.ts` already supplies observation schemas, immutable binding reads, append/recovery rules and EvidenceBundle body references. Reuse this owner rather than add another capture ledger.
@@ -650,13 +650,15 @@ The pre-replacement file representation writes the immutable coverage binding in
 
 | Boundary | Current gap to close |
 | --- | --- |
-| Coverage | Default-off history and missing bindings cannot be backfilled; new default-on resolution needs implementation. |
+| Coverage | Default-off history and missing bindings cannot be backfilled; new default-on resolution needs implementation. The current resolver `captureCoverageBindingFromOpenKitConfig` reads only the server scope; Workspace and Task overrides are not implemented; [issue 732](https://github.com/lingkaix/openkit/issues/732). |
 | Gateway content | Selected semantic content does not cover actual upstream fields, translated pairs, native streaming chunks/timing, or no-Turn coverage. |
 | Cost | Complete shared message/prompt/tool blobs and structurally shared request roots are not established. |
-| Native runtime | Optional provenance/import does not establish default verbatim transcripts/logs, truncation records, or measured binary version identity. |
+| Native runtime | Optional provenance/import does not establish default verbatim transcripts/logs or measured binary version identity. When coverage is `on`, `packages/worker-shim/src/runtime-capture.ts` emits truncation records with `range`, `retainedBytes`, `omittedBytes` and reason `limit-exceeded`. |
 | Context | AEP/Skill/digest metadata does not prove exact Knowledge/Memory/attachment delivery or visibility into runtime-private compaction. |
 | Judgments | Durable requests/Reviews exist; complete edit/correction/retry/rating lineage and joins are not established. |
 | Lifecycle | The separate journal owner supplies step facts; metadata and telemetry cannot replace its unimplemented portions. |
+| Segmentation | The Thread record has an optional `parentThreadId` but no `segment` ordinal; continuous-output segmentation is not implemented; [issue 732](https://github.com/lingkaix/openkit/issues/732). |
+| Observation types | No `config.model` observation exists; [issue 732](https://github.com/lingkaix/openkit/issues/732). |
 
 ### Collector Replacement Map
 
