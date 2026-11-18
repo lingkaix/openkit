@@ -9138,7 +9138,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('records workspace recovery decisions idempotently', async () => {
+  it('records supported workspace recovery abandon idempotently', async () => {
     const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
@@ -9187,8 +9187,8 @@ describe('nanocore server', () => {
             method: 'POST',
             body: JSON.stringify({
               requestId: 'workspace-recovery-request-1',
-              decision: 'quarantine',
-              message: 'Keep unsafe recovery material isolated.',
+              decision: 'abandon',
+              message: 'Abandon recovery while retaining collected evidence.',
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -9202,8 +9202,8 @@ describe('nanocore server', () => {
             method: 'POST',
             body: JSON.stringify({
               requestId: 'workspace-recovery-request-1',
-              decision: 'quarantine',
-              message: 'Keep unsafe recovery material isolated.',
+              decision: 'abandon',
+              message: 'Abandon recovery while retaining collected evidence.',
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -9224,7 +9224,7 @@ describe('nanocore server', () => {
       ).toMatchObject({
         id: 'wrr_recovery_decision',
         stateBefore: 'requires-human',
-        stateAfter: 'quarantined',
+        stateAfter: 'unrecoverable',
         requiredHumanDecision: null,
         retentionDecision: 'teardown-backend',
       });
@@ -10433,7 +10433,9 @@ describe('nanocore server', () => {
       rootPath: workerRoot,
       workspaceId: workspace.id,
     });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
+    const changeSet = await buildFilesystemWorkspaceChangeSet({
+      beforeRootPath: targetRoot,
+      afterRootPath: workerRoot,
       after,
       before,
       changeSetId: 'wcs_filesystem_apply_1',
@@ -10720,7 +10722,9 @@ describe('nanocore server', () => {
         rootPath: workerRoot,
         workspaceId: workspace.id,
       });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         after,
         before,
         changeSetId: 'wcs_filesystem_persist_rollback',

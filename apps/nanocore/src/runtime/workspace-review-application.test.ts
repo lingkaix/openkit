@@ -254,7 +254,9 @@ describe('workspace review application', () => {
         rootPath: workerRoot,
         workspaceId,
       });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         after,
         before,
         changeSetId: 'wcs_workspace_review_disabled_user',
@@ -431,7 +433,9 @@ describe('workspace review application', () => {
         rootPath: workerRoot,
         workspaceId,
       });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         after,
         before,
         changeSetId,
@@ -575,7 +579,9 @@ describe('workspace review application', () => {
       rootPath: workerRoot,
       workspaceId,
     });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
+    const changeSet = await buildFilesystemWorkspaceChangeSet({
+      beforeRootPath: targetRoot,
+      afterRootPath: workerRoot,
       after,
       before,
       changeSetId: 'wcs_filesystem_cleanup',
@@ -921,7 +927,9 @@ describe('workspace review application', () => {
           rootPath: workerRoot,
           workspaceId,
         });
-        const changeSet = buildFilesystemWorkspaceChangeSet({
+        const changeSet = await buildFilesystemWorkspaceChangeSet({
+          beforeRootPath: targetRoot,
+          afterRootPath: workerRoot,
           after,
           before,
           changeSetId: 'wcs_accepted_native_tuple',

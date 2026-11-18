@@ -55,6 +55,12 @@ export function applyWorkspaceRecoveryDecisionInDb(
       throw new WorkspaceRecoveryDecisionRefusal('missing');
     if (error instanceof OperationError && error.code === 'workspace_recovery_decision_failed') {
       if (
+        error.status === 409 &&
+        error.message ===
+          'Workspace recovery staging and quarantine are unavailable. Use resume_collection with a matching durable output manifest, or abandon with evidence retained.'
+      )
+        throw new WorkspaceRecoveryDecisionRefusal('unsupported_decision');
+      if (
         error.status === 404 &&
         error.message === `Workspace reconciliation record is already terminal: ${id}`
       )

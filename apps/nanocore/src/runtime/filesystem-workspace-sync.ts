@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import {
@@ -33,6 +34,8 @@ import { publishCanonicalPathAsync } from '../storage/workspace-file-records.js'
 
 const defaultIgnoredPathPrefixes = ['.git', 'node_modules'];
 const unsafeRelativePathPattern = /(^|\/)\.\.(\/|$)/;
+/** Existing review policy: larger payloads use artifact-only presentation. */
+const textReviewByteLimit = 1024 * 1024;
 /** Process-local target reservations, including queued overlapping operations. */
 const filesystemTargetReservations: Array<{
   readonly identity: string;
@@ -91,6 +94,10 @@ export interface CreateFilesystemSnapshotManifestInput {
 
 /** Input for building one filesystem workspace change set. */
 export interface BuildFilesystemWorkspaceChangeSetInput {
+  /** Root containing the exact before-snapshot bytes, including deleted paths. */
+  readonly beforeRootPath: string;
+  /** Root containing the exact after-snapshot bytes. */
+  readonly afterRootPath: string;
   /** Snapshot captured before worker execution. */
   readonly before: FilesystemSnapshotManifest;
   /** Snapshot captured after worker execution. */
@@ -195,12 +202,12 @@ export async function createFilesystemSnapshotManifest(
 /**
  * Builds a filesystem workspace change set by comparing two manifests.
  *
- * @param input Before and after manifests plus lineage ids.
+ * @param input Before and after manifests, their byte roots, and lineage ids.
  * @returns Workspace change set using the `filesystem` strategy.
  */
-export function buildFilesystemWorkspaceChangeSet(
+export async function buildFilesystemWorkspaceChangeSet(
   input: BuildFilesystemWorkspaceChangeSetInput
-): WorkspaceChangeSet {
+): Promise<WorkspaceChangeSet> {
   assertSupportedNonFileChanges(input.before, input.after);
   const beforeFiles = fileEntriesByPath(input.before);
   const afterFiles = fileEntriesByPath(input.after);
@@ -210,10 +217,24 @@ export function buildFilesystemWorkspaceChangeSet(
   for (const path of paths) {
     const before = beforeFiles.get(path);
     const after = afterFiles.get(path);
+    if (
+      before &&
+      after &&
+      before.digest === after.digest &&
+      before.permissions === after.permissions
+    ) {
+      continue;
+    }
+    const presentation = await classifyFilesystemChange(
+      before,
+      after,
+      input.beforeRootPath,
+      input.afterRootPath
+    );
 
     if (!before && after) {
       changedPaths.push({
-        binary: false,
+        ...presentation,
         digest: after.digest ?? undefined,
         newPermissions: after.permissions ?? undefined,
         path,
@@ -225,7 +246,7 @@ export function buildFilesystemWorkspaceChangeSet(
 
     if (before && !after) {
       changedPaths.push({
-        binary: false,
+        ...presentation,
         digest: before.digest ?? undefined,
         oldPermissions: before.permissions ?? undefined,
         path,
@@ -237,7 +258,7 @@ export function buildFilesystemWorkspaceChangeSet(
 
     if (before && after && before.digest !== after.digest) {
       changedPaths.push({
-        binary: false,
+        ...presentation,
         digest: after.digest ?? undefined,
         newPermissions: after.permissions ?? undefined,
         oldPermissions: before.permissions ?? undefined,
@@ -250,7 +271,7 @@ export function buildFilesystemWorkspaceChangeSet(
 
     if (before && after && before.permissions !== after.permissions) {
       changedPaths.push({
-        binary: false,
+        ...presentation,
         digest: after.digest ?? undefined,
         newPermissions: after.permissions ?? undefined,
         oldPermissions: before.permissions ?? undefined,
@@ -278,6 +299,82 @@ export function buildFilesystemWorkspaceChangeSet(
     strategy: 'filesystem',
     workspaceId: input.before.workspaceId,
   });
+}
+
+/**
+ * Classifies both sides, reading and verifying only payloads within the text limit.
+ *
+ * @param before Before entry, including the only bytes of a deleted path.
+ * @param after After entry, whose metadata describes an added or modified output.
+ * @param beforeRoot Root of the before snapshot.
+ * @param afterRoot Root of the after snapshot.
+ * @returns Existing changed-path presentation fields, never raw file content.
+ */
+async function classifyFilesystemChange(
+  before: FilesystemSnapshotEntry | undefined,
+  after: FilesystemSnapshotEntry | undefined,
+  beforeRoot: string,
+  afterRoot: string
+): Promise<
+  Pick<WorkspaceChangeSet['changedPaths'][number], 'binary' | 'mediaType' | 'binaryReview'>
+> {
+  let binary = false;
+  let large = false;
+  let mediaType = 'application/octet-stream';
+  for (const [entry, root] of [
+    [before, beforeRoot],
+    [after, afterRoot],
+  ] as const) {
+    if (!entry) continue;
+    let content: Buffer;
+    try {
+      const filePath = await requireExistingPathWithinRoot(await realpath(root), entry.path);
+      const stats = await lstat(filePath);
+      if (!stats.isFile()) throw new Error('Filesystem review requires regular files.');
+      if (entry.size !== null && entry.size > textReviewByteLimit) {
+        large = true;
+        mediaType = 'application/octet-stream';
+        continue;
+      }
+      content = await readFile(filePath);
+    } catch {
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        'Filesystem snapshot files are unavailable or unsupported. Capture fresh before and after snapshots and retry.',
+        409
+      );
+    }
+    if (content.length !== entry.size || digestBuffer(content) !== entry.digest) {
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        'Filesystem snapshot content changed before classification. Capture fresh before and after snapshots and retry.',
+        409
+      );
+    }
+    const text =
+      isUtf8(content) &&
+      !content.some(
+        (byte) => (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) || byte === 0x7f
+      );
+    binary ||= !text;
+    mediaType = text ? 'text/plain' : 'application/octet-stream';
+  }
+  if (!binary && !large) return { binary: false };
+  const entry = after ?? before!;
+  return {
+    binary: true,
+    mediaType,
+    binaryReview: {
+      mode: 'artifact-only',
+      reason: large ? 'binary-payload-too-large' : 'binary-path',
+      summary: large
+        ? 'At least one file version exceeds the 1 MiB text review limit; inspect as an artifact.'
+        : 'At least one file version is not safe text; inspect as an artifact.',
+      digest: entry.digest,
+      bytes: entry.size,
+      mediaType,
+    },
+  };
 }
 
 /**

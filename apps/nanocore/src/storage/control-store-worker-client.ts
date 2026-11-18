@@ -5426,6 +5426,12 @@ class ControlStoreWorkerClient {
               'Unaccepted capture source supports only abandon with evidence retained.',
               409
             );
+          case 'unsupported_decision':
+            throw new OperationError(
+              'workspace_recovery_decision_failed',
+              'Workspace recovery staging and quarantine are unavailable. Use resume_collection with a matching durable output manifest, or abandon with evidence retained.',
+              409
+            );
           case 'no_manifest':
             throw new OperationError(
               'workspace_recovery_decision_failed',

@@ -474,7 +474,9 @@ async function foreignFilesystemFixture() {
   };
   const before = await createFilesystemSnapshotManifest({ ...common, rootPath: targetRoot });
   const after = await createFilesystemSnapshotManifest({ ...common, rootPath: workerRoot });
-  const changeSet = buildFilesystemWorkspaceChangeSet({
+  const changeSet = await buildFilesystemWorkspaceChangeSet({
+    beforeRootPath: targetRoot,
+    afterRootPath: workerRoot,
     before,
     after,
     changeSetId: 'wcs_admin',
@@ -754,7 +756,9 @@ describe('Workspace synchronization native projections', () => {
     };
     const beforeFiles = await createFilesystemSnapshotManifest({ ...common, rootPath: targetRoot });
     const afterFiles = await createFilesystemSnapshotManifest({ ...common, rootPath: workerRoot });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
+    const changeSet = await buildFilesystemWorkspaceChangeSet({
+      beforeRootPath: targetRoot,
+      afterRootPath: workerRoot,
       before: beforeFiles,
       after: afterFiles,
       changeSetId: 'wcs_queued_current',
@@ -1896,6 +1900,43 @@ it.each(['HTTP', 'MCP'] as const)(
       expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
     } else {
       expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+    }
+  }
+);
+
+it.each(['stage_verified', 'quarantine'] as const)(
+  'refuses unsupported %s through HTTP and MCP without owner, handle, or receipt changes',
+  async (decision) => {
+    const f = await fixture();
+    const before = structuredClone(f.observed());
+    const handlesBefore = f.db.sqlite.prepare('SELECT * FROM backend_workspace_handles').all();
+    const evidenceBefore = f.db.sqlite.prepare('SELECT * FROM evidence_bundles').all();
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      reconciliationRecordId: 'wrr_projection',
+      decision,
+      requestId: crypto.randomUUID(),
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await f.http('sync.recovery-decide', input);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: 'workspace_recovery_decision_failed',
+        message: expect.stringMatching(/resume_collection.*abandon/),
+      });
+      expect(await f.mcp('sync.recovery-decide', input)).toMatchObject({
+        isError: true,
+        value: {
+          code: 'workspace_recovery_decision_failed',
+          status: 409,
+          message: expect.stringMatching(/resume_collection.*abandon/),
+        },
+      });
+      expect(f.observed()).toEqual(before);
+      expect(f.db.sqlite.prepare('SELECT * FROM backend_workspace_handles').all()).toEqual(
+        handlesBefore
+      );
+      expect(f.db.sqlite.prepare('SELECT * FROM evidence_bundles').all()).toEqual(evidenceBefore);
     }
   }
 );

@@ -374,7 +374,61 @@ describe('workspace reconciliation records', () => {
     }
   });
 
-  it('maps human recovery decisions to terminal state and backend teardown decisions', () => {
+  it.each(['stage_verified', 'quarantine'] as const)(
+    'refuses unsupported %s without changing reconciliation or backend retention, including after restart',
+    (decision) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-unsupported-recovery-'));
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      let db = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        applyScopedMigrations(db);
+        recordWorkspaceReconciliationRecord(db, {
+          ...workspaceReconciliationRecord(),
+          retentionDecision: 'retain-backend',
+        });
+        const before = db.sqlite.prepare('SELECT * FROM workspace_reconciliation_records').all();
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          expect(() =>
+            resolveWorkspaceReconciliationRecord({
+              workspaceDb: db,
+              workspaceId,
+              reconciliationRecordId: 'wrr_1',
+              decision,
+              decidedAt: '2026-07-08T00:05:00.000Z',
+            })
+          ).toThrowError(
+            expect.objectContaining({
+              code: 'workspace_recovery_decision_failed',
+              status: 409,
+              message: expect.stringMatching(/resume_collection.*abandon/),
+            })
+          );
+          expect(db.sqlite.prepare('SELECT * FROM workspace_reconciliation_records').all()).toEqual(
+            before
+          );
+          db.sqlite.close();
+          db = openWorkspaceDb(dataRoot, workspaceId);
+        }
+        expect(
+          resolveWorkspaceReconciliationRecord({
+            workspaceDb: db,
+            workspaceId,
+            reconciliationRecordId: 'wrr_1',
+            decision: 'abandon',
+            decidedAt: '2026-07-08T00:10:00.000Z',
+          })
+        ).toMatchObject({
+          stateAfter: 'unrecoverable',
+          evidenceBundleIds: ['evb_workspace_materialization_wmr_1'],
+        });
+      } finally {
+        db.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it('maps explicit abandon to terminal state and backend teardown with evidence retained', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-decision-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const decidedAt = '2026-07-08T00:05:00.000Z';
@@ -384,50 +438,10 @@ describe('workspace reconciliation records', () => {
 
       recordWorkspaceReconciliationRecord(workspaceDb, {
         ...workspaceReconciliationRecord(),
-        id: 'wrr_stage_verified',
-        retentionDecision: 'retain-backend',
-      });
-      recordWorkspaceReconciliationRecord(workspaceDb, {
-        ...workspaceReconciliationRecord(),
-        id: 'wrr_quarantine',
-        retentionDecision: 'retain-backend',
-      });
-      recordWorkspaceReconciliationRecord(workspaceDb, {
-        ...workspaceReconciliationRecord(),
         id: 'wrr_abandon',
         retentionDecision: 'retain-backend',
       });
 
-      expect(
-        resolveWorkspaceReconciliationRecord({
-          decidedAt,
-          decision: 'stage_verified',
-          reconciliationRecordId: 'wrr_stage_verified',
-          workspaceDb,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toMatchObject({
-        finishedAt: decidedAt,
-        requiredHumanDecision: null,
-        retentionDecision: 'teardown-backend',
-        stateAfter: 'recovered',
-        stateBefore: 'requires-human',
-      });
-      expect(
-        resolveWorkspaceReconciliationRecord({
-          decidedAt,
-          decision: 'quarantine',
-          reconciliationRecordId: 'wrr_quarantine',
-          workspaceDb,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toMatchObject({
-        finishedAt: decidedAt,
-        requiredHumanDecision: null,
-        retentionDecision: 'teardown-backend',
-        stateAfter: 'quarantined',
-        stateBefore: 'requires-human',
-      });
       expect(
         resolveWorkspaceReconciliationRecord({
           decidedAt,

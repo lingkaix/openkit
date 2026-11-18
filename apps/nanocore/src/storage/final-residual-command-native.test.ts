@@ -441,7 +441,9 @@ async function fixture(kind: Kind) {
       const common = { createdAt, resourceId: `fs_${id}`, workspaceId };
       const before = await createFilesystemSnapshotManifest({ ...common, rootPath: targetRoot }),
         after = await createFilesystemSnapshotManifest({ ...common, rootPath: workerRoot });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         before,
         after,
         changeSetId: `wcs_${id}`,

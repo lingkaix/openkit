@@ -24,8 +24,10 @@ import {
   type ControlSqlStatement,
   type ControlWorkerReply,
 } from './control-store-worker-protocol.js';
-import { openCoreDb } from './db.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
+import { applyScopedMigrations } from './migrate.js';
 import { nativeProductScope } from './workspace-file-records.js';
+import { recordWorkspaceReconciliationRecord } from './workspace-reconciliation-records.js';
 
 const require = createRequire(import.meta.url);
 const roots: string[] = [];
@@ -153,6 +155,102 @@ const setup: readonly ControlSqlStatement[] = ['0000_setup', '0001_thread_read_r
 );
 
 describe('shipped native worker bundle', () => {
+  it.each(['stage_verified', 'quarantine'] as const)(
+    'keeps unsupported %s scoped to its request before an unrelated native barrier',
+    async (decision) => {
+      const f = fixture();
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const db = openWorkspaceDb(f.root, workspaceId);
+      try {
+        applyScopedMigrations(db);
+        for (const id of ['wrr_unsupported', 'wrr_unrelated']) {
+          recordWorkspaceReconciliationRecord(db, {
+            id,
+            workspaceId,
+            triggerReason: 'manual',
+            affectedRecordIds: ['wmr_fixture'],
+            backendHandleSummary: {},
+            backendReachability: {
+              status: 'unknown',
+              checkedAt: '2026-07-08T00:00:00.000Z',
+              detail: null,
+            },
+            collectedOutputManifestIds: [],
+            evidenceBundleIds: [],
+            stateBefore: 'requires-human',
+            stateAfter: 'requires-human',
+            quarantineRefs: [],
+            requiredHumanDecision: 'inspect_recovery',
+            retentionDecision: 'retain-backend',
+            startedAt: '2026-07-08T00:00:00.000Z',
+            finishedAt: null,
+          });
+        }
+      } finally {
+        db.sqlite.close();
+      }
+      const scope = nativeProductScope(f.root, { kind: 'workspace', workspaceId });
+      expect(
+        await f.send({
+          operation: 'open',
+          path: scope.path,
+          dataRoot: f.root,
+          create: false,
+          initialize: 'workspace',
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
+        })
+      ).toMatchObject({ status: 'ok' });
+      Atomics.store(f.gate, 0, 1);
+      const prefix = f.send({
+        operation: 'write',
+        statements: [{ mode: 'get', sql: 'SELECT 0 AS value', parameters: [] }],
+      });
+      await f.held;
+      const refused = f.send({
+        operation: 'workspace-recovery-decision',
+        input: {
+          action: 'decide',
+          workspaceId,
+          reconciliationRecordId: 'wrr_unsupported',
+          decision,
+          decidedAt: '2026-07-08T00:05:00.000Z',
+        },
+      });
+      const barrier = f.send({
+        operation: 'write',
+        statements: [{ mode: 'get', sql: 'SELECT 1 AS value', parameters: [] }],
+      });
+      const unrelated = f.send({
+        operation: 'workspace-recovery-decision',
+        input: {
+          action: 'decide',
+          workspaceId,
+          reconciliationRecordId: 'wrr_unrelated',
+          decision: 'abandon',
+          decidedAt: '2026-07-08T00:05:00.000Z',
+        },
+      });
+      Atomics.store(f.gate, 1, 1);
+      Atomics.notify(f.gate, 1);
+      expect(await prefix).toMatchObject({ status: 'ok' });
+      expect(await refused).toMatchObject({
+        status: 'error',
+        commit: 'not-committed',
+        domain: {
+          operation: 'workspace-recovery-decision',
+          code: 'unsupported_decision',
+          status: 409,
+        },
+      });
+      expect(await barrier).toMatchObject({ status: 'ok', operation: 'write' });
+      expect(await unrelated).toMatchObject({
+        status: 'ok',
+        result: { id: 'wrr_unrelated', stateAfter: 'unrecoverable' },
+      });
+    }
+  );
+
   it('opens a real Core through the relocated bundled entry and its shipped migration resources', async () => {
     const f = fixture();
     const scope = nativeProductScope(f.root, { kind: 'server' });

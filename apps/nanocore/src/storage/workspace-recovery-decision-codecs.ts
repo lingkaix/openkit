@@ -42,7 +42,14 @@ export type ControlWorkspaceRecoveryDecision = z.infer<
 /** The original public record or the separate receipt acknowledgement. */
 export const ControlWorkspaceRecoveryDecisionResultSchema =
   WorkspaceReconciliationRecordSchema.nullable();
-const codes = ['missing', 'terminal', 'capture_source', 'no_manifest', 'record_invalid'] as const;
+const codes = [
+  'missing',
+  'terminal',
+  'capture_source',
+  'no_manifest',
+  'record_invalid',
+  'unsupported_decision',
+] as const;
 /** Fixed owned refusal categories; SQL diagnostics never cross this boundary. */
 export const ControlWorkspaceRecoveryDecisionRefusalSchema = z
   .object({
@@ -52,7 +59,11 @@ export const ControlWorkspaceRecoveryDecisionRefusalSchema = z
     status: z.union([z.literal(404), z.literal(409)]),
   })
   .strict()
-  .refine((value) => value.status === (value.code === 'capture_source' ? 409 : 404));
+  .refine(
+    (value) =>
+      value.status ===
+      (value.code === 'capture_source' || value.code === 'unsupported_decision' ? 409 : 404)
+  );
 /** Exact original domain refusal identity, not a new error contract. */
 export class WorkspaceRecoveryDecisionRefusal extends Error {
   constructor(readonly code: (typeof codes)[number]) {

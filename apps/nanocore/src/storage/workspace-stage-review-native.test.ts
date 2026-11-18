@@ -208,7 +208,9 @@ async function createNativeStageReviewFixture(name: string) {
     rootPath: workerRoot,
     workspaceId: DEMO_WORKSPACE_ID,
   });
-  const changeSet = buildFilesystemWorkspaceChangeSet({
+  const changeSet = await buildFilesystemWorkspaceChangeSet({
+    beforeRootPath: originalApply.targetRootPath,
+    afterRootPath: workerRoot,
     after,
     before,
     changeSetId: `wcs_stage_review_${name}`,

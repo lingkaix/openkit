@@ -62,6 +62,15 @@ export function resolveWorkspaceReconciliationRecord(
     );
   }
 
+  // #776: no terminal state or teardown is safe until real staging/isolation exists.
+  if (input.decision === 'stage_verified' || input.decision === 'quarantine') {
+    throw new OperationError(
+      'workspace_recovery_decision_failed',
+      'Workspace recovery staging and quarantine are unavailable. Use resume_collection with a matching durable output manifest, or abandon with evidence retained.',
+      409
+    );
+  }
+
   const resumeCollection =
     input.decision === 'resume_collection'
       ? resolveResumeCollection({
@@ -74,7 +83,7 @@ export function resolveWorkspaceReconciliationRecord(
     ...record,
     ...(resumeCollection ?? {}),
     stateBefore: 'requires-human',
-    stateAfter: recoveryDecisionState(input.decision),
+    stateAfter: input.decision === 'resume_collection' ? 'recovered' : 'unrecoverable',
     requiredHumanDecision: null,
     retentionDecision: 'teardown-backend',
     finishedAt: input.decidedAt,
@@ -142,26 +151,4 @@ function resolveResumeCollection(input: {
  */
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
-}
-
-/**
- * Maps a recovery decision to the terminal reconciliation state.
- *
- * @param decision Human recovery decision.
- * @returns Terminal reconciliation state.
- */
-function recoveryDecisionState(
-  decision: WorkspaceRecoveryDecision
-): WorkspaceReconciliationRecord['stateAfter'] {
-  if (decision === 'stage_verified') {
-    return 'recovered';
-  }
-  if (decision === 'resume_collection') {
-    return 'recovered';
-  }
-  if (decision === 'quarantine') {
-    return 'quarantined';
-  }
-
-  return 'unrecoverable';
 }

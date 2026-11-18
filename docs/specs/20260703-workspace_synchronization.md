@@ -386,9 +386,8 @@ Workspace-linked backing Artifacts remain available for inspection and may suppl
 ## Implementation Gaps
 
 - A nonempty captured candidate is staged as one Workspace Sync Review - On main, the staging helper has no production caller - #495
-- A quarantine record isolates invalid synchronization material - On main, no production caller writes that record, and a quarantine decision only changes reconciliation state - #776
-- A binary changed path uses artifact-only review presentation - On main, filesystem diff marks every changed path binary false and no size classifier runs - #776
-- Stage verified performs the required staging - main only changes reconciliation state - #776
+- A quarantine record isolates invalid synchronization material - Production isolation remains unavailable; quarantine decisions refuse before terminal state or backend teardown and retain evidence - #776
+- Stage verified performs the required staging - Recovery staging remains unavailable; stage_verified decisions refuse before terminal state or backend teardown and retain evidence - #776
 
 ## Decisions
 

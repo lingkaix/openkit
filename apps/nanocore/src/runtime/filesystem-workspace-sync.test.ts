@@ -50,7 +50,9 @@ async function createChangedFileFixture(name: string, workerContent: string | nu
     rootPath: workerRoot,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const changeSet = buildFilesystemWorkspaceChangeSet({
+  const changeSet = await buildFilesystemWorkspaceChangeSet({
+    beforeRootPath: targetRoot,
+    afterRootPath: workerRoot,
     after,
     before,
     changeSetId: `wcs_fs_${name}`,
@@ -183,7 +185,9 @@ describe('filesystem workspace synchronization', () => {
       rootPath: workerRoot,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
+    const changeSet = await buildFilesystemWorkspaceChangeSet({
+      beforeRootPath: targetRoot,
+      afterRootPath: workerRoot,
       after,
       before,
       changeSetId: 'wcs_fs_1',
@@ -255,7 +259,9 @@ describe('filesystem workspace synchronization', () => {
       rootPath: workerRoot,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
+    const changeSet = await buildFilesystemWorkspaceChangeSet({
+      beforeRootPath: targetRoot,
+      afterRootPath: workerRoot,
       after,
       before,
       changeSetId: 'wcs_fs_conflict',
@@ -315,7 +321,9 @@ describe('filesystem workspace synchronization', () => {
       rootPath: workerRoot,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
+    const changeSet = await buildFilesystemWorkspaceChangeSet({
+      beforeRootPath: targetRoot,
+      afterRootPath: workerRoot,
       after,
       before,
       changeSetId: 'wcs_fs_kind_conflict',
@@ -375,7 +383,9 @@ describe('filesystem workspace synchronization', () => {
       rootPath: workerRoot,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
+    const changeSet = await buildFilesystemWorkspaceChangeSet({
+      beforeRootPath: targetRoot,
+      afterRootPath: workerRoot,
       after,
       before,
       changeSetId: 'wcs_fs_parent_conflict',
@@ -436,7 +446,9 @@ describe('filesystem workspace synchronization', () => {
       rootPath: workerRoot,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
+    const changeSet = await buildFilesystemWorkspaceChangeSet({
+      beforeRootPath: targetRoot,
+      afterRootPath: workerRoot,
       after,
       before,
       changeSetId: 'wcs_fs_mode',
@@ -512,7 +524,9 @@ describe('filesystem workspace synchronization', () => {
         rootPath: workerRoot,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         after,
         before,
         changeSetId: 'wcs_fs_rollback',
@@ -581,7 +595,9 @@ describe('filesystem workspace synchronization', () => {
         rootPath: workerRoot,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         after,
         before,
         changeSetId: 'wcs_fs_directory_rollback',
@@ -824,7 +840,9 @@ describe('filesystem workspace synchronization', () => {
         rootPath: workerRoot,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         after,
         before,
         changeSetId: 'wcs_fs_added_parent_rollback',
@@ -950,7 +968,9 @@ describe('filesystem workspace synchronization', () => {
           rootPath: innerWorkerRoot,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
-        const outerChangeSet = buildFilesystemWorkspaceChangeSet({
+        const outerChangeSet = await buildFilesystemWorkspaceChangeSet({
+          beforeRootPath: targetRoot,
+          afterRootPath: outerWorkerRoot,
           after: outerAfter,
           before: outerBefore,
           changeSetId: `wcs_fs_concurrent_overlap_${orderName}_outer`,
@@ -958,7 +978,9 @@ describe('filesystem workspace synchronization', () => {
           inputSnapshotId: `wis_fs_concurrent_overlap_${orderName}_outer`,
           materializationRecordId: `wmr_fs_concurrent_overlap_${orderName}_outer`,
         });
-        const innerChangeSet = buildFilesystemWorkspaceChangeSet({
+        const innerChangeSet = await buildFilesystemWorkspaceChangeSet({
+          beforeRootPath: innerTargetRoot,
+          afterRootPath: innerWorkerRoot,
           after: innerAfter,
           before: innerBefore,
           changeSetId: `wcs_fs_concurrent_overlap_${orderName}_inner`,
@@ -1144,7 +1166,9 @@ describe('filesystem workspace synchronization', () => {
         rootPath: workerCRoot,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const changeSetA = buildFilesystemWorkspaceChangeSet({
+      const changeSetA = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetARoot,
+        afterRootPath: workerARoot,
         after: afterA,
         before: beforeA,
         changeSetId: 'wcs_fs_concurrent_no_barging_a',
@@ -1152,7 +1176,9 @@ describe('filesystem workspace synchronization', () => {
         inputSnapshotId: 'wis_fs_concurrent_no_barging_a',
         materializationRecordId: 'wmr_fs_concurrent_no_barging_a',
       });
-      const changeSetB = buildFilesystemWorkspaceChangeSet({
+      const changeSetB = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: sharedRoot,
+        afterRootPath: workerBRoot,
         after: afterB,
         before: beforeB,
         changeSetId: 'wcs_fs_concurrent_no_barging_b',
@@ -1160,7 +1186,9 @@ describe('filesystem workspace synchronization', () => {
         inputSnapshotId: 'wis_fs_concurrent_no_barging_b',
         materializationRecordId: 'wmr_fs_concurrent_no_barging_b',
       });
-      const changeSetC = buildFilesystemWorkspaceChangeSet({
+      const changeSetC = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetCRoot,
+        afterRootPath: workerCRoot,
         after: afterC,
         before: beforeC,
         changeSetId: 'wcs_fs_concurrent_no_barging_c',
@@ -1304,7 +1332,9 @@ describe('filesystem workspace synchronization', () => {
         rootPath: secondWorkerRoot,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const secondChangeSet = buildFilesystemWorkspaceChangeSet({
+      const secondChangeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: first.targetRoot,
+        afterRootPath: secondWorkerRoot,
         after: secondAfter,
         before: first.before,
         changeSetId: 'wcs_fs_concurrent_same_second',
@@ -1565,7 +1595,9 @@ describe('filesystem workspace synchronization', () => {
         rootPath: workerRoot,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         after,
         before,
         changeSetId: 'wcs_fs_directory_mode',
@@ -1631,7 +1663,9 @@ describe('filesystem workspace synchronization', () => {
         rootPath: workerRoot,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         after,
         before,
         changeSetId: 'wcs_fs_parent_swap',
@@ -1730,8 +1764,10 @@ describe('filesystem workspace synchronization', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
-      expect(() =>
+      await expect(
         buildFilesystemWorkspaceChangeSet({
+          beforeRootPath: targetRoot,
+          afterRootPath: workerRoot,
           after,
           before,
           changeSetId: `wcs_fs_${scenario}`,
@@ -1739,7 +1775,7 @@ describe('filesystem workspace synchronization', () => {
           inputSnapshotId: `wis_fs_${scenario}`,
           materializationRecordId: `wmr_fs_${scenario}`,
         })
-      ).toThrow(/unsupported/i);
+      ).rejects.toThrow(/unsupported/i);
     } finally {
       await rm(targetRoot, { force: true, recursive: true });
       await rm(workerRoot, { force: true, recursive: true });
@@ -1851,7 +1887,9 @@ describe('filesystem workspace synchronization', () => {
         rootPath: workerRoot,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const changeSet = buildFilesystemWorkspaceChangeSet({
+      const changeSet = await buildFilesystemWorkspaceChangeSet({
+        beforeRootPath: targetRoot,
+        afterRootPath: workerRoot,
         after,
         before,
         changeSetId: 'wcs_fs_apply_internal_symlink',

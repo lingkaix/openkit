@@ -931,7 +931,7 @@ function domainRefusal(
       operation,
       code: error.code,
       message: 'Workspace recovery decision was refused.',
-      status: error.code === 'capture_source' ? 409 : 404,
+      status: error.code === 'capture_source' || error.code === 'unsupported_decision' ? 409 : 404,
     };
   if (operation === 'workspace-takeover' && error instanceof WorkspaceTakeoverRefusal) {
     const value = {
@@ -3465,7 +3465,17 @@ function flush(owner: OwnedDatabase): void {
           const refused = domain
             ? { ...failure(request.id, 'precondition'), domain }
             : failure(request.id, failureCode(error, [request.id]));
-          if (!isolatedSchemaRefusal(owner, request, refused)) refuseSuccessors(owner, request);
+          // #776: an unimplemented recovery refusal creates no predecessor for unrelated work.
+          const isolatedUnsupportedRecovery =
+            request.operation === 'workspace-recovery-decision' &&
+            request.input.action === 'decide' &&
+            !request.barrier &&
+            request.lanes.size === 0 &&
+            !request.cohort &&
+            error instanceof WorkspaceRecoveryDecisionRefusal &&
+            error.code === 'unsupported_decision';
+          if (!isolatedUnsupportedRecovery && !isolatedSchemaRefusal(owner, request, refused))
+            refuseSuccessors(owner, request);
           outcomes.push(refused);
         }
       }
