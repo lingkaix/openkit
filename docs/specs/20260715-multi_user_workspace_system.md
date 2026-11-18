@@ -237,7 +237,7 @@ NanoCore projects the authenticated human or responsible agent identity, active 
 
 ## Implementation Gaps
 
-- Governed Workspace deletion captures and disposes of the exact fenced Worker `storageRef`s and revisions bound to the deletion request, recording each target's confirmed, retained, or unknown cleanup outcome after hold and writer-absence checks and keeping phase `deleted` until all targets are proved `cleaned` - `WorkspaceDeletionRequestRecordSchema` and the deletion cleanup path remove the staging tree and transition to `cleaned` without retaining or purging bound Worker `storageRef`s - #817
+- Governed Workspace deletion captures and disposes of the exact fenced Worker `storageRef`s and revisions bound to the deletion request, recording each target's confirmed, retained, or unknown cleanup outcome after hold and writer-absence checks and keeping phase `deleted` until all targets are proved `cleaned` - request-bound target capture and purge remain unavailable; deletion refuses before destruction unless the complete Core ledger proves Worker storage absent, and pre-destruction refusal leaves the active Workspace usable, and uncertain `deleted` retries preserve staging for inspection and can resume after proved cleanup without recording premature `cleaned`; the full cleanup lifecycle remains after v0.1.0 - #817
 
 ## Decisions
 

@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
+import { Hono } from 'hono';
 import { expect, it, vi } from 'vitest';
 import {
   ApiCallError,
@@ -22,11 +23,13 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import type { AuthVariables } from './auth/middleware.js';
 import { requireAdministratorOperation } from './auth/operation-authorizer.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
+import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
@@ -40,6 +43,13 @@ import {
   settleNanoHostHarnessOperation,
 } from './runtime/nanohost-harness.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
+import {
+  createWorkerStorageBinding,
+  getWorkerStorageBinding,
+  listWorkerStorageBindings,
+  releaseWorkerStorageAttachment,
+  reserveWorkerStorageAttachment,
+} from './runtime/worker-storage-binding-records.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
@@ -71,6 +81,7 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recoveryJournalFact } from './test-support/recovery-journal.js';
+import { createWorkerEnvironmentOperations } from './worker-environments/worker-environment-operations.js';
 import { WORKSPACE_DELETION_LEGAL_HOLD_OWNERS } from './workspace-deletion-evidence.js';
 import * as deletionRequestOwner from './workspace-deletion-request.js';
 import {
@@ -3226,3 +3237,565 @@ it('retains exact staged bytes and file request after a late native receipt fail
     rmSync(f.dataRoot, { recursive: true, force: true });
   }
 }, 30_000);
+
+/** Seeds retained Core facts, including an audience the current actor cannot inspect. */
+function deletionStorageFixture(
+  f: Awaited<ReturnType<typeof nativeDeletionRouteFixture>>,
+  contributor = { responsibleUserId: 'removed-user', threadId: 'private-thread' }
+) {
+  const db = openCoreDb(f.dataRoot);
+  db.sqlite
+    .prepare(`INSERT INTO nanohost_runtime_targets (
+    target_id, identity_id, deployment_id, connection_generation,
+    predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+  ) VALUES ('delete-target', 'delete-identity', 'delete-deployment', 1, 1, 1, 1, ?, 1)`)
+    .run('2026-11-18T00:00:00.000Z');
+  const binding = createWorkerStorageBinding(db, {
+    workspaceId: f.workspace.id,
+    runtimeTargetId: 'delete-target',
+    deploymentId: 'delete-deployment',
+    layout: {
+      family: null,
+      version: null,
+      uid: 1000,
+      gid: 1000,
+      workingDirectory: '/workspace',
+      platform: { architecture: 'amd64', os: 'linux' },
+      targets: [{ target: '/workspace' }],
+    },
+  });
+  const reserved = reserveWorkerStorageAttachment(db, {
+    storageRef: binding.storageRef,
+    expectedRevision: binding.revision,
+    runtimeTargetId: binding.runtimeTargetId,
+    workspaceId: f.workspace.id,
+    agentSessionId: 'former-session',
+    responsibleUserId: contributor.responsibleUserId,
+    threadId: contributor.threadId,
+    purpose: 'work',
+    layout: binding.layout,
+    authorizeContributor: () => true,
+  });
+  // No Host materialization took place; release the exact Core-only reservation.
+  releaseWorkerStorageAttachment(db, {
+    storageRef: reserved.storageRef,
+    expectedRevision: reserved.revision,
+    attachmentGeneration: reserved.attachmentGeneration,
+    cleanupProved: true,
+  });
+  return { db, binding };
+}
+
+/** Uses real public admission and the existing purge owner; only the Host effect is a private fixture. */
+function deletionStoragePurgeFixture(f: Awaited<ReturnType<typeof nativeDeletionRouteFixture>>) {
+  const unused = async () => {
+    throw new Error('Not exercised.');
+  };
+  const purgeStorage = vi.fn(
+    async (input: { authorize: () => boolean; binding: { storageRef: string } }) => {
+      expect(input.authorize()).toBe(true);
+      return { state: 'purged' as const, storageRef: input.binding.storageRef };
+    }
+  );
+  const operations = createWorkerEnvironmentOperations({
+    coreDb: f.coreDb,
+    store: f.store,
+    runtimeEffects: {
+      inspectImage: unused,
+      prepareImage: unused,
+      recoverImageEffect: unused,
+      inspectStorage: unused,
+      purgeStorage,
+    },
+  });
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use('*', async (context, next) => {
+    context.set('actor', { kind: 'local', userId: f.actorId });
+    await next();
+  });
+  registerOperationJsonRoutes({
+    app,
+    coreDb: f.coreDb,
+    store: f.store,
+    requestStore: () => f.store,
+    workerEnvironmentServices: { operations },
+  });
+  return {
+    purgeStorage,
+    purge: (storageRef: string, expectedRevision: number) =>
+      app.request(
+        ...operationRequest(
+          'worker-environment.purge',
+          {
+            workspaceId: f.workspace.id,
+            storageRef,
+          },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              confirmation: `purge-worker-environment:${storageRef}:${expectedRevision}`,
+              expectedRevision,
+              requestId: randomUUID(),
+              storageRef,
+            }),
+          }
+        )
+      ),
+  };
+}
+
+/** Makes only the selected private ledger read unavailable until the fixture repairs the fault. */
+function unavailableDeletionStorageRead(
+  f: Awaited<ReturnType<typeof nativeDeletionRouteFixture>>,
+  table: 'bindings' | 'contributors'
+): () => void {
+  const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
+  const read = vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+    if (sql.includes(`worker_storage_${table}`))
+      throw new Error('Injected Worker storage ledger read failure.');
+    return prepare(sql);
+  });
+  return () => read.mockRestore();
+}
+
+it.each([
+  'idle',
+  'reserved',
+  'attached',
+  'unknown',
+  'purge-pending',
+  'purged-with-invalid-proof',
+  'unsupported-schema',
+  'invalid-targets',
+  'orphan-contributor',
+  'unreadable-bindings',
+  'unreadable-contributors',
+])('refuses deletion before destruction for unproved Worker storage: %s', async (shape) => {
+  const f = await nativeDeletionRouteFixture();
+  const { db, binding } = deletionStorageFixture(f);
+  let restoreRead: (() => void) | undefined;
+  try {
+    if (['idle', 'reserved', 'attached', 'unknown', 'purge-pending'].includes(shape)) {
+      db.sqlite
+        .prepare(`UPDATE worker_storage_bindings SET state = ?,
+        current_agent_session_id = ?, current_thread_id = ?, current_work_slot_ref = ?`)
+        .run(
+          shape,
+          ...(['reserved', 'attached'].includes(shape)
+            ? ['writer', 'private-thread', 'private-slot']
+            : [null, null, null])
+        );
+      expect(
+        listWorkerStorageBindings(db, {
+          workspaceId: f.workspace.id,
+          authorizeContributor: () => false,
+        })
+      ).toEqual([]);
+    } else {
+      db.sqlite
+        .prepare("UPDATE worker_storage_bindings SET state = 'purged', purged_at = ?")
+        .run(binding.createdAt);
+      if (shape === 'purged-with-invalid-proof')
+        db.sqlite.exec("UPDATE worker_storage_bindings SET purged_at = 'invalid'");
+      if (shape === 'unsupported-schema')
+        db.sqlite.exec('UPDATE worker_storage_bindings SET schema_version = 999');
+      if (shape === 'invalid-targets')
+        db.sqlite.exec("UPDATE worker_storage_bindings SET targets_json = 'invalid'");
+      if (shape === 'orphan-contributor') {
+        // Model lost ledger rows without deleting the surviving retained lineage through FK cascade.
+        db.sqlite.pragma('foreign_keys = OFF');
+        db.sqlite.exec('DELETE FROM worker_storage_bindings');
+      }
+      if (shape === 'unreadable-bindings')
+        restoreRead = unavailableDeletionStorageRead(f, 'bindings');
+      if (shape === 'unreadable-contributors')
+        restoreRead = unavailableDeletionStorageRead(f, 'contributors');
+    }
+    const response = await f.invoke();
+    expect(response.status, await response.clone().text()).toBe(409);
+    const error = await response.json();
+    expect(error).toMatchObject({ code: 'recovery_required' });
+    expect(error.message).toMatch(/inspect.*cleanup.*retry/i);
+    expect(error.message).toContain('administration.cleanup-read');
+    expect(error.message).toContain('worker-environment.purge');
+    expect(error.message).toMatch(/purge.*only.*active.*contributor/i);
+    expect(error.message).toMatch(/cleanup.*unavailable.*after-v0.1.0/i);
+    expect(JSON.stringify(error)).not.toContain(binding.storageRef);
+    expect(JSON.stringify(error)).not.toContain('private-thread');
+    expect(
+      f.coreDb.sqlite
+        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+        .get(f.workspace.id)
+    ).toEqual({ status: 'active', revision: 1 });
+    expect(existsSync(join(f.dataRoot, 'workspaces', f.workspace.id))).toBe(true);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspace.id)
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(f.dataRoot, workspaceDeletionStagingRelativePath(f.workspace.id, f.requestId))
+      )
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(f.dataRoot, 'server/exports/workspace-deletions', f.workspace.id, f.requestId)
+      )
+    ).toBe(false);
+  } finally {
+    restoreRead?.();
+    db.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    rmSync(f.dataRoot, { recursive: true, force: true });
+  }
+});
+
+it.each(['retained', 'unreadable', 'already-removed-staging'])(
+  'keeps deleted retry for inspection without cleanup proof: %s',
+  async (shape) => {
+    const f = await nativeDeletionRouteFixture();
+    const write = deletionRequestOwner.writeWorkspaceDeletionRequest;
+    const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
+    let db: ReturnType<typeof openCoreDb> | undefined;
+    let restoreRead: (() => void) | undefined;
+    try {
+      phaseWrite.mockImplementation((root, record) => {
+        const result = write(root, record);
+        if (result.phase === 'deleted')
+          throw new Error('Stop after genuine tombstone publication.');
+        return result;
+      });
+      const interrupted = await f.invoke();
+      expect(interrupted.status).toBe(409);
+      phaseWrite.mockRestore();
+      const retained = readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId);
+      expect(retained.phase).toBe('deleted');
+      const stagingRoot = join(f.dataRoot, retained.stagingRelativePath!);
+      expect(existsSync(stagingRoot)).toBe(true);
+      ({ db } = deletionStorageFixture(f));
+      if (shape === 'unreadable') restoreRead = unavailableDeletionStorageRead(f, 'bindings');
+      if (shape === 'already-removed-staging') rmSync(stagingRoot, { recursive: true });
+      await shutdownControlStoreWorkerClient();
+      // Rebuild serving composition from retained files after the native owner shuts down.
+      const restarted = createApp({
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: new FsStore({ dataRoot: f.dataRoot }),
+        mode: 'local',
+      });
+      for (let retry = 0; retry < 2; retry++) {
+        const response = await restarted.request(
+          ...operationRequest(
+            'workspace.delete',
+            { workspaceId: f.workspace.id },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: f.requestId,
+                confirmation: retained.confirmation,
+                expectedRegistryRevision: retained.expectedRegistryRevision,
+              }),
+            }
+          )
+        );
+        expect(response.status, await response.clone().text()).toBe(409);
+        expect(await response.json()).toMatchObject({
+          code: 'recovery_required',
+          message: expect.stringMatching(/purge.*cannot.*deleting or deleted/i),
+        });
+        expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId)).toEqual(
+          retained
+        );
+        expect(existsSync(stagingRoot)).toBe(shape !== 'already-removed-staging');
+      }
+      // Retained-target cleanup is not available after deletion; do not manufacture purge proof.
+      restoreRead?.();
+      restoreRead = undefined;
+      const binding = db.sqlite
+        .prepare('SELECT storage_ref, revision FROM worker_storage_bindings')
+        .get() as { storage_ref: string; revision: number };
+      const purge = deletionStoragePurgeFixture(f);
+      const refusedPurge = await purge.purge(binding.storage_ref, binding.revision);
+      expect(refusedPurge.status).toBe(403);
+      expect(purge.purgeStorage).not.toHaveBeenCalled();
+      expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId)).toEqual(
+        retained
+      );
+    } finally {
+      phaseWrite.mockRestore();
+      restoreRead?.();
+      db?.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  }
+);
+
+it('admits deletion with proved purged Worker storage without disclosing hidden contributors', async () => {
+  const f = await nativeDeletionRouteFixture();
+  const { db, binding } = deletionStorageFixture(f);
+  try {
+    db.sqlite
+      .prepare("UPDATE worker_storage_bindings SET state = 'purged', purged_at = ?")
+      .run(binding.createdAt);
+    const response = await f.invoke();
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await response.json()).toMatchObject({ deletion: { phase: 'cleaned' } });
+  } finally {
+    db.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    rmSync(f.dataRoot, { recursive: true, force: true });
+  }
+});
+
+it('replays historical cleaned requests without rewriting them when Worker storage is retained', async () => {
+  const f = await nativeDeletionRouteFixture();
+  let db: ReturnType<typeof openCoreDb> | undefined;
+  try {
+    const first = await f.invoke();
+    expect(first.status, await first.clone().text()).toBe(200);
+    const retained = readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId);
+    expect(retained.phase).toBe('cleaned');
+    ({ db } = deletionStorageFixture(f));
+    const replay = await f.invoke();
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(await replay.json()).toEqual(await first.json());
+    expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId)).toEqual(retained);
+  } finally {
+    db?.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    rmSync(f.dataRoot, { recursive: true, force: true });
+  }
+});
+
+it.each(['fenced', 'closure-sealed', 'staged', 'deleted'] as const)(
+  'refuses unproved Worker storage before destruction after phase publication: %s',
+  async (phase) => {
+    const f = await nativeDeletionRouteFixture();
+    const write = deletionRequestOwner.writeWorkspaceDeletionRequest;
+    const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
+    let db: ReturnType<typeof openCoreDb> | undefined;
+    try {
+      phaseWrite.mockImplementation((root, record) => {
+        const result = write(root, record);
+        // Publish genuine earlier phases; then model late discovery of retained storage.
+        if (result.phase === phase && !db) ({ db } = deletionStorageFixture(f));
+        return result;
+      });
+      const response = await f.invoke();
+      expect(response.status, await response.clone().text()).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'recovery_required' });
+      expect(db).toBeDefined();
+      const retained = readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId);
+      expect(retained.phase).toBe(phase === 'fenced' ? 'blocked' : phase);
+      expect(retained.cleanedAt).toBeNull();
+      if (phase === 'fenced') {
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspace.id)
+        ).toBe(false);
+        const thread = await f.store.createThread(f.workspace.id, 'Usable after refused deletion');
+        expect(thread.owner).toEqual({ kind: 'workspace', workspaceId: f.workspace.id });
+      }
+      const staged = ['staged', 'deleted'].includes(phase);
+      expect(existsSync(join(f.dataRoot, 'workspaces', f.workspace.id))).toBe(!staged);
+      expect(
+        existsSync(
+          join(f.dataRoot, workspaceDeletionStagingRelativePath(f.workspace.id, f.requestId))
+        )
+      ).toBe(staged);
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT status FROM workspace_registry WHERE workspace_id = ?')
+          .get(f.workspace.id)
+      ).toEqual({
+        status: phase === 'fenced' ? 'active' : phase === 'deleted' ? 'deleted' : 'deleting',
+      });
+    } finally {
+      phaseWrite.mockRestore();
+      db?.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  }
+);
+
+it.each([
+  ['requested', false],
+  ['fenced', false],
+  ['fenced', true],
+] as const)(
+  'refuses unproved Worker storage on an active %s retry (cut=%s) without holding ordinary work',
+  async (phase, cut) => {
+    const f = await nativeDeletionRouteFixture();
+    const { db } = deletionStorageFixture(f);
+    try {
+      const request = createWorkspaceDeletionRequest(f.dataRoot, {
+        confirmation: `permanently-delete-workspace:${f.workspace.id}:1`,
+        createdAt: new Date().toISOString(),
+        expectedRegistryRevision: 1,
+        originalOwnerUserId: f.actorId,
+        initiatingUserId: f.actorId,
+        requestId: f.requestId,
+        workspaceId: f.workspace.id,
+      });
+      writeWorkspaceDeletionRequest(f.dataRoot, {
+        ...request,
+        phase,
+        recoveryBackupManifestDigest: cut ? 'retained-cut-digest' : null,
+      });
+      getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(f.dataRoot, f.workspace.id, {
+        deletionRequestId: f.requestId,
+        revision: 1,
+      });
+      const response = await f.invoke();
+      expect(response.status, await response.clone().text()).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: 'recovery_required',
+        message: expect.stringMatching(/inspect.*cleanup.*new deletion request/i),
+      });
+      expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId).phase).toBe(
+        'blocked'
+      );
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspace.id)
+      ).toBe(false);
+      const thread = await f.store.createThread(f.workspace.id, 'Ordinary work remains usable');
+      expect(thread.owner).toEqual({ kind: 'workspace', workspaceId: f.workspace.id });
+      const sibling = await f.store.createWorkspace('Unaffected sibling');
+      const siblingThread = await f.store.createThread(sibling.id, 'Unaffected ordinary work');
+      expect(siblingThread.owner).toEqual({ kind: 'workspace', workspaceId: sibling.id });
+    } finally {
+      db.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  }
+);
+
+it.each([false, true])(
+  'keeps purge remediation within existing contributor authority: visible=%s',
+  async (visible) => {
+    const f = await nativeDeletionRouteFixture();
+    const thread = visible
+      ? await f.store.createThread(f.workspace.id, 'Authorized cleanup')
+      : null;
+    const { db, binding } = deletionStorageFixture(
+      f,
+      thread ? { responsibleUserId: f.actorId, threadId: thread.id } : undefined
+    );
+    const purge = deletionStoragePurgeFixture(f);
+    try {
+      const refused = await f.invoke();
+      expect(refused.status).toBe(409);
+      expect((await refused.json()).message).toMatch(/purge.*only.*active.*contributor/i);
+      const current = getWorkerStorageBinding(db, { storageRef: binding.storageRef })!;
+      const result = await purge.purge(current.storageRef, current.revision);
+      expect(result.status, await result.clone().text()).toBe(visible ? 200 : 404);
+      if (visible) {
+        expect(await result.json()).toMatchObject({ outcome: 'purged' });
+        expect(purge.purgeStorage).toHaveBeenCalledTimes(1);
+        expect(getWorkerStorageBinding(db, { storageRef: current.storageRef })).toMatchObject({
+          state: 'purged',
+          purgedAt: expect.any(String),
+        });
+        const retried = await f.invoke();
+        expect(retried.status, await retried.clone().text()).toBe(200);
+        expect(await retried.json()).toMatchObject({ deletion: { phase: 'cleaned' } });
+      } else {
+        expect(purge.purgeStorage).not.toHaveBeenCalled();
+        expect(getWorkerStorageBinding(db, { storageRef: current.storageRef })?.state).toBe('idle');
+        expect(await f.invoke()).toMatchObject({ status: 409 });
+      }
+    } finally {
+      db.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  }
+);
+
+it('resumes exact deleted request after repairing a read fault over owner-proved absence', async () => {
+  const f = await nativeDeletionRouteFixture();
+  const thread = await f.store.createThread(f.workspace.id, 'Proved cleanup before deletion');
+  const { db, binding } = deletionStorageFixture(f, {
+    responsibleUserId: f.actorId,
+    threadId: thread.id,
+  });
+  const purge = deletionStoragePurgeFixture(f);
+  const write = deletionRequestOwner.writeWorkspaceDeletionRequest;
+  const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
+  let restoreRead: (() => void) | undefined;
+  try {
+    const idle = getWorkerStorageBinding(db, { storageRef: binding.storageRef })!;
+    const purged = await purge.purge(idle.storageRef, idle.revision);
+    expect(purged.status, await purged.clone().text()).toBe(200);
+    expect(await purged.json()).toMatchObject({ outcome: 'purged' });
+    const proved = getWorkerStorageBinding(db, { storageRef: idle.storageRef })!;
+    expect(proved.state).toBe('purged');
+    phaseWrite.mockImplementation((root, record) => {
+      const result = write(root, record);
+      if (result.phase === 'deleted') throw new Error('Stop after genuine tombstone publication.');
+      return result;
+    });
+    expect((await f.invoke()).status).toBe(409);
+    phaseWrite.mockRestore();
+    const retained = readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId);
+    expect(retained.phase).toBe('deleted');
+    const stagingRoot = join(f.dataRoot, retained.stagingRelativePath!);
+    await shutdownControlStoreWorkerClient();
+    restoreRead = unavailableDeletionStorageRead(f, 'bindings');
+    const restarted = createApp({
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      store: new FsStore({ dataRoot: f.dataRoot }),
+      mode: 'local',
+    });
+    const retry = () =>
+      restarted.request(
+        ...operationRequest(
+          'workspace.delete',
+          {
+            workspaceId: f.workspace.id,
+          },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: f.requestId,
+              confirmation: retained.confirmation,
+              expectedRegistryRevision: retained.expectedRegistryRevision,
+            }),
+          }
+        )
+      );
+    const refused = await retry();
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).message).toMatch(/repair.*ledger-read fault/i);
+    expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId)).toEqual(retained);
+    expect(existsSync(stagingRoot)).toBe(true);
+    expect((await purge.purge(proved.storageRef, proved.revision)).status).toBe(403);
+    expect(purge.purgeStorage).toHaveBeenCalledTimes(1);
+    // Restore only the read fault: the purge owner already published the deciding proof above.
+    restoreRead();
+    restoreRead = undefined;
+    const resumed = await retry();
+    expect(resumed.status, await resumed.clone().text()).toBe(200);
+    expect(await resumed.json()).toMatchObject({ deletion: { phase: 'cleaned' } });
+    expect(existsSync(stagingRoot)).toBe(false);
+  } finally {
+    phaseWrite.mockRestore();
+    restoreRead?.();
+    db.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    rmSync(f.dataRoot, { recursive: true, force: true });
+  }
+});

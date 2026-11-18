@@ -264,6 +264,42 @@ export function listWorkerStorageBindings(
     .filter((binding) => binding.contributors.every(input.authorizeContributor));
 }
 
+/** Proves Workspace storage absence from the complete Core ledger, without audience filtering or Host discovery. */
+export function isWorkspaceWorkerStorageProvedAbsent(coreDb: CoreDb, workspaceId: string): boolean {
+  requireIdentity(workspaceId, 'Workspace');
+  return coreDb.sqlite.transaction(() => {
+    const rows = coreDb.sqlite
+      .prepare(
+        `SELECT *, schema_version AS schemaVersion FROM worker_storage_bindings
+         WHERE workspace_id = ?`
+      )
+      .all(workspaceId) as WorkerStorageBindingRow[];
+    for (const row of rows) {
+      const binding = bindingFromRow(coreDb, row);
+      if (
+        binding.state !== 'purged' ||
+        binding.purgedAt === null ||
+        !Number.isFinite(Date.parse(binding.purgedAt)) ||
+        binding.currentAgentSessionId !== null ||
+        binding.currentThreadId !== null ||
+        binding.currentWorkSlotRef !== null ||
+        binding.currentSandboxBindingRef !== null
+      )
+        return false;
+    }
+    // Orphaned or cross-Workspace lineage cannot make an incomplete census look empty.
+    return !coreDb.sqlite
+      .prepare(
+        `SELECT 1 FROM worker_storage_contributors AS contributor
+         LEFT JOIN worker_storage_bindings AS binding ON binding.storage_ref = contributor.storage_ref
+         WHERE contributor.workspace_id = ?
+           AND (binding.storage_ref IS NULL OR binding.workspace_id <> ?)
+         LIMIT 1`
+      )
+      .get(workspaceId, workspaceId);
+  })();
+}
+
 /** Rechecks and returns one explicitly selected idle association. */
 export function selectWorkerStorageBinding(
   coreDb: CoreDb,

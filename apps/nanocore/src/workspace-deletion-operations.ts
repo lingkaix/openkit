@@ -34,6 +34,7 @@ import type { OperationInvocationDependencies } from './operation-composition.js
 import type { OperationImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
+import { isWorkspaceWorkerStorageProvedAbsent } from './runtime/worker-storage-binding-records.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import {
@@ -148,7 +149,14 @@ export function createWorkspaceDeletionOperationImplementations(
         const existing = selectDeletionRequest(deletionInput, false);
         let freeze: WorkspaceFrozenAdmission | undefined;
         if (!existing || !['blocked', 'cleaned'].includes(existing.phase)) {
+          let storageRefused = false;
           const inspect = () => {
+            if (!workerStorageAbsenceProved(coreDb, value.workspaceId)) {
+              storageRefused = true;
+              return [
+                { kind: 'unavailable' as const, reason: 'unavailable' as const, actions: [] },
+              ];
+            }
             if (existing?.phase === 'deleted') {
               requireTerminalDeletionTruth(
                 { coreDb, store: input.store!, workspaceId: value.workspaceId },
@@ -199,7 +207,8 @@ export function createWorkspaceDeletionOperationImplementations(
                   value.workspaceId,
                   inspect
                 );
-          if (admitted.status !== 'frozen')
+          if (admitted.status !== 'frozen') {
+            if (storageRefused) refuseWorkerStorageDeletion(deletionInput, existing);
             throw new OperationError(
               admitted.status === 'busy' ? 'workspace_frozen' : 'workspace_blocked',
               'Workspace deletion is not admitted.',
@@ -223,6 +232,7 @@ export function createWorkspaceDeletionOperationImplementations(
                 },
               }
             );
+          }
           freeze = admitted;
         }
         try {
@@ -634,7 +644,11 @@ async function advanceWorkspaceDeletion(input: {
     throw recoveryRequired();
   if (!isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)) {
     if (['requested', 'fenced'].includes(request.phase)) {
-      request = persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });
+      request = persistDeletionPhase(input.dataRoot, request, {
+        phase: 'blocked',
+        // The existing blocked shape retains the backup ID, but cannot carry a final-cut digest.
+        recoveryBackupManifestDigest: null,
+      });
       getControlStoreWorkerClient().reopenWorkspaceMutations(
         input.dataRoot,
         input.workspaceId,
@@ -645,6 +659,7 @@ async function advanceWorkspaceDeletion(input: {
     }
     throw recoveryRequired();
   }
+  requireWorkerStorageAbsence(input, request);
   if (request.phase === 'requested') {
     request = persistDeletionPhase(input.dataRoot, request, { phase: 'fenced' });
   }
@@ -678,7 +693,11 @@ async function advanceWorkspaceDeletion(input: {
   if (request.phase === 'fenced') {
     const holdRecordIds = deletionHoldRecordIds(input.repositoryWorkspaceDb, input.workspaceId);
     if (holdRecordIds.length > 0) {
-      persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });
+      persistDeletionPhase(input.dataRoot, request, {
+        phase: 'blocked',
+        // The existing blocked shape retains the backup ID, but cannot carry a final-cut digest.
+        recoveryBackupManifestDigest: null,
+      });
       getControlStoreWorkerClient().reopenWorkspaceMutations(
         input.dataRoot,
         input.workspaceId,
@@ -793,6 +812,7 @@ async function advanceWorkspaceDeletion(input: {
         { details: { holdRecordIds: holds } }
       );
     }
+    requireWorkerStorageAbsence(input, request);
     // The final-cut pointer is durable before the active registry can change.
     request = persistDeletionPhase(input.dataRoot, request, {
       recoveryBackupManifestDigest: verified.manifestDigest,
@@ -898,6 +918,7 @@ async function advanceWorkspaceDeletion(input: {
       )
         throw recoveryRequired();
       requireDeletingRegistry(input.coreDb, request);
+      requireWorkerStorageAbsence(input, request);
       mkdirPrivate(dirname(target));
       closeWorkspaceProductReadHandles(source);
       renameSync(source, target);
@@ -914,6 +935,7 @@ async function advanceWorkspaceDeletion(input: {
   if (request.phase === 'staged') {
     requireExactStagedWorkspace(input.dataRoot, request);
     await verifyDeletionArtifacts(input.dataRoot, request);
+    requireWorkerStorageAbsence(input, request);
     removeSupersededWorkspaceExports(input.dataRoot, request);
     const terminal = await coreClient.workspaceDeletion(
       coreDatabase,
@@ -939,6 +961,7 @@ async function advanceWorkspaceDeletion(input: {
     const stagingRoot = requireTerminalWorkspaceStorage(input.dataRoot, request);
     requireTerminalDeletionTruth(input, request);
     await verifyDeletionArtifacts(input.dataRoot, request);
+    requireWorkerStorageAbsence(input, request);
     input.store.evictWorkspace(input.workspaceId);
     try {
       if (existsSync(stagingRoot)) {
@@ -1302,6 +1325,64 @@ function fsyncDirectory(path: string): void {
   } finally {
     closeSync(descriptor);
   }
+}
+
+/** Reads only the existing complete ledger; unreadable proof never authorizes deletion. */
+function workerStorageAbsenceProved(coreDb: CoreDb, workspaceId: string): boolean {
+  try {
+    return isWorkspaceWorkerStorageProvedAbsent(coreDb, workspaceId);
+  } catch {
+    return false;
+  }
+}
+
+/** #817: keep an active Workspace usable; later phases retain only their existing exact retry authority. */
+function refuseWorkerStorageDeletion(
+  input: { coreDb: CoreDb; dataRoot: string; workspaceId: string },
+  request?: WorkspaceDeletionRequestRecord
+): never {
+  let newRequest = false;
+  if (request && ['requested', 'fenced'].includes(request.phase)) {
+    const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+    if (
+      registry?.status === 'active' &&
+      registry.ownerUserId === request.originalOwnerUserId &&
+      registry.registryRevision === request.expectedRegistryRevision
+    ) {
+      persistDeletionPhase(input.dataRoot, request, {
+        phase: 'blocked',
+        // The existing blocked shape retains the backup ID, but cannot carry a final-cut digest.
+        recoveryBackupManifestDigest: null,
+      });
+      getControlStoreWorkerClient().reopenWorkspaceMutations(
+        input.dataRoot,
+        input.workspaceId,
+        'capture'
+      );
+      getControlStoreWorkerClient().reopenWorkspaceMutations(input.dataRoot, input.workspaceId);
+      newRequest = true;
+    }
+  }
+  throw new OperationError(
+    'recovery_required',
+    'Worker storage absence cannot be proved. Inspect with administration.cleanup-read; inspection does not clean storage and may withhold private storage. Repair a ledger-read fault before retrying. ' +
+      (!request || newRequest
+        ? 'worker-environment.purge is available only while the Workspace is active and its existing administrator, contributor and idle-storage checks pass. Other retained-target cleanup is unavailable until the after-v0.1.0 #817 lifecycle. '
+        : 'worker-environment.purge cannot clean a deleting or deleted Workspace. Retained-target cleanup has no supported exit in this phase until the after-v0.1.0 #817 lifecycle. Retry only when the existing Core ledger can prove absence. ') +
+      (newRequest
+        ? 'submit a new deletion request. The Workspace remains active.'
+        : 'retry this exact deletion request.'),
+    409
+  );
+}
+
+/** Absence proof is repeated under the existing freeze before each destructive boundary. */
+function requireWorkerStorageAbsence(
+  input: { coreDb: CoreDb; dataRoot: string; workspaceId: string },
+  request: WorkspaceDeletionRequestRecord
+): void {
+  if (!workerStorageAbsenceProved(input.coreDb, input.workspaceId))
+    refuseWorkerStorageDeletion(input, request);
 }
 
 function recoveryRequired(): OperationError {
