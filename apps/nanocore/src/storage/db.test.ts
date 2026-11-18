@@ -447,6 +447,7 @@ describe('scoped storage databases', () => {
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_baseline',
+        'workspace_0001_agent_session_current_thread',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -659,6 +660,7 @@ describe('scoped storage databases', () => {
     try {
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_baseline',
+        'workspace_0001_agent_session_current_thread',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -1001,6 +1003,7 @@ process.kill(process.pid, 'SIGKILL');`,
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_baseline',
+        'workspace_0001_agent_session_current_thread',
       ]);
     } finally {
       userDb.sqlite.close();

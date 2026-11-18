@@ -1639,10 +1639,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       return workerStorageChoice;
     }
 
-    const predecessorIsTerminal =
-      prepared.currentAgentSession.status === 'failed' ||
-      prepared.currentAgentSession.status === 'interrupted' ||
-      prepared.currentAgentSession.status === 'closed';
+    const predecessorIsTerminal = !isCurrentAgentSessionStatus(prepared.currentAgentSession.status);
     const current = predecessorIsTerminal
       ? store.getAgentSession(prepared.currentAgentSession.id)
       : currentSessions[0];
@@ -3506,8 +3503,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       const conflictingCurrentAgentSession = threadAgentSessions.find(
         (candidate) =>
-          candidate.id !== resolvedAgentSessionId &&
-          !['interrupted', 'failed', 'closed'].includes(candidate.status)
+          candidate.id !== resolvedAgentSessionId && isCurrentAgentSessionStatus(candidate.status)
       );
       if (conflictingCurrentAgentSession) {
         agentSessionId = null;

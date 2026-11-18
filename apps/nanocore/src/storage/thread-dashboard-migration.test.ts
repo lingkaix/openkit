@@ -71,7 +71,11 @@ it.each(['core', 'workspace'] as const)(
     const target =
       kind === 'core' ? openCoreDb(sourceRoot) : openWorkspaceDb(sourceRoot, DEMO_WORKSPACE_ID);
     try {
-      expect(listAppliedNativeMigrationIds(target.sqlite, kind)).toEqual([`${kind}_0000_baseline`]);
+      expect(listAppliedNativeMigrationIds(target.sqlite, kind)).toEqual(
+        kind === 'core'
+          ? ['core_0000_baseline']
+          : ['workspace_0000_baseline', 'workspace_0001_agent_session_current_thread']
+      );
       const rows = target.sqlite
         .prepare(
           "SELECT id,revision,is_current,item_order,turn_admission_order,read_metadata_json,content_json FROM control_product_entries WHERE kind='item' AND id IN (?,?) ORDER BY id,revision"

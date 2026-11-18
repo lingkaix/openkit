@@ -3,6 +3,7 @@ import { setImmediate as yieldTimelineMain } from 'node:timers/promises';
 import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 import { OperationError } from '../operation-error-core.js';
 import { type PendingRequestRecord, readPendingRequest } from '../runtime/pending-requests.js';
+import { isCurrentAgentSessionStatus } from './agent-session-status.js';
 import {
   readActiveThreadTurnSnapshot,
   reserveMainScopeReadAcquisition,
@@ -18,6 +19,7 @@ import {
 } from './thread-dashboard-records.js';
 import { assertSafeWorkspacePathSegment } from './workspace-path-segment.js';
 
+export { isCurrentAgentSessionStatus } from './agent-session-status.js';
 export { assertSafeWorkspacePathSegment } from './workspace-path-segment.js';
 
 import {
@@ -249,17 +251,6 @@ export const AgentSessionRetainedStorageSchema = z
 
 /** Fixed canonical AgentSession payload shared with Workspace portability and current projections. */
 export const AgentSessionRecordSchema = StoredAgentSessionV1Schema.omit({ schemaVersion: true });
-
-const TERMINAL_AGENT_SESSION_STATUSES = new Set<AgentSession['status']>([
-  'interrupted',
-  'failed',
-  'closed',
-]);
-
-/** Returns whether one AgentSession status remains current for its Thread. */
-export function isCurrentAgentSessionStatus(status: AgentSession['status']): boolean {
-  return !TERMINAL_AGENT_SESSION_STATUSES.has(status);
-}
 
 /** Maximum canonical replay window retained in memory after reload. */
 export const TURN_STREAM_EVENT_WINDOW_SIZE = 100;

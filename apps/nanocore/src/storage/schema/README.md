@@ -1,6 +1,6 @@
 # Storage Schemas
 
-This directory projects the current durable record shapes for NanoCore's Core, User and Workspace databases. Core and Workspace each have one complete `apps/nanocore/drizzle/{core,workspace}/0000_baseline.sql`; edit these baselines directly before v0.1.0, without another journal entry or format bump. User and App retain their independent journals. The [single-baseline decision](../../../../../docs/decisions/20261114-pre_release_sql_baselines.md) and [storage guide](../README.md) own this boundary. Do not run Drizzle Kit generate against this mixed-scope TypeScript tree.
+This directory projects the current durable record shapes for NanoCore's Core, User and Workspace databases. Keep these definitions aligned with the result of applying the [native journals](../../../drizzle/README.md). The Workspace AgentSession index includes the migration that follows its baseline. Do not run Drizzle Kit generate against this mixed-scope TypeScript tree.
 
 ## Boundaries
 

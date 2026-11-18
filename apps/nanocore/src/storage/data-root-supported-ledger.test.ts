@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { parseDataRootBackupManifest } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { BootConfigError } from '../config/mode.js';
@@ -29,6 +30,7 @@ import { FsStore } from '../lib/store.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { lightAppDbPath, lightAppRoot } from './app-db.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -47,6 +49,7 @@ import {
   listAppliedNativeMigrationIds,
   type StorageMigrationScope,
 } from './migrate.js';
+import { verifyAndMigrateExistingScopedDatabases } from './workspace-storage-migration.js';
 
 // G2: only canonical scope paths and owned immutable App snapshots are ledger authorities.
 const roots: string[] = [];
@@ -138,7 +141,7 @@ async function fixture() {
   for (const path of Object.values(paths)) expect(existsSync(path)).toBe(true);
   return { parent, source, backup, target, paths, app, changed, snapshot, record };
 }
-function capture(f: Awaited<ReturnType<typeof fixture>>) {
+function capture(f: { source: string; backup: string; target: string }) {
   copyColdDataRoot({ dataRoot: f.source, backupRoot: f.backup });
   writeColdDataRootBackupManifest({
     backupRoot: f.backup,
@@ -234,7 +237,94 @@ it.each(['core', 'user', 'workspace', 'app', 'app-snapshot'] as const)(
   }
 );
 
-it('G2 restores supported User and sparse App-snapshot journals while preserving the current Workspace baseline', async () => {
+it('G2 restores a cold rc.10 Workspace and upgrades its journal with the interrupted session intact', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'openkit-root-rc10-ledger-'));
+  roots.push(parent);
+  const source = join(parent, 'source');
+  const backup = join(parent, 'backup');
+  const target = join(parent, 'target');
+  const store = createTestStore({ dataRoot: source });
+  const { id: workspaceId } = await store.createWorkspace('rc.10 backup Workspace');
+  const { id: threadId } = await store.createThread(workspaceId, 'Interrupted Thread');
+  const input = {
+    workspaceId,
+    threadId,
+    agentId: 'agent_codex_host',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const interrupted = await store.createAgentSession({
+    ...input,
+    id: allocateEntityId('as'),
+    status: 'interrupted',
+    message: 'The user interrupted this session.',
+    nativeHandleDigest: 'a'.repeat(64),
+  });
+  await shutdownControlStoreWorkerClient();
+  closeWorkspaceProductReadHandles(source);
+
+  const baseline = readFileSync(
+    new URL('../../drizzle/workspace/0000_baseline.sql', import.meta.url),
+    'utf8'
+  );
+  const oldIndex = baseline
+    .split('--> statement-breakpoint')
+    .find((statement) =>
+      statement.includes('CREATE UNIQUE INDEX `control_agent_sessions_current_thread_idx`')
+    )!;
+  const predecessor = new Database(workspaceDbPath(source, workspaceId), { fileMustExist: true });
+  try {
+    // Re-create only the rc.10 derived index and ledger prefix on this stopped fixture.
+    predecessor.exec(`DROP INDEX control_agent_sessions_current_thread_idx; ${oldIndex}`);
+    predecessor
+      .prepare('DELETE FROM __drizzle_migrations WHERE created_at > ?')
+      .run(journal('workspace')[0]!.when);
+  } finally {
+    predecessor.close();
+  }
+  const readWorkspace = (root: string) => {
+    const db = new Database(workspaceDbPath(root, workspaceId), {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      return {
+        migrations: listAppliedNativeMigrationIds(db, 'workspace'),
+        session: db.prepare('SELECT * FROM control_agent_sessions WHERE id=?').get(interrupted.id),
+      };
+    } finally {
+      db.close();
+    }
+  };
+  const original = readWorkspace(source);
+  expect(original.migrations).toEqual(['workspace_0000_baseline']);
+  expect(original.session).toMatchObject({ id: interrupted.id, status: 'interrupted' });
+  capture({ source, backup, target });
+  const originalBackup = tree(backup);
+
+  await restoreDataRootBackup({ backupRoot: backup, dataRoot: target });
+  expect(readWorkspace(target)).toEqual(original);
+  await verifyAndMigrateExistingScopedDatabases(target);
+  const upgraded = readWorkspace(target);
+  expect(upgraded).toEqual({
+    migrations: ['workspace_0000_baseline', 'workspace_0001_agent_session_current_thread'],
+    session: original.session,
+  });
+
+  const restored = new FsStore({ dataRoot: target });
+  expect(restored.getAgentSession(interrupted.id)).toEqual(interrupted);
+  await expect(
+    restored.createAgentSession({
+      ...input,
+      id: allocateEntityId('as'),
+      status: 'created',
+      message: null,
+    })
+  ).resolves.toMatchObject({ threadId, status: 'created' });
+  expect(tree(backup)).toEqual(originalBackup);
+});
+
+it('G2 restores supported User and sparse App-snapshot journals while preserving the current Workspace journal', async () => {
   const f = await fixture();
   const prefix = join(f.parent, 'original-user-journal');
   const original = new URL('../../drizzle/user/', import.meta.url);
@@ -258,6 +348,7 @@ it('G2 restores supported User and sparse App-snapshot journals while preserving
   try {
     expect(listAppliedNativeMigrationIds(workspace, 'workspace')).toEqual([
       'workspace_0000_baseline',
+      'workspace_0001_agent_session_current_thread',
     ]);
   } finally {
     workspace.close();

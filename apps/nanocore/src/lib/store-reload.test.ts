@@ -3,11 +3,17 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
+import {
+  applyMigrations,
+  applyNativeScopeMigrations,
+  listAppliedNativeMigrationIds,
+} from '../storage/migrate.js';
+import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createPendingRequestFixture } from '../test-support/pending-request.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import {
   captureWorkspaceSourceFixture,
@@ -42,7 +48,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ensureLayout } from '../storage/fs-layout.js';
 import {
   discardAbandonedWorkspaceStaging,
@@ -154,6 +160,7 @@ async function replaceEntry(
 
 const timestamp = '2026-07-06T00:00:00.000Z';
 const localActor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
+const rc10WorkspaceMigration = { tag: '0000_baseline', when: 1794664200000 };
 
 /**
  * Computes the canonical S16 digest for exact UTF-8 Artifact content.
@@ -190,6 +197,79 @@ function turnOutputArtifactProof(
       requestId,
     },
   };
+}
+
+/** Publishes an interrupted session with native resume proof and an Artifact linked by its Turn. */
+async function interruptedSessionWorkspace() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-interrupted-session-'));
+  onTestFinished(() => disposeTestStore(dataRoot));
+  const store = createTestStore({ dataRoot });
+  const { id: workspaceId } = await store.createWorkspace('Interrupted session Workspace');
+  const { id: threadId } = await store.createThread(workspaceId, 'Interrupted session Thread');
+  const input = {
+    agentId: 'agent_codex_host',
+    workspaceId,
+    threadId,
+    status: 'created' as const,
+    message: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const session = await store.createAgentSession({
+    ...input,
+    id: allocateEntityId('as'),
+    status: 'busy',
+  });
+  const turn = await store.createTurn(
+    workspaceId,
+    threadId,
+    'Publish before interrupt',
+    localActor
+  );
+  await store.updateTurn(turn.id, { agentSessionId: session.id });
+  const artifactBody = 'Artifact retained across AgentSession interruption.';
+  const artifact = await store.createArtifact({
+    id: allocateEntityId('ar'),
+    workspaceId,
+    threadId,
+    turnId: turn.id,
+    kind: 'summary',
+    title: 'Interrupted session Artifact',
+    status: 'ready',
+    summary: null,
+    version: 1,
+    content: { format: 'text', body: artifactBody },
+    ...turnOutputArtifactProof(threadId, turn.id, 'interrupted-session-artifact', artifactBody),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  const interrupted = await store.updateAgentSession(session.id, {
+    status: 'interrupted',
+    message: 'The user interrupted this session.',
+    nativeHandleDigest: 'a'.repeat(64),
+    retainedStorage: {
+      storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
+      workSlotRef: 'interrupted-session',
+      attachmentGeneration: 1,
+    },
+  });
+  return { dataRoot, store, input, turn, artifact, interrupted };
+}
+
+/** Restores the exact rc.10 index and ledger on a private fixture with the product writer stopped. */
+async function restoreRc10SessionIndex(dataRoot: string, workspaceId: string) {
+  await shutdownControlStoreWorkerClient();
+  workspaceSql(dataRoot, workspaceId, (db) => {
+    db.exec(`
+      DROP INDEX control_agent_sessions_current_thread_idx;
+      CREATE UNIQUE INDEX control_agent_sessions_current_thread_idx
+        ON control_agent_sessions (thread_id)
+        WHERE thread_id IS NOT NULL AND status NOT IN ('closed', 'failed');
+    `);
+    db.prepare('DELETE FROM __drizzle_migrations WHERE created_at > ?').run(
+      rc10WorkspaceMigration.when
+    );
+  });
 }
 
 /**
@@ -1888,6 +1968,153 @@ describe('FsStore canonical reload', () => {
       );
     });
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
+  });
+
+  it.each(['fresh', 'upgraded rc.10'])(
+    'opens a successor after interruption in the %s Workspace',
+    async (origin) => {
+      const fixture = await interruptedSessionWorkspace();
+      const { dataRoot, input, interrupted, turn, artifact } = fixture;
+      const { workspaceId, threadId } = input;
+      const readSessionRow = () =>
+        workspaceSql(dataRoot, workspaceId, (db) =>
+          db.prepare('SELECT * FROM control_agent_sessions WHERE id=?').get(interrupted.id)
+        );
+      const originalRow = readSessionRow();
+      const originalArtifact = fixture.store.getArtifactVersion(workspaceId, artifact.id, 1);
+      let store = fixture.store;
+
+      if (origin === 'upgraded rc.10') {
+        await restoreRc10SessionIndex(dataRoot, workspaceId);
+        await verifyAndMigrateExistingScopedDatabases(dataRoot);
+        store = createTestStore({ dataRoot });
+      }
+
+      const successor = await store.createAgentSession({ ...input, id: allocateEntityId('as') });
+      expect(store.listThreadAgentSessions(workspaceId, threadId)).toHaveLength(2);
+      expect(store.getAgentSession(successor.id)).toEqual(successor);
+      expect(store.getAgentSession(interrupted.id)).toEqual(interrupted);
+      expect(readSessionRow()).toEqual(originalRow);
+      expect(store.getTurn(workspaceId, threadId, turn.id).agentSessionId).toBe(interrupted.id);
+      expect(store.getArtifactVersion(workspaceId, artifact.id, 1)).toEqual(originalArtifact);
+
+      if (origin === 'upgraded rc.10') {
+        const oldJournal = join(dataRoot, 'rc10-workspace-journal');
+        mkdirSync(join(oldJournal, 'meta'), { recursive: true });
+        writeFileSync(
+          join(oldJournal, 'meta', '_journal.json'),
+          JSON.stringify({ entries: [rc10WorkspaceMigration] })
+        );
+        workspaceSql(dataRoot, workspaceId, (db) => {
+          expect(listAppliedNativeMigrationIds(db, 'workspace')).toEqual([
+            'workspace_0000_baseline',
+            'workspace_0001_agent_session_current_thread',
+          ]);
+          const upgraded = db.serialize();
+          expect(() => applyNativeScopeMigrations(db, 'workspace', oldJournal)).toThrow(
+            expect.objectContaining({ code: 'migration_unsupported_workspace' })
+          );
+          expect(db.serialize()).toEqual(upgraded);
+        });
+      }
+    }
+  );
+
+  it.each(['before either commit', 'after the first commit'])(
+    'admits one concurrent current AgentSession when the second request starts %s',
+    async (timing) => {
+      const { store, input, interrupted } = await interruptedSessionWorkspace();
+      const client = getControlStoreWorkerClient();
+      const write = client.products.bind(client);
+      const committed = Promise.withResolvers<void>();
+      const acknowledge = Promise.withResolvers<void>();
+      const holdAcknowledgement =
+        timing === 'after the first commit'
+          ? vi.spyOn(client, 'products').mockImplementationOnce(async (...args) => {
+              await write(...args);
+              committed.resolve();
+              await acknowledge.promise;
+            })
+          : undefined;
+      const firstId = allocateEntityId('as');
+      let firstSettled = false;
+      const first = store.createAgentSession({ ...input, id: firstId }).finally(() => {
+        firstSettled = true;
+      });
+      try {
+        if (holdAcknowledgement) {
+          await Promise.race([committed.promise, first]);
+          expect(store.getAgentSession(firstId).status).toBe('created');
+          expect(firstSettled).toBe(false);
+        }
+        const second = store.createAgentSession({
+          ...input,
+          id: allocateEntityId('as'),
+          status: 'ready',
+        });
+        const both = Promise.allSettled([first, second]);
+        acknowledge.resolve();
+        const results = await both;
+        const winners = results.filter((result) => result.status === 'fulfilled');
+        const losers = results.filter((result) => result.status === 'rejected');
+        expect(winners).toHaveLength(1);
+        expect(losers).toHaveLength(1);
+        expect(losers[0]?.reason).toBeInstanceOf(ControlStoreWorkerError);
+        expect(losers[0]?.reason).toMatchObject({ code: 'constraint', commit: 'not-committed' });
+        const sessions = store.listThreadAgentSessions(input.workspaceId, input.threadId);
+        expect(sessions).toHaveLength(2);
+        expect(sessions).toEqual(expect.arrayContaining([interrupted, winners[0]!.value]));
+      } finally {
+        acknowledge.resolve();
+        await first.catch(() => undefined);
+        holdAcknowledgement?.mockRestore();
+      }
+    }
+  );
+
+  it('rolls back the rc.10 AgentSession index drop when its replacement fails', async () => {
+    const { dataRoot, input } = await interruptedSessionWorkspace();
+    await restoreRc10SessionIndex(dataRoot, input.workspaceId);
+    workspaceSql(dataRoot, input.workspaceId, (db) => {
+      const readIndex = () =>
+        db
+          .prepare(
+            "SELECT sql FROM sqlite_schema WHERE name='control_agent_sessions_current_thread_idx'"
+          )
+          .get();
+      const readSessions = () => db.prepare('SELECT * FROM control_agent_sessions').all();
+      const readLedger = () => db.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
+      const originalIndex = readIndex();
+      const originalSessions = readSessions();
+      const originalLedger = readLedger();
+      const prepare = db.prepare.bind(db);
+      let droppedInsideTransaction = false;
+      const fault = vi.spyOn(db, 'prepare').mockImplementation((sql) => {
+        if (/^CREATE UNIQUE INDEX `control_agent_sessions_current_thread_idx`/.test(sql.trim())) {
+          droppedInsideTransaction = db.inTransaction && readIndex() === undefined;
+          throw new Database.SqliteError('Injected index replacement failure.', 'SQLITE_IOERR');
+        }
+        return prepare(sql);
+      });
+      try {
+        expect(() => applyNativeScopeMigrations(db, 'workspace')).toThrow(
+          expect.objectContaining({
+            code: 'migration_failed',
+            message: expect.stringContaining(
+              'migration=workspace_0001_agent_session_current_thread; statement_index=2'
+            ),
+          })
+        );
+      } finally {
+        fault.mockRestore();
+      }
+
+      expect(droppedInsideTransaction).toBe(true);
+      expect(db.inTransaction).toBe(false);
+      expect(readIndex()).toEqual(originalIndex);
+      expect(readSessions()).toEqual(originalSessions);
+      expect(readLedger()).toEqual(originalLedger);
+    });
   });
 
   it.each(['Workspace', 'Thread', 'Turn', 'Items', 'Artifact', 'AgentSession'] as const)(

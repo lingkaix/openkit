@@ -7040,7 +7040,7 @@ export class FsStore {
         isCurrentAgentSessionStatus(candidate.status)
       )
     ) {
-      throw new Error(`Thread already has a current AgentSession: ${input.threadId}`);
+      throw new ControlStoreWorkerError('constraint', 'not-committed');
     }
 
     if (this.dataRoot) {

@@ -6,22 +6,28 @@ import { describe, expect, it } from 'vitest';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { type CoreDb, openCoreReadDb, openWorkspaceReadDb, type WorkspaceDb } from './db.js';
 
-// Engineer-authorized pre-v0.1.0 Core/Workspace baseline reset. User and App are outside this reset.
-describe('fresh Core and Workspace baseline', () => {
+const journalTags = {
+  core: ['0000_baseline'],
+  workspace: ['0000_baseline', '0001_agent_session_current_thread'],
+} as const;
+
+describe('fresh Core and Workspace setup', () => {
   it.each(['core', 'workspace'] as const)(
-    'packages one journal entry and one SQL baseline for %s',
+    'packages the complete native journal and SQL for %s',
     (scope) => {
       const folder = new URL(`../../drizzle/${scope}/`, import.meta.url);
       const journal = JSON.parse(readFileSync(new URL('meta/_journal.json', folder), 'utf8')) as {
         entries: Array<{ idx: number; tag: string }>;
       };
-      expect(journal.entries).toHaveLength(1);
-      expect(journal.entries.map(({ idx }) => idx)).toEqual([0]);
+      const tags = journalTags[scope];
+      expect(journal.entries.map(({ tag }) => tag)).toEqual(tags);
+      expect(journal.entries.map(({ idx }) => idx)).toEqual(tags.map((_, index) => index));
       const sqlFiles = readdirSync(folder)
         .filter((name) => name.endsWith('.sql'))
         .sort();
-      expect(sqlFiles).toEqual(journal.entries.map(({ tag }) => `${tag}.sql`));
-      expect(readFileSync(new URL(sqlFiles[0]!, folder), 'utf8')).toMatch(/\S/);
+      expect(sqlFiles).toEqual(tags.map((tag) => `${tag}.sql`));
+      for (const file of sqlFiles)
+        expect(readFileSync(new URL(file, folder), 'utf8')).toMatch(/\S/);
     }
   );
 
@@ -112,15 +118,14 @@ describe('fresh Core and Workspace baseline', () => {
         ])
       );
 
-      // One native ledger row is required independently in each genuinely fresh scope.
-      // Soft assertions expose both pre-squash counts after the current-schema predicates above.
+      // Fresh publication applies every migration in the owning scope.
       for (const db of databases) {
         expect
           .soft(
             db.sqlite.prepare('SELECT COUNT(*) FROM __drizzle_migrations').pluck().get(),
             db.scope
           )
-          .toBe(1);
+          .toBe(journalTags[db.scope].length);
       }
     } finally {
       // The shared fixture owner closes readers, drains the actual native writer, then removes only this private root.

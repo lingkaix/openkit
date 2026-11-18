@@ -232,9 +232,9 @@ afterEach(async () => {
 });
 
 describe.each(scopes)('G1 %s supported ledger', (scope) => {
-  // A single baseline has no interior interval; User and App retain their sparse journals.
+  // A single baseline has no interior interval.
   const positions =
-    scope === 'core' || scope === 'workspace'
+    scope === 'core'
       ? (['earlier', 'future'] as const)
       : (['earlier', 'interior', 'future'] as const);
   it.each(positions)(

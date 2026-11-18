@@ -209,7 +209,7 @@ function listColumnNames(
 // Raw baseline setup creates current schema, not admitted Knowledge authority.
 // Real initial Notebook and native publication remain covered through their public owners.
 describe('database setup', () => {
-  it('T1 applies the real Workspace baseline exactly once and preserves native bytes on repeat', () => {
+  it('T1 applies the real Workspace journal exactly once and preserves native bytes on repeat', () => {
     const root = createDataRoot();
     const db = openWorkspaceDb(root, testEntityId('ws', 'journal-migration-workspace'));
     try {
@@ -218,7 +218,10 @@ describe('database setup', () => {
         ['control_execution_steps', 'control_executions'].includes(name)
       );
       expect(tables).toEqual(['control_execution_steps', 'control_executions']);
-      expect(listMigrationIds(db, 'workspace')).toEqual(['workspace_0000_baseline']);
+      expect(listMigrationIds(db, 'workspace')).toEqual([
+        'workspace_0000_baseline',
+        'workspace_0001_agent_session_current_thread',
+      ]);
       const ledger = db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
       const before = db.sqlite.serialize();
       applyScopedMigrations(db);
@@ -816,7 +819,10 @@ describe('database setup', () => {
           'other-schema-approval'
         )
       ).not.toThrow();
-      expect(listMigrationIds(workspaceDb, 'workspace')).toEqual(['workspace_0000_baseline']);
+      expect(listMigrationIds(workspaceDb, 'workspace')).toEqual([
+        'workspace_0000_baseline',
+        'workspace_0001_agent_session_current_thread',
+      ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       // These are present-schema defaults, independent of the retired Review and usage upgrades.
       expect(workspaceDb.sqlite.pragma('table_info(artifact_reviews)')).toEqual(

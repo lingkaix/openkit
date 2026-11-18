@@ -154,7 +154,7 @@ node --test tests/release-publication-check.test.mjs tests/release-manifest.test
 
 ## Temporary fixtures
 
-Pre-release upgrade suites and their corpora are retired. Core and Workspace tests use the single current baseline, not intermediate development prefixes. Keep fresh schema, native publication, current constraints, failure and physical-lifetime checks. This changes no retained runtime or evidence data. [Release Management](../docs/specs/20260829-release_management.md#pre-stable-baseline-qualification) owns the release boundary.
+Core and Workspace tests qualify the complete current journals. The Workspace AgentSession regression also uses the rc.10 baseline to verify its forward index migration. Keep fresh schema, native publication, current constraints, failure and physical-lifetime checks. This changes no retained runtime or evidence data. [Release Management](../docs/specs/20260829-release_management.md#pre-stable-baseline-qualification) owns the release boundary.
 
 Every Vitest config uses `support/vitest-global-setup.mjs`. Before workers start, it creates one private run directory below the caller-selected temporary directory and sets TMPDIR, TMP and TEMP to it. Normal teardown removes that directory after passing or failing runs, then restores the previous values. Tests still close their resources and remove their own directories in afterEach or afterAll; run teardown is the containment backstop. A forcibly killed runner cannot execute teardown.
 

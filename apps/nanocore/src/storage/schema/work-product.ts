@@ -8,6 +8,7 @@ import {
   text,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
+import { CURRENT_AGENT_SESSION_STATUSES } from '../agent-session-status.js';
 
 /** Existing product metadata uses its retained v1 decoder, not the release-coupled wire schema. */
 function metadata() {
@@ -51,7 +52,12 @@ export const controlAgentSessions = sqliteTable(
   (table) => [
     uniqueIndex('control_agent_sessions_current_thread_idx')
       .on(table.threadId)
-      .where(sql`${table.threadId} IS NOT NULL AND ${table.status} NOT IN ('closed', 'failed')`),
+      // SQLite index DDL requires literals. These values are fixed protocol constants.
+      .where(
+        sql`${table.threadId} IS NOT NULL AND ${table.status} IN (${sql.raw(
+          [...CURRENT_AGENT_SESSION_STATUSES].map((status) => `'${status}'`).join(', ')
+        )})`
+      ),
   ]
 );
 

@@ -729,7 +729,7 @@ describe('D0-1: capture complete stopped authority', () => {
       expect.arrayContaining([
         {
           path: 'db/workspace.sqlite',
-          markers: { 'drizzle.workspace': WORKSPACE_BACKUP_DATABASE_FORMATS['drizzle.workspace']! },
+          markers: { 'drizzle.workspace': 2 },
         },
         {
           path: `light-apps/${f.app.appId}/data.sqlite`,

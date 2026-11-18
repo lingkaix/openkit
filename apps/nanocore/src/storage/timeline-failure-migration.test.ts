@@ -89,7 +89,10 @@ it('reads current Workspace failure metadata from original inline and file-backe
   const sourceScope = nativeProductScope(sourceRoot, turn.owner);
   const target = openWorkspaceDb(sourceRoot, DEMO_WORKSPACE_ID);
   try {
-    expect(listAppliedNativeMigrationIds(target.sqlite, kind)).toEqual(['workspace_0000_baseline']);
+    expect(listAppliedNativeMigrationIds(target.sqlite, kind)).toEqual([
+      'workspace_0000_baseline',
+      'workspace_0001_agent_session_current_thread',
+    ]);
     const itemRows = () =>
       target.sqlite
         .prepare(

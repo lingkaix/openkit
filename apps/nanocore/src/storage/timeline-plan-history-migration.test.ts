@@ -156,6 +156,7 @@ it('reads genuine current Workspace plan history through its covering index and 
     assertSupportedNativeLedger(target.sqlite, 'workspace');
     expect(listAppliedNativeMigrationIds(target.sqlite, 'workspace')).toEqual([
       'workspace_0000_baseline',
+      'workspace_0001_agent_session_current_thread',
     ]);
     applyNativeScopeMigrations(target.sqlite, 'workspace');
     expect(stableRows()).toEqual(before);

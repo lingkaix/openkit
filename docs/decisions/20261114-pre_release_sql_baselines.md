@@ -13,6 +13,10 @@ Before the first stable release, `v0.1.0`, Core and Workspace each use one curre
 
 This decision authorizes no deployment reset, account action or cleanup of retained runtime or evidence databases. Existing reset procedures still need explicit operator authorization and must preserve the designated accounts. Unsupported database identities fail closed. Startup must not reset them or infer publication authority from old files. Ordinary access, retention, transaction, physical close and acknowledgement rules remain binding.
 
+### Workspace AgentSession Continuity
+
+The rc.11 fix for #912 carries forward existing rc.10 Workspace databases. Preserve the applied Workspace baseline and append one atomic migration that replaces the current AgentSession index. Use the current-session statuses from [Core Protocol](../core/protocol.md#status-values). Fresh and existing Workspaces apply the same migration. Verify both paths and refusal by the rc.10 ledger gate.
+
 ## Reason
 
 The engineer rejected development-format compatibility work before the first stable release. Repeated intermediate migrations and their upgrade fixtures create maintenance work without a released-data obligation. Consolidating the current schema now keeps one clear fresh setup and removes that work. Current schema constraints, real fresh publication, failure handling and native ownership still need tests; removing old upgrade scenarios does not remove these requirements.
