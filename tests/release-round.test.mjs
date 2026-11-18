@@ -1143,6 +1143,10 @@ test('three runtime groups overlap while A to D remain sequential in each Thread
   for (const runtime of QUALIFIED_RUNTIMES)
     assert.deepEqual(order.get(runtime), ['A', 'B', 'C', 'D']);
   const recorded = await readJson(path.join(dir, 'round.json'));
+  assert.match(
+    recorded.runtimes.codex.steps[2].submitInput.input,
+    /Report the filename, the exact file contents \(the marker text verbatim\) and the returned Artifact id\./
+  );
   const evaluated = evaluate(recorded, p);
   assert.equal(
     evaluated.rows.filter((r) => r.mechanicalCode === 'P').length,
