@@ -70,7 +70,7 @@ import {
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestMcpApproval } from '../test-support/mcp-tool-policy.js';
+import { admitTestMcpToolCondition } from '../test-support/mcp-tool-policy.js';
 import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
@@ -86,7 +86,11 @@ import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
-import { registerWorkerMcpRoutes, reviewCapturedMcpPolicy } from '../worker-mcp-routes.js';
+import {
+  readCurrentWorkerMcpPolicyAnchor,
+  registerWorkerMcpRoutes,
+  reviewCapturedMcpPolicy,
+} from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   listExportableAgentEnvironmentPackageSnapshots,
@@ -275,12 +279,18 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
+type McpFixtureCondition = {
+  effect: 'require_approval' | 'prohibit';
+  subject: 'worker' | 'human' | 'other Agent' | 'other Workspace';
+};
+
 /** Composes the real Goal/Pending writer and admitted Policy owner before any Task or transport. */
 async function fixture(
   options: {
+    agentId?: string;
     uses?: number;
     publish?: boolean;
-    approval?: boolean;
+    toolCondition?: McpFixtureCondition;
     taskGrant?: boolean;
     /** A genuine unlinked Task; the unrelated fixture Goal supplies no Task authority. */
     standalone?: boolean;
@@ -364,7 +374,7 @@ async function fixture(
     services
   );
   const card = cards.cards[0]!;
-  const agentId = 'issue-worker';
+  const agentId = options.agentId ?? 'issue-worker';
   const resource = {
     kind: 'mcp-tool' as const,
     workspaceId: workspace.id,
@@ -928,15 +938,23 @@ async function fixture(
       closeWorkspace: vi.fn(async () => {}),
       getServerHealth: () => 'ready',
     };
-    if (options.approval) {
-      const policy = await admitTestMcpApproval({
+    const publishToolCondition = async ({ effect, subject }: McpFixtureCondition) => {
+      const policyWorkspaceId =
+        subject === 'other Workspace'
+          ? (await store.createWorkspace('Other Tool Policy Workspace')).id
+          : workspace.id;
+      const policy = await admitTestMcpToolCondition({
         coreDb,
         document: manager.current().openKitConfig.policy?.mediation,
-        workspaceId: workspace.id,
+        effect,
+        workspaceId: policyWorkspaceId,
         serverId: 'issues',
         toolName: 'read',
         userId,
-        principal: { kind: 'agent', id: agentId },
+        principal:
+          subject === 'human'
+            ? { kind: 'human', id: userId }
+            : { kind: 'agent', id: subject === 'other Agent' ? 'agent_codex' : agentId },
         threadId: thread.id,
         turnId: turn.id,
       });
@@ -948,7 +966,8 @@ async function fixture(
         })
       );
       await manager.reload({ mode: 'safe', dryRun: false });
-    }
+    };
+    if (options.toolCondition) await publishToolCondition(options.toolCondition);
     const app = new Hono<{ Variables: AuthVariables }>();
     const interception = new PolicyInterception();
     const routes = {
@@ -987,7 +1006,7 @@ async function fixture(
         }
       )
     );
-    await client.listTools();
+    const discovery = await client.listTools();
     const call = () => client.callTool({ name: 'read', arguments: {} });
     const decisions = () =>
       listExportableWorkspacePermissionDecisions(db, workspace.id).filter(
@@ -995,6 +1014,7 @@ async function fixture(
       );
     return {
       client,
+      discovery,
       gateway,
       call,
       decisions,
@@ -1005,6 +1025,7 @@ async function fixture(
       administrator,
       packageSnapshotId: environmentPackage.snapshotId,
       environmentPackage,
+      publishToolCondition,
     };
   };
   return {
@@ -1079,6 +1100,51 @@ async function prohibitFixtureThread(
 }
 
 describe('P7 Task lineage and physical access through production consumers', () => {
+  it('fails closed when the MCP reader cannot read a same-Workspace Turn anchor', () => {
+    const scope = {
+      workspaceId: allocateEntityId('ws'),
+      threadId: allocateEntityId('th'),
+      turnId: allocateEntityId('tu'),
+    };
+    const anchor = {
+      owner: { kind: 'workspace' as const, workspaceId: scope.workspaceId },
+      kind: 'turn',
+      id: allocateEntityId('tu'),
+    };
+    const store = new FsStore();
+    const readFailure = new Error('The Turn anchor is unreadable.');
+    const readTurn = vi.spyOn(store, 'getTurnById').mockImplementationOnce(() => {
+      throw readFailure;
+    });
+
+    expect(() => readCurrentWorkerMcpPolicyAnchor(anchor, scope, store)).toThrow(readFailure);
+    expect(readTurn).toHaveBeenCalledExactlyOnceWith(anchor.id);
+  });
+
+  it.each([
+    { effect: 'prohibit', subject: 'worker', prohibited: true },
+    { effect: 'prohibit', subject: 'other Agent', prohibited: false },
+    { effect: 'prohibit', subject: 'other Workspace', prohibited: false },
+  ] as const)(
+    'checks direct Pi discovery and calls with $effect scoped to $subject',
+    async ({ effect, subject, prohibited }) => {
+      const f = await fixture({
+        agentId: 'agent_pi',
+        standalone: true,
+        toolCondition: { effect, subject },
+      });
+      const mcp = await f.setupMcp();
+      expect.soft(mcp.discovery.tools.map((tool) => tool.name)).toEqual(prohibited ? [] : ['read']);
+      if (prohibited) {
+        await expect.soft(mcp.call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+      } else {
+        expect(await mcp.call()).toMatchObject({ content: [{ text: 'ISSUE_RESULT_CANARY' }] });
+        expect(mcp.gateway.callTool).toHaveBeenCalledTimes(1);
+      }
+    }
+  );
+
   it('bounds actual standalone Task and continuation MCP calls without borrowing an unrelated Goal', async () => {
     for (const continuation of [false, true]) {
       const selected = await fixture({ standalone: true });
@@ -1541,7 +1607,7 @@ describe('Goal-domain Task consumers', () => {
   });
 
   it('withholds a captured result after Goal closure while preserving the settled effect and usage', async () => {
-    const f = await fixture({ approval: true });
+    const f = await fixture({ toolCondition: { effect: 'require_approval', subject: 'worker' } });
     const mcp = await f.setupMcp();
     expect(await mcp.call()).toMatchObject({
       isError: true,
@@ -1652,29 +1718,47 @@ describe('Goal-domain Task consumers', () => {
     expect(JSON.stringify(settled.heldResult)).not.toContain('ISSUE_RESULT_CANARY');
   });
 
-  it('executes captured approval from a later administrator Turn with original Goal accountability', async () => {
-    const f = await fixture({ approval: true });
-    const mcp = await f.setupMcp(true);
-    const administrator = mcp.administrator!;
-    expect(administrator.userId).not.toBe(f.actor.userId);
-    expect(mcp.turn.triggerActor).toEqual({ kind: 'user', id: administrator.userId });
+  it.each([
+    'Goal continuation',
+    'direct Pi',
+    'direct human',
+    'direct Pi with later prohibition',
+  ] as const)('revalidates and settles captured Tool approval for %s', async (scenario) => {
+    const standalone = scenario !== 'Goal continuation';
+    const lateProhibition = scenario === 'direct Pi with later prohibition';
+    const f = await fixture({
+      ...(standalone ? { agentId: 'agent_pi' } : {}),
+      standalone,
+      toolCondition: {
+        effect: 'require_approval',
+        subject: scenario === 'direct human' ? 'human' : 'worker',
+      },
+    });
+    const mcp = await f.setupMcp(!standalone);
+    const decider = mcp.administrator ?? f.actor;
+    if (!standalone) expect(decider.userId).not.toBe(f.actor.userId);
+    expect(mcp.turn.triggerActor).toEqual({ kind: 'user', id: decider.userId });
     expect(await mcp.call()).toMatchObject({
       isError: true,
       structuredContent: { status: 'pending-approval' },
     });
-    const record = listThreadPendingRequests(
-      f.db.sqlite,
-      f.scope.workspaceId,
-      mcp.turn.threadId
-    )[0]!;
+    expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+    const pending = listThreadPendingRequests(f.db.sqlite, f.scope.workspaceId, mcp.turn.threadId);
+    expect(pending).toHaveLength(1);
+    const record = pending[0]!;
+    expect(record).toMatchObject({ state: 'pending', kind: 'approval' });
+    const principal = standalone
+      ? { kind: 'human', id: f.actor.userId }
+      : { kind: 'agent', id: f.agentId };
     expect(
       mcp.decisions().find((decision) => decision.decisionId === record.policyDecisionId)
     ).toMatchObject({
       result: 'require_approval',
       mediation: {
         subject: {
-          principal: { kind: 'agent', id: f.agentId },
-          actor: { responsibleUserId: f.actor.userId },
+          principal,
+          onBehalfOf: null,
+          actor: { kind: 'agent', id: f.agentId, responsibleUserId: f.actor.userId },
           responsibleHumanId: f.actor.userId,
         },
       },
@@ -1688,13 +1772,13 @@ describe('Goal-domain Task consumers', () => {
       threadId: mcp.turn.threadId,
       approvalRequestId: record.requestId,
       decision: 'granted',
-      actorId: administrator.userId,
+      actorId: decider.userId,
       coreDb: f.coreDb,
-      requestActor: administrator,
+      requestActor: decider,
       dependencies: { coreDb: f.coreDb, openWorkspace: () => f.db },
       prepare: async () => {
         prepared = await prepareCapturedPendingCall({
-          actor: administrator,
+          actor: decider,
           record,
           catalog: mcp.catalog,
           coreDb: f.coreDb,
@@ -1704,7 +1788,7 @@ describe('Goal-domain Task consumers', () => {
           reviewPolicy: () =>
             reviewCapturedMcpPolicy({
               record,
-              actor: administrator,
+              actor: decider,
               workspaceDb: f.db,
               routes: mcp.routes,
               catalog: mcp.catalog,
@@ -1724,6 +1808,10 @@ describe('Goal-domain Task consumers', () => {
         }),
       admitExecution: async () => {
         executionCall = await admitCapturedPendingCall(record, f.db, randomUUID(), prepared);
+        if (lateProhibition) {
+          expect(executionCall).toMatchObject({ id: executionCallIdForRequest(record.requestId) });
+          await mcp.publishToolCondition({ effect: 'prohibit', subject: 'worker' });
+        }
       },
       execute: (claimed) =>
         executeCapturedPendingCall({
@@ -1736,16 +1824,29 @@ describe('Goal-domain Task consumers', () => {
           executionCall,
         }),
     });
+    if (lateProhibition) {
+      expect(settled).toMatchObject({ claim: 'finished', disposition: 'execution-error' });
+      expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+      expect(
+        listWorkspaceCapabilityCalls(f.db, f.scope.workspaceId).find(
+          (call) => call.id === executionCallIdForRequest(record.requestId)
+        )
+      ).toMatchObject({ status: 'failed', errorCode: 'policy-changed' });
+      return;
+    }
     expect(settled).toMatchObject({
       claim: 'finished',
       disposition: 'approved-executed',
       responsibleUserId: f.actor.userId,
       authorizationContext: { responsibleUserId: f.actor.userId },
-      decidingActor: { kind: 'user', id: administrator.userId },
-      decidingActorContext: administrator,
+      decidingActor: { kind: 'user', id: decider.userId },
+      decidingActorContext: decider,
       heldResult: { content: [{ text: 'ISSUE_RESULT_CANARY' }] },
     });
     expect(mcp.gateway.callTool).toHaveBeenCalledTimes(1);
+    expect(mcp.gateway.callTool).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: record.toolName, arguments: {} })
+    );
     const executionDecision = listExportableWorkspacePermissionDecisions(
       f.db,
       f.scope.workspaceId
@@ -1754,7 +1855,8 @@ describe('Goal-domain Task consumers', () => {
       result: 'allow',
       mediation: {
         subject: {
-          principal: { kind: 'agent', id: f.agentId },
+          principal,
+          onBehalfOf: null,
           responsibleHumanId: f.actor.userId,
         },
       },
@@ -1763,7 +1865,7 @@ describe('Goal-domain Task consumers', () => {
       listWorkspaceAuditEvents(f.db, f.scope.workspaceId).find(
         (event) => event.id === executionDecision.auditEventId
       )
-    ).toMatchObject({ actor: { kind: 'user', id: administrator.userId } });
+    ).toMatchObject({ actor: { kind: 'user', id: decider.userId } });
     const reloaded = readPendingRequest(f.db.sqlite, record.requestId)!;
     const reopenedStore = new FsStore({ dataRoot: f.store.getDataRoot()! });
     expect(
@@ -1775,7 +1877,7 @@ describe('Goal-domain Task consumers', () => {
   });
 
   it('invalidates a captured human response when Goal authority ends without a Policy revision change', async () => {
-    const f = await fixture({ approval: true });
+    const f = await fixture({ toolCondition: { effect: 'require_approval', subject: 'worker' } });
     const mcp = await f.setupMcp();
     expect(await mcp.call()).toMatchObject({
       isError: true,

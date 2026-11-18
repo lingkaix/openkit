@@ -42,8 +42,7 @@ export function withHumanMcpApproval(
   };
 }
 
-/** Explicitly records fixture human admission; production candidate/confirmation is tested separately. */
-export async function admitTestMcpApproval(input: {
+type TestMcpToolConditionInput = {
   coreDb: CoreDb;
   document?: PolicyDocumentV1;
   workspaceId: string;
@@ -53,13 +52,23 @@ export async function admitTestMcpApproval(input: {
   principal?: InterceptionInput['proposal']['subject']['principal'];
   threadId: string;
   turnId: string;
-}): Promise<PolicyDocumentV1> {
+};
+
+/** Records an approval condition through the fixture's Policy admission owner. */
+export function admitTestMcpApproval(input: TestMcpToolConditionInput): Promise<PolicyDocumentV1> {
+  return admitTestMcpToolCondition({ ...input, effect: 'require_approval' });
+}
+
+/** Records a human-authored restrictive Tool condition through the Policy admission owner. */
+export async function admitTestMcpToolCondition(
+  input: TestMcpToolConditionInput & { effect: 'require_approval' | 'prohibit' }
+): Promise<PolicyDocumentV1> {
   const current = input.document ?? EMPTY_POLICY_DOCUMENT;
   const statement = PolicyPermissionV1Schema.parse({
-    id: `human-tool-condition-${input.serverId}-${input.toolName}`,
+    id: `human-tool-condition-${input.effect}-${input.serverId}-${input.toolName}`,
     kind: 'permission',
     state: 'active',
-    effect: 'require_approval',
+    effect: input.effect,
     grant: { kind: 'ordinary' },
     author: { kind: 'human', id: input.userId },
     authority: { kind: 'human', userId: input.userId },
@@ -105,7 +114,7 @@ export async function admitTestMcpApproval(input: {
       proposed: prepared.document,
       validation: 'valid',
     },
-    requestId: 'test-human-tool-condition',
+    requestId: `test-human-tool-condition-${input.effect}`,
     threadId: input.threadId,
     turnId: input.turnId,
   });

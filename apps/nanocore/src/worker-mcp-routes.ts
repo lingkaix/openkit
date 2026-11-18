@@ -21,6 +21,7 @@ import {
   canonicalJsonText,
   deriveEntityId,
   isSealedTurnTerminal,
+  type PolicyBindingV1,
   RequestIdSchema,
   readRetainedV1,
   responsibleUserIdForActor,
@@ -2639,30 +2640,12 @@ function currentMcpPolicyAuthority(
         },
         now: Date.now(),
         authorCurrent: (userId) => isCurrentServerPolicyAuthor(input.input.coreDb!, userId),
-        anchorCurrent: (anchor) => {
-          if (anchor.owner.kind === 'server' && anchor.kind === 'server' && anchor.id === 'server')
-            return true;
-          if (
-            anchor.owner.kind !== 'workspace' ||
-            anchor.owner.workspaceId !== input.environmentPackage.scope.workspaceId
-          )
-            throw mcpDeniedError();
-          if (anchor.kind === 'workspace')
-            return anchor.id === input.environmentPackage.scope.workspaceId;
-          if (anchor.kind === 'turn') {
-            const turn =
-              anchor.id === input.environmentPackage.scope.turnId
-                ? input.input.store.getTurnMetadata(
-                    input.environmentPackage.scope.workspaceId,
-                    input.environmentPackage.scope.threadId,
-                    anchor.id
-                  )
-                : input.input.store.getTurnById(anchor.id);
-            return !isSealedTurnTerminal(turn.status);
-          }
-          // No missing Thread/Goal/lifecycle fact is evidence that a restriction ended.
-          throw mcpDeniedError();
-        },
+        anchorCurrent: (anchor) =>
+          readCurrentWorkerMcpPolicyAnchor(
+            anchor,
+            input.environmentPackage.scope,
+            input.input.store
+          ),
       },
     }
   );
@@ -2726,14 +2709,26 @@ function currentMcpPolicyAuthority(
         : []
     ),
   ].map((id) => ({ kind: 'human' as const, id }));
+  // Captured approvals bind the existing mediation subject and proposal digest.
+  // Apply the verified Task Worker only to Tool conditions, keeping the human and issuer restrictions.
+  const directTaskSubject =
+    context?.goalId === null
+      ? {
+          ...subject,
+          principal: { kind: 'agent' as const, id: context.agentId },
+          onBehalfOf: initiatingHumanId,
+        }
+      : null;
   const toolConditions = selectHumanToolConditions({
     document,
     proposal: {
       workspaceId: scope.workspaceId,
       serverId: input.serverId,
       toolName: input.toolName,
-      subject,
-      restrictingPrincipals,
+      subject: directTaskSubject ?? subject,
+      restrictingPrincipals: directTaskSubject
+        ? [subject.principal, ...restrictingPrincipals]
+        : restrictingPrincipals,
     },
     authorCurrent: (userId) => isCurrentServerPolicyAuthor(input.input.coreDb!, userId),
   });
@@ -2810,6 +2805,28 @@ function currentMcpPolicyAuthority(
     }),
     authorizationUses,
   };
+}
+
+/** Checks Worker MCP Policy anchor lifetime and propagates failures reading current scope. */
+export function readCurrentWorkerMcpPolicyAnchor(
+  anchor: PolicyBindingV1['lifetime']['anchor'],
+  scope: Pick<AgentEnvironmentPackage['scope'], 'workspaceId' | 'threadId' | 'turnId'>,
+  store: Pick<FsStore, 'getTurnMetadata' | 'getTurnById'>
+): boolean {
+  if (anchor.owner.kind === 'server' && anchor.kind === 'server' && anchor.id === 'server')
+    return true;
+  if (anchor.owner.kind !== 'workspace') throw mcpDeniedError();
+  if (anchor.owner.workspaceId !== scope.workspaceId) return false;
+  if (anchor.kind === 'workspace') return anchor.id === scope.workspaceId;
+  if (anchor.kind === 'turn') {
+    const turn =
+      anchor.id === scope.turnId
+        ? store.getTurnMetadata(scope.workspaceId, scope.threadId, anchor.id)
+        : store.getTurnById(anchor.id);
+    return !isSealedTurnTerminal(turn.status);
+  }
+  // No missing Thread/Goal/lifecycle fact is evidence that a restriction ended.
+  throw mcpDeniedError();
 }
 
 type GoalTaskPolicyService = ReturnType<
