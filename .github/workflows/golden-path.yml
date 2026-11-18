@@ -1,0 +1,122 @@
+name: Golden path (deterministic real Worker)
+
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: Build this commit or test exact published digests
+        type: choice
+        options: [build, published]
+        default: build
+      app_digest:
+        description: Published App sha256 index or platform digest
+        type: string
+      worker_digest:
+        description: Published worker-runtimes sha256 index or platform digest
+        type: string
+      nanohost_release:
+        description: Published NanoHost release (published mode only)
+        type: string
+        default: v0.1.0-rc.9
+  schedule:
+    - cron: '23 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: golden-path-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  golden-path:
+    name: Fresh install, Turn, restart, Turn (${{ matrix.architecture }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    env:
+      IMAGES: ${{ inputs.images || 'build' }}
+      APP_DIGEST: ${{ inputs.app_digest }}
+      WORKER_DIGEST: ${{ inputs.worker_digest }}
+      NANOHOST_RELEASE: ${{ inputs.nanohost_release || 'v0.1.0-rc.9' }}
+      ARCHITECTURE: ${{ matrix.architecture }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Node
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: node
+
+      - name: Validate artifact selection
+        run: |
+          RUNNER_TEMP="${RUNNER_TEMP}/golden-path-oracle" node tests/support/golden-path.mjs self-check
+          node tests/support/golden-path.mjs validate
+
+      - name: Set up pinned NanoHost compiler
+        if: env.IMAGES == 'build'
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          working_directory: apps/nanohost
+          install_args: rust
+
+      - name: Set up the existing native image builder
+        if: env.IMAGES == 'build'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the App and real Worker image
+        if: env.IMAGES == 'build'
+        run: |
+          bash scripts/docker/build-image.sh app openkit/golden-app:dev
+          docker buildx build --file containers/workers/Dockerfile --target worker-runtimes \
+            --build-arg "OPENKIT_SOURCE_COMMIT=${GITHUB_SHA}" --provenance=false \
+            --output "type=oci,dest=${RUNNER_TEMP}/golden-worker.oci.tar" .
+
+      - name: Build the native NanoHost
+        if: env.IMAGES == 'build'
+        working-directory: apps/nanohost
+        run: cargo build --locked --release
+
+      - name: Set up pinned package manager for the existing packager
+        if: env.IMAGES == 'build'
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: pnpm
+
+      - name: Install the existing packager dependencies
+        if: env.IMAGES == 'build'
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter .
+
+      - name: Prepare the existing NanoHost installer bundle
+        run: node tests/support/golden-path.mjs package
+
+      - name: Provision missing host prerequisite
+        run: |
+          if [ ! -x /usr/bin/slirp4netns ]; then
+            sudo apt-get update
+            sudo apt-get install -y slirp4netns
+          fi
+
+      - name: Fresh install, first Worker Turn, restart, second Turn
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_TEMP,IMAGES,APP_DIGEST,WORKER_DIGEST,NANOHOST_RELEASE,ARCHITECTURE "$(command -v node)" tests/support/golden-path.mjs run
+
+      - name: Upload redacted diagnostics and public Turn records
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-path-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/golden-path-evidence
+          if-no-files-found: error

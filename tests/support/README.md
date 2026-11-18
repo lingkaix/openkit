@@ -23,3 +23,9 @@ The fresh demo Workspace records use the current retained marker. Each fixture s
 The demo Thread fixture carries the canonical explicit Workspace owner. Its existing envelope lineage stays an address, and its digest covers the same admitted Thread payload as the native reader. No retired record shape is emitted.
 
 Qualification public-record checks require an explicit Workspace owner on each attributed Turn. Plan and operation Workspace selectors remain addressing inputs. Synthetic Turn and Item fixtures use the same current owner shape.
+
+`golden-path.mjs` is the hosted-only fixed procedure for `.github/workflows/golden-path.yml`. It reuses release packaging, the installer and `scripts/release-safety.mjs`; the live release-round kit requires a retained remote published deployment and does not fit this fresh-install subject. The model endpoint scripts native file write/read tool calls, checks their actual results, and supplies exact assistant text. Public records prove completion, exact public Artifact bytes and retained association identity. Private attempt SQL is diagnostic only and selects no credentials or preparation payloads. Run the workflow to exercise the real stack; never run this helper or NanoHost on a development installation.
+
+The helper's `self-check` mode uses fixed HTTP stand-ins and no host or product process. It must reach success and reject a failed Turn, a wrong assistant reply, wrong file bytes and an observation timeout. The workflow runs this admission before building artifacts. Its output is instrument evidence only.
+
+The fixed order creates W1 before Worker image activation and W2 after activation. W1 runs first; a failed W1 stops the procedure. W2 must then complete before the restart and the retained-file Turn on W1. This covers both initial configuration loading and immediate use of a new Workspace without an extra reload.
