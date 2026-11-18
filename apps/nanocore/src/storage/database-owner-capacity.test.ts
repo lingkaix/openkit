@@ -147,6 +147,8 @@ it('shares physical forecasts and reserves the watermark for admitted Turn close
     pending.release();
   }
   await f.store.createItem(f.item);
+  // Capacity admission needs an idle origin; the existing Turn keeps its closeout reserve.
+  const freshThread = await f.store.createThread(DEMO_WORKSPACE_ID, 'Fresh capacity admission');
   // Explicit fixture policy: free bytes are below the margin but sufficient for a small closeout.
   margin = 128n * 1_024n * 1_024n;
   available = margin / 2n;
@@ -154,7 +156,13 @@ it('shares physical forecasts and reserves the watermark for admitted Turn close
   getControlStoreWorkerClient().setFileStorageAdmission(f.root, admission);
   const before = f.store.listThreadTurns(DEMO_WORKSPACE_ID, DEMO_THREAD_ID);
   await expect(
-    f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Must yield.', {
+    f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Busy origin.', {
+      kind: 'user',
+      id: FIXTURE_LOCAL_USER_ID,
+    })
+  ).rejects.toMatchObject({ code: 'thread_busy' });
+  await expect(
+    f.store.createTurn(DEMO_WORKSPACE_ID, freshThread.id, 'Must yield.', {
       kind: 'user',
       id: FIXTURE_LOCAL_USER_ID,
     })
@@ -163,6 +171,7 @@ it('shares physical forecasts and reserves the watermark for admitted Turn close
     { code: 'no-space', commit: 'not-committed' }
   );
   expect(f.store.listThreadTurns(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)).toEqual(before);
+  expect(f.store.listThreadTurns(DEMO_WORKSPACE_ID, freshThread.id)).toEqual([]);
   expect(f.store.listWorkspaceItemRevisions(DEMO_WORKSPACE_ID)).toEqual([f.item]);
   // An admitted closeout must also open its existing cold database inside the protected margin.
   await getControlStoreWorkerClient().close(
