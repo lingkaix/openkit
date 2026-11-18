@@ -5767,6 +5767,20 @@ export function createTaskStartOperation({
         recoveryDb.sqlite.close();
       }
 
+      // Fresh execution only. Receipt lookup, in-flight conflict, and retained
+      // checkpoint recovery already ran. An exact replay keeps its response, and a
+      // changed input is idempotency_key_conflict before this check.
+      const objective = StructuredWorkerDelegationRequestSchema.shape.objective.safeParse(
+        taskInput.input
+      );
+      if (!objective.success) {
+        throw new TurnStartValidationError(
+          'invalid_request',
+          objective.error.issues.map((issue) => issue.message).join('; '),
+          400
+        );
+      }
+
       const delegation = createTaskModeDelegation({
         entryIntent: 'explicit_task',
         userId: actor.userId,

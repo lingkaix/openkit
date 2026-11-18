@@ -948,6 +948,89 @@ describe('conversation.submit worker storage choice', () => {
   });
 });
 
+describe('task.start objective limit', () => {
+  it('rejects an input over 2000 characters before any task effect', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-objective-limit-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store);
+    const executor = native.executor;
+    const workerSetup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const app = createAppWithWorkspaceAuthority({
+      agentManifests: [workerSetup.manifest],
+      coreDb,
+      dataRoot,
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
+      openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
+      store,
+      turnExecutor: executor,
+    });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadsBefore = store.listThreads(workspaceId);
+    try {
+      const rejected = await app.request(
+        ...operationRequest(
+          'task.start',
+          {
+            workspaceId,
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
+          {
+            body: JSON.stringify({
+              input: 'x'.repeat(2001),
+              requestId: '0190f4c8-0000-7000-8000-000000000611',
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
+      expect(rejected.status, await rejected.clone().text()).toBe(400);
+      await expect(rejected.json()).resolves.toMatchObject({
+        code: 'invalid_request',
+        message: 'Too big: expected string to have <=2000 characters',
+      });
+      expect(store.listThreads(workspaceId)).toEqual(threadsBefore);
+      for (const thread of threadsBefore) {
+        expect(store.listThreadTurns(workspaceId, thread.id)).toEqual([]);
+      }
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          workspaceId,
+        })
+      ).toEqual([]);
+      expect(store.listCommandRequests().filter((entry) => entry.command === 'task.start')).toEqual(
+        []
+      );
+      const checkpointDb = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        expect(checkpointDb.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').all()).toEqual(
+          []
+        );
+      } finally {
+        checkpointDb.sqlite.close();
+      }
+      expect(executor.launches).toBe(0);
+    } finally {
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+});
+
 describe('conversation.submit worker acceptance wait', () => {
   it('accepts the durable running Worker tuple with a historical pinned Artifact before completion', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-conversation-accept-before-complete-'));
@@ -2722,6 +2805,13 @@ describe('route B queued Task receipts', () => {
         expect(conflict.status).toBe(409);
         expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
         expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual(queued);
+        const oversized = await post(makeApp(reloaded), requestId, 'x'.repeat(2001));
+        expect(oversized.status, await oversized.clone().text()).toBe(409);
+        expect(await oversized.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+        expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual(queued);
+        expect(reloaded.getCommandRequest(command, requestId, scope)).toMatchObject({
+          response: { kind: 'turn', id: turn.id },
+        });
         expect(executor.launches).toBe(0);
       } finally {
         prepare.mockRestore();
