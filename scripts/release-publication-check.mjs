@@ -35,6 +35,367 @@ const firstCoveredTag = 'v0.1.0-rc.6';
 function requireFact(holds, name) {
   if (!holds) throw Error(`Release Management: publication refused: ${name}`);
 }
+const rustWhitespace = new Set([
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0x200e, 0x200f, 0x2028, 0x2029,
+]);
+const includeRefusal = 'compiled include is not a plain string literal';
+const includeMacros = new Set(['include', 'include_str', 'include_bytes']);
+const includeClosers = { '(': ')', '[': ']', '{': '}' };
+/** Rust Pattern_White_Space and comments, including nested block comments. */
+function skipRustTrivia(source, index) {
+  let i = index;
+  while (i < source.length) {
+    if (rustWhitespace.has(source.charCodeAt(i))) {
+      i += 1;
+      continue;
+    }
+    if (source.startsWith('//', i)) {
+      i += 2;
+      while (i < source.length && source.charCodeAt(i) !== 0x0a) i += 1;
+      continue;
+    }
+    if (source.startsWith('/*', i)) {
+      const end = skipRustBlockComment(source, i);
+      if (end < 0) return -1;
+      i = end;
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+function skipRustBlockComment(source, index) {
+  let depth = 1;
+  let i = index + 2;
+  while (i < source.length && depth > 0) {
+    if (source.startsWith('/*', i)) {
+      depth += 1;
+      i += 2;
+      continue;
+    }
+    if (source.startsWith('*/', i)) {
+      depth -= 1;
+      i += 2;
+      continue;
+    }
+    i += 1;
+  }
+  return depth === 0 ? i : -1;
+}
+/**
+ * Skip one Rust string starting at index.
+ * -1 is not a string. -2 is an unterminated string.
+ */
+function skipRustString(source, index) {
+  const match = /^(br|cr|b|c|r)?(#*)"/.exec(source.slice(index));
+  if (!match) return -1;
+  const prefix = match[1] ?? '';
+  const hashes = match[2] ?? '';
+  let j = index + match[0].length;
+  const raw = prefix.includes('r') || hashes.length > 0;
+  if (!raw) {
+    while (j < source.length) {
+      if (source[j] === '\\') {
+        if (j + 1 >= source.length) return -2;
+        j += 2;
+        continue;
+      }
+      if (source[j] === '"') return j + 1;
+      j += 1;
+    }
+    return -2;
+  }
+  const end = source.indexOf(`"${hashes}`, j);
+  return end < 0 ? -2 : end + hashes.length + 1;
+}
+function skipRustChar(source, index) {
+  if (source[index] !== "'") return -1;
+  let j = index + 1;
+  if (j >= source.length) return -1;
+  if (source[j] === '\\') {
+    if (source[j + 1] === 'u' && source[j + 2] === '{') {
+      const close = source.indexOf('}', j + 3);
+      if (close < 0) return -1;
+      j = close + 1;
+    } else if (j + 1 < source.length) j += 2;
+    else return -1;
+  } else if (source[j] !== "'") j += 1;
+  else return -1;
+  return source[j] === "'" ? j + 1 : -1;
+}
+function plainRustString(source, index) {
+  const match = /^"((?:\\.|[^"\\\n])*)"/.exec(source.slice(index));
+  if (!match) return null;
+  return { body: match[1], end: index + match[0].length };
+}
+/** An identifier, including a raw `r#` prefix. Raw strings are not identifiers. */
+function readRustIdent(source, index) {
+  let i = index;
+  if (source.startsWith('r#', i) && /[A-Za-z_]/.test(source[i + 2] ?? '')) i += 2;
+  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(i));
+  if (!match) return null;
+  return { name: match[0], end: i + match[0].length };
+}
+const includeEscape = 'compiled include escape is outside the supported subset';
+const includeSource = 'compiled include source must be a Rust file';
+const includeIndirection = 'compiled include indirection is outside the supported subset';
+const modulePathLeaves = 'compiled module path leaves NanoHost';
+const buildScript = 'NanoHost build script is outside the supported subset';
+const pathSymlink = 'compiled path symlink is outside the supported subset';
+const pathComponent = 'compiled path component is outside the supported subset';
+/** Mode of one Git tree entry at this commit, or null when that path is absent. */
+function trackedMode(git, commit, file, cache) {
+  if (cache.has(file)) return cache.get(file);
+  const line = git(['ls-tree', commit, '--', file])
+    .split('\n')
+    .find((row) => row.endsWith(`\t${file}`));
+  const mode = line ? line.slice(0, line.indexOf(' ')) : null;
+  cache.set(file, mode);
+  return mode;
+}
+/**
+ * Resolve a relative path from a tracked file, one component at a time, against
+ * the Git tree. `..` pops only a proven directory. A symlink is never followed.
+ */
+function resolveGitPath(git, commit, fromFile, relative, cache) {
+  requireFact(!posix.isAbsolute(relative), 'publication input escapes repository');
+  const stack = posix
+    .dirname(fromFile)
+    .split('/')
+    .filter((part) => part && part !== '.');
+  let entered = null;
+  const parts = relative.split('/');
+  const descendsAfter = (index) =>
+    parts.slice(index + 1).some((part) => part !== '' && part !== '.');
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (part === '' || part === '.') {
+      if (part === '.' && entered !== null) {
+        requireFact(entered === '040000', `${pathComponent}: ${stack.join('/')}`);
+      }
+      continue;
+    }
+    if (part === '..') {
+      if (entered !== null) {
+        requireFact(entered === '040000', `${pathComponent}: ${stack.join('/')}`);
+        entered = null;
+      }
+      requireFact(stack.length > 0, 'publication input escapes repository');
+      stack.pop();
+      continue;
+    }
+    if (entered !== null) requireFact(entered === '040000', `${pathComponent}: ${stack.join('/')}`);
+    stack.push(part);
+    const next = stack.join('/');
+    const mode = trackedMode(git, commit, next, cache);
+    if (mode === '120000') requireFact(false, `${pathSymlink}: ${next}`);
+    if (!mode) {
+      const rest = parts.slice(index + 1);
+      // A later `..` would climb out of a component the tree does not contain.
+      if (rest.some((part) => part === '..')) requireFact(false, `${pathComponent}: ${next}`);
+      const missing = [...stack, ...rest.filter((part) => part && part !== '.')].join('/');
+      requireFact(false, `publication input must be a regular tracked file: ${missing}`);
+    }
+    if (descendsAfter(index)) requireFact(mode === '040000', `${pathComponent}: ${next}`);
+    entered = mode;
+  }
+  const target = stack.join('/');
+  requireFact(target && !target.startsWith('../'), 'publication input escapes repository');
+  return target;
+}
+/**
+ * Supported include invocation after the macro name.
+ * Null when this name is not invoked. Escapes and other forms refuse.
+ */
+function takeRustInclude(source, index, file, macro, resolvePath) {
+  const bang = skipRustTrivia(source, index);
+  requireFact(bang >= 0, `${includeRefusal}: ${file}`);
+  if (bang >= source.length || source.startsWith('!=', bang) || source[bang] !== '!') return null;
+  let cursor = skipRustTrivia(source, bang + 1);
+  requireFact(cursor >= 0 && includeClosers[source[cursor]], `${includeRefusal}: ${file}`);
+  const closer = includeClosers[source[cursor]];
+  cursor = skipRustTrivia(source, cursor + 1);
+  requireFact(cursor >= 0, `${includeRefusal}: ${file}`);
+  const literal = plainRustString(source, cursor);
+  requireFact(literal, `${includeRefusal}: ${file}`);
+  requireFact(!literal.body.includes('\\'), `${includeEscape}: ${file}`);
+  const close = skipRustTrivia(source, literal.end);
+  requireFact(close >= 0 && source[close] === closer, `${includeRefusal}: ${file}`);
+  // An absolute literal is rejected before any join, so it cannot bind a namesake.
+  requireFact(!posix.isAbsolute(literal.body), 'publication input escapes repository');
+  const target = resolvePath(file, literal.body);
+  if (macro === 'include') requireFact(target.endsWith('.rs'), `${includeSource}: ${file}`);
+  return { target, end: close + 1 };
+}
+/** use item. An imported include macro is outside the supported subset. */
+function consumeUseItem(source, index, file) {
+  let i = index;
+  let depth = 0;
+  while (i < source.length) {
+    const token = skipRustTrivia(source, i);
+    requireFact(token >= 0, `${includeIndirection}: ${file}`);
+    if (token >= source.length) break;
+    i = token;
+    if (source[i] === ';' && depth === 0) return i + 1;
+    if (source[i] === '{') {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (source[i] === '}') {
+      depth -= 1;
+      i += 1;
+      continue;
+    }
+    const stringEnd = skipRustString(source, i);
+    if (stringEnd === -2) requireFact(false, `${includeIndirection}: ${file}`);
+    if (stringEnd >= 0) {
+      i = stringEnd;
+      continue;
+    }
+    const ident = readRustIdent(source, i);
+    if (ident) {
+      requireFact(!includeMacros.has(ident.name), `${includeIndirection}: ${file}`);
+      i = ident.end;
+      continue;
+    }
+    i += 1;
+  }
+  requireFact(false, `${includeIndirection}: ${file}`);
+  return i;
+}
+/** macro_rules body. A metavariable invocation or include name is unsupported. */
+function consumeMacroRules(source, index, file) {
+  let i = skipRustTrivia(source, index);
+  requireFact(i >= 0 && source[i] === '!', `${includeIndirection}: ${file}`);
+  i = skipRustTrivia(source, i + 1);
+  const name = readRustIdent(source, i);
+  requireFact(name, `${includeIndirection}: ${file}`);
+  i = skipRustTrivia(source, name.end);
+  const closer = includeClosers[source[i]];
+  requireFact(closer, `${includeIndirection}: ${file}`);
+  const stack = [closer];
+  i += 1;
+  while (i < source.length && stack.length > 0) {
+    const token = skipRustTrivia(source, i);
+    requireFact(token >= 0, `${includeIndirection}: ${file}`);
+    if (token >= source.length) break;
+    i = token;
+    const stringEnd = skipRustString(source, i);
+    if (stringEnd === -2) requireFact(false, `${includeIndirection}: ${file}`);
+    if (stringEnd >= 0) {
+      i = stringEnd;
+      continue;
+    }
+    if (includeClosers[source[i]]) {
+      stack.push(includeClosers[source[i]]);
+      i += 1;
+      continue;
+    }
+    if (source[i] === stack.at(-1)) {
+      stack.pop();
+      i += 1;
+      continue;
+    }
+    if (source[i] === '$') {
+      const metaAt = skipRustTrivia(source, i + 1);
+      const meta = metaAt >= 0 ? readRustIdent(source, metaAt) : null;
+      if (meta) {
+        const bang = skipRustTrivia(source, meta.end);
+        if (bang >= 0 && source[bang] === '!' && !source.startsWith('!=', bang)) {
+          requireFact(false, `${includeIndirection}: ${file}`);
+        }
+      }
+      i += 1;
+      continue;
+    }
+    const ident = readRustIdent(source, i);
+    if (ident) {
+      requireFact(!includeMacros.has(ident.name), `${includeIndirection}: ${file}`);
+      i = ident.end;
+      continue;
+    }
+    i += 1;
+  }
+  requireFact(stack.length === 0, `${includeIndirection}: ${file}`);
+  return i;
+}
+/** #[path = "..."] that stays inside apps/nanohost, or null when this is not one. */
+function takeModulePath(source, index, file, resolvePath) {
+  let i = index + 1;
+  if (source[i] === '!') i += 1;
+  if (source[i] !== '[') return null;
+  i = skipRustTrivia(source, i + 1);
+  if (i < 0) return null;
+  const ident = readRustIdent(source, i);
+  if (!ident || ident.name !== 'path') return null;
+  i = skipRustTrivia(source, ident.end);
+  requireFact(i >= 0 && source[i] === '=', `${modulePathLeaves}: ${file}`);
+  i = skipRustTrivia(source, i + 1);
+  const literal = i >= 0 ? plainRustString(source, i) : null;
+  requireFact(literal && !literal.body.includes('\\'), `${modulePathLeaves}: ${file}`);
+  i = skipRustTrivia(source, literal.end);
+  requireFact(i >= 0 && source[i] === ']', `${modulePathLeaves}: ${file}`);
+  requireFact(!posix.isAbsolute(literal.body), `${modulePathLeaves}: ${file}`);
+  const target = resolvePath(file, literal.body);
+  requireFact(target.startsWith('apps/nanohost/'), `${modulePathLeaves}: ${file}`);
+  return i + 1;
+}
+function rustIncludeTargets(source, file, resolvePath) {
+  const targets = [];
+  const nanohost = file.startsWith('apps/nanohost/');
+  let i = 0;
+  while (i < source.length) {
+    const token = skipRustTrivia(source, i);
+    requireFact(token >= 0, `${includeRefusal}: ${file}`);
+    if (token >= source.length) break;
+    i = token;
+    const stringEnd = skipRustString(source, i);
+    if (stringEnd === -2) requireFact(false, `${includeRefusal}: ${file}`);
+    if (stringEnd >= 0) {
+      i = stringEnd;
+      continue;
+    }
+    if (nanohost && source[i] === '#') {
+      const attr = takeModulePath(source, i, file, resolvePath);
+      if (attr) {
+        i = attr;
+        continue;
+      }
+    }
+    if (source[i] === "'") {
+      if (/^'[A-Za-z_]/.test(source.slice(i, i + 2))) {
+        i += 1;
+        continue;
+      }
+      const charEnd = skipRustChar(source, i);
+      i = charEnd >= 0 ? charEnd : i + 1;
+      continue;
+    }
+    const ident = readRustIdent(source, i);
+    if (ident) {
+      if (nanohost && ident.name === 'use') {
+        i = consumeUseItem(source, ident.end, file);
+        continue;
+      }
+      if (nanohost && ident.name === 'macro_rules') {
+        i = consumeMacroRules(source, ident.end, file);
+        continue;
+      }
+      i = ident.end;
+      if (includeMacros.has(ident.name)) {
+        const parsed = takeRustInclude(source, i, file, ident.name, resolvePath);
+        if (parsed) {
+          targets.push(parsed.target);
+          i = parsed.end;
+        }
+      }
+      continue;
+    }
+    i += 1;
+  }
+  return targets;
+}
 /** Observe immutable Git bytes, not checkout files or claims in the evidence snapshot. */
 export function publicationInputsAt(repoRoot, sourceCommit) {
   requireFact(commit.test(sourceCommit ?? ''), 'publication proof exact commit');
@@ -138,6 +499,9 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     pending.add(promotionWorkflow);
   }
   requireFact(pending.size > 0, 'publication jobs have no admitted script inputs');
+  const pathModes = new Map();
+  const resolvePath = (fromFile, relative) =>
+    resolveGitPath(git, sourceCommit, fromFile, relative, pathModes);
   // Current publication scripts use relative static imports and literal URL file reads.
   // Follow that actual dependency closure; a missing or untracked dependency refuses proof.
   for (const file of pending) {
@@ -147,19 +511,48 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     );
     const { blob, bytes } = read(file);
     files[file] = blob;
+    if (file === 'apps/nanohost/Cargo.toml') {
+      requireFact(!/^[\t ]*build[\t ]*=/m.test(bytes), buildScript);
+    }
     for (const match of bytes.matchAll(/\bscripts\/[a-zA-Z0-9_./-]+\.(?:mjs|sh|py)\b/g))
       pending.add(match[0]);
-    // Worker smoke now executes this same-checkout Rust extractor as publication code.
+    // The Worker seed smoke compiles the NanoHost test harness from this checkout.
+    // This is a closed supported subset, not a compiler closure. Bind every
+    // tracked package file and the parent manifest Cargo consults, then each
+    // direct include!, include_str!, or include_bytes! of one plain relative
+    // string. A raw r# prefix, a path such as std:: or core::, whitespace,
+    // comments, and () [] {} delimiters are that same direct invocation.
+    // Escapes are refused and never decoded. include! of a non-.rs file, a use
+    // import or macro_rules indirection of these macros, a #[path] module that
+    // leaves apps/nanohost, and any NanoHost build script are refused. Absolute
+    // literals are rejected before joining. Each relative path is then resolved
+    // one component at a time against this commit: a symlink is never followed,
+    // and a missing component or a non-directory that must be traversed refuses
+    // proof. Ordinary .. through a proven directory still binds. An untracked
+    // target refuses proof. A baseline recorded with a smaller closure
+    // mismatches and fails closed.
     if (file === 'scripts/docker/check-worker-seed.sh') {
-      for (const native of [
-        'Cargo.toml',
-        'Cargo.lock',
-        'mise.toml',
-        'src/main.rs',
-        'src/persistent_volume.rs',
-        'src/filesystem_capacity.rs',
+      pending.add('Cargo.toml');
+      for (const tracked of git([
+        'ls-tree',
+        '-r',
+        '--name-only',
+        sourceCommit,
+        '--',
+        'apps/nanohost',
       ])
-        pending.add(`apps/nanohost/${native}`);
+        .trim()
+        .split('\n'))
+        if (tracked) {
+          requireFact(
+            !(tracked === 'apps/nanohost/build.rs' || /\/build\.rs$/.test(tracked)),
+            buildScript
+          );
+          pending.add(tracked);
+        }
+    }
+    if (file.endsWith('.rs')) {
+      for (const target of rustIncludeTargets(bytes, file, resolvePath)) pending.add(target);
     }
     if (!/\.(?:mjs|js)$/.test(file)) continue;
     for (const match of bytes.matchAll(
@@ -168,7 +561,7 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
       // A trailing-slash URL locates a directory (for example a build's cwd),
       // not file bytes. Imports and literal file URLs must still resolve to blobs.
       if (match[1].startsWith('new URL') && match[2].endsWith('/')) continue;
-      const dependency = posix.normalize(posix.join(posix.dirname(file), match[2]));
+      const dependency = resolvePath(file, match[2]);
       pending.add(dependency);
     }
   }

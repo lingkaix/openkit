@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
@@ -93,6 +93,23 @@ function repository({ moved = false } = {}) {
   return { root, baseline, head, git };
 }
 
+/** Seed smoke pulls the NanoHost tree into the publication closure. */
+function workerSeedRepository() {
+  const r = repository({ moved: true });
+  writeFileSync(
+    path.join(r.root, 'scripts/docker/smoke-image.sh'),
+    'bash scripts/docker/check-worker-seed.sh image\n'
+  );
+  writeFileSync(
+    path.join(r.root, 'scripts/docker/check-worker-seed.sh'),
+    'cargo test --manifest-path apps/nanohost/Cargo.toml\n'
+  );
+  writeFileSync(path.join(r.root, 'Cargo.toml'), '[workspace]\nexclude = ["apps/nanohost"]\n');
+  mkdirSync(path.join(r.root, 'apps/nanohost/src'), { recursive: true });
+  mkdirSync(path.join(r.root, 'fixtures'), { recursive: true });
+  return r;
+}
+
 test('publication proof includes every moved job and image-construction input', () => {
   const r = repository({ moved: true });
   const proof = publicationInputsAt(r.root, r.head);
@@ -151,11 +168,15 @@ test('publication proof binds the production Worker seed checker and its native 
     'src/persistent_volume.rs',
     'src/filesystem_capacity.rs',
   ].map((file) => `apps/nanohost/${file}`);
+  const compiled = 'apps/nanohost/src/telemetry.rs';
+  writeFileSync(path.join(r.root, 'Cargo.toml'), '[workspace]\nexclude = ["apps/nanohost"]\n');
   for (const file of native) writeFileSync(path.join(r.root, file), '# fixture native input\n');
+  writeFileSync(path.join(r.root, compiled), '# fixture compiled module\n');
   r.git('add', '.');
   r.git('commit', '-m', 'add production seed gate');
   const proved = r.git('rev-parse', 'HEAD');
   const before = publicationInputsAt(r.root, proved);
+  assert.ok(before.files['Cargo.toml']);
   for (const file of native) {
     assert.ok(before.files[file], file);
     writeFileSync(path.join(r.root, file), '# changed native input\n');
@@ -163,6 +184,330 @@ test('publication proof binds the production Worker seed checker and its native 
     r.git('commit', '-m', 'change seed gate native input');
     assert.notEqual(publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256, before.sha256);
   }
+  const compiledBase = r.git('rev-parse', 'HEAD');
+  const compiledProof = publicationInputsAt(r.root, compiledBase);
+  writeFileSync(path.join(r.root, compiled), '# changed compiled module\n');
+  r.git('add', compiled);
+  r.git('commit', '-m', 'change compiled module outside the old seed list');
+  const compiledHead = r.git('rev-parse', 'HEAD');
+  assert.notEqual(publicationInputsAt(r.root, compiledHead).sha256, compiledProof.sha256);
+  mkdirSync(path.join(r.root, 'apps/nanohost/deploy'), { recursive: true });
+  mkdirSync(path.join(r.root, 'apps/nanocore/src/auth'), { recursive: true });
+  writeFileSync(path.join(r.root, 'apps/nanohost/deploy/host-manifest.json'), '{}\n');
+  writeFileSync(
+    path.join(r.root, 'apps/nanocore/src/auth/nanohost-transport-revision.json'),
+    '{}\n'
+  );
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/embed.rs'),
+    'const MANIFEST: &str = include_str!("../deploy/host-manifest.json");\n' +
+      'const REVISION: &str = include_str!("../../nanocore/src/auth/nanohost-transport-revision.json");\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add embedded compile inputs');
+  for (const file of [
+    'apps/nanohost/deploy/host-manifest.json',
+    'apps/nanocore/src/auth/nanohost-transport-revision.json',
+  ]) {
+    const embeddedProof = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+    assert.ok(embeddedProof.files[file], file);
+    writeFileSync(path.join(r.root, file), '{"changed":true}\n');
+    r.git('add', file);
+    r.git('commit', '-m', 'change one embedded compile input');
+    assert.notEqual(
+      publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256,
+      embeddedProof.sha256
+    );
+  }
+  const assetSet = 'b'.repeat(64);
+  assert.throws(
+    () =>
+      actualCheck(
+        {
+          repository: 'lingkaix/openkit',
+          tag: 'v0.1.0-rc.6',
+          sha: compiledHead,
+          assetSet,
+          publicationInputs: compiledProof.sha256,
+          grant: {
+            reference: 'synthetic-engineer-grant',
+            repository: 'lingkaix/openkit',
+            firstTag: 'v0.1.0-rc.6',
+            assetSet,
+            publicationInputs: compiledProof.sha256,
+            revoked: false,
+            cycleOpen: true,
+          },
+          baseline: { sha: compiledBase, publicationInputs: compiledProof.sha256 },
+        },
+        { repoRoot: r.root }
+      ),
+    /actual repository publication inputs differ from approved baseline/
+  );
+});
+
+test('spaced include_str target changes the publication digest', () => {
+  const r = workerSeedRepository();
+  const target = 'fixtures/spaced-include.txt';
+  writeFileSync(path.join(r.root, target), 'original\n');
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/spaced.rs'),
+    'const VALUE: &str = include_str ! // spaced\n' +
+      '(\n' +
+      '    "../../../fixtures/spaced-include.txt"\n' +
+      ');\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add spaced include');
+  const before = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  writeFileSync(path.join(r.root, target), 'changed\n');
+  r.git('add', target);
+  r.git('commit', '-m', 'change spaced include target');
+  const after = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  assert.notEqual(after.sha256, before.sha256);
+  assert.equal(after.files[target], r.git('rev-parse', `HEAD:${target}`));
+});
+
+test('spaced include_bytes with a missing target refuses publication proof', () => {
+  const r = workerSeedRepository();
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/spaced.rs'),
+    'const MISSING: &[u8] = include_bytes /* spaced */ !(\n' +
+      '    "../../../fixtures/missing-include.txt"\n' +
+      ');\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add spaced include with a missing target');
+  assert.throws(
+    () => publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')),
+    /publication input must be a regular tracked file: fixtures\/missing-include.txt/
+  );
+});
+
+test('absolute include literal refuses before binding its tracked namesake', () => {
+  const r = workerSeedRepository();
+  const source = 'apps/nanohost/src/absolute.rs';
+  const literal = '/tmp/namesake.bin';
+  const namesake = path.posix.normalize(path.posix.join(path.posix.dirname(source), literal));
+  assert.equal(namesake, 'apps/nanohost/src/tmp/namesake.bin');
+  mkdirSync(path.join(r.root, path.posix.dirname(namesake)), { recursive: true });
+  writeFileSync(path.join(r.root, namesake), 'tracked namesake\n');
+  writeFileSync(
+    path.join(r.root, source),
+    'const BYTES: &[u8] = include_bytes!("/tmp/namesake.bin");\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add absolute include beside a tracked namesake');
+  assert.throws(
+    () => publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')),
+    /publication input escapes repository/
+  );
+});
+
+function changedIncludeDigest(r, source, body, target) {
+  writeFileSync(path.join(r.root, target), 'original\n');
+  writeFileSync(path.join(r.root, source), body);
+  r.git('add', '.');
+  r.git('commit', '-m', 'add include form');
+  const before = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  writeFileSync(path.join(r.root, target), 'changed\n');
+  r.git('add', target);
+  r.git('commit', '-m', 'change include target');
+  const after = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  assert.notEqual(after.sha256, before.sha256);
+  assert.equal(after.files[target], r.git('rev-parse', `HEAD:${target}`));
+}
+
+test('raw include identifier changes the publication digest', () => {
+  const r = workerSeedRepository();
+  changedIncludeDigest(
+    r,
+    'apps/nanohost/src/raw_include.rs',
+    'const VALUE: &str = r#include_str /* trivia */ !\n' +
+      '(\n' +
+      '    "../../../fixtures/raw-include.txt"\n' +
+      ');\n',
+    'fixtures/raw-include.txt'
+  );
+});
+
+test('std path include changes the publication digest', () => {
+  const r = workerSeedRepository();
+  changedIncludeDigest(
+    r,
+    'apps/nanohost/src/std_include.rs',
+    'const VALUE: &str = std::r#include_str!("../../../fixtures/std-include.txt");\n',
+    'fixtures/std-include.txt'
+  );
+});
+
+test('include! source changes the publication digest', () => {
+  const r = workerSeedRepository();
+  changedIncludeDigest(
+    r,
+    'apps/nanohost/src/source_include.rs',
+    'include!("../../../fixtures/included-source.rs");\n',
+    'fixtures/included-source.rs'
+  );
+});
+
+test('bracket include delimiter changes the publication digest', () => {
+  const r = workerSeedRepository();
+  writeFileSync(path.join(r.root, 'fixtures/bracket-include.txt'), 'original\n');
+  writeFileSync(path.join(r.root, 'fixtures/brace-include.txt'), 'original\n');
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/bracket_include.rs'),
+    'const BRACKET: &[u8] = include_bytes ! [ "../../../fixtures/bracket-include.txt" ];\n' +
+      'const BRACE: &[u8] = include_bytes ! { "../../../fixtures/brace-include.txt" };\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add bracket and brace includes');
+  const before = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  writeFileSync(path.join(r.root, 'fixtures/brace-include.txt'), 'changed\n');
+  r.git('add', 'fixtures/brace-include.txt');
+  r.git('commit', '-m', 'change brace include target');
+  const after = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  assert.ok(after.files['fixtures/bracket-include.txt']);
+  assert.notEqual(after.sha256, before.sha256);
+  assert.equal(
+    after.files['fixtures/brace-include.txt'],
+    r.git('rev-parse', 'HEAD:fixtures/brace-include.txt')
+  );
+});
+
+test('concat! include argument refuses publication proof', () => {
+  const r = workerSeedRepository();
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/concat_include.rs'),
+    'include!(concat!("../../../fixtures/", "piece.rs"));\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add concat include');
+  assert.throws(
+    () => publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')),
+    /compiled include is not a plain string literal: apps\/nanohost\/src\/concat_include.rs/
+  );
+});
+
+function refusedInclude(r, source, body, pattern, extra) {
+  if (extra) extra(r);
+  writeFileSync(path.join(r.root, source), body);
+  r.git('add', '.');
+  r.git('commit', '-m', 'add unsupported include form');
+  assert.throws(() => publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')), pattern);
+}
+
+test('escaped include path refuses publication proof', () => {
+  const r = workerSeedRepository();
+  // Outside apps/nanohost: a backslash name under that tree is C-quoted by ls-tree
+  // and the listing itself refuses. The old scanner joins this spelling and binds it.
+  const namesake = path.posix.join('fixtures', '\\x61.txt');
+  refusedInclude(
+    r,
+    'apps/nanohost/src/escaped.rs',
+    'const VALUE: &str = include_str!("../../../fixtures/\\x61.txt");\n',
+    /compiled include escape is outside the supported subset/,
+    (repo) => {
+      mkdirSync(path.join(repo.root, 'fixtures'), { recursive: true });
+      writeFileSync(path.join(repo.root, namesake), 'tracked escape namesake\n');
+    }
+  );
+});
+
+test('non-rust include! target refuses publication proof', () => {
+  const r = workerSeedRepository();
+  refusedInclude(
+    r,
+    'apps/nanohost/src/fragment_include.rs',
+    'include!("../../../fixtures/fragment.inc");\n',
+    /compiled include source must be a Rust file/,
+    (repo) => {
+      writeFileSync(
+        path.join(repo.root, 'fixtures/fragment.inc'),
+        'const NESTED: &str = include_str!("nested.txt");\n'
+      );
+      writeFileSync(path.join(repo.root, 'fixtures/nested.txt'), 'nested\n');
+    }
+  );
+});
+
+test('include import and macro indirection refuse publication proof', () => {
+  const alias = workerSeedRepository();
+  refusedInclude(
+    alias,
+    'apps/nanohost/src/alias.rs',
+    'use std::include_str as snapshot;\n' +
+      'const VALUE: &str = snapshot!("../../../fixtures/alias.txt");\n',
+    /compiled include indirection is outside the supported subset/,
+    (repo) => writeFileSync(path.join(repo.root, 'fixtures/alias.txt'), 'alias\n')
+  );
+  const wrapped = workerSeedRepository();
+  refusedInclude(
+    wrapped,
+    'apps/nanohost/src/wrapper.rs',
+    'macro_rules! read_snapshot {\n' +
+      '    ($reader:ident, $source:literal) => {\n' +
+      '        $reader!($source)\n' +
+      '    };\n' +
+      '}\n',
+    /compiled include indirection is outside the supported subset/
+  );
+});
+
+test('cross-tree module path refuses publication proof', () => {
+  const r = workerSeedRepository();
+  refusedInclude(
+    r,
+    'apps/nanohost/src/pathed.rs',
+    '#[path = "../../../fixtures/outside_module.rs"]\nmod outside;\n',
+    /compiled module path leaves NanoHost/,
+    (repo) => writeFileSync(path.join(repo.root, 'fixtures/outside_module.rs'), 'fn outside() {}\n')
+  );
+});
+
+test('NanoHost build script refuses publication proof', () => {
+  const script = workerSeedRepository();
+  refusedInclude(script, 'apps/nanohost/build.rs', 'fn main() {}\n', /NanoHost build script/);
+  const keyed = workerSeedRepository();
+  refusedInclude(
+    keyed,
+    'apps/nanohost/src/lib.rs',
+    'fn host() {}\n',
+    /NanoHost build script/,
+    (repo) =>
+      writeFileSync(
+        path.join(repo.root, 'apps/nanohost/Cargo.toml'),
+        '[package]\nbuild = "build.rs"\n'
+      )
+  );
+});
+
+test('symlinked include component refuses publication proof', () => {
+  const r = workerSeedRepository();
+  refusedInclude(
+    r,
+    'apps/nanohost/src/main.rs',
+    'const VALUE: &str = include_str!("../../../fixtures/jump/../value.txt");\n',
+    /compiled path symlink is outside the supported subset: fixtures\/jump/,
+    (repo) => {
+      mkdirSync(path.join(repo.root, 'fixtures/other'), { recursive: true });
+      writeFileSync(path.join(repo.root, 'fixtures/value.txt'), 'lexical\n');
+      writeFileSync(path.join(repo.root, 'fixtures/other/value.txt'), 'followed\n');
+      symlinkSync('other/inner', path.join(repo.root, 'fixtures/jump'));
+    }
+  );
+});
+
+test('include through a real parent directory still binds', () => {
+  const r = workerSeedRepository();
+  mkdirSync(path.join(r.root, 'fixtures/other'), { recursive: true });
+  writeFileSync(path.join(r.root, 'fixtures/other/keep.txt'), 'keep\n');
+  changedIncludeDigest(
+    r,
+    'apps/nanohost/src/parent_include.rs',
+    'const VALUE: &str = include_str!("../../../fixtures/other/../value.txt");\n',
+    'fixtures/value.txt'
+  );
 });
 
 test('publication proof binds the admission and attestation gate instructions, not only their scripts', () => {

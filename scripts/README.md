@@ -81,6 +81,8 @@ See [Deployment Host Requirements](../docs/specs/20260909-deployment_host_requir
 
 `release-publication-check.mjs EVIDENCE.json` reads immutable Git objects at exact P and `baseline.sha`. Its proof includes publication jobs, moved candidate jobs, the matrix and read-only registry admission. Native App publication also includes its index loader, both native smoke legs and promotion. It follows invoked scripts and their static relative-import and literal-file dependencies, including the native missing-setter fixture. Trailing-slash directory URLs locate a working directory and are not file inputs. Missing or changed file inputs refuse even if supplied hashes agree. The proof retains each input blob identity and the aggregate fingerprint.
 
+The NanoHost Worker seed portion is a closed supported subset, not a compiler closure. It binds every tracked file under `apps/nanohost`, the manifests Cargo reads, and a direct `include!`, `include_str!`, or `include_bytes!` of one plain relative string literal. Relative paths are resolved one component at a time against the Git tree. It refuses an escaped literal, an `include!` target that is not a `.rs` file, a `use` import or `macro_rules` indirection of those macros, a `#[path]` module that leaves `apps/nanohost`, any NanoHost `build.rs` or package `build` key, and any symlinked path component.
+
 `release-observe.mjs` collects baseline workflow, tag-push and job provenance from current GitHub API responses. It resolves lightweight or annotated tags to the actual commit and rechecks the tag and completed run after job collection. Missing or mismatched job run, attempt or source identities refuse collection; authored baseline fields cannot fill them.
 
 ## Retrieval Build Supply
