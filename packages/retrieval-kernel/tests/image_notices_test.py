@@ -161,13 +161,15 @@ class VerifierTests(unittest.TestCase):
             output = ''
             if operation == 'inspect':
                 self.assertIn(REFERENCE, command)
-                self.assertTrue(platform in command or f'--platform={platform}' in command)
+                if any(part == '--platform' or part.startswith('--platform=') for part in command):
+                    raise subprocess.CalledProcessError(125, command, stderr='unknown flag: --platform')
                 self.assertTrue('--format' in command or any(part.startswith('--format=') for part in command))
                 output = json.dumps({'Id': image_id, 'Os': operating_system,
                                      'Architecture': architecture})
             elif operation == 'create':
                 self.assertIn(image_id, command)
                 self.assertNotIn(REFERENCE, command)
+                self.assertTrue(platform in command or f'--platform={platform}' in command)
                 self.assertIn('--pull=never', command)
                 output = container_id + '\n'
             elif operation == 'cp':
@@ -186,7 +188,7 @@ class VerifierTests(unittest.TestCase):
         return calls, run
 
     def test_driver_pins_image_and_removes_only_its_stopped_container(self):
-        """A mutable input is inspected, then only its immutable image ID is used for extraction."""
+        """A Docker 28.0-compatible inspect pins the immutable image used for extraction."""
         for platform, image_id in [('linux/amd64', IMAGE_ID), ('linux/arm64', ARM_ID)]:
             with self.subTest(platform=platform):
                 calls, run = self.docker_double(platform=platform,

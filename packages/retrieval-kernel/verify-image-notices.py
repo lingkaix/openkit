@@ -72,8 +72,9 @@ def compare_notice_trees(expected: Path, actual: Path) -> int:
 
 def verify_image(reference: str, platform: str, expected: Path) -> dict:
     """Inspect one pinned image through an owned stopped container, without running its code."""
-    identity = json.loads(command(['docker', 'image', 'inspect', '--platform', platform,
-                                   '--format', INSPECT_FORMAT, reference]))
+    # The caller selects the platform image. Docker 28.0 cannot pass a platform to image inspect.
+    identity = json.loads(command(['docker', 'image', 'inspect', '--format', INSPECT_FORMAT,
+                                   reference]))
     if not isinstance(identity, dict):
         raise ValueError('image inspection did not return an identity object')
     if f"{identity.get('Os')}/{identity.get('Architecture')}" != platform:

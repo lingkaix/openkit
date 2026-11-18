@@ -57,7 +57,7 @@ Before #249 closes, build both target-native App images and compare the packaged
 
 ## Prepared Image Notice Check
 
-`packages/retrieval-kernel/verify-image-notices.py` checks the full notice tree from both built App images. Run it on the Docker-capable merge train or release CI host that builds the App images, from the selected source checkout, against the loaded candidate images. It requires Python 3, the pinned Cargo toolchain and already-fetched locked crate sources, and Docker API 1.49 or later for [explicit platform inspection](https://docs.docker.com/reference/cli/docker/image/inspect/). Supply platform-specific image references, or a locally loaded multi-platform reference that the engine can select for both platforms. The check never builds or pulls an image.
+`packages/retrieval-kernel/verify-image-notices.py` checks the full notice tree from both built App images. Run it on the Docker-capable merge train or release CI host that builds the App images, from the selected source checkout, against the loaded candidate images. It requires Python 3, the pinned Cargo toolchain, already-fetched locked crate sources, and Docker. Supply one loaded platform-specific image reference per architecture, such as its manifest digest. The check never builds or pulls an image.
 
 ```sh
 CARGO_BUILD_JOBS=1 python3 packages/retrieval-kernel/verify-image-notices.py --amd64-image <loaded-amd64-App-reference> --arm64-image <loaded-arm64-App-reference>
