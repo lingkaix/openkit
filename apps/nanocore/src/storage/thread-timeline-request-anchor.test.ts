@@ -7,6 +7,7 @@ import { allocateEntityId, type Item } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import * as channelOwners from '../channel-services.js';
 import {
   answerRecordedUserInput,
   raiseRecordedPendingRequest,
@@ -487,7 +488,27 @@ describe('Exact request-ID timeline anchors', () => {
   it('adds no anchor-proof receipt query or broad census beyond the identical original Item-anchor read', async () => {
     const f = await fixture();
     const expected = { turnId: f.turn.id, itemId: f.itemId, type: 'user-input-request' };
-    expectOriginal(await f.read(), expected);
+    // Startup can still be recovering attention after the first timeline response.
+    const resumeRecovery = Promise.withResolvers<void>();
+    let recovery: Promise<void> | undefined;
+    const createChannels = channelOwners.createChannelServices;
+    const observeStartup = vi.spyOn(channelOwners, 'createChannelServices');
+    observeStartup.mockImplementationOnce((options) => {
+      const services = createChannels(options);
+      return {
+        ...services,
+        recoverAttention: () => (recovery = resumeRecovery.promise.then(services.recoverAttention)),
+      };
+    });
+    try {
+      expectOriginal(await f.read(), expected);
+    } finally {
+      observeStartup.mockRestore();
+      resumeRecovery.resolve();
+      // The measurements belong to the two timeline reads after startup has settled.
+      await recovery;
+    }
+    expect(recovery).toBeDefined();
     const census = [
       'listThreadTurns',
       'listThreadItems',

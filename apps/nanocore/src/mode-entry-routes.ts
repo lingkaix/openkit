@@ -443,16 +443,6 @@ function replayConversationCommand(
         )
           throw new Error('Conversation Worker origin reference is contradictory.');
       }
-      if (
-        coreDb &&
-        listSchedulerExecutionAttemptsForTurn(coreDb, {
-          workspaceId: workspaceIdForOwner(currentTurn.owner),
-          threadId: currentTurn.threadId,
-          turnId: currentTurn.id,
-        }).some((attempt) => attempt.phase === 'closing')
-      ) {
-        throw new Error('Conversation Worker execution requires recovery.');
-      }
       if (currentTurn.status === 'pending' || currentTurn.status === 'running') {
         if (!coreDb) throw new Error('Conversation Worker runtime owners are unavailable.');
         const workspaceDb = repositoryWorkspaceDb(workspaceIdForOwner(currentTurn.owner));
@@ -463,21 +453,15 @@ function replayConversationCommand(
             currentTurn.threadId,
             currentTurn.id
           );
-          const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, {
-            workspaceId: workspaceIdForOwner(currentTurn.owner),
-            threadId: currentTurn.threadId,
-            turnId: currentTurn.id,
-          }).filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
           if (
             !checkpoint ||
             checkpoint.requestId !== record.requestId ||
             checkpoint.requestInputHash !== record.inputHash ||
-            isTerminalWorkerTurnStage(checkpoint.stage) ||
-            attempts.some((candidate) => candidate.phase === 'closing')
+            isTerminalWorkerTurnStage(checkpoint.stage)
           ) {
             throw new Error('Conversation Worker execution requires recovery.');
           }
-          const { admission } = verifyAcceptedTurnLineage({
+          const { attempt, admission } = verifyAcceptedTurnLineage({
             coreDb,
             store,
             actorId,
@@ -486,6 +470,9 @@ function replayConversationCommand(
             turnId: currentTurn.id,
             requestId: record.requestId,
           });
+          if (attempt?.phase === 'closing') {
+            throw new Error('Conversation Worker execution requires recovery.');
+          }
           if (
             admission.requestId !== record.requestId ||
             admission.triggerActor.kind !== 'user' ||
@@ -496,6 +483,15 @@ function replayConversationCommand(
         } finally {
           workspaceDb.sqlite.close();
         }
+      } else if (
+        coreDb &&
+        listSchedulerExecutionAttemptsForTurn(coreDb, {
+          workspaceId: workspaceIdForOwner(currentTurn.owner),
+          threadId: currentTurn.threadId,
+          turnId: currentTurn.id,
+        }).some((attempt) => attempt.phase === 'closing')
+      ) {
+        throw new Error('Conversation Worker execution requires recovery.');
       }
       const resultItem = currentTurn.items.find(
         (item) => item.id === deriveEntityId('it', ['worker-result', currentTurn.id])

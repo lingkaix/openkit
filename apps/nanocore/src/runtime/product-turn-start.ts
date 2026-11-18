@@ -583,7 +583,8 @@ export function verifyAcceptedTurnLineage(input: {
     readonly contextDigest?: string;
   };
 }) {
-  if (!input.coreDb)
+  const { coreDb } = input;
+  if (!coreDb)
     throw new TurnStartValidationError(
       'recovery_required',
       'Turn admission has no scheduler storage.',
@@ -597,16 +598,24 @@ export function verifyAcceptedTurnLineage(input: {
   let admission: CoreSchedulerQueueEntry;
   try {
     turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
-    const attempts = listSchedulerExecutionAttemptsForTurn(input.coreDb, input);
-    const held = attempts.filter((attempt) => attempt.phase !== 'closed');
+    // The native writer commits attempt acquisition and admission status together.
+    const { attempts, entry } = coreDb.sqlite
+      .transaction(() => {
+        const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, input);
+        const row = coreDb.sqlite
+          .prepare(
+            'SELECT queue_entry_id AS queueEntryId FROM scheduler_admission_entries WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?'
+          )
+          .get(input.workspaceId, input.threadId, input.turnId) as
+          | { queueEntryId: string }
+          | undefined;
+        if (!row) throw new Error('Live Turn has no exact scheduler admission.');
+        return { attempts, entry: requireSchedulerAdmissionEntry(coreDb, row.queueEntryId, input) };
+      })
+      .deferred();
+    const held = attempts.filter((candidate) => candidate.phase !== 'closed');
     attempt = held[0] ?? null;
-    const row = input.coreDb.sqlite
-      .prepare(
-        'SELECT queue_entry_id AS queueEntryId FROM scheduler_admission_entries WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?'
-      )
-      .get(input.workspaceId, input.threadId, input.turnId) as { queueEntryId: string } | undefined;
-    if (!row) throw new Error('Live Turn has no exact scheduler admission.');
-    admission = requireSchedulerAdmissionEntry(input.coreDb, row.queueEntryId, input);
+    admission = entry;
     if (
       !['pending', 'running'].includes(turn.status) ||
       !['user', 'integration'].includes(turn.triggerActor.kind) ||

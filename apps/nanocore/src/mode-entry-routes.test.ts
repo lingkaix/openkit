@@ -23,6 +23,7 @@ import type { FsStore } from './lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
+import * as attemptRecords from './runtime/execution-attempt-records.js';
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithFence,
@@ -33,16 +34,11 @@ import {
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempts.js';
 import { NanoHostEffectNotEnqueuedError } from './runtime/nanohost-session-dispatch.js';
-import { listThreadPendingRequests } from './runtime/pending-requests.js';
 import * as productTurnOwners from './runtime/product-turn-start.js';
-import {
-  getSchedulerPreparationClaims,
-  runSchedulerDispatchLoop,
-} from './runtime/scheduler-dispatch-loop.js';
+import { getSchedulerPreparationClaims } from './runtime/scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import type { TurnStartRuntimeContext } from './runtime/types.js';
 import {
-  getWorkerBackendSession,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
@@ -52,8 +48,6 @@ import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { getWorkerControlAcceptedFinalStatus } from './runtime/worker-control-records.js';
 import type { WorkerGovernanceBackend } from './runtime/worker-governance-backend.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
-import * as recoveryOwners from './runtime/worker-recovery.js';
-import { workerTurnTerminalPublication } from './runtime/worker-turn-failure.js';
 import * as loopOwners from './runtime/worker-turn-loop.js';
 import { bindWorkerCheckpointToPreparedSession } from './runtime/worker-turn-loop.js';
 import {
@@ -70,15 +64,13 @@ import { ensureConfigTemplateSurface } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import {
-  confirmTaskRequest,
   conversationBody,
   observeExecutionAttempts,
   SELECTED_CHOICE,
-  taskProposalProvider,
 } from './test-support/mode-entry-fixture.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
@@ -1295,6 +1287,116 @@ describe('conversation.submit worker acceptance wait', () => {
     }
   });
 
+  it('refuses selected Worker replay when the attempt enters closing before the admission snapshot', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-conversation-replay-closing-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    const scope = {
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: DEMO_THREAD_ID,
+    };
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: scope.workspaceId,
+      ownerUserId,
+    });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store);
+    const executor = native.executor;
+    const runWorkerTurnLoop = loopOwners.runWorkerTurnLoop;
+    const workerLoops: ReturnType<typeof runWorkerTurnLoop>[] = [];
+    const loopObservation = vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation((args) => {
+      const pending = runWorkerTurnLoop(args);
+      if (args.store === store) workerLoops.push(pending);
+      return pending;
+    });
+    try {
+      const workerSetup = createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      });
+      const app = createAppWithWorkspaceAuthority({
+        agentManifests: [workerSetup.manifest],
+        coreDb,
+        dataRoot,
+        fileAdmission: native.fileAdmission,
+        workerControlGateway: native.workerControlGateway,
+        openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
+        store,
+        turnExecutor: executor,
+      });
+      const body = conversationBody({
+        input: 'Keep this Task Worker running.',
+        requestId: '0190f4c8-0000-7000-8000-000000000503',
+        targetRef: 'new-task-worker',
+      });
+      const submit = () =>
+        app.request(
+          ...operationRequest('conversation.submit', scope, {
+            body,
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          })
+        );
+      const accepted = await submit();
+      expect(accepted.status, await accepted.clone().text()).toBe(202);
+      const { turn } = SubmitConversationResponseSchema.parse(await accepted.json());
+      await executor.launched.promise;
+      const workerScope = { ...scope, threadId: turn.threadId, turnId: turn.id };
+      const running = store.getTurnById(turn.id);
+      expect(running.status).toBe('running');
+      const [attempt] = listSchedulerExecutionAttemptsForTurn(coreDb, workerScope);
+      expect(attempt).toMatchObject({ phase: 'open', agentSessionId: running.agentSessionId });
+
+      const writer = openCoreDb(dataRoot);
+      const verifyAcceptedTurnLineage = productTurnOwners.verifyAcceptedTurnLineage;
+      let committedPhase: string | undefined;
+      const interleave = vi
+        .spyOn(productTurnOwners, 'verifyAcceptedTurnLineage')
+        .mockImplementationOnce((input) => {
+          // The writer commits after any earlier phase read and before the shared snapshot opens.
+          committedPhase = writer.sqlite
+            .transaction(() =>
+              attemptRecords.markSchedulerExecutionAttemptClosing(writer, {
+                attemptId: attempt!.attemptId,
+                cause: 'preparation-or-execution-failed',
+              })
+            )
+            .immediate().phase;
+          return verifyAcceptedTurnLineage(input);
+        });
+      let replay: Response;
+      try {
+        replay = await submit();
+      } finally {
+        interleave.mockRestore();
+        writer.sqlite.close();
+      }
+      expect(committedPhase).toBe('closing');
+      expect(store.getTurnById(turn.id).status).toBe('running');
+      const laterReplay = await submit();
+      expect(laterReplay.status).toBe(409);
+      await expect(laterReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(executor.launches).toBe(1);
+      expect(replay.status).toBe(409);
+      await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      executor.completion.resolve();
+      try {
+        await Promise.allSettled([
+          ...(executor.launches ? [executor.execution] : []),
+          ...workerLoops,
+        ]);
+      } finally {
+        loopObservation.mockRestore();
+        native.restore();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
+    }
+  });
+
   it.each([false, true])(
     'replays the original failed Task after native image preparation refusal only when cleanup completes (%s)',
     async (cleanupFails) => {
@@ -2162,6 +2264,56 @@ describe('exact Task Agent selection', () => {
       }
     }
   );
+
+  it('replays the accepted Task across concurrent scheduler attempt publication', async () => {
+    const f = await fixture();
+    try {
+      const accepted = await f.post(f.app);
+      expect(accepted.status, await accepted.clone().text()).toBe(202);
+      const { turn } = StartTaskModeResponseSchema.parse(await accepted.json());
+      await f.settlePreparation();
+      const before = f.effects();
+      expect(before.admissions).toEqual([
+        expect.objectContaining({ status: 'queued', turnId: turn.id }),
+      ]);
+      const entry = before.admissions[0]!;
+      const writer = openCoreDb(f.dataRoot);
+      let acquired: ReturnType<typeof attemptRecords.createSchedulerExecutionAttempt> | undefined;
+      const readAttempts = attemptRecords.listSchedulerExecutionAttemptsForTurn;
+      const interleave = vi.spyOn(attemptRecords, 'listSchedulerExecutionAttemptsForTurn');
+      interleave.mockImplementationOnce((db, scope) => {
+        const attempts = readAttempts(db, scope);
+        expect(scope.turnId).toBe(turn.id);
+        expect(attempts.every((attempt) => attempt.phase === 'closed')).toBe(true);
+        // Commit the native writer's transaction after replay reads the old attempt set.
+        acquired = attemptRecords.createSchedulerExecutionAttempt(writer, {
+          entry,
+          preparationInput: { admission: entry },
+        });
+        return attempts;
+      });
+      let replay: Response;
+      try {
+        replay = await f.post(f.app);
+      } finally {
+        interleave.mockRestore();
+        writer.sqlite.close();
+      }
+      expect(acquired).toMatchObject({ queueEntryId: entry.queueEntryId, phase: 'open' });
+      const laterReplay = await f.post(f.app);
+      expect(laterReplay.status, await laterReplay.clone().text()).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await laterReplay.json()).turn.id).toBe(turn.id);
+      const after = f.effects();
+      expect(after.turns).toEqual(before.turns);
+      expect(after.receipts).toEqual(before.receipts);
+      expect(after.attempts).toHaveLength(before.attempts.length + 1);
+      expect(f.executor.launches).toBe(0);
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(turn.id);
+    } finally {
+      await f.cleanup();
+    }
+  });
 
   it.each(['missing', 'blocked', 'disabled', 'unknown', 'degraded'] as const)(
     'refuses a %s exact Agent before effects without using the ready preferred Agent',
