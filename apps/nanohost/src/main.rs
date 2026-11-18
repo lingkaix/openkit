@@ -1871,6 +1871,7 @@ mod tests {
                 .block_on(async {
                     use crate::epoch_coordinator::{EpochCoordinator, EpochFault};
                     use crate::openshell_client::tests::create_gateway_fixture;
+                    use std::task::Poll;
                     use tokio::net::TcpListener;
 
                     for case in [
@@ -1928,27 +1929,66 @@ mod tests {
                             let mut result_seen = false;
                             let mut followup_create_poll = false;
                             let mut continued = Some(continued_tx);
-                            while let Some(request) = connection.accept().await {
-                                let (request, mut respond) = request.unwrap();
+                            'requests: while let Some(request) = connection.accept().await {
+                                let (request, mut respond) = request.expect("Core peer accept");
                                 let path = request.uri().path().to_string();
+                                let is_create_result = path.ends_with("/sandbox.create/result");
+                                if is_create_result {
+                                    assert!(
+                                        clean,
+                                        "uncertain create cannot publish a definite result: {case}"
+                                    );
+                                    assert!(!result_seen, "exactly one failed-create result");
+                                }
+                                // The test can inject the member fault once it has the continuation.
+                                // That fault can cancel a later poll without a response.
+                                let is_trailing_effect_poll = continued.is_none()
+                                    && request.method() == http::Method::POST
+                                    && path.strip_prefix("/api/nanohost/transport/effects/")
+                                        .is_some_and(|effect| !effect.is_empty() && !effect.contains('/'));
                                 let mut body = request.into_body();
                                 let mut bytes = Vec::new();
-                                while let Some(chunk) = body.data().await {
-                                    let chunk = chunk.unwrap();
-                                    body.flow_control().release_capacity(chunk.len()).unwrap();
-                                    bytes.extend_from_slice(&chunk);
+                                // Drive incoming frames while leaving new requests for accept().
+                                loop {
+                                    let read = std::future::poll_fn(|cx| {
+                                        if let Poll::Ready(chunk) = body.poll_data(cx) {
+                                            return Poll::Ready(Some(chunk));
+                                        }
+                                        match connection.poll_closed(cx) {
+                                            Poll::Pending => body.poll_data(cx).map(Some),
+                                            Poll::Ready(result) => {
+                                                result.expect("Core peer connection");
+                                                Poll::Ready(None)
+                                            }
+                                        }
+                                    })
+                                    .await;
+                                    let Some(read) = read else {
+                                        break 'requests;
+                                    };
+                                    match read {
+                                        Some(Ok(chunk)) => {
+                                            body.flow_control().release_capacity(chunk.len()).unwrap();
+                                            bytes.extend_from_slice(&chunk);
+                                        }
+                                        Some(Err(error))
+                                            if is_trailing_effect_poll
+                                                && error.is_reset()
+                                                && error.is_remote()
+                                                && error.reason() == Some(h2::Reason::CANCEL) =>
+                                        {
+                                            continue 'requests;
+                                        }
+                                        Some(Err(error)) => panic!("Core peer body for {path}: {error}"),
+                                        None => break,
+                                    }
                                 }
                                 let payload = if path.ends_with("/session/admit") {
                                     Some(
                                         serde_json::json!({"connectionGeneration": 1, "deploymentId": "deployment-main",
                                         "identityId": "integration_nanohost_main", "mayCarryWork": true, "role": "authoritative"}),
                                     )
-                                } else if path.ends_with("/sandbox.create/result") {
-                                    assert!(
-                                        clean,
-                                        "uncertain create cannot publish a definite result: {case}"
-                                    );
-                                    assert!(!result_seen, "exactly one failed-create result");
+                                } else if is_create_result {
                                     assert_eq!(
                                         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
                                         serde_json::json!({"requestId": "a".repeat(64), "failureCode": "effect_failed"})
