@@ -920,6 +920,7 @@ function conversationKnowledgeThreadId(
  * @param workspaceId Workspace bound into the command scope.
  * @param threadId Thread bound into the command scope.
  * @param record Completed command receipt.
+ * @param joinTerminalCloseout Joins the original live owner before terminal recovery.
  * @returns Original Task response without rerunning Coordinator or downstream effects.
  * @throws TurnStartValidationError when the receipt and durable owners disagree.
  */
@@ -930,10 +931,11 @@ async function replayTaskModeCommand(
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb,
   workspaceId: string,
   threadId: string,
-  record: CommandRequestRecord
+  record: CommandRequestRecord,
+  joinTerminalCloseout: (turn: z.infer<typeof TurnSchema>) => Promise<void>
 ): Promise<StartTaskModeResponse> {
   try {
-    const currentTurn = store.getTurnById(record.response.id);
+    let currentTurn = store.getTurnById(record.response.id);
 
     if (
       record.response.kind !== 'turn' ||
@@ -948,33 +950,44 @@ async function replayTaskModeCommand(
         if (!coreDb) throw new Error('Task runtime owners are unavailable.');
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
         try {
-          verifyAcceptedTurnLineage({
-            coreDb,
-            store,
-            actorId,
-            workspaceId,
-            threadId,
-            requestId: record.requestId,
-            turnId: currentTurn.id,
-            task: { workspaceDb, requestInputHash: record.inputHash },
-          });
-          return StartTaskModeResponseSchema.parse({
-            state: pendingRequestTaskState(store, workspaceDb, workspaceId, threadId, 'running'),
-            turn: currentTurn,
-            completion: null,
-            evidence: taskModeEvidenceForTurn(
+          try {
+            verifyAcceptedTurnLineage({
+              coreDb,
               store,
-              workspaceDb,
+              actorId,
               workspaceId,
               threadId,
-              currentTurn
-            ),
-          });
+              requestId: record.requestId,
+              turnId: currentTurn.id,
+              task: { workspaceDb, requestInputHash: record.inputHash },
+            });
+          } catch (error) {
+            // The native writer can publish terminal state between these reads.
+            // A settled Turn must use terminal proof, not the live admission predicate.
+            if (!(error instanceof TurnStartValidationError) || error.code !== 'recovery_required')
+              throw error;
+            currentTurn = store.getTurnById(record.response.id);
+            if (currentTurn.status === 'pending' || currentTurn.status === 'running') throw error;
+          }
+          if (currentTurn.status === 'pending' || currentTurn.status === 'running')
+            return StartTaskModeResponseSchema.parse({
+              state: pendingRequestTaskState(store, workspaceDb, workspaceId, threadId, 'running'),
+              turn: currentTurn,
+              completion: null,
+              evidence: taskModeEvidenceForTurn(
+                store,
+                workspaceDb,
+                workspaceId,
+                threadId,
+                currentTurn
+              ),
+            });
         } finally {
           workspaceDb.sqlite.close();
         }
       }
       // A receipt published at admission cannot bypass an unfinished or contradictory closeout.
+      await joinTerminalCloseout(currentTurn);
       if (coreDb) {
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
         try {
@@ -5886,36 +5899,6 @@ export function createTaskStartOperation({
               workspaceDb.sqlite.close();
             }
           }
-          if (closeout && record.response.kind === 'turn' && record.response.id === turnId) {
-            const turn = store.getTurnById(turnId);
-            if (turn.status !== 'pending' && turn.status !== 'running') {
-              joinedCloseout = true;
-              try {
-                await closeout;
-              } catch {
-                if (!coreDb || turn.status !== 'failed')
-                  throw directTaskModeRecoveryError('The original Task worker closeout failed.');
-                const workspaceDb = repositoryWorkspaceDb(workspaceId);
-                try {
-                  const checkpoint = getWorkerCheckpoint(
-                    workspaceDb,
-                    workspaceId,
-                    threadId,
-                    turnId
-                  );
-                  // Only proved execution refusal may reach durable replay after this observer rejects; a started closeout retains its own failure.
-                  if (
-                    checkpoint?.stage !== 'running_worker' ||
-                    checkpoint.stopReason !== null ||
-                    !hasWorkerCheckpointNeverSubmittedProof(coreDb, store, workspaceDb, checkpoint)
-                  )
-                    throw directTaskModeRecoveryError('The original Task worker closeout failed.');
-                } finally {
-                  workspaceDb.sqlite.close();
-                }
-              }
-            }
-          }
           return await replayTaskModeCommand(
             store,
             actorId,
@@ -5923,7 +5906,43 @@ export function createTaskStartOperation({
             repositoryWorkspaceDb,
             workspaceId,
             threadId,
-            record
+            record,
+            async (turn) => {
+              if (closeout && record.response.kind === 'turn' && record.response.id === turnId) {
+                joinedCloseout = true;
+                try {
+                  await closeout;
+                } catch {
+                  if (!coreDb || turn.status !== 'failed')
+                    throw directTaskModeRecoveryError('The original Task worker closeout failed.');
+                  const workspaceDb = repositoryWorkspaceDb(workspaceId);
+                  try {
+                    const checkpoint = getWorkerCheckpoint(
+                      workspaceDb,
+                      workspaceId,
+                      threadId,
+                      turnId
+                    );
+                    // Only proved execution refusal may reach durable replay after this observer rejects; a started closeout retains its own failure.
+                    if (
+                      checkpoint?.stage !== 'running_worker' ||
+                      checkpoint.stopReason !== null ||
+                      !hasWorkerCheckpointNeverSubmittedProof(
+                        coreDb,
+                        store,
+                        workspaceDb,
+                        checkpoint
+                      )
+                    )
+                      throw directTaskModeRecoveryError(
+                        'The original Task worker closeout failed.'
+                      );
+                  } finally {
+                    workspaceDb.sqlite.close();
+                  }
+                }
+              }
+            }
           );
         },
         requestId: taskInput.requestId,
