@@ -285,7 +285,7 @@ Each supported worker runtime, under its existing runtime owner, exercises `work
 
 ## Implementation Gaps
 
-- A security trigger raises at most one open renotice per item and recipient - On main, no producer raises that renotice request - #785
+- A security trigger raises at most one open renotice per item and recipient - Delivery of the original outstanding notice is implemented; no producer raises a new renotice request - #785
 
 ## Decisions
 

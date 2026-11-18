@@ -59,7 +59,7 @@ export function createChannelServices(input: {
   function currentRequest(
     actor: Actor,
     source: { workspaceId: string; threadId: string; requestId: string },
-    pendingOnly = true
+    options: { readonly pendingOnly?: boolean; readonly includeArchived?: boolean } = {}
   ): PendingRequestRecord | null {
     if (
       !ordinaryActor(actor.userId) ||
@@ -83,9 +83,10 @@ export function createChannelServices(input: {
         source.workspaceId,
         source.threadId
       );
-      return (!pendingOnly || record.state === 'pending') &&
+      return (options.pendingOnly === false || record.state === 'pending') &&
         record.responsibleUserId === actor.userId &&
-        store.getThread(source.workspaceId, source.threadId).status !== 'archived'
+        (options.includeArchived === true ||
+          store.getThread(source.workspaceId, source.threadId).status !== 'archived')
         ? record
         : null;
     } finally {
@@ -165,7 +166,7 @@ export function createChannelServices(input: {
             const record = currentRequest(
               query.actor,
               { ...query, requestId: query.pendingRequestId },
-              false
+              { pendingOnly: false }
             );
             return record ? new URL(attentionPath(record), input.publicBaseUrl!).href : null;
           } catch {
@@ -179,7 +180,7 @@ export function createChannelServices(input: {
     : null;
 
   /** Only the original native notice/recipient/destination can admit the fixed App-link transport. */
-  function securityDelivery(delivery: AttentionDelivery, pendingOnly: boolean): boolean {
+  function securityDelivery(delivery: AttentionDelivery, outstandingOnly: boolean): boolean {
     if (delivery.source.kind !== 'security-notice') return false;
     const actor = ordinaryActor(delivery.recipientUserId);
     if (
@@ -188,12 +189,21 @@ export function createChannelServices(input: {
     )
       return false;
     const notice = readSecurityAlarmNoticeInDb(coreDb, delivery.source.requestId);
-    const record = currentRequest(actor, delivery.source, pendingOnly);
+    // Archived history remains a readable notice source; no new request or Turn is admitted.
+    const record = currentRequest(actor, delivery.source, {
+      pendingOnly: false,
+      includeArchived: true,
+    });
     return !!(
       notice &&
       record &&
       record.kind === 'user-input' &&
       record.requesterKind === 'automation' &&
+      // E6: only the recipient's own answer acknowledges the notice. Endings do not.
+      (!outstandingOnly ||
+        record.resolution !== 'answered' ||
+        record.decidingActor?.kind !== 'user' ||
+        record.decidingActor.id !== actor.userId) &&
       notice.attention.id === delivery.id &&
       notice.recipientUserId === actor.userId &&
       notice.attention.source.workspaceId === delivery.source.workspaceId &&
@@ -206,7 +216,7 @@ export function createChannelServices(input: {
     try {
       if (delivery.source.kind === 'security-notice') return securityDelivery(delivery, false);
       const actor = ordinaryActor(delivery.recipientUserId);
-      const record = actor && currentRequest(actor, delivery.source, false);
+      const record = actor && currentRequest(actor, delivery.source, { pendingOnly: false });
       return Boolean(
         record &&
           delivery.source.kind ===
@@ -259,7 +269,8 @@ export function createChannelServices(input: {
               appPath: payload.appPath,
               automation:
                 delivery.source.kind === 'security-notice' ||
-                currentRequest(actor, delivery.source, false)?.requesterKind === 'automation',
+                currentRequest(actor, delivery.source, { pendingOnly: false })?.requesterKind ===
+                  'automation',
               beforeSend: () =>
                 eligible(delivery) && discord?.binding(actor)?.revision === bound.revision,
             });
@@ -282,15 +293,20 @@ export function createChannelServices(input: {
 
   /** Publishes only an exact source reference; a notification write cannot change the Core request. */
   async function attentionRaised(record: PendingRequestRecord): Promise<void> {
-    if (record.state !== 'pending') return;
     const actor = ordinaryActor(record.responsibleUserId);
-    if (!actor || !currentRequest(actor, record)) return;
+    if (!actor) return;
     const originalNotice =
       record.requesterKind === 'automation'
         ? readSecurityAlarmNoticeInDb(coreDb, record.requestId)
         : null;
     // The security publisher owns its native-only source. Never create a parallel ordinary notification.
     if (record.requesterKind === 'automation' && !originalNotice) return;
+    if (
+      originalNotice
+        ? !eligible(originalNotice.attention)
+        : record.state !== 'pending' || !currentRequest(actor, record)
+    )
+      return;
     const delivery = originalNotice
       ? originalNotice.attention
       : await notifications.enqueue({
@@ -306,7 +322,7 @@ export function createChannelServices(input: {
       void send(actor, delivery.id, null).catch(() => undefined);
   }
 
-  /** Re-enumerates the request authority at boot or binding change, without a notification runner or implicit retry. */
+  /** Re-enumerates requests and their original notices at boot or binding change, without implicit retry. */
   async function recoverAttention(): Promise<void> {
     for (const workspace of store.listWorkspaces()) {
       try {
