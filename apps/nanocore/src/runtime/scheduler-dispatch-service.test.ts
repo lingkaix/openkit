@@ -23,8 +23,18 @@ import {
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { commandInputHash } from './idempotent-command.js';
+import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types';
+
+// Supply current source authority for the simulator's package checks using the fixture catalog.
+vi.mock('./agent-environment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./agent-environment.js')>();
+  const { withTestPreparedNativeEnvironment } = await import(
+    '../test-support/native-environment.js'
+  );
+  return withTestPreparedNativeEnvironment(actual);
+});
 
 class RecordingTurnExecutor extends SimulatedTurnExecutor {
   public readonly calls: Array<{
@@ -256,6 +266,7 @@ describe('scheduler dispatch service', () => {
       providerRegistry,
       workspaceDataSourceCatalogs,
     });
+    let service: ReturnType<typeof startSchedulerDispatchRetryService> | undefined;
 
     try {
       coreDb.sqlite
@@ -298,7 +309,7 @@ describe('scheduler dispatch service', () => {
       });
 
       const errors: unknown[] = [];
-      const service = startSchedulerDispatchRetryService({
+      service = startSchedulerDispatchRetryService({
         clearInterval: () => {},
         coreDb,
         createAgentSessionId: () => 'as_00000000-0000-7ac2-8803-3284138729d9',
@@ -388,8 +399,8 @@ describe('scheduler dispatch service', () => {
         }
       );
       const result = await service.runOnce();
-      service.stop();
 
+      expect(errors).toEqual([]);
       expect(result?.startedTurns).toHaveLength(1);
       expect(providerCredentialResolver).not.toHaveBeenCalled();
       expect(turnExecutor.calls).toMatchObject([
@@ -419,6 +430,9 @@ describe('scheduler dispatch service', () => {
         }),
       });
     } finally {
+      service?.stop();
+      // Submission can return before the simulator finishes writing the Turn outcome.
+      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
       await disposeTestStore(coreDb.dataRoot, coreDb);
     }
   });
