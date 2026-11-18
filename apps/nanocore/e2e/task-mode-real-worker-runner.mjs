@@ -36,6 +36,14 @@ const PROVENANCE_SUMMARY_PATTERN =
   /^Worker runtime provenance complete: (\d+) streams, (\d+) frames, (\d+) attributed, (\d+) unattributed, (\d+) roots?, (\d+) children, (\d+)\/(\d+) gateway calls reconciled, gateway complete, bundles \S+ and \S+\.$/;
 /** Fixed one-hour deadline for the explicitly opt-in real-worker L3 test. */
 const TASK_MODE_REAL_WORKER_TIMEOUT_MS = 3_600_000;
+/**
+ * Milliseconds of exact terminal replays after the first `recovery_required`.
+ * That replay is at the end of a real Worker run. One retry after 100 ms drops the
+ * run under sustained Workspace writer backpressure (`control-store-worker-client.ts:6506-6517`,
+ * published at `mode-entry-routes.ts:6005-6012`). Ten seconds of 100 ms replays stays
+ * inside the one-hour supervisor deadline; a permanent error then costs about 10 s.
+ */
+const TASK_MODE_TERMINAL_REPLAY_BUDGET = 10_000;
 const TASK_TEST_TIMEOUT_MESSAGE = 'Real Task Mode worker test exceeded its deadline.';
 const TASK_TEST_FAILURE_MESSAGE = 'Real Task Mode worker test failed.';
 const TASK_ASSERTION_ERROR_CODE = 'OPENKIT_TASK_MODE_ASSERTION';
@@ -439,7 +447,7 @@ export function assertTaskModeAgentEnvironment(input) {
 /**
  * Runs the opt-in real OpenShell/Codex Task Mode L3 test.
  *
- * @param {{ clients?: { admin: Record<string, any>, core: Record<string, any> }, configureRuntime?: (admin: Record<string, any>) => Promise<{ providerId: string }>, createClients?: (config: TaskModeRealWorkerRunnerConfig) => Promise<{ admin: Record<string, any>, core: Record<string, any> }>, env?: Record<string, string | undefined>, now?: Date, stdout?: (message: string) => void }} options Runner options.
+ * @param {{ clients?: { admin: Record<string, any>, core: Record<string, any> }, configureRuntime?: (admin: Record<string, any>) => Promise<{ providerId: string }>, createClients?: (config: TaskModeRealWorkerRunnerConfig) => Promise<{ admin: Record<string, any>, core: Record<string, any> }>, env?: Record<string, string | undefined>, now?: Date, stdout?: (message: string) => void, terminalReplayBudgetMs?: number }} options Runner options. `terminalReplayBudgetMs` overrides `TASK_MODE_TERMINAL_REPLAY_BUDGET`.
  * @returns {Promise<Record<string, unknown>>} Runner result.
  */
 export async function runTaskModeRealWorkerTest(options = {}) {
@@ -572,8 +580,21 @@ async function executeTaskModeRealWorkerTest({
     assert(task.state !== 'escalated-to-goal', 'Task Mode escalated a bounded real-worker task.');
     assert(typeof task.turn?.id === 'string', 'Task Mode response did not include a turn id.');
     const admittedTurnId = task.turn.id;
-    // The existing process supervisor bounds this integration run; each read remains an ordinary operation.
-    while (task.state === 'running') {
+    // queued and running project current work (task_mode_worker_delegation.md:248).
+    // Pending and running Turns stay in this poll. The supervisor bounds that wait
+    // (TASK_MODE_REAL_WORKER_TIMEOUT_MS; mode-entry-routes.ts:949-984).
+    // A terminal replay joins closeout inside the request (mode-entry-routes.ts:989-990
+    // and :5911-5914). recovery_required has no retry class (mode-entry-routes.ts:1081-1086
+    // and :2036-2054). From the first terminal recovery_required, exact replays of
+    // taskInput continue every 100 ms until TASK_MODE_TERMINAL_REPLAY_BUDGET. The last
+    // recovery error is then rethrown into the existing failure path.
+    const terminalReplayBudgetMs =
+      typeof options.terminalReplayBudgetMs === 'number'
+        ? options.terminalReplayBudgetMs
+        : TASK_MODE_TERMINAL_REPLAY_BUDGET;
+    let terminalRecoveryAt = null;
+    let lastTerminalRecovery = null;
+    while (task.state === 'queued' || task.state === 'running') {
       await delay(100);
       const current = await clients.core.operations['turn.read']({
         workspaceId,
@@ -582,12 +603,17 @@ async function executeTaskModeRealWorkerTest({
       });
       assert(current?.id === admittedTurnId, 'Task read changed the admitted Turn lineage.');
       if (current.status === 'pending' || current.status === 'running') continue;
+      if (lastTerminalRecovery && Date.now() - terminalRecoveryAt >= terminalReplayBudgetMs) {
+        throw lastTerminalRecovery;
+      }
       try {
         task = await clients.core.operations['task.start'](taskInput);
       } catch (error) {
-        // A terminal Turn can precede the full backend/checkpoint closeout; never launch a new request.
-        if (error?.code === 'recovery_required') continue;
-        throw error;
+        if (error?.code !== 'recovery_required') throw error;
+        lastTerminalRecovery = error;
+        if (terminalRecoveryAt === null) terminalRecoveryAt = Date.now();
+        if (Date.now() - terminalRecoveryAt >= terminalReplayBudgetMs) throw error;
+        continue;
       }
       assert(task.turn?.id === admittedTurnId, 'Task replay changed the admitted Turn lineage.');
     }

@@ -1382,6 +1382,190 @@ describe('real Task Mode worker L3 test policy', () => {
     }
   });
 
+  it('completes when one terminal recovery_required is followed by the same replay', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-task-transient-recovery-'));
+    const workerImageRef = 'example.invalid/openkit-worker:test';
+    const fixture = createPassingTaskModeFixture({
+      reviewIds: ['review_closeout'],
+      workerImageRef,
+    });
+    const terminalStart = fixture.clients.core.operations['task.start'];
+    const inputs = [];
+    let refused = false;
+    fixture.clients.core.operations['task.start'] = async (input) => {
+      inputs.push(input);
+      if (inputs.length === 1) {
+        return { evidence: { reviewIds: [] }, state: 'running', turn: { id: 'turn_acceptance' } };
+      }
+      assert.deepEqual(input, inputs[0]);
+      assert.equal(input.requestId, inputs[0].requestId);
+      if (!refused) {
+        refused = true;
+        const recovery = new Error(
+          'The Task command receipt does not match its durable owner lineage.'
+        );
+        recovery.code = 'recovery_required';
+        recovery.status = 409;
+        throw recovery;
+      }
+      return terminalStart(input);
+    };
+    fixture.clients.core.operations['turn.read'] = async (input) => {
+      assert.equal(input.turnId, 'turn_acceptance');
+      return { id: input.turnId, status: 'completed' };
+    };
+    try {
+      const result = await runTaskModeRealWorkerTest({
+        clients: fixture.clients,
+        configureRuntime: async () => ({ providerId: 'openai_codex' }),
+        env: enabledTaskModeEnv({
+          OPENKIT_L6_EVIDENCE_DIR: join(tempRoot, 'evidence'),
+          OPENKIT_L6_TASK_WORKER_IMAGE_REF: workerImageRef,
+        }),
+        stdout: () => {},
+      });
+      assert.equal(result.status, 'ok');
+      assert.equal(refused, true);
+      assert.equal(inputs.length, 3);
+      assert.equal(
+        existsSync(join(tempRoot, 'evidence', 'task-mode-real-worker-failure.json')),
+        false
+      );
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('fails fast after the terminal replay budget when recovery_required persists', {
+    timeout: 3_000,
+  }, async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-task-permanent-recovery-'));
+    const evidenceDir = join(tempRoot, 'evidence');
+    const workerImageRef = 'example.invalid/openkit-worker:test';
+    const decisions = [];
+    const fixture = createPassingTaskModeFixture({
+      onReviewDecision: (_workspaceId, reviewId) => {
+        decisions.push(reviewId);
+      },
+      workerImageRef,
+    });
+    const budgetOverrideMs = 300;
+    const inputs = [];
+    const recoveries = [];
+    const statuses = [];
+    let firstRecoveryAt = 0;
+    fixture.clients.core.operations['task.start'] = async (input) => {
+      inputs.push(input);
+      if (inputs.length > 1) {
+        assert.deepEqual(input, inputs[0]);
+        assert.equal(input.requestId, inputs[0].requestId);
+      }
+      if (inputs.length === 1) {
+        return {
+          evidence: { reviewIds: ['review_closeout'] },
+          state: 'running',
+          turn: { id: 'turn_acceptance' },
+        };
+      }
+      const recovery = new Error(
+        `The Task command receipt does not match its durable owner lineage. (${inputs.length})`
+      );
+      recovery.code = 'recovery_required';
+      recovery.status = 409;
+      if (recoveries.length === 0) firstRecoveryAt = Date.now();
+      recoveries.push(recovery);
+      throw recovery;
+    };
+    fixture.clients.core.operations['turn.read'] = async (input) => {
+      assert.equal(input.turnId, 'turn_acceptance');
+      const transient = ['pending', 'running'];
+      const status = transient[statuses.length] ?? 'completed';
+      statuses.push(status);
+      return { id: input.turnId, status };
+    };
+
+    try {
+      await assert.rejects(
+        () =>
+          runTaskModeRealWorkerTest({
+            clients: fixture.clients,
+            configureRuntime: async () => ({ providerId: 'openai_codex' }),
+            env: enabledTaskModeEnv({
+              OPENKIT_L6_EVIDENCE_DIR: evidenceDir,
+              OPENKIT_L6_TASK_WORKER_IMAGE_REF: workerImageRef,
+            }),
+            stdout: () => {},
+            terminalReplayBudgetMs: budgetOverrideMs,
+          }),
+        (error) => error === recoveries.at(-1)
+      );
+      const elapsed = Date.now() - firstRecoveryAt;
+      const budget = Number(
+        readFileSync(new URL('./task-mode-real-worker-runner.mjs', import.meta.url), 'utf8')
+          .match(/const TASK_MODE_TERMINAL_REPLAY_BUDGET = ([\d_]+);/)?.[1]
+          .replaceAll('_', '')
+      );
+      assert.equal(budget, 10_000);
+      assert.ok(recoveries.length >= 2);
+      assert.ok(elapsed >= budgetOverrideMs);
+      assert.ok(elapsed < 2_000);
+      assert.notEqual(recoveries.at(-1), recoveries[0]);
+      assert.equal(statuses[0], 'pending');
+      assert.equal(statuses[1], 'running');
+      assert.ok(statuses.slice(2).every((status) => status === 'completed'));
+      assert.deepEqual(decisions, ['review_closeout']);
+      const failure = JSON.parse(
+        readFileSync(join(evidenceDir, 'task-mode-real-worker-failure.json'), 'utf8')
+      );
+      assert.equal(failure.status, 'failed');
+      assert.equal(failure.failure.kind, 'runtime_failure');
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('polls an initially queued Task until its original replay completes', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-task-queued-admission-'));
+    const workerImageRef = 'example.invalid/openkit-worker:test';
+    const fixture = createPassingTaskModeFixture({ workerImageRef });
+    const terminalStart = fixture.clients.core.operations['task.start'];
+    const events = [];
+    let originalInput;
+    fixture.clients.core.operations['task.start'] = async (input) => {
+      events.push('task.start');
+      if (!originalInput) {
+        originalInput = input;
+        return { evidence: { reviewIds: [] }, state: 'queued', turn: { id: 'turn_acceptance' } };
+      }
+      assert.deepEqual(input, originalInput);
+      return terminalStart(input);
+    };
+    fixture.clients.core.operations['turn.read'] = async (input) => {
+      events.push('turn.read');
+      assert.equal(input.turnId, 'turn_acceptance');
+      return {
+        id: input.turnId,
+        status:
+          events.filter((event) => event === 'turn.read').length === 1 ? 'pending' : 'completed',
+      };
+    };
+    try {
+      const result = await runTaskModeRealWorkerTest({
+        clients: fixture.clients,
+        configureRuntime: async () => ({ providerId: 'openai_codex' }),
+        env: enabledTaskModeEnv({
+          OPENKIT_L6_EVIDENCE_DIR: join(tempRoot, 'evidence'),
+          OPENKIT_L6_TASK_WORKER_IMAGE_REF: workerImageRef,
+        }),
+        stdout: () => {},
+      });
+      assert.equal(result.status, 'ok');
+      assert.deepEqual(events, ['task.start', 'turn.read', 'turn.read', 'task.start']);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it('writes the failed Turn product-safe runtime evidence into failure evidence', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-task-runtime-failure-evidence-'));
     const evidenceDir = join(tempRoot, 'evidence');
