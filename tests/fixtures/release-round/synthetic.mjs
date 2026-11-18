@@ -1,5 +1,10 @@
 /** Synthetic stand-ins; identifiers and deployment coordinates have no real counterpart. */
-import { digest, RUNTIMES } from '../../support/release-round/safety.mjs';
+import {
+  digest,
+  MATRIX_REVISION,
+  QUALIFIED_RUNTIMES,
+  RUNTIMES,
+} from '../../support/release-round/safety.mjs';
 /** Synthetic public success envelope; it never calls a product surface. */
 export const ok = (data) => ({ ok: true, data });
 /** Closed clock interval shared by all invented deciding records. */
@@ -13,7 +18,7 @@ export function parameters() {
     roundId: 'example-round',
     candidateCommit: hash,
     checklistBlob: hash,
-    scenarioRevision: 'synthetic-set',
+    scenarioRevision: MATRIX_REVISION,
     evidenceAlias: 'example-evidence',
     workspaceId: 'workspace-example',
     protectedIds: ['protected-example'],
@@ -40,7 +45,7 @@ export function parameters() {
       RUNTIMES.map((r) => [
         r,
         {
-          agentId: `agent-example-${r}`,
+          agentId: r === 'deepseek' ? 'agent_deepseek' : `agent-example-${r}`,
           profileId: 'default',
           modelId: 'configured default',
           configurationVersion: 1,
@@ -91,6 +96,8 @@ export function bundle(p = parameters()) {
     attribution: {
       candidateCommit: p.candidateCommit,
       checklistBlob: p.checklistBlob,
+      matrixRevision: MATRIX_REVISION,
+      scenarioRevision: p.scenarioRevision,
       configurationDigest: p.deployment.configurationDigest,
       runnerSha256: 'd'.repeat(64),
       parameterSha256: 'e'.repeat(64),
@@ -107,7 +114,7 @@ export function bundle(p = parameters()) {
     runtimes: {},
     issues: {},
   };
-  for (const r of RUNTIMES) {
+  for (const r of QUALIFIED_RUNTIMES) {
     const cfg = p.runtimes[r],
       tid = `thread-example-${r}`,
       steps = [],
@@ -174,6 +181,72 @@ export function bundle(p = parameters()) {
     b.runtimes[r] = { threadId: tid, modelId: cfg.modelId, steps };
     b.issues[r] = { readExit: 0, issue: p.issue };
   }
+  const refused = p.runtimes.deepseek,
+    threadId = 'thread-example-deepseek',
+    quiet = {
+      dashboard: {
+        thread: { id: threadId, owner: { kind: 'workspace', workspaceId: p.workspaceId } },
+        turns: [],
+        artifacts: [],
+        pendingRequests: [],
+        workStatus: {
+          selectedAgentId: null,
+          activeTurnStatus: 'idle',
+          pendingApprovalCount: 0,
+          pendingQuestionCount: 0,
+          latestArtifact: null,
+        },
+        coverage: {
+          turns: 'current-run',
+          participants: 'current-run',
+          artifacts: 'referenced-window',
+          taskInputs: 'available',
+          runtimeActivity: 'available',
+        },
+        attention: { items: [], more: false, restricted: false },
+      },
+      items: { items: [], nextCursor: null },
+    };
+  // Pinned public response. The evaluator keeps its own copy; this fixture does not share a helper.
+  const pinnedDispatchRefusal = 'Agent agent_deepseek readiness is disabled.';
+  b.runtimes.deepseek = {
+    threadId,
+    steps: [
+      {
+        scenario: 'refusal',
+        windowStart: start,
+        windowEnd: end,
+        setup: {
+          createdThreads: 0,
+          operation: 'thread.read',
+          threadId,
+          workspaceId: p.workspaceId,
+          observedThreadId: threadId,
+          observedWorkspaceId: p.workspaceId,
+        },
+        submitInput: {
+          workspaceId: p.workspaceId,
+          threadId,
+          agentId: refused.agentId,
+          profileId: refused.profileId,
+        },
+        agent: {
+          id: 'agent_deepseek',
+          name: 'DeepSeek Agent',
+          status: 'disabled',
+          defaultProfileId: 'default',
+        },
+        submission: {
+          ok: false,
+          error: { code: 'agent_not_ready', message: pinnedDispatchRefusal },
+          http: [{ method: 'POST', path: '/api/app/operations/turn.start', status: 409 }],
+        },
+        before: structuredClone(quiet),
+        after: structuredClone(quiet),
+        outcome: 'refused',
+      },
+    ],
+  };
   b.binding = ok({
     items: [{ id: 'github', allowedTools: ['issue_read', 'example_write'] }],
   });

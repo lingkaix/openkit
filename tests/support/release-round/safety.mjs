@@ -2,13 +2,23 @@
 import path from 'node:path';
 import { noSecrets, sha } from '../../../scripts/release-safety.mjs';
 
-/** Fixed runtime matrix membership from the frozen first-release checklist. */
+/** Closed parameter keys. DeepSeek remains so the refusal selection has an agent id. */
 export const RUNTIMES = ['codex', 'pi', 'opencode', 'deepseek'];
-/** The exact denominator; every qualification row is traversed even when its observation is absent. */
+/** Codex, Pi and OpenCode V2 each run cases A to D. */
+export const QUALIFIED_RUNTIMES = ['codex', 'pi', 'opencode'];
+/** DeepSeek stays disabled and contributes one pre-effect refusal row. */
+export const REFUSAL_RUNTIME = 'deepseek';
+/** Public subject for the single disabled-DeepSeek selection. */
+export const REFUSAL_SCENARIO = 'deepseek.refusal';
 /** Benign public sentence binds case A to this attempt and runtime without changing file fixtures. */
 export const replySentence = (p, runtime) => `OpenKit connectivity check ${p.roundId} ${runtime}`;
-/** The exact qualification denominator. */
-export const SCENARIOS = RUNTIMES.flatMap((r) => ['A', 'B', 'C', 'D'].map((s) => `${r}.${s}`));
+/** Twelve A–D cases plus the DeepSeek pre-effect refusal. Every row is traversed when its observation is absent. */
+export const SCENARIOS = [
+  ...QUALIFIED_RUNTIMES.flatMap((r) => ['A', 'B', 'C', 'D'].map((s) => `${r}.${s}`)),
+  REFUSAL_SCENARIO,
+];
+/** Closed identity of this instrument's thirteen-row matrix. Older revisions are not re-denominated. */
+export const MATRIX_REVISION = '13-row-deepseek-refusal';
 /** Public Artifact digest for qualification-owned byte comparisons. */
 export const digest = (bytes) => `sha256:${sha(bytes)}`;
 function object(value, keys, name) {

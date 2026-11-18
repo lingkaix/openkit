@@ -253,6 +253,83 @@ test('compact record keeps effect results separate and refuses an incomplete hea
   delete header.authorizationReference;
   assert.throws(() => compactReleaseRecord({ tag, sha, header }), /incomplete/);
 });
+test('qualification projection admits twelve A-D rows and one DeepSeek refusal', () => {
+  const tag = 'v0.1.0-rc.6',
+    sha = 'a'.repeat(40),
+    digest = `sha256:${'b'.repeat(64)}`;
+  const header = {
+    tag,
+    sourceCommit: sha,
+    authorizationReference: 'engineer-standing-grant',
+    candidateRunId: 1,
+    visibility: 'public',
+    stages: [
+      {
+        name: 'qualification',
+        result: 'passed',
+        start: '2026-10-14T00:00:00Z',
+        end: '2026-10-14T00:01:00Z',
+      },
+    ],
+  };
+  const row = (subject) => ({
+    subject,
+    publishedIdentity: tag,
+    sourceCommit: sha,
+    verdict: 'P',
+    start: '2026-10-14T00:00:00Z',
+    end: '2026-10-14T00:01:00Z',
+    evidenceAlias: 'example-evidence',
+    evidenceDigest: digest,
+    identities: {
+      app: digest,
+      web: digest,
+      nanoHost: digest,
+      worker: digest,
+      configuration: digest,
+    },
+  });
+  const subjects = ['codex', 'pi', 'opencode'].flatMap((runtime) =>
+    ['A', 'B', 'C', 'D'].map((letter) => `${runtime}.${letter}`)
+  );
+  subjects.push('deepseek.refusal');
+  const text = compactReleaseRecord({
+    tag,
+    sha,
+    header,
+    qualification: { publicRows: subjects.map(row) },
+  });
+  assert.match(text, /deepseek\.refusal/);
+  assert.doesNotMatch(text, /deepseek\.[A-D]/);
+  assert.throws(
+    () =>
+      compactReleaseRecord({
+        tag,
+        sha,
+        header,
+        qualification: {
+          publicRows: subjects
+            .map((subject) => (subject === 'deepseek.refusal' ? 'deepseek.A' : subject))
+            .map(row),
+        },
+      }),
+    /invalid public qualification row/
+  );
+  assert.throws(
+    () =>
+      compactReleaseRecord({
+        tag,
+        sha,
+        header,
+        qualification: {
+          publicRows: ['codex', 'pi', 'opencode', 'deepseek'].flatMap((runtime) =>
+            ['A', 'B', 'C', 'D'].map((letter) => row(`${runtime}.${letter}`))
+          ),
+        },
+      }),
+    /incomplete qualification projection/
+  );
+});
 test('manifest CLI generates the asset and refuses changed downloaded bytes', (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-manifest-cli-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

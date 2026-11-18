@@ -16,8 +16,15 @@ import {
   scan,
   sha,
 } from '../../../scripts/release-safety.mjs';
-import { telemetry } from './evidence.mjs';
-import { RUNTIMES, replySentence, validateParams } from './safety.mjs';
+import { refusalMaySubmit, telemetry } from './evidence.mjs';
+import {
+  MATRIX_REVISION,
+  QUALIFIED_RUNTIMES,
+  REFUSAL_RUNTIME,
+  RUNTIMES,
+  replySentence,
+  validateParams,
+} from './safety.mjs';
 
 const here = fileURLToPath(import.meta.url),
   repo = path.resolve(path.dirname(here), '../../..');
@@ -26,11 +33,12 @@ const reads = {
   runtime: new Set([
     'thread.dashboard',
     'thread.items',
-    'thread.read',
     'turn.read',
     'artifact.read',
     'catalog.mcp-list',
     'nanohost.runtime-target',
+    'agent.read',
+    'thread.read',
   ]),
 };
 const mutations = {
@@ -163,6 +171,7 @@ export async function prepare(paramsFile, dir, seams = {}, purpose = 'worker') {
       throw Error(`Exact ${key} required for live preparation`);
   const blob = await git(io, ['rev-parse', `${p.candidateCommit}:docs/cookbooks/release.md`]);
   if (blob !== p.checklistBlob) throw Error('Frozen checklist blob mismatch');
+  if (p.scenarioRevision !== MATRIX_REVISION) throw Error('Incompatible scenario revision');
   const code = await instrument(),
     commit = await git(io, ['rev-parse', 'HEAD']);
   await fs.mkdir(dir, { mode: 0o700 });
@@ -176,6 +185,8 @@ export async function prepare(paramsFile, dir, seams = {}, purpose = 'worker') {
     instrumentFiles: code.entries,
     parameterSha256: sha(raw),
     checklistBlob: blob,
+    scenarioRevision: p.scenarioRevision,
+    matrixRevision: MATRIX_REVISION,
     candidateCommit: p.candidateCommit,
     preparedAt: io.now(),
   };
@@ -289,7 +300,9 @@ export class RoundClient {
       throw Error('Only the declared Workspace addressable');
     if (this.p.protectedIds.some((v) => JSON.stringify(input).includes(v)))
       throw Error('Protected identifier refused');
-    if (input.threadId && !this.owned.has(input.threadId))
+    const setupRead =
+      op === 'thread.read' && input.threadId && input.threadId === this.setupThreadId;
+    if (input.threadId && !this.owned.has(input.threadId) && !setupRead)
       throw Error('Only round-owned Threads addressable');
     if (mutation ? !mutations[this.phase]?.has(op) : !reads[this.phase]?.has(op))
       throw Error(`Public operation ${op} refused in ${this.phase}`);
@@ -349,7 +362,7 @@ export class RoundClient {
             `Invalid ${op} result identity; inspect without resubmission`
           );
       }
-      return redact(payload, this.secrets);
+      return { ...redact(payload, this.secrets), http: spans };
     };
     if (mutation) {
       try {
@@ -558,6 +571,131 @@ export async function runtimeGroup(client, runtime) {
   return record;
 }
 
+/** Read the public Thread records the refusal row compares before and after the selection. */
+async function publicEffects(client, threadId) {
+  const board = await client.call('thread.dashboard', {
+      workspaceId: client.p.workspaceId,
+      threadId,
+    }),
+    items = await client.page('thread.items', {
+      workspaceId: client.p.workspaceId,
+      threadId,
+    });
+  return {
+    dashboard: board.ok ? board.data : undefined,
+    items: items.ok ? items.data : undefined,
+  };
+}
+/**
+ * Setup boundary: admit one existing Workspace Thread from admitted-thread.json.
+ * The refusal probe reads that Thread and submits one turn.start. It does not call
+ * thread.create, so the selection creates zero Threads.
+ */
+async function admitExistingThread(client) {
+  const file = path.join(client.dir, 'admitted-thread.json');
+  let declared;
+  try {
+    declared = await readJson(file);
+  } catch (error) {
+    if (error.code === 'ENOENT') return { admitted: false };
+    throw error;
+  }
+  if (declared?.workspaceId !== client.p.workspaceId || typeof declared.threadId !== 'string')
+    return { admitted: false, mismatch: true, threadId: declared?.threadId };
+  if (client.p.protectedIds.includes(declared.threadId)) throw Error('Protected Thread refused');
+  client.setupThreadId = declared.threadId;
+  let read;
+  try {
+    read = await client.call('thread.read', {
+      workspaceId: client.p.workspaceId,
+      threadId: declared.threadId,
+    });
+  } finally {
+    client.setupThreadId = undefined;
+  }
+  const observedWorkspaceId =
+    read.data?.owner?.kind === 'workspace' ? read.data.owner.workspaceId : undefined;
+  const matched =
+    read.ok && read.data?.id === declared.threadId && observedWorkspaceId === client.p.workspaceId;
+  if (!matched)
+    return {
+      admitted: false,
+      mismatch: true,
+      threadId: declared.threadId,
+      observedThreadId: read.data?.id,
+      observedWorkspaceId,
+    };
+  await client.own(declared.threadId);
+  return {
+    admitted: true,
+    createdThreads: 0,
+    operation: 'thread.read',
+    threadId: declared.threadId,
+    workspaceId: client.p.workspaceId,
+    observedThreadId: read.data.id,
+    observedWorkspaceId,
+  };
+}
+/** Select the disabled DeepSeek Worker once on the admitted Thread. A started Turn fails the refusal. */
+export async function deepseekRefusal(client) {
+  const p = client.p,
+    runtime = REFUSAL_RUNTIME,
+    cfg = p.runtimes[runtime],
+    setup = await admitExistingThread(client),
+    record = { runtime, threadId: setup.threadId, steps: [] },
+    s = { scenario: 'refusal', windowStart: client.io.now(), setup };
+  record.steps.push(s);
+  if (!setup.admitted) {
+    s.outcome = setup.mismatch ? 'selector-mismatch' : 'setup-missing';
+    s.windowEnd = client.io.now();
+    await save(path.join(client.dir, 'runtimes', runtime, 'refusal.json'), s, client.secrets);
+    return record;
+  }
+  s.before = await publicEffects(client, setup.threadId);
+  const agent = await client.call('agent.read', { agentId: cfg.agentId });
+  s.agent = agent.ok ? agent.data : undefined;
+  if (
+    !refusalMaySubmit({
+      before: s.before,
+      agent: s.agent,
+      setup,
+      workspaceId: p.workspaceId,
+      threadId: setup.threadId,
+      agentId: cfg.agentId,
+      profileId: cfg.profileId,
+    })
+  ) {
+    s.outcome = agent.ok ? 'blocked' : 'agent-unobserved';
+    s.windowEnd = client.io.now();
+    await save(path.join(client.dir, 'runtimes', runtime, 'refusal.json'), s, client.secrets);
+    return record;
+  }
+  s.submitInput = {
+    workspaceId: p.workspaceId,
+    threadId: setup.threadId,
+    requestId: randomUUID(),
+    agentId: cfg.agentId,
+    profileId: cfg.profileId,
+    ...(cfg.modelId === 'configured default' ? {} : { modelId: cfg.modelId }),
+    input: `Select the disabled DeepSeek Worker for ${p.roundId}. A Turn must not start.`,
+  };
+  s.submission = await client.call('turn.start', s.submitInput, true);
+  if (s.submission.ok) {
+    s.turnId = s.submission.data.id;
+    s.outcome = 'turn-started';
+  } else s.outcome = 'refused';
+  try {
+    s.after = await publicEffects(client, setup.threadId);
+  } catch (error) {
+    if (error instanceof InspectionRequired) throw error;
+    s.observationFailure = { error: String(error) };
+    s.outcome = 'observation-unavailable';
+  }
+  s.windowEnd = client.io.now();
+  await save(path.join(client.dir, 'runtimes', runtime, 'refusal.json'), s, client.secrets);
+  return record;
+}
+
 async function github(p, dir, io, label, route) {
   await guard(p, dir, io);
   const r = await io.exec('gh', ['api', '--include', '--method', 'GET', route], {
@@ -666,9 +804,9 @@ export async function round(dir, seams = {}) {
   const persist = () => save(path.join(dir, 'round.json'), bundle, [secret], false);
   try {
     bundle.binding = await client.call('catalog.mcp-list', { workspaceId: p.workspaceId });
-    // Settle all already admitted groups before closing attribution, even after a lost mutation.
-    const groups = await Promise.allSettled(
-      RUNTIMES.map(async (runtime) => {
+    // Settle admitted groups and the DeepSeek refusal before closing attribution, even after a lost mutation.
+    const groups = await Promise.allSettled([
+      ...QUALIFIED_RUNTIMES.map(async (runtime) => {
         const issue = await github(
           p,
           dir,
@@ -682,8 +820,11 @@ export async function round(dir, seams = {}) {
           receipt: issue.receipt,
         };
         bundle.runtimes[runtime] = await runtimeGroup(client, runtime);
-      })
-    );
+      }),
+      deepseekRefusal(client).then((record) => {
+        bundle.runtimes[REFUSAL_RUNTIME] = record;
+      }),
+    ]);
     await persist();
     const unknown = groups.find(
       (r) => r.status === 'rejected' && r.reason instanceof InspectionRequired
@@ -691,9 +832,12 @@ export async function round(dir, seams = {}) {
     if (unknown) throw unknown.reason;
     for (const [index, result] of groups.entries())
       if (result.status === 'rejected') {
-        bundle.runtimes[RUNTIMES[index]] = {
-          observationFailure: { error: String(result.reason), at: io.now() },
-        };
+        const runtime =
+          index < QUALIFIED_RUNTIMES.length ? QUALIFIED_RUNTIMES[index] : REFUSAL_RUNTIME;
+        if (!bundle.runtimes[runtime])
+          bundle.runtimes[runtime] = {
+            observationFailure: { error: String(result.reason), at: io.now() },
+          };
       }
     const diagnosticEnd = io.now();
     let diagnostic;

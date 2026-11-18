@@ -307,8 +307,8 @@ export function compactReleaseRecord({ tag, sha, header, qualification }) {
   if (qualification) {
     if (
       !Array.isArray(qualification.publicRows) ||
-      qualification.publicRows.length !== 16 ||
-      new Set(qualification.publicRows.map((r) => r.subject)).size !== 16
+      qualification.publicRows.length !== 13 ||
+      new Set(qualification.publicRows.map((r) => r.subject)).size !== 13
     )
       throw Error('Release Management: incomplete qualification projection');
     lines.push(
@@ -318,7 +318,7 @@ export function compactReleaseRecord({ tag, sha, header, qualification }) {
     );
     for (const row of qualification.publicRows) {
       if (
-        !/^(codex|pi|opencode|deepseek)\.[A-D]$/u.test(row.subject) ||
+        !/^(?:(?:codex|pi|opencode)\.[A-D]|deepseek\.refusal)$/u.test(row.subject) ||
         row.publishedIdentity !== tag ||
         row.sourceCommit !== sha ||
         !['P', 'K', 'E', 'N', 'T', 'I', 'unclassified'].includes(row.verdict) ||

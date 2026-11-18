@@ -65,9 +65,9 @@ node tests/support/release-round.mjs round --target example-host --evidence-dir 
 node tests/support/release-round.mjs summarize --evidence-dir /example/private/round --adjudications /example/private/checks.json
 ```
 
-`prepare` refuses an existing evidence directory. It pins the instrument, the parameters, and the candidate checklist blob. Worker-only preparation launches no browser because no qualification case uses a deciding browser observation. It records changed Worker input paths and unchanged NanoHost attribution. Live preparation requires the published `releaseTag`; offline historical summaries may report its absence as unavailable.
+`prepare` refuses an existing evidence directory. It pins the instrument, the parameters, and the candidate checklist blob. Compatibility follows the matrix revision `13-row-deepseek-refusal`, not equality with the whole cookbook at HEAD. An incompatible scenario revision is refused before the evidence directory is created. Worker-only preparation launches no browser because no qualification case uses a deciding browser observation. It records changed Worker input paths and unchanged NanoHost attribution. Live preparation requires the published `releaseTag`; offline historical summaries may report its absence as unavailable.
 
-`round` requires completed preparation and admits one writer. On completion it automatically generates the offline summary and per-case rows. `round` and `summarize` return nonzero unless all sixteen rows pass. The runner does not build an image or replace a container. It runs each runtime's A–D rows and the four runtime groups concurrently within admitted capacity, then telemetry and cleanup.
+`round` requires completed preparation and admits one writer. Before `round`, place `admitted-thread.json` in the evidence directory with `{ "threadId", "workspaceId" }` for one existing Workspace Thread. The refusal setup reads that Thread and records ownership. The refusal probe does not call `thread.create`. On completion `round` generates the offline summary and per-case rows. `summarize` refuses an incompatible checklist or scenario revision, including a sixteen-row round, before it replaces `summary.json`, `cases.md`, `row.md`, or `manifest.json`. `round` and `summarize` return nonzero unless all thirteen rows pass. The runner does not build an image or replace a container. It runs Codex, Pi and OpenCode V2 A–D as three concurrent runtime groups, plus one DeepSeek pre-effect refusal, within admitted capacity, then telemetry and cleanup.
 
 `prepare` defaults to Worker-only purpose and makes no browser launch. For a browser-dependent catalog story, use `--purpose browser-story`: preparation must retain successful blank-page launch and session closure in `browser-preflight.json`. Failed launch, timeout, exception or failed close prevents `prepare-complete.json`; inspect that retained failure before a fresh attempt. This shared prerequisite does not perform or judge the story.
 
@@ -83,7 +83,7 @@ All original parameter keys below are required; the additive `releaseTag` is req
 | `cli` | Absolute `executable`, protected `credentialFile` path, HTTPS `origin` with no credentials, path override, query or fragment |
 | `deployment` | `sshAlias`, `machineId`, `container`, `imageRepository`, `configurationDigest`, `nanoHostDigest`, `workerDigest`, `appImage`, `webIdentity`, `componentCommits`, `componentPaths`, `diagnosticUnit` |
 | Component maps | `componentCommits` and `componentPaths` each have `nanoHost` and `worker` |
-| `runtimes` | Exactly `codex`, `pi`, `opencode`, `deepseek`, each with `agentId`, `profileId`, `modelId`, `configurationVersion`, `marker`, `filename` |
+| `runtimes` | Exactly `codex`, `pi`, `opencode`, and `deepseek`. Codex, Pi and OpenCode each require `agentId`, `profileId`, `modelId`, `configurationVersion`, `marker`, and `filename` for cases A–D. DeepSeek keeps the same closed fields; its `agentId` and `profileId` select the disabled Worker for the single pre-effect refusal row, and its `marker` and `filename` are unused by that row. |
 | `issue` | Independently verified `repository`, `number`, `title`, `state` |
 | `bounds` | Positive bounded `readAttempts` (at most ten), `pollMs`, `observationMs`, `processMs` |
 
@@ -113,7 +113,7 @@ An independent checker supplies a JSON array of `{ "scenario": "pi.A", "code": "
 
 An adjudication for a mechanical `P`, a duplicate adjudication, or promotion of missing evidence to an observed failure is refused. A missing adjudication leaves the round unclassified. Final `I` and `T` rows leave the round incomplete.
 
-`summary.json` retains complete private classifications, evidence references, transport coverage and Worker failures by distinct failed Turn; `cases.md` contains sixteen per-case public rows; `summary.json.publicRows` supplies the bounded notes projection. `row.md` retains the aggregate seven-column diagnostic projection with neutral receipt/check aliases and the SHA-256 of `manifest.json`.
+`summary.json` retains complete private classifications, evidence references, transport coverage and Worker failures by distinct failed Turn; `cases.md` contains thirteen per-case public rows (twelve A–D rows and `deepseek.refusal`); `summary.json.publicRows` supplies the bounded notes projection. `row.md` retains the aggregate seven-column diagnostic projection with neutral receipt/check aliases and the SHA-256 of `manifest.json`.
 
 The manifest hashes every retained source evidence file and the checker inputs, excluding the derived `summary.json`, `row.md`, `cases.md`, and `manifest.json` to avoid recursive hashes; preserve the private bundle in the existing access-controlled custody before temporary files expire.
 

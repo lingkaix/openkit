@@ -10,6 +10,7 @@ import {
 } from './fixtures/release-round/synthetic.mjs';
 import { classify, evaluate, summarize } from './support/release-round/evidence.mjs';
 import {
+  deepseekRefusal,
   defaults,
   InspectionRequired,
   prepare,
@@ -19,7 +20,8 @@ import {
 } from './support/release-round/live.mjs';
 import {
   digest,
-  RUNTIMES,
+  MATRIX_REVISION,
+  QUALIFIED_RUNTIMES,
   replySentence,
   SCENARIOS,
   validateParams,
@@ -32,7 +34,7 @@ function parameters() {
 /** Rebind every retained A Item copy so D still observes byte-identical earlier history. */
 function bundle(p = parameters()) {
   const b = originalBundle(p);
-  for (const runtime of RUNTIMES) {
+  for (const runtime of QUALIFIED_RUNTIMES) {
     const steps = b.runtimes[runtime].steps,
       turnId = steps[0].turnId;
     for (const step of steps)
@@ -359,6 +361,34 @@ test('prepare refuses an existing directory before any effect', async (t) => {
   await assert.rejects(prepare(f, dir, { exec, credential: 'synthetic-private-value' }), /EEXIST/);
   assert.equal(effects, 0);
 });
+test('prepare allows an unrelated cookbook edit and refuses another matrix revision', async (t) => {
+  const dir = await temp(t),
+    edited = path.join(dir, 'edited');
+  const checklist = parameters();
+  checklist.candidateCommit = 'b'.repeat(40);
+  await save(path.join(dir, 'checklist.json'), checklist);
+  await prepare(path.join(dir, 'checklist.json'), edited, {
+    credential: 'synthetic-private-value',
+    exec: async (_exe, args) => {
+      const spec = args.at(-1) ?? '';
+      const blob = spec.startsWith('HEAD:') ? 'c'.repeat(40) : checklist.checklistBlob;
+      return { exitCode: 0, stdout: args[0] === 'diff' ? '' : blob, stderr: '' };
+    },
+  });
+  assert.equal((await readJson(path.join(edited, 'prepare.json'))).matrixRevision, MATRIX_REVISION);
+  const revision = parameters();
+  revision.scenarioRevision = '16-row-matrix';
+  const dest = path.join(dir, 'revision');
+  await save(path.join(dir, 'revision.json'), revision);
+  await assert.rejects(
+    prepare(path.join(dir, 'revision.json'), dest, {
+      credential: 'synthetic-private-value',
+      exec: async () => ({ exitCode: 0, stdout: revision.checklistBlob, stderr: '' }),
+    }),
+    /Incompatible scenario revision/
+  );
+  await assert.rejects(fs.stat(dest), /ENOENT/);
+});
 test('prepare refuses frozen checklist mismatch before directory creation', async (t) => {
   const dir = await temp(t),
     f = path.join(dir, 'input.json');
@@ -472,7 +502,7 @@ test('offline summarize produces all seven compact columns and deterministic man
     p = parameters();
   await summaryFixture(dir, p);
   const s = await summarize(dir);
-  assert.equal(s.counts.successful, 16);
+  assert.equal(s.counts.successful, 13);
   const row = await fs.readFile(path.join(dir, 'row.md'), 'utf8');
   assert.equal(row.split('\n')[2].split(' | ').length, 7);
   const again = await summarize(dir);
@@ -496,10 +526,41 @@ async function summaryFixture(dir, p, b = bundle(p)) {
     runnerSha256: b.attribution.runnerSha256,
     instrumentFiles: entries,
     checklistBlob: p.checklistBlob,
+    scenarioRevision: p.scenarioRevision,
+    matrixRevision: MATRIX_REVISION,
   });
   await save(path.join(dir, 'round.json'), b);
 }
 
+test('summarize refuses an older matrix before replacing projections', async (t) => {
+  const root = await temp(t),
+    marker = 'sixteen-row projection\n',
+    pins = ['summary.json', 'cases.md', 'row.md', 'manifest.json'];
+  for (const name of ['older', 'forged', 'attribution', 'candidate', 'checklist']) {
+    const dir = path.join(root, name),
+      p = parameters();
+    if (name === 'older') p.scenarioRevision = '16-row-matrix';
+    await fs.mkdir(dir);
+    await summaryFixture(dir, p);
+    const round = await readJson(path.join(dir, 'round.json'));
+    if (name === 'older' || name === 'forged') round.runtimes.deepseek.steps[0].scenario = 'A';
+    if (name === 'attribution') {
+      round.attribution.matrixRevision = '16-row-matrix';
+      round.attribution.scenarioRevision = '16-row-matrix';
+    }
+    if (name === 'candidate') round.attribution.candidateCommit = 'f'.repeat(40);
+    if (name === 'checklist') round.attribution.checklistBlob = 'f'.repeat(40);
+    await save(path.join(dir, 'round.json'), round, [], false);
+    for (const file of pins) await fs.writeFile(path.join(dir, file), marker);
+    await assert.rejects(
+      summarize(dir),
+      name === 'candidate' || name === 'checklist'
+        ? /Conflicting pinned instrument attribution/
+        : /Incompatible scenario revision/
+    );
+    for (const file of pins) assert.equal(await fs.readFile(path.join(dir, file), 'utf8'), marker);
+  }
+});
 test('summarize refuses retained parameters containing the earlier runner sequence', async (t) => {
   const dir = await temp(t),
     p = { ...parameters(), sequence: { priorCount: 0, resetReason: null } };
@@ -656,7 +717,6 @@ test('an ok envelope without mutation identity is ambiguous and never retried', 
 test('public row hashes private revision text and uses neutral reset and unavailable identities', async (t) => {
   const dir = await temp(t),
     p = parameters();
-  p.scenarioRevision = '/example/private/scenario';
   p.deployment.workerDigest = '/example/private/worker';
   await summaryFixture(dir, p);
   await summarize(dir);
@@ -795,18 +855,154 @@ for (const [name, reply] of [
     step.itemCoverage.items[0].text = reply;
     assert.equal(evaluate(b, p).rows.find((r) => r.scenario === 'pi.A').mechanicalCode, 'N');
   });
-test('summarize generates sixteen public per-case rows with exact identities', async (t) => {
+test('an enabled or different Agent is not submitted', async (t) => {
+  const root = await temp(t),
+    p = parameters(),
+    threadId = 'thread-example-deepseek',
+    board = {
+      thread: { id: threadId, owner: { kind: 'workspace', workspaceId: p.workspaceId } },
+      turns: [],
+      artifacts: [],
+      pendingRequests: [],
+      workStatus: {
+        selectedAgentId: null,
+        activeTurnStatus: 'idle',
+        pendingApprovalCount: 0,
+        pendingQuestionCount: 0,
+        latestArtifact: null,
+      },
+      coverage: { artifacts: 'referenced-window' },
+      attention: { items: [], more: false, restricted: false },
+    };
+  let starts = 0;
+  const run = async (name, agent, items) => {
+    const dir = path.join(root, name);
+    await fs.mkdir(dir);
+    await save(path.join(dir, 'admitted-thread.json'), { threadId, workspaceId: p.workspaceId });
+    return deepseekRefusal(
+      new RoundClient(
+        p,
+        dir,
+        {
+          ...defaults,
+          ssh: async () => ({ exitCode: 0, stdout: p.deployment.machineId, stderr: '' }),
+          cli: async (_exe, args) => {
+            const op = args[2];
+            if (op === 'turn.start') starts += 1;
+            const data =
+              op === 'thread.read'
+                ? board.thread
+                : op === 'agent.read'
+                  ? agent
+                  : op === 'thread.items'
+                    ? { items, nextCursor: null }
+                    : board;
+            return { exitCode: 0, stdout: JSON.stringify({ ok: true, data }), stderr: '' };
+          },
+        },
+        ['synthetic-private-value']
+      )
+    );
+  };
+  const disabled = {
+    id: 'agent_deepseek',
+    name: 'DeepSeek Agent',
+    status: 'disabled',
+    defaultProfileId: 'default',
+  };
+  const records = [
+    await run('enabled', { ...disabled, status: 'enabled' }, []),
+    await run('other', { ...disabled, id: 'agent_other', name: 'Other Agent' }, []),
+    await run('items', disabled, [{ id: 'item-example' }]),
+  ];
+  assert.equal(starts, 0);
+  assert.ok(records.every((record) => record.steps[0].submission === undefined));
+});
+test('summarize generates thirteen public per-case rows with exact identities', async (t) => {
   const dir = await temp(t);
   await summaryFixture(dir, parameters());
   const s = await summarize(dir);
-  assert.equal(s.publicRows.length, 16);
+  assert.equal(s.publicRows.length, 13);
+  assert.deepEqual(
+    s.publicRows.map((r) => r.subject),
+    SCENARIOS
+  );
+  assert.equal(s.publicRows.filter((r) => r.subject === 'deepseek.refusal').length, 1);
+  assert.equal(
+    s.publicRows.some((r) => /^deepseek\.[A-D]$/.test(r.subject)),
+    false
+  );
   assert(s.publicRows.every((r) => r.publishedIdentity === 'v0.1.0-rc.6' && r.verdict === 'P'));
   const text = await fs.readFile(path.join(dir, 'cases.md'), 'utf8');
-  assert.equal(text.trim().split('\n').length, 18);
+  assert.equal(text.trim().split('\n').length, 15);
   assert(!text.includes('thread-example'));
 });
 
-test('four runtime groups overlap while A to D remain sequential in each Thread', async (t) => {
+for (const name of [
+  'a started Turn',
+  'a different refusal code',
+  'a different readiness message',
+  'an Item without a Turn',
+  'an Artifact without a Turn',
+  'queued work without a Turn',
+  'a pending request without a Turn',
+  'a mismatched Workspace selector',
+  'a different disabled Agent',
+  'an accepted HTTP status',
+  'a GET correlation',
+  'restricted Artifact coverage',
+  'an absent Artifact coverage field',
+  'absent attention',
+  'incomplete requests',
+  'a Thread that already has a Turn',
+])
+  test(`DeepSeek pre-effect refusal fails on ${name}`, () => {
+    const b = bundle(),
+      step = b.runtimes.deepseek.steps[0];
+    if (name === 'a started Turn') {
+      step.submission = { ok: true, data: { id: 'turn-example-deepseek' } };
+      step.turnId = 'turn-example-deepseek';
+      step.turn = { id: 'turn-example-deepseek', status: 'completed' };
+      step.dashboard = { turns: [{ id: 'turn-example-deepseek' }] };
+      step.outcome = 'turn-started';
+    } else if (name === 'a different refusal code') step.submission.error.code = 'unsupported';
+    else if (name === 'a different readiness message')
+      step.submission.error.message = 'Agent agent_deepseek readiness is blocked.';
+    else if (name === 'an Item without a Turn')
+      step.after.items.items.push({ id: 'item-example', type: 'assistant-message' });
+    else if (name === 'an Artifact without a Turn')
+      step.after.dashboard.artifacts.push({ id: 'artifact-example' });
+    else if (name === 'queued work without a Turn')
+      step.after.dashboard.workStatus.activeTurnStatus = 'pending';
+    else if (name === 'a pending request without a Turn')
+      step.after.dashboard.pendingRequests.push({
+        requestId: 'request-example',
+        state: 'pending',
+      });
+    else if (name === 'a mismatched Workspace selector')
+      step.after.dashboard.thread.owner.workspaceId = 'workspace-other';
+    else if (name === 'a different disabled Agent') {
+      step.agent.id = 'agent_other';
+      step.agent.name = 'Other Agent';
+    } else if (name === 'an accepted HTTP status') step.submission.http[0].status = 202;
+    else if (name === 'a GET correlation') step.submission.http[0].method = 'GET';
+    else if (name === 'restricted Artifact coverage') {
+      step.before.dashboard.coverage.artifacts = 'restricted';
+      step.after.dashboard.coverage.artifacts = 'restricted';
+    } else if (name === 'an absent Artifact coverage field') {
+      delete step.before.dashboard.coverage.artifacts;
+      delete step.after.dashboard.coverage.artifacts;
+    } else if (name === 'absent attention') {
+      delete step.before.dashboard.attention;
+      delete step.after.dashboard.attention;
+    } else if (name === 'incomplete requests')
+      step.after.dashboard.attention = { more: true, restricted: true, items: [] };
+    else step.after.dashboard.turns = [{ id: 'turn-example' }];
+    const row = evaluate(b, parameters()).rows.find((r) => r.scenario === 'deepseek.refusal');
+    assert.equal(row.mechanicalCode, 'N', JSON.stringify(row.failures));
+  });
+
+test('three runtime groups overlap while A to D remain sequential in each Thread', async (t) => {
   const dir = await temp(t),
     p = parameters(),
     b = bundle(p);
@@ -817,16 +1013,16 @@ test('four runtime groups overlap while A to D remain sequential in each Thread'
   const positions = new Map(),
     order = new Map(),
     first = new Set();
-  let admitFour;
+  let admitGroups;
   const gate = new Promise((resolve) => {
-    admitFour = resolve;
+    admitGroups = resolve;
   });
   const envelope = (data) => ({
     exitCode: 0,
     stdout: JSON.stringify({ ok: true, data }),
     stderr: '',
   });
-  const runtimeFor = (tid) => RUNTIMES.find((r) => b.runtimes[r].threadId === tid);
+  const runtimeFor = (tid) => QUALIFIED_RUNTIMES.find((r) => b.runtimes[r].threadId === tid);
   const seams = {
     credential: 'synthetic-private-value',
     now: () => '2026-01-01T00:30:00Z',
@@ -850,14 +1046,45 @@ test('four runtime groups overlap while A to D remain sequential in each Thread'
     cli: async (_exe, args, options) => {
       const op = args[2],
         input = JSON.parse(options.input);
+      if (op === 'thread.read' && input.threadId === b.runtimes.deepseek.threadId)
+        return envelope({
+          id: input.threadId,
+          owner: { kind: 'workspace', workspaceId: p.workspaceId },
+        });
+      if (op === 'agent.read')
+        return envelope({
+          id: 'agent_deepseek',
+          name: 'DeepSeek Agent',
+          status: 'disabled',
+          defaultProfileId: 'default',
+        });
       if (op === 'catalog.mcp-list') return envelope(b.binding.data);
       if (op === 'nanohost.runtime-target') return envelope({ ready: true });
       if (op === 'thread.create') {
-        const r = RUNTIMES.find((r) => input.name.endsWith(`runtime ${r}`));
+        if (String(input.name).includes('deepseek')) throw Error('refusal probe created a Thread');
+        const r = QUALIFIED_RUNTIMES.find((r) => input.name.endsWith(`runtime ${r}`));
         positions.set(r, -1);
         order.set(r, []);
         return envelope({ id: b.runtimes[r].threadId });
       }
+      if (op === 'turn.start' && input.agentId === p.runtimes.deepseek.agentId)
+        return {
+          exitCode: 4,
+          stdout: JSON.stringify({
+            ok: false,
+            error: {
+              code: 'agent_not_ready',
+              message: 'Agent agent_deepseek readiness is disabled.',
+            },
+          }),
+          stderr: `RELEASE_HTTP ${JSON.stringify({
+            startedAt: '2026-01-01T00:30:00Z',
+            observedAt: '2026-01-01T00:30:00Z',
+            method: 'POST',
+            path: '/api/app/operations/turn.start',
+            status: 409,
+          })}\n`,
+        };
       const r = runtimeFor(input.threadId),
         index = positions.get(r),
         group = b.runtimes[r],
@@ -868,22 +1095,38 @@ test('four runtime groups overlap while A to D remain sequential in each Thread'
         order.get(r).push(['A', 'B', 'C', 'D'][next]);
         if (next === 0) {
           first.add(r);
-          if (first.size === 4) admitFour();
+          if (first.size === 3) admitGroups();
           await gate;
         }
         return envelope({ id: group.steps[next].turnId });
       }
-      if (op === 'thread.dashboard')
-        return envelope({
+      if (op === 'thread.dashboard') {
+        const body = {
           turns: step ? [step.turn] : [],
-          artifacts: step?.dashboard.artifacts ?? [],
+          artifacts: step?.dashboard?.artifacts ?? [],
           pendingRequests: [],
-          workStatus: { activeTurnStatus: 'idle' },
-        });
+          workStatus: {
+            selectedAgentId: null,
+            activeTurnStatus: 'idle',
+            pendingApprovalCount: 0,
+            pendingQuestionCount: 0,
+            latestArtifact: null,
+          },
+          coverage: { artifacts: 'referenced-window', turns: 'current-run' },
+          attention: { items: [], more: false, restricted: false },
+        };
+        if (input.threadId === b.runtimes.deepseek.threadId)
+          body.thread = {
+            id: input.threadId,
+            owner: { kind: 'workspace', workspaceId: p.workspaceId },
+          };
+        return envelope(body);
+      }
       if (op === 'turn.read') return envelope(step.turn);
-      if (op === 'thread.items') return envelope(step.itemCoverage);
+      if (op === 'thread.items')
+        return envelope(step ? step.itemCoverage : { items: [], nextCursor: null });
       if (op === 'artifact.read') {
-        const art = RUNTIMES.flatMap((r) => b.runtimes[r].steps[3].artifactReads).find(
+        const art = QUALIFIED_RUNTIMES.flatMap((r) => b.runtimes[r].steps[3].artifactReads).find(
           (v) => v.data.id === input.artifactId
         );
         return envelope(art.data);
@@ -891,16 +1134,27 @@ test('four runtime groups overlap while A to D remain sequential in each Thread'
       throw Error(`Unexpected ${op}`);
     },
   };
+  await save(path.join(dir, 'admitted-thread.json'), {
+    threadId: b.runtimes.deepseek.threadId,
+    workspaceId: p.workspaceId,
+  });
   await round(dir, seams);
-  assert.equal(first.size, 4);
-  for (const runtime of RUNTIMES) assert.deepEqual(order.get(runtime), ['A', 'B', 'C', 'D']);
+  assert.equal(first.size, 3);
+  for (const runtime of QUALIFIED_RUNTIMES)
+    assert.deepEqual(order.get(runtime), ['A', 'B', 'C', 'D']);
   const recorded = await readJson(path.join(dir, 'round.json'));
   const evaluated = evaluate(recorded, p);
   assert.equal(
     evaluated.rows.filter((r) => r.mechanicalCode === 'P').length,
-    16,
+    13,
     JSON.stringify(evaluated)
   );
+  const refusal = evaluated.rows.find((r) => r.scenario === 'deepseek.refusal');
+  assert.equal(refusal.actualStatus, 'refused');
+  assert.equal(recorded.runtimes.deepseek.steps[0].turnId, undefined);
+  assert.equal(recorded.runtimes.deepseek.steps[0].setup.createdThreads, 0);
+  assert.equal(recorded.runtimes.deepseek.steps[0].after.dashboard.turns.length, 0);
+  assert.equal(recorded.runtimes.deepseek.steps[0].after.items.items.length, 0);
 });
 
 test('qualification CLI returns nonzero for a completed wrong reply', async (t) => {

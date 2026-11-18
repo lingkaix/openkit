@@ -2,8 +2,29 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { canonical, files, readJson, save, sha } from '../../../scripts/release-safety.mjs';
-import { digest, RUNTIMES, replySentence, SCENARIOS, validateParams } from './safety.mjs';
+import {
+  digest,
+  MATRIX_REVISION,
+  QUALIFIED_RUNTIMES,
+  REFUSAL_RUNTIME,
+  REFUSAL_SCENARIO,
+  RUNTIMES,
+  replySentence,
+  SCENARIOS,
+  validateParams,
+} from './safety.mjs';
 
+/** Pinned public refusal. Product proof stays with the admission regression. */
+const REFUSAL = {
+  status: 409,
+  method: 'POST',
+  code: 'agent_not_ready',
+  message: 'Agent agent_deepseek readiness is disabled.',
+  id: 'agent_deepseek',
+  name: 'DeepSeek Agent',
+  readiness: 'disabled',
+  profileId: 'default',
+};
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const data = (v) => (v?.ok === true ? v.data : undefined);
 const artifact = (v) => data(v)?.artifact ?? data(v);
@@ -189,6 +210,134 @@ export function runtimeRows(r, issue, p, runtime, refs) {
     return c.finish(turn?.status ?? s.submission?.error?.code);
   });
 }
+function workspaceOf(thread) {
+  return thread?.owner?.kind === 'workspace' ? thread.owner.workspaceId : undefined;
+}
+function turnSeen(step) {
+  return (
+    step?.turnId !== undefined ||
+    step?.turn !== undefined ||
+    [step?.before?.dashboard, step?.after?.dashboard, step?.dashboard].some(
+      (board) => Array.isArray(board?.turns) && board.turns.length > 0
+    )
+  );
+}
+function effectView(record) {
+  return {
+    turns: record?.dashboard?.turns ?? null,
+    artifacts: record?.dashboard?.artifacts ?? null,
+    pendingRequests: record?.dashboard?.pendingRequests ?? null,
+    workStatus: record?.dashboard?.workStatus ?? null,
+    items: record?.items?.items ?? null,
+  };
+}
+function deciding(board) {
+  const attention = board?.attention;
+  return (
+    board?.coverage?.artifacts === 'referenced-window' &&
+    attention?.more === false &&
+    attention?.restricted === false &&
+    Array.isArray(attention?.items) &&
+    Array.isArray(board?.pendingRequests)
+  );
+}
+function quiet(record) {
+  const board = record?.dashboard,
+    items = record?.items;
+  return (
+    board &&
+    deciding(board) &&
+    complete(items) &&
+    items.items.length === 0 &&
+    Array.isArray(board.turns) &&
+    board.turns.length === 0 &&
+    Array.isArray(board.artifacts) &&
+    board.artifacts.length === 0 &&
+    board.pendingRequests.length === 0 &&
+    board.workStatus?.activeTurnStatus === 'idle' &&
+    (board.workStatus.pendingApprovalCount ?? 0) === 0 &&
+    (board.workStatus.pendingQuestionCount ?? 0) === 0 &&
+    (board.workStatus.latestArtifact ?? null) === null
+  );
+}
+/** Live submission and the retained row share one identity, selector and quiet-before gate. */
+export function refusalMaySubmit({
+  before,
+  agent,
+  setup,
+  workspaceId,
+  threadId,
+  agentId,
+  profileId,
+}) {
+  return (
+    quiet(before) &&
+    agent?.id === REFUSAL.id &&
+    agent?.name === REFUSAL.name &&
+    agent?.status === REFUSAL.readiness &&
+    agent?.defaultProfileId === REFUSAL.profileId &&
+    agentId === agent.id &&
+    profileId === REFUSAL.profileId &&
+    setup?.createdThreads === 0 &&
+    setup?.observedThreadId === threadId &&
+    setup?.observedWorkspaceId === workspaceId &&
+    before?.dashboard?.thread?.id === threadId &&
+    workspaceOf(before?.dashboard?.thread) === workspaceId
+  );
+}
+/** Pass only a disabled DeepSeek selection whose command is the observed 409 and whose public records stay quiet. */
+function refusalRow(r, p, refs) {
+  const c = checker(REFUSAL_SCENARIO, refs),
+    steps = r?.steps?.filter((s) => s.scenario === 'refusal') ?? [];
+  c.test('one scenario observation', steps.length === 1, true);
+  const s = steps[0];
+  if (!s) return c.finish();
+  const cfg = p.runtimes[REFUSAL_RUNTIME],
+    error = s.submission?.ok === false ? s.submission.error : undefined,
+    command = (Array.isArray(s.submission?.http) ? s.submission.http : []).filter(
+      (span) => span?.path === '/api/app/operations/turn.start'
+    );
+  c.test(
+    'disabled DeepSeek selection on the admitted Thread',
+    s.before && s.agent && s.setup,
+    refusalMaySubmit({
+      before: s.before,
+      agent: s.agent,
+      setup: s.setup,
+      workspaceId: p.workspaceId,
+      threadId: r?.threadId,
+      agentId: cfg?.agentId,
+      profileId: cfg?.profileId,
+    }) &&
+      s.submitInput?.agentId === cfg?.agentId &&
+      s.submitInput?.profileId === cfg?.profileId
+  );
+  c.test(
+    'command HTTP 409 agent_not_ready',
+    s.submission,
+    s.submission?.ok === false &&
+      command.length === 1 &&
+      command[0]?.method === REFUSAL.method &&
+      command[0]?.status === REFUSAL.status &&
+      error?.code === REFUSAL.code &&
+      error?.message === REFUSAL.message
+  );
+  c.test(
+    'Thread and Workspace selectors match',
+    s.after && s.submitInput,
+    s.after?.dashboard?.thread?.id === r?.threadId &&
+      workspaceOf(s.after?.dashboard?.thread) === p.workspaceId &&
+      s.submitInput?.threadId === r?.threadId &&
+      s.submitInput?.workspaceId === p.workspaceId
+  );
+  c.test('complete quiet records before the selection', s.before, quiet(s.before) && !turnSeen(s));
+  c.test(
+    'no new effect after the selection',
+    s.before && s.after,
+    quiet(s.after) && same(effectView(s.before), effectView(s.after)) && !turnSeen(s)
+  );
+  return c.finish(s.outcome ?? error?.code ?? 'observed');
+}
 function validArtifact(a, title, body, tid, turnId) {
   return (
     a?.kind === 'file' &&
@@ -241,13 +390,20 @@ export function evaluate(bundle, p) {
         Date.parse(span.observedAt ?? span.startedAt) > Date.parse(a?.end)
       )
         global.push('telemetry outside attribution window');
-  let rows = RUNTIMES.flatMap((r) =>
+  let rows = QUALIFIED_RUNTIMES.flatMap((r) =>
     runtimeRows(
       bundle.runtimes?.[r],
       bundle.issues?.[r],
       p,
       r,
       bundle.runtimes?.[r]?.refs ?? [`round.json#runtimes.${r}`]
+    )
+  );
+  rows.push(
+    refusalRow(
+      bundle.runtimes?.[REFUSAL_RUNTIME],
+      p,
+      bundle.runtimes?.[REFUSAL_RUNTIME]?.refs ?? [`round.json#runtimes.${REFUSAL_RUNTIME}`]
     )
   );
   if (global.length)
@@ -341,10 +497,29 @@ export async function summarize(dir, { adjudicationsFile } = {}) {
     prep.runnerSha256 !== bundle.attribution?.runnerSha256 ||
     prep.parameterSha256 !== bundle.attribution?.parameterSha256 ||
     prep.checklistBlob !== p.checklistBlob ||
+    bundle.attribution?.candidateCommit !== p.candidateCommit ||
+    bundle.attribution?.checklistBlob !== p.checklistBlob ||
     !Array.isArray(prep.instrumentFiles) ||
     sha(canonical(prep.instrumentFiles)) !== prep.runnerSha256
   )
     throw Error('Conflicting pinned instrument attribution');
+  const subjects = [];
+  for (const [runtime, group] of Object.entries(bundle.runtimes ?? {}))
+    for (const step of group?.steps ?? [])
+      if (typeof step?.scenario === 'string')
+        subjects.push(
+          step.scenario === 'refusal' ? `${runtime}.refusal` : `${runtime}.${step.scenario}`
+        );
+  const recorded = bundle.attribution ?? {};
+  if (
+    p.scenarioRevision !== MATRIX_REVISION ||
+    prep.matrixRevision !== MATRIX_REVISION ||
+    prep.scenarioRevision !== MATRIX_REVISION ||
+    recorded.matrixRevision !== prep.matrixRevision ||
+    recorded.scenarioRevision !== prep.scenarioRevision ||
+    subjects.some((subject) => !SCENARIOS.includes(subject))
+  )
+    throw Error('Incompatible scenario revision');
   const evaluation = evaluate(bundle, p),
     adjudications = adjudicationsFile ? await readJson(adjudicationsFile) : [];
   if (!Array.isArray(adjudications)) throw Error('Adjudications must be an array');
