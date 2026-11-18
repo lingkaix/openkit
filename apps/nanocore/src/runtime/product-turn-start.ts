@@ -3,7 +3,12 @@ import { isDeepStrictEqual } from 'node:util';
 import type { ActorRef, SubmitTurnInputRequestSchema, TurnSchema } from '@openkit/protocol';
 import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { z } from 'zod';
-import { computeReadiness } from '../agents/readiness.js';
+import type { AgentManifest } from '../agents/manifest.js';
+import {
+  type AgentReadiness,
+  agentNotReadyMessage,
+  computeReadiness,
+} from '../agents/readiness.js';
 import { selectAgent } from '../agents/selector.js';
 import {
   type AgentSetupResolverDependencies,
@@ -74,6 +79,8 @@ interface StartProductTurnInput
   readonly workerPlacement: 'local' | 'remote';
   /** Optional worker id selected by an upper-level coordinator. */
   readonly requestedAgentId?: string | null;
+  /** Conversation checked the Agent before publishing the origin or pending Worker Turn. */
+  readonly agentReadinessCheckedBeforePublication?: true | undefined;
   /** Optional turn id reserved by an upper-level worker loop. */
   readonly reservedTurnId?: string;
   /** Explicit retained-storage choice captured with scheduler admission. */
@@ -104,6 +111,19 @@ interface StartProductTurnInput
     turn: z.infer<typeof TurnSchema>,
     agentSessionId: string | null
   ) => void | Promise<void>;
+}
+
+/** Checks the selected Agent before a caller publishes a fresh Worker Turn or its origin. */
+export function checkAgentReadinessForAdmission(manifest: AgentManifest): AgentReadiness {
+  const readiness = computeReadiness(manifest);
+  if (readiness.status === 'disabled') {
+    throw new TurnStartValidationError(
+      'agent_not_ready',
+      agentNotReadyMessage(manifest.id, readiness.status),
+      409
+    );
+  }
+  return readiness;
 }
 
 /**
@@ -172,6 +192,9 @@ export async function startProductTurn(input: StartProductTurnInput) {
   if (!('id' in selectedAgent)) {
     throw new TurnStartValidationError(selectedAgent.error.code, selectedAgent.error.message, 409);
   }
+  const readiness = input.agentReadinessCheckedBeforePublication
+    ? computeReadiness(selectedAgent)
+    : checkAgentReadinessForAdmission(selectedAgent);
   assertAgentManifestSupportsModel(selectedAgent, input.input.modelId);
 
   const workspaceRoots = materializeWorkspaceRootsForTurn(
@@ -395,7 +418,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
       resolve({
         turn: current,
         modelId: setup.setup!.logicalModels.preferredLogicalModelId ?? null,
-        readiness: computeReadiness(selectedAgent),
+        readiness,
         agent: selectedAgent,
         agentSetup: setup.setup,
         agentSetupRecordId: null,

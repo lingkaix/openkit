@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
@@ -12,9 +12,10 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import type { AgentManifest } from './agents/manifest.js';
+import { type AgentManifest, AuthoredAgentConfigSchema } from './agents/manifest.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { BetterAuthServer } from './auth/middleware.js';
+import { parseJsoncObject } from './config/jsonc.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -42,6 +43,7 @@ import type {
   TurnExecutor,
   TurnStartRuntimeContext,
 } from './runtime/types.js';
+import * as workerLoopOwners from './runtime/worker-turn-loop.js';
 import * as schedulerOwners from './scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -49,13 +51,17 @@ import type { CoreDb } from './storage/db.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
-import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import {
+  type CreateAppOptions,
+  createAppWithWorkspaceAuthority as createApp,
+} from './test-support/app.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -342,6 +348,7 @@ class HoldingTurnExecutor extends RecordingTurnExecutor {
  * @param workerPlacement Configured scheduler placement.
  * @param manifest Exact authored Agent configuration admitted by the app.
  * @param persist Whether to use real Workspace SQLite for durable receipt observations.
+ * @param config Runtime selection and model catalog overrides for the fixture.
  * @returns App, product store and Core database fixture.
  */
 async function createSchedulerFixture(
@@ -349,7 +356,8 @@ async function createSchedulerFixture(
   slug: string,
   workerPlacement: 'local' | 'remote' = 'local',
   manifest: AgentManifest = createTestAgentSetup().manifest,
-  persist = false
+  persist = false,
+  config?: Pick<CreateAppOptions, 'openKitConfig' | 'gatewayConfig'>
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-turn-routes-${slug}-`));
   const coreDb = openCoreDb(dataRoot);
@@ -367,6 +375,7 @@ async function createSchedulerFixture(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const app = createApp({
+    ...config,
     agentManifests: [manifest],
     coreDb,
     providerRegistry: testProviderRegistry(),
@@ -1662,6 +1671,73 @@ vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
 });
 
 describe('Core Turn durable admission response', () => {
+  it.each(['turn.start', 'conversation.submit'] as const)(
+    '%s refuses the shipped disabled DeepSeek Agent before publishing work',
+    async (operation) => {
+      const path = new URL('../data-templates/config/agents/deepseek.agent.jsonc', import.meta.url);
+      const manifest = AuthoredAgentConfigSchema.parse(
+        parseJsoncObject(readFileSync(path, 'utf8'), path.pathname)
+      );
+      const executor = new RecordingTurnExecutor();
+      const { app, coreDb, dataRoot, store } = await createSchedulerFixture(
+        executor,
+        'disabled-deepseek',
+        'local',
+        manifest,
+        true,
+        {
+          openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+          gatewayConfig: createTestGatewayConfig({ logicalModelId: 'smart' }),
+        }
+      );
+      const admissions = vi.spyOn(productTurnOwners, 'observeTurnAdmission');
+      const workerLoops = vi.spyOn(workerLoopOwners, 'runWorkerTurnLoop');
+      const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+      const requestId = '00000000-0000-4000-8000-000000000992';
+
+      const scope = { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID };
+      const selection =
+        operation === 'turn.start'
+          ? { agentId: manifest.id, profileId: 'default', modelId: 'smart' }
+          : { targetRef: 'new-task-worker', logicalModelId: 'smart' };
+      try {
+        const response = await app.request(
+          ...operationRequest(operation, scope, {
+            body: JSON.stringify({ ...selection, input: 'Run a bounded worker.', requestId }),
+          })
+        );
+        // Join any dispatch that the operation started before testing for effects.
+        await Promise.allSettled([
+          ...admissions.mock.results.map((result) => result.value.closeout),
+          ...workerLoops.mock.results.map((result) => result.value),
+        ]);
+
+        expect.soft(response.status).toBe(409);
+        expect.soft(await response.json()).toMatchObject({
+          code: 'agent_not_ready',
+          message: 'Agent agent_deepseek readiness is disabled.',
+        });
+        expect
+          .soft(coreDb.sqlite.prepare('SELECT 1 FROM scheduler_admission_entries LIMIT 1').get())
+          .toBeUndefined();
+        expect
+          .soft(
+            store
+              .listThreads(DEMO_WORKSPACE_ID)
+              .flatMap(({ id }) => store.listThreadTurns(DEMO_WORKSPACE_ID, id))
+          )
+          .toEqual([]);
+        expect.soft(store.listCommandRequests()).toEqual([]);
+        expect(prepare).not.toHaveBeenCalled();
+        expect(executor.startCalls).toBe(0);
+      } finally {
+        admissions.mockRestore();
+        workerLoops.mockRestore();
+        await disposeTestStore(dataRoot, coreDb);
+      }
+    }
+  );
+
   it.each(['http', 'remote-mcp', 'failure'] as const)(
     'returns %s admission and receipt before worker completion',
     async (entry) => {

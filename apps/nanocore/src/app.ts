@@ -1347,6 +1347,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly commandReceipt?: IdempotentCommandReceipt;
     /** Exact selected Worker conversation response, including its original routing metadata. */
     readonly commandReceiptResponse?: CommandRequestRecord['response'];
+    /** Conversation checked the Agent before publishing the origin or pending Worker Turn. */
+    readonly agentReadinessCheckedBeforePublication?: true;
     readonly triggerActor: ActorRef;
     /** Native initiating cause supplied by the Turn-creating owner. */
     readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
@@ -1375,6 +1377,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }): Promise<z.infer<typeof TurnSchema>> {
     const snapshot = runtimeConfig();
     const handle = await startProductTurn({
+      agentReadinessCheckedBeforePublication: input.agentReadinessCheckedBeforePublication,
       agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
       ...setupProviderSupply,
       ...(input.commandReceipt ? { commandReceipt: input.commandReceipt } : {}),

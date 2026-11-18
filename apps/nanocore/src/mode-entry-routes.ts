@@ -150,7 +150,11 @@ import {
   type PendingRequestRecord,
   pendingRequestItemId,
 } from './runtime/pending-requests.js';
-import { observeTurnAdmission, verifyAcceptedTurnLineage } from './runtime/product-turn-start.js';
+import {
+  checkAgentReadinessForAdmission,
+  observeTurnAdmission,
+  verifyAcceptedTurnLineage,
+} from './runtime/product-turn-start.js';
 import type { TurnCommandRuntimeContext } from './runtime/types.js';
 import {
   createWorkerCheckpointEvidenceDiagnostics,
@@ -2543,6 +2547,8 @@ export function createConversationService({
     /** Original conversation command and its exact selected Worker response. */
     readonly commandReceipt?: IdempotentCommandReceipt;
     readonly commandReceiptResponse?: CommandRequestRecord['response'];
+    /** Conversation checked the Agent before publishing the origin or pending Worker Turn. */
+    readonly agentReadinessCheckedBeforePublication?: true;
     readonly triggerActor: ActorRef;
     /** Known native Task admission cause, separate from actor identity. */
     readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
@@ -3579,6 +3585,8 @@ export function createConversationService({
         } else {
           agentId = resolveDefaultAgentId(snapshot, workspaceId, actorId);
         }
+        const manifest = snapshot.agentManifests.find((entry) => entry.id === agentId);
+        if (manifest) checkAgentReadinessForAdmission(manifest);
         // Claim the origin in native SQL before creating or mutating receiving work.
         if (acceptedTarget.kind !== 'running-worker' || receivingThreadId !== threadId)
           originTurn = await createChatTurn(new Date().toISOString(), providerTurnId, {});
@@ -3687,10 +3695,9 @@ export function createConversationService({
         let pendingWorker: z.infer<typeof TurnSchema> | undefined;
         let workerAdmissionStarted = false;
         if (receivingThreadId === threadId) {
-          const manifest = snapshot.agentManifests.find((entry) => entry.id === agentId)!;
           const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
           const userConfig = snapshot.userConfigs.find((entry) => entry.userId === actorId)?.config;
-          const setup = resolveAgentSetup(manifest, {
+          const setup = resolveAgentSetup(manifest!, {
             ...setupProviderSupply,
             gatewayConfig: snapshot.gatewayConfig,
             providerRegistry: snapshot.providerRegistry,
@@ -3851,6 +3858,7 @@ export function createConversationService({
                 chatInput.workerStorageChoice
               );
               const turn = await startModeWorkerTurn({
+                agentReadinessCheckedBeforePublication: true,
                 commandReceipt,
                 commandReceiptResponse: {
                   kind: 'turn',

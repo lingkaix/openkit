@@ -25,6 +25,11 @@ export function isAgentLaunchable(readiness: AgentReadiness): boolean {
   return readiness.status === 'ready';
 }
 
+/** Formats the public readiness refusal shared by Worker admission and dispatch. */
+export function agentNotReadyMessage(agentId: string, status: AgentReadinessStatus): string {
+  return `Agent ${agentId} readiness is ${status}.`;
+}
+
 /**
  * Computes agent readiness from manifest dependencies and provider registry state.
  *

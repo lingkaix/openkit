@@ -1,21 +1,31 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
+import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import * as knowledgeOwners from '../knowledge-operations.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestKey, FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { listSchedulerExecutionAttemptsForTurn } from '../runtime/execution-attempts.js';
 import { commandInputHash, conversationTaskTurnId } from '../runtime/idempotent-command.js';
 import * as productOwners from '../runtime/product-turn-start.js';
 import * as loopOwners from '../runtime/worker-turn-loop.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, DEMO_THREAD_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { assistantWiringFixture, conversationBody } from '../test-support/mode-entry-fixture.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as schedulerOwners from './control-store-admission.js';
 import {
@@ -28,6 +38,201 @@ import { nativeProductScope } from './workspace-file-records.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const actorId = 'usr_00000000-0000-7000-8000-000000000001';
+
+it.each(['existing', 'new'] as const)(
+  'accepts the %s Worker Thread when safe reload disables its Agent after publication',
+  async (entry) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'conversation-worker-readiness-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot, coreDb });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actorId, workspaceId });
+    const { manifest } = createTestAgentSetup({
+      agentId: 'agent_reload_fixture',
+      logicalModelId: 'smart',
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const configRoot = join(dataRoot, 'config');
+    const agentPath = join(configRoot, 'agents', 'worker.agent.jsonc');
+    mkdirSync(join(configRoot, 'agents'), { recursive: true });
+    mkdirSync(join(configRoot, 'providers'), { recursive: true });
+    writeFileSync(agentPath, JSON.stringify(manifest));
+    writeFileSync(
+      join(configRoot, 'server.jsonc'),
+      JSON.stringify({ schemaVersion: 1, defaults: { defaultAgentId: manifest.id } })
+    );
+    const gateway = createTestGatewayConfig({ logicalModelId: 'smart' });
+    writeFileSync(join(configRoot, 'gateway.jsonc'), JSON.stringify(gateway));
+    const model = gateway.logicalModels[0]!.routes[0]!.providerModel;
+    writeFileSync(
+      join(configRoot, 'providers', 'agent-openrouter.provider.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'agent-openrouter',
+        kind: 'local',
+        displayName: 'Test provider',
+        models: [model],
+        modelMetadata: { [model]: { limit: { context: 256_000, output: 32_000 } } },
+      })
+    );
+    const manager = createRuntimeConfigManager({ dataRoot });
+    if (entry === 'existing') {
+      const now = new Date().toISOString();
+      await store.createAgentSession({
+        id: 'as_00000000-0000-713e-88a7-b182503728ab',
+        agentId: manifest.id,
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+        status: 'idle',
+        message: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const executor = new SimulatedTurnExecutor({ coreDb });
+    const launches = vi.spyOn(executor, 'startTurn');
+    const app = createAppWithWorkspaceAuthority({
+      coreDb,
+      dataRoot,
+      store,
+      runtimeConfigManager: manager,
+      turnExecutor: executor,
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const originalPrepare = knowledgeOwners.createTaskKnowledgePreparation;
+    const preparation = vi
+      .spyOn(knowledgeOwners, 'createTaskKnowledgePreparation')
+      .mockImplementation((dependencies) => {
+        const prepare = originalPrepare(dependencies);
+        return async (...args) => {
+          entered.resolve();
+          await release.promise;
+          return prepare(...args);
+        };
+      });
+    const loops = vi.spyOn(loopOwners, 'runWorkerTurnLoop');
+    const publications = vi.spyOn(store, 'refreshDisplayProjectionItem');
+    const requestId = randomUUID();
+    const submit = () =>
+      app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId, threadId: DEMO_THREAD_ID },
+          {
+            body: conversationBody({
+              input: 'Continue this focused work.',
+              requestId,
+              targetRef:
+                entry === 'existing'
+                  ? `running-worker:${DEMO_THREAD_ID}:${manifest.id}`
+                  : 'new-task-worker',
+            }),
+          }
+        )
+      );
+    const receipt = () =>
+      store.getCommandRequest('conversation.submit', requestId, {
+        actorId,
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+      });
+    const admissions = () =>
+      listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId,
+        statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+      });
+    const pending = submit();
+    try {
+      await Promise.race([
+        entered.promise,
+        pending.then(async (response) => {
+          throw new Error(
+            `Conversation returned before Worker preparation: ${await response.clone().text()}`
+          );
+        }),
+      ]);
+      const [origin] = store.listThreadTurns(workspaceId, DEMO_THREAD_ID);
+      const before = { origin, receipt: receipt(), admissions: admissions() };
+      writeFileSync(agentPath, JSON.stringify({ ...manifest, readiness: { status: 'disabled' } }));
+      expect(await manager.reload({ mode: 'safe', dryRun: false })).toMatchObject({
+        status: 'applied',
+      });
+      expect(
+        manager.current().agentManifests.find((candidate) => candidate.id === manifest.id)
+          ?.readiness?.status
+      ).toBe('disabled');
+      release.resolve();
+
+      const first = await pending;
+      await Promise.allSettled(loops.mock.results.map((result) => result.value));
+      if (first.status === 202) {
+        // The accepted-work owner publishes its final display Item after the Worker loop settles.
+        const accepted = SubmitConversationResponseSchema.parse(await first.clone().json());
+        await vi.waitFor(() =>
+          expect(store.getTurnById(accepted.turn.id).items).toContainEqual(
+            expect.objectContaining({ id: accepted.item.id, title: 'Worker Turn failed' })
+          )
+        );
+        await Promise.all(publications.mock.results.map((result) => result.value));
+        await setImmediate();
+      }
+      const replay = await submit();
+      expect(
+        [first.status, replay.status],
+        `Initial response: ${await first.clone().text()}\nReplay: ${await replay.clone().text()}`
+      ).toEqual([202, 202]);
+      const accepted = SubmitConversationResponseSchema.parse(await first.json());
+      const repeated = SubmitConversationResponseSchema.parse(await replay.json());
+      expect(before.admissions).toEqual([]);
+      if (entry === 'existing') {
+        expect(before.origin).toMatchObject({ agentId: manifest.id, status: 'pending' });
+        expect(before.receipt?.response).toMatchObject({ id: before.origin?.id });
+      } else {
+        expect(before.origin?.status).toBe('completed');
+        expect(before.receipt).toBeNull();
+      }
+      expect(repeated).toMatchObject({
+        outcome: accepted.outcome,
+        originatingWorkspaceId: workspaceId,
+        originatingThreadId: DEMO_THREAD_ID,
+        receivingWorkspaceId: workspaceId,
+        receivingThreadId: accepted.receivingThreadId,
+        item: { id: accepted.item.id },
+        turn: { id: accepted.turn.id, status: 'failed' },
+      });
+      expect(accepted.receivingThreadId === DEMO_THREAD_ID).toBe(entry === 'existing');
+      expect(store.getTurnById(accepted.turn.id)).toMatchObject({
+        status: 'failed',
+        error: {
+          code: 'worker_preparation_failed',
+          message: `Agent ${manifest.id} readiness is disabled.`,
+        },
+      });
+      expect(receipt()?.response).toMatchObject({ id: accepted.turn.id });
+      expect(admissions()).toMatchObject([
+        { requestId, turnId: accepted.turn.id, status: 'admitted' },
+      ]);
+      expect(
+        listSchedulerExecutionAttemptsForTurn(coreDb, {
+          workspaceId,
+          threadId: accepted.receivingThreadId,
+          turnId: accepted.turn.id,
+        })
+      ).toMatchObject([{ phase: 'closed', disposition: 'not_accepted', operationId: null }]);
+      expect(launches).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await Promise.allSettled([pending, ...loops.mock.results.map((result) => result.value)]);
+      preparation.mockRestore();
+      loops.mockRestore();
+      publications.mockRestore();
+      await closeRetrievalServices();
+      await disposeTestStore(dataRoot, coreDb);
+    }
+  }
+);
 
 /** Observe real owners while the winning request is paused before Knowledge effects. */
 describe('existing Worker origin admission', () => {

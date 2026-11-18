@@ -16,7 +16,12 @@ import {
 import type { ActorRef, TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
-import { type AgentReadiness, computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
+import {
+  type AgentReadiness,
+  agentNotReadyMessage,
+  computeReadiness,
+  isAgentLaunchable,
+} from '../agents/readiness.js';
 import {
   type AgentSelectionDefaults,
   type AgentSelectionOverride,
@@ -331,7 +336,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
   if (!isAgentLaunchable(readiness)) {
     throw new TurnStartValidationError(
       'agent_not_ready',
-      `Agent ${selectedAgent.id} readiness is ${readiness.status}.`,
+      agentNotReadyMessage(selectedAgent.id, readiness.status),
       409
     );
   }

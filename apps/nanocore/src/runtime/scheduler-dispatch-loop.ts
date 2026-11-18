@@ -14,7 +14,7 @@ import {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
-import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
+import { agentNotReadyMessage, computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
 import {
   type AgentSetupResolverDependencies,
   readSupportedAgentSetupFeatures,
@@ -684,7 +684,7 @@ function resolveDispatchAgentSetup(
   if (!isAgentLaunchable(readiness)) {
     throw new TurnStartValidationError(
       'agent_not_ready',
-      `Agent ${requestedAgentId} readiness is ${readiness.status}.`,
+      agentNotReadyMessage(requestedAgentId, readiness.status),
       409
     );
   }
