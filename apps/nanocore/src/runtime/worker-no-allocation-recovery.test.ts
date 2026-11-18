@@ -343,15 +343,21 @@ describe('original native Worker restart before allocation', () => {
 
   it('retains unused obligations until the native terminal write is acknowledged', async () => {
     const f = await stoppedOriginalWorker();
+    const originalTurn = f.store.getTurnById(f.turnId);
+    const originalCheckpoint = f.checkpoint();
     f.workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_original_terminal
       BEFORE UPDATE ON control_turns WHEN NEW.id='${f.turnId}' AND NEW.status='failed'
       BEGIN SELECT RAISE(ABORT, 'Controlled original terminal refusal.'); END`);
     try {
       await expect(f.recover()).rejects.toThrow();
-      expect(f.checkpointClassifications).toBe(0);
+      // Boot records the per-attempt fault and still tries checkpoint classification.
+      // Its refused retry must preserve every obligation until terminal publication ACK.
+      expect(f.checkpointClassifications).toBe(1);
+      expect(f.store.getTurnById(f.turnId)).toEqual(originalTurn);
       expect(f.steps()).toEqual(f.originalSteps);
       expect(f.roots()[0]!.phase).not.toBe('closed');
       expect(f.checkpoint()).not.toBeNull();
+      expect(f.checkpoint()).toEqual(originalCheckpoint);
     } finally {
       f.workspaceDb.sqlite.exec('DROP TRIGGER refuse_original_terminal');
     }

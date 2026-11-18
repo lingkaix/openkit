@@ -12662,6 +12662,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await Promise.race([cleanupEntered.promise, execution]);
       expect(getWorkerBackendSession(coreDb, leaseId)?.state).toBe('cleanup-pending');
       const nativeRecovery = {
+        executionBackend: backend,
         cleanupBackendSession: (
           identity: Parameters<WorkerGovernanceBackend['cleanupSession']>[0]
         ) => backend.cleanupSession(identity),
