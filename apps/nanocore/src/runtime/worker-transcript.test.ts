@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
+import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
+import { WorkerTranscriptWriter } from '../../../../packages/worker-shim/src/transcript.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -700,6 +702,75 @@ describe('worker transcript Item exact-value admission', () => {
 });
 
 describe('worker transcript import', () => {
+  it('imports the completed assistant Item when capture stops before metadata dispatch', async () => {
+    const fixture = await createTranscriptFixture();
+    const lineage = transcriptLineage(fixture);
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-cutoff-'));
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const acceptedLiveEvents: Parameters<
+      NonNullable<ConstructorParameters<typeof WorkerTranscriptWriter>[0]['appendEvent']>
+    >[0][] = [];
+    const writer = new WorkerTranscriptWriter({
+      lineage,
+      sessionDir,
+      appendEvent: async (record) => {
+        if (record.event.type === 'worker.ready') {
+          entered.resolve();
+          await release.promise;
+        }
+        acceptedLiveEvents.push(record);
+      },
+    });
+    const ordinary = writer.writeAndAppendEvent({ type: 'worker.ready' });
+    let observation: Promise<void> | undefined;
+    try {
+      await Promise.race([entered.promise, ordinary]);
+      observation = writer.writeObservation({
+        observationId: 'obs_cutoff',
+        sourceRef: 'source_cutoff',
+        sourceSequence: 0,
+        observedAt: '2026-10-21T00:00:00.000Z',
+        fact: { kind: 'origin', runtimeOriginRef: null, phase: 'completed' },
+        content: { state: 'not-applicable' },
+      });
+      writer.stopObservationDelivery();
+      release.resolve();
+      await Promise.all([ordinary, observation]);
+      const assistantText = 'Completed reply after capture cutoff.';
+      await writer.writeAssistantMessage({ status: 'completed', text: assistantText });
+      acceptedLiveEvents.push(
+        await writer.writeTerminalOutcome({ status: 'completed', stopReason: 'completed' })
+      );
+      const result = await importWorkerTranscript(
+        fixture.store,
+        fixture.environmentPackage,
+        {
+          credentialCheckValues: transcriptCredentialChecks(),
+          eventsJsonl: await readFile(join(sessionDir, 'events.jsonl'), 'utf8'),
+          itemsJsonl: await readFile(join(sessionDir, 'items.jsonl'), 'utf8'),
+        },
+        { ...transcriptImportOptions, acceptedLiveEvents }
+      );
+      expect(result.diagnostics).toEqual([]);
+      expect(result.dedupedEventSequences).toEqual(
+        acceptedLiveEvents.map((record) => record.sequence)
+      );
+      expect(result.itemIds).toHaveLength(1);
+      expect(fixture.store.listThreadItems(lineage.workspaceId, lineage.threadId)).toContainEqual(
+        expect.objectContaining({
+          id: result.itemIds[0],
+          type: 'assistant-message',
+          text: assistantText,
+        })
+      );
+    } finally {
+      release.resolve();
+      await Promise.allSettled([ordinary, observation]);
+      await rm(sessionDir, { force: true, recursive: true });
+    }
+  });
+
   it('rejects transcript records whose lineage does not match the package scope', async () => {
     const { environmentPackage, store, turn } = await createTranscriptFixture();
     const result = await importWorkerTranscript(store, environmentPackage, {

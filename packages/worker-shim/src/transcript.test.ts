@@ -1,11 +1,15 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { WorkerTranscriptRecordSchema } from '@openkit/worker-protocol';
+import { dirname, join } from 'node:path';
+import {
+  type WorkerCanonicalEventRecord,
+  WorkerTranscriptRecordSchema,
+  workerObservationSourceRelativePath,
+} from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { type WorkerLineage, WorkerTranscriptWriter } from './index.js';
-import type { RuntimeObservation } from './runtime-capture.js';
+import { RUNTIME_CONTENT_CHUNK_BYTES, type RuntimeObservation } from './runtime-capture.js';
 
 const appendControl = vi.hoisted(() => ({
   completed: [] as string[],
@@ -419,6 +423,116 @@ describe('WorkerTranscriptWriter', () => {
       );
       expect(readJsonl(join(sessionDir, 'events.jsonl'))).toHaveLength(1);
     } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('joins metadata admitted before cutoff while its local append is pending', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-metadata-stop-'));
+    const appendEvent = vi.fn(async (_record: WorkerCanonicalEventRecord) => undefined);
+    const writer = new WorkerTranscriptWriter({ lineage, sessionDir, appendEvent });
+    appendControl.holdNext = true;
+    appendControl.release = null;
+    const observation = writer.writeObservation({
+      observationId: 'obs_admitted',
+      sourceRef: 'source_admitted',
+      sourceSequence: 0,
+      observedAt: '2026-10-21T00:00:00.000Z',
+      fact: { kind: 'origin', runtimeOriginRef: null, phase: 'completed' },
+      content: { state: 'not-applicable' },
+    });
+    try {
+      await vi.waitFor(() => expect(appendControl.release).toBeTypeOf('function'));
+      writer.stopObservationDelivery();
+      expect(appendEvent).not.toHaveBeenCalled();
+      appendControl.release?.();
+      await observation;
+      expect(appendEvent).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          sequence: 0,
+          event: expect.objectContaining({ type: 'observation.recorded' }),
+        })
+      );
+      expect(readJsonl(join(sessionDir, 'events.jsonl'))).toEqual([appendEvent.mock.calls[0]![0]]);
+    } finally {
+      appendControl.release?.();
+      await Promise.allSettled([observation]);
+      appendControl.holdNext = false;
+      appendControl.release = null;
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('joins the entered capture chunk and preserves ordering when further delivery stops', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-capture-stop-'));
+    mkdirSync(dirname(join(sessionDir, workerObservationSourceRelativePath(0))), {
+      recursive: true,
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const accepted: WorkerCanonicalEventRecord[] = [];
+    const writer = new WorkerTranscriptWriter({
+      lineage,
+      sessionDir,
+      appendEvent: async (record) => {
+        if (
+          record.event.type === 'observation.content.chunk' &&
+          record.event.data.chunkIndex === 0
+        ) {
+          entered.resolve();
+          await release.promise;
+        }
+        accepted.push(record);
+      },
+    });
+    const body = Buffer.alloc(RUNTIME_CONTENT_CHUNK_BYTES + 1, 97);
+    const write = writer.writeObservation(
+      {
+        observationId: 'obs_partial',
+        sourceRef: 'source_partial',
+        sourceSequence: 0,
+        observedAt: '2026-10-21T00:00:00.000Z',
+        fact: {
+          kind: 'assistant',
+          messageRef: 'msg_partial',
+          phase: 'completed',
+          representation: 'snapshot',
+          runtimeOriginRef: null,
+        },
+        content: {
+          boundary: 'runtime.assistant.text',
+          bytes: body.byteLength,
+          chunkCount: 2,
+          mediaType: 'text/plain',
+          sha256: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+          state: 'expected',
+        },
+      },
+      body
+    );
+    let ordinary: ReturnType<typeof writer.writeAndAppendEvent> | undefined;
+    try {
+      await Promise.race([
+        entered.promise,
+        write.then(() => {
+          throw new Error('The first capture chunk did not enter delivery.');
+        }),
+      ]);
+      writer.stopObservationDelivery();
+      ordinary = writer.writeAndAppendEvent({ type: 'worker.ready' });
+      expect(accepted.map((record) => record.sequence)).toEqual([0]);
+      release.resolve();
+      await write;
+      await ordinary;
+      expect(accepted.map((record) => [record.sequence, record.event.type])).toEqual([
+        [0, 'observation.recorded'],
+        [1, 'observation.content.chunk'],
+        [3, 'worker.ready'],
+      ]);
+      expect(writer.liveEventsIncomplete).toBe(true);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([write, ordinary]);
       rmSync(sessionDir, { recursive: true, force: true });
     }
   });

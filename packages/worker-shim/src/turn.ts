@@ -437,6 +437,7 @@ async function runResidentTurnImplementation(
         authoredVersion: packageManifest.agent?.runtimeVersion,
         credentialValues,
         emit: (record, body) => writer.writeObservation(record, body),
+        stopDelivery: () => writer.stopObservationDelivery(),
         packageSnapshotId: lineage.packageSnapshotId,
       },
       ...(provenanceDeclaration
@@ -937,7 +938,7 @@ async function writeAndReportTerminalOutcome(
   try {
     timeline.freeze();
     // Only closed vocabulary, allowlisted signals and bounded numbers enter the timeline; free-text redaction would corrupt numeric JSON.
-    if (input.status === 'failed') snapshot = timeline.seal();
+    if (input.status === 'failed' || timeline.has('host_settlement')) snapshot = timeline.seal();
   } catch {
     // Diagnostics are optional: retain the original terminal evidence and publication outcome.
   }

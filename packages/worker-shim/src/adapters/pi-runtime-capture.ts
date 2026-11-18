@@ -214,6 +214,11 @@ export class PiRuntimeCapture {
     this.pendingBytes = 0;
   }
 
+  /** Stops dispatch of queued observation chunks while the sink still owns an entered append. */
+  public stopDelivery(): void {
+    this.input.stopDelivery?.();
+  }
+
   /** Binds only the adapter-proved native file; a fresh allocation uses its known zero watermark. */
   public async bindFile(path: string, watermark?: number): Promise<void> {
     if (this.fileFailed) return;

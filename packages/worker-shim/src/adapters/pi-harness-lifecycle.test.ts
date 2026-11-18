@@ -179,7 +179,9 @@ function harnessFor(
     turnId: string,
     sequence: number,
     agentSessionId = 'as_00000000-0000-7f03-8682-76a52604a84a',
-    servers: string[] = []
+    servers: string[] = [],
+    capture: 'on' | 'off' = 'off',
+    threadId = 'th_00000000-0000-730e-88b8-d76794f39a2f'
   ) => {
     const config = join(sandboxRoot, 'sessions', agentSessionId, 'config');
     mkdirSync(config, { recursive: true });
@@ -232,13 +234,13 @@ function harnessFor(
             },
           ],
         },
-        observability: { captureCoverage: { scope: 'server', value: 'off' } },
+        observability: { captureCoverage: { scope: 'server', value: capture } },
         runtime: {
           command: { argv: ['openkit-worker-shim'], workingDirectory: sandboxRoot },
         },
         scope: {
           agentSessionId: agentSessionId,
-          threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+          threadId,
           turnId,
           workspaceId,
         },
@@ -256,7 +258,7 @@ function harnessFor(
       inferenceToken: credential(`inference-token-${turnId}`),
       leaseId: `lease-${turnId}`,
       packageSnapshotId: `package-${turnId}`,
-      threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+      threadId,
       turnId,
       turnSequence: sequence,
       workerControlToken: credential(`control-token-${turnId}`),
@@ -524,6 +526,124 @@ describe('Pi real Integration lifecycle', () => {
       ).toBe('succeeded');
       expect(observations.getResponses).toEqual([405, 405]);
       expect(f.capability.log.some((r) => r.httpMethod === 'GET')).toBe(false);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'posts a completed final over a slow capture sink and starts the queued admission',
+    async () => {
+      const f = await fixture((n) => ({ text: `answer-${n}` }));
+      cleanup.push(f.close);
+      const first = allocateEntityId('tu');
+      const second = allocateEntityId('tu');
+      const sessionId = allocateEntityId('as');
+      const held = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const releasedSlot = Promise.withResolvers<void>();
+      const write = WorkerTranscriptWriter.prototype.writeObservation;
+      const sink = vi
+        .spyOn(WorkerTranscriptWriter.prototype, 'writeObservation')
+        .mockImplementation(async function (this: WorkerTranscriptWriter, observation, body) {
+          await write.call(this, observation, body);
+          if (observation.fact.kind === 'origin' && observation.fact.phase === 'completed') {
+            entered.resolve();
+            await held.promise;
+          }
+        });
+      const queued = releasedSlot.promise.then(() => f.run(second, 1, sessionId));
+      void queued.catch(() => undefined);
+      try {
+        expect((await f.open(sessionId)).disposition).toBe('succeeded');
+        expect((await f.run(first, 0, sessionId, [], 'on')).disposition).toBe('succeeded');
+        await entered.promise;
+        expect(f.finalStatuses).toHaveLength(0);
+        expect(f.inference.requests).toHaveLength(1);
+        await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 12_000 });
+        expect(f.finalStatuses[0]).toMatchObject({
+          lineage: { turnId: first },
+          body: {
+            status: 'completed',
+            diagnostics: {
+              runtimeCapture: 'incomplete',
+              timeline: expect.stringContaining('"capture_drain"'),
+            },
+          },
+        });
+        await waitIdle(f, sessionId);
+        releasedSlot.resolve();
+        // The second Turn can use the live binding while the previous capture call is still held.
+        expect((await queued).disposition).toBe('succeeded');
+        held.resolve();
+        await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(2), { timeout: 5_000 });
+        expect(f.finalStatuses[1]).toMatchObject({
+          lineage: { turnId: second },
+          body: { status: 'completed' },
+        });
+      } finally {
+        held.resolve();
+        sink.mockRestore();
+      }
+    },
+    TIMEOUT
+  );
+
+  it(
+    'posts only a proved-stop failure for missing native settlement, then runs the queued admission',
+    async () => {
+      // Accelerate only the production watchdog in the real child. The first inference holds
+      // both the SDK prompt promise and its native terminal event.
+      const scaleWatchdog = `const real = globalThis.setTimeout;
+        globalThis.setTimeout = (callback, delay, ...args) =>
+          real(callback, delay === 900000 ? 2000 : delay, ...args);`;
+      const f = await fixture((n) => (n === 1 ? { hang: true } : { text: 'successor' }), {
+        hostCommand: [
+          process.execPath,
+          '--no-warnings',
+          '--import',
+          `data:text/javascript,${encodeURIComponent(scaleWatchdog)}`,
+          HOST_BIN,
+        ],
+      });
+      cleanup.push(f.close);
+      const first = allocateEntityId('tu');
+      const second = allocateEntityId('tu');
+      const sessionId = allocateEntityId('as');
+      const successor = allocateEntityId('as');
+      const successorThread = allocateEntityId('th');
+      const releasedSlot = Promise.withResolvers<void>();
+      const queued = releasedSlot.promise.then(async () => {
+        expect((await f.open(successor, null, successorThread)).disposition).toBe('succeeded');
+        return f.run(second, 0, successor, [], 'off', successorThread);
+      });
+      void queued.catch(() => undefined);
+      expect((await f.open(sessionId)).disposition).toBe('succeeded');
+      expect((await f.run(first, 0, sessionId)).disposition).toBe('succeeded');
+      const child = children.at(-1)!;
+      child.once('exit', () => f.events.push('timed-out-host-exit'));
+      await vi.waitFor(() => expect(f.inference.requests).toHaveLength(1), { timeout: 5_000 });
+      expect(f.finalStatuses).toHaveLength(0);
+      await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(1), { timeout: 6_000 });
+      expect(f.events.indexOf('timed-out-host-exit')).toBeGreaterThanOrEqual(0);
+      expect(f.events.indexOf('timed-out-host-exit')).toBeLessThan(f.events.indexOf('final'));
+      expect(f.finalStatuses[0]).toMatchObject({
+        lineage: { turnId: first },
+        body: {
+          status: 'failed',
+          diagnostics: {
+            failureCause: 'pi-terminal-correlation-failed',
+            timeline: expect.stringContaining('"host_settlement"'),
+          },
+        },
+      });
+      await waitIdle(f, sessionId);
+      releasedSlot.resolve();
+      expect((await queued).disposition).toBe('succeeded');
+      await vi.waitFor(() => expect(f.finalStatuses).toHaveLength(2), { timeout: 5_000 });
+      expect(f.finalStatuses[1]).toMatchObject({
+        lineage: { turnId: second },
+        body: { status: 'completed' },
+      });
     },
     TIMEOUT
   );

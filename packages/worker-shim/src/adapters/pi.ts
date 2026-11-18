@@ -53,6 +53,8 @@ const MCP_SERVER_ID = /^(?:_discovery|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
 const HANDLE_DIGEST = /^[0-9a-f]{64}$/;
 const HEADER_MAX_BYTES = 64 * 1024;
 const FAILED_REASONS = new Set<string>(PI_FAILED_REASONS);
+/** Gives observational capture the same allowance as the independent loopback drain. */
+const CAPTURE_DRAIN_MS = 10_000;
 /** Failure of the Pi adapter before or during a native operation. The message carries no secret. */
 export class PiAdapterError extends Error {
   /**
@@ -244,10 +246,11 @@ export function projectPiTurnSettlement(
   }
   if (status === 'failed') {
     const reason = typeof outcome?.reason === 'string' ? outcome.reason : '';
-    return failed(
-      FAILED_REASONS.has(reason) ? reason : 'pi-output-malformed',
-      FAILED_REASONS.has(reason)
-    );
+    const known = FAILED_REASONS.has(reason);
+    // A correlation failure with an unknown handle can carry a native watchdog expiry.
+    const stopRequired =
+      reason === 'pi-terminal-correlation-failed' && frame.nativeHandle.state === 'unknown';
+    return failed(known ? reason : 'pi-output-malformed', known && !stopRequired);
   }
   return failed('pi-output-malformed');
 }
@@ -774,8 +777,12 @@ export class PiResidentBinding implements WorkerResidentSession {
       this.#exitSeen = true;
       this.#exitCode = code;
       // Exit is not EOF. Keep the channel reader alive to inspect the complete buffered tail.
-      if (!this.#closing) this.#markLost();
-      else if (this.#turn) this.#failActive('pi-channel-lost');
+      const active = this.#turn;
+      if (active?.violated && active.stopReason === 'pi-terminal-correlation-failed') {
+        // Publish the watchdog failure after exit proof, before the generic host-exit race.
+        this.#failActive(active.stopReason, true);
+      } else if (!this.#closing) this.#markLost();
+      else if (active) this.#failActive('pi-channel-lost');
       this.#exitedResolve();
     });
   }
@@ -1345,6 +1352,7 @@ export class PiResidentBinding implements WorkerResidentSession {
       return;
     }
     active.applying = true;
+    this.#recordLifecycleFact?.({ label: 'host_settlement' });
     void this.#applySettlement(active, settled);
   }
 
@@ -1362,6 +1370,11 @@ export class PiResidentBinding implements WorkerResidentSession {
     });
     this.#nativeTerminal = projected.validEvidence;
     if (!projected.validEvidence) {
+      if (projected.stopReason === 'pi-terminal-correlation-failed') {
+        active.stopReason = projected.stopReason;
+        active.capture.stopDelivery();
+        this.#abandonCapture(active);
+      }
       await this.#stopActive(projected.stopReason);
       return;
     }
@@ -1390,13 +1403,23 @@ export class PiResidentBinding implements WorkerResidentSession {
       }
       await active.capture.finalize(projected.status, originalAssistantText);
     };
-    await Promise.race([
-      finishCapture().catch(() => {
-        active.collectionIncomplete = true;
-        active.capture.abandon();
-      }),
-      active.collectionCancelled,
-    ]);
+    const captureStarted = performance.now();
+    await piDeadline(
+      Promise.race([
+        finishCapture().catch(() => this.#abandonCapture(active)),
+        active.collectionCancelled,
+      ]),
+      CAPTURE_DRAIN_MS,
+      'Pi runtime capture drain timed out.'
+    ).catch(() => {
+      active.capture.stopDelivery();
+      this.#abandonCapture(active);
+    });
+    this.#recordLifecycleFact?.({
+      label: 'capture_drain',
+      durationMs: performance.now() - captureStarted,
+      reason: active.collectionIncomplete ? 'unknown' : 'completed',
+    });
     if (active.done || this.#turn !== active || active.violated) return;
     active.done = true;
     this.#lastTurnId = active.turnId;

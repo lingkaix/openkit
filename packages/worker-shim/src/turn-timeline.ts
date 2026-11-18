@@ -6,6 +6,8 @@ export const TURN_TIMELINE_LABELS = [
   'native_accepted',
   'native_first',
   'native_last',
+  'host_settlement',
+  'capture_drain',
   'transcript',
   'heartbeat',
   'reconnect',
@@ -148,6 +150,11 @@ export class TurnTimeline {
       entry.signal = signal;
     this.append(entry);
   });
+
+  /** Reports whether the recorder observed a marker for this Turn. */
+  public has(label: Entry['label']): boolean {
+    return this.entries.some((entry) => entry.label === label);
+  }
 
   /** Freezes observed facts even when snapshot construction fails; successful closeout needs no serialization. */
   public freeze(): void {

@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { AgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
 import { describe, expect, it, vi } from 'vitest';
 import type { HostEvent, HostResponse } from './channel.ts';
 import { PiRuntimeHost } from './host.ts';
@@ -109,6 +109,47 @@ describe('PiRuntimeHost lifecycle races', () => {
       await rm(directories.root, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it('fences a prompt with neither native settlement nor prompt return', async () => {
+    const directories = await createHostDirectories();
+    const { frames, host } = recorder();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    vi.spyOn(AgentSession.prototype, 'prompt').mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    try {
+      await host.receive(openLine(1, directories));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const running = host.receive(
+        JSON.stringify({ id: 2, op: 'turn', prompt: 'held', turnId: 'first' })
+      );
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      expect(frames.at(-1)).toMatchObject({
+        event: 'turn_settled',
+        turnId: 'first',
+        nativeHandle: { state: 'unknown' },
+        outcome: { reason: 'pi-terminal-correlation-failed', status: 'failed' },
+      });
+      await running;
+      await host.receive(JSON.stringify({ id: 3, op: 'inspect' }));
+      expect(frames.at(-1)).toMatchObject({ id: 3, result: { state: 'failed', turnId: null } });
+      release.resolve();
+      await Promise.resolve();
+      await host.receive(
+        JSON.stringify({ id: 4, op: 'turn', prompt: 'successor', turnId: 'second' })
+      );
+      expect(frames.at(-1)).toMatchObject({ id: 4, ok: false });
+    } finally {
+      release.resolve();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      await host.abandon();
+      await rm(directories.root, { recursive: true, force: true });
+    }
+  });
 
   it('does not prompt after native effort selection throws and fences the established binding', async () => {
     const directories = await createHostDirectories();

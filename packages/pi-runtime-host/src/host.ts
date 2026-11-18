@@ -55,6 +55,9 @@ import {
 /** The one adapter-owned provider alias every generated model descriptor uses. */
 export const PI_PROVIDER_ALIAS = 'openkit-worker-inference';
 
+/** Allows multi-step prompts while bounding a missing SDK settlement well inside the two-hour attempt. */
+const NATIVE_SETTLEMENT_MS = 15 * 60_000;
+
 /** Interactive Extension UI methods; confirmation allows and free-input prompts return undefined. */
 const UI_PROMPT_METHODS = ['select', 'confirm', 'input', 'editor', 'custom'] as const;
 /**
@@ -396,6 +399,7 @@ export class PiRuntimeHost {
     }
     let earlierEntries = new Set<string>();
     let promptFailed = false;
+    let settlementExpired = false;
     if (session && setupFailure === null && !cancelled(turn)) {
       // Compaction appends its entry without an `entry_appended` event, so the identities this
       // prompt produced are the compaction entries that were not in the graph before it.
@@ -426,11 +430,16 @@ export class PiRuntimeHost {
           this.#promptPending = false;
           unsubscribe();
         });
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        // The correlated loop boundary owns the outcome. A late prompt return or rejection
-        // only releases cleanup; it must not withhold or rewrite the terminal handoff.
-        await Promise.race([loopEnded, prompting]);
+        // The correlated loop boundary owns the outcome. Late prompt cleanup cannot rewrite it.
+        const expired = new Promise<true>((resolve) => {
+          timer = setTimeout(() => resolve(true), NATIVE_SETTLEMENT_MS);
+        });
+        settlementExpired = (await Promise.race([loopEnded, prompting, expired])) === true;
+        if (settlementExpired) turn.failure = 'pi-terminal-correlation-failed';
       } finally {
+        clearTimeout(timer);
         unsubscribe();
       }
     }
@@ -448,16 +457,19 @@ export class PiRuntimeHost {
     ) {
       outcome = { status: 'failed', reason: 'pi-output-malformed' };
     }
-    const compactionEntryIds = session
-      ? session.sessionManager
-          .getEntries()
-          .filter((entry) => entry.type === 'compaction' && !earlierEntries.has(entry.id))
-          .map((entry) => entry.id)
-      : [];
+    const compactionEntryIds =
+      session && !settlementExpired
+        ? session.sessionManager
+            .getEntries()
+            .filter((entry) => entry.type === 'compaction' && !earlierEntries.has(entry.id))
+            .map((entry) => entry.id)
+        : [];
     let nativeHandle: HostNativeHandle;
     try {
-      nativeHandle =
-        outcome.status === 'completed' && !established
+      // The timeout grants no native terminal or retaining proof. The supervisor stops this host.
+      nativeHandle = settlementExpired
+        ? { state: 'unknown' }
+        : outcome.status === 'completed' && !established
           ? await this.#promoteHandle(binding)
           : await this.#proveHandle(binding);
     } catch {
@@ -467,7 +479,7 @@ export class PiRuntimeHost {
     }
     // Native abort does not clear Pi 1.4's input queues. They belong to this exact work,
     // and must never become executable by a successor prompt or retained-handle resume.
-    session?.clearQueue();
+    if (!settlementExpired) session?.clearQueue();
     this.#turn = null;
     // A new conversation is reusable only after one completed Turn proved its handle. Any other
     // first result, and any identity or setup failure, fences the binding for exact close.

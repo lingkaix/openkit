@@ -72,6 +72,7 @@ export class WorkerTranscriptWriter {
   private liveQueue: Promise<void> = Promise.resolve();
   private readonly appendEvent: ((record: WorkerCanonicalEventRecord) => Promise<void>) | null;
   private eventsSealed = false;
+  private observationDeliveryStopped = false;
   private liveStopReason: Error | null = null;
   private liveIncomplete = false;
   private readonly lineage: WorkerLineage;
@@ -112,6 +113,12 @@ export class WorkerTranscriptWriter {
     this.liveStopReason ??= reason;
   }
 
+  /** Stops dispatch of further live observations and chunks without cancelling an entered append. */
+  public stopObservationDelivery(): void {
+    this.observationDeliveryStopped = true;
+    this.liveIncomplete = true;
+  }
+
   /**
    * Writes one worker event record and waits for configured live acceptance.
    *
@@ -134,6 +141,7 @@ export class WorkerTranscriptWriter {
     const appended = this.appendJsonl('events.jsonl', record);
     await this.enqueueLive(appended, async () => {
       await this.appendLive(record);
+      return true;
     });
     return record;
   }
@@ -185,16 +193,32 @@ export class WorkerTranscriptWriter {
         },
       });
     });
-    let appended = this.appendJsonl('events.jsonl', record);
-    if (body !== undefined) {
-      appended = this.appendJsonl(workerObservationSourceRelativePath(record.sequence), [
-        record,
-        ...chunks,
-      ]);
-    }
+    // Reserve the local position now. Decide metadata admission at its live queue's turn,
+    // before either transcript can retain it. Once admitted, the same owner joins its append.
+    const predecessor = this.liveQueue;
+    let admitted = false;
+    const metadata = this.appendJsonl('events.jsonl', record, async () => {
+      // Local I/O still settles if earlier live delivery failed.
+      await predecessor.catch(() => undefined);
+      admitted = !this.observationDeliveryStopped;
+      return admitted;
+    });
+    const appended =
+      body === undefined
+        ? metadata
+        : this.appendJsonl(
+            workerObservationSourceRelativePath(record.sequence),
+            [record, ...chunks],
+            () => admitted
+          );
     await this.enqueueLive(appended, async () => {
+      if (!admitted) return false;
       await this.appendLive(record);
-      for (const chunk of chunks) await this.appendLive(chunk);
+      for (const chunk of chunks) {
+        if (this.observationDeliveryStopped) return false;
+        await this.appendLive(chunk);
+      }
+      return true;
     });
   }
 
@@ -211,22 +235,23 @@ export class WorkerTranscriptWriter {
     throw this.liveStopReason;
   }
 
-  /** Joins local append settlement before reporting live acceptance or its original failure. */
-  private enqueueLive(appended: Promise<void>, operation: () => Promise<void>): Promise<void> {
+  /** Joins local append settlement before reporting delivery, suppression, or the original failure. */
+  private enqueueLive(appended: Promise<void>, operation: () => Promise<boolean>): Promise<void> {
     const enqueuedAt = performance.now();
+    let delivered = true;
     this.recordLifecycleFact?.({ label: 'transcript_enqueue' });
     // Observe both promises immediately. An earlier live rejection must not skip the
     // local append's settlement, leave its rejection unhandled, or replace the first failure.
-    this.liveQueue = Promise.allSettled([this.liveQueue, appended]).then(([live, local]) => {
+    this.liveQueue = Promise.allSettled([this.liveQueue, appended]).then(async ([live, local]) => {
       if (live.status === 'rejected') throw live.reason;
       if (local.status === 'rejected') throw local.reason;
-      return operation();
+      delivered = await operation();
     });
     // Observe rejection without recovering the delivery queue or changing its barrier.
     void this.liveQueue.then(
       () =>
         this.recordLifecycleFact?.({
-          label: 'transcript_delivered',
+          label: delivered ? 'transcript_delivered' : 'transcript_failed',
           durationMs: performance.now() - enqueuedAt,
         }),
       () => {
@@ -241,9 +266,9 @@ export class WorkerTranscriptWriter {
   }
 
   /**
-   * Waits for all already-queued live event acknowledgements; terminal sealing prevents later events from extending this barrier.
+   * Joins admitted live event acknowledgements. Terminal sealing prevents later events from extending this barrier.
    *
-   * @returns Promise that resolves only after every queued event has live acceptance.
+   * @returns Resolves after entered appends settle and queued capture suppression, if any, finishes.
    * @throws The deciding live-delivery error when an event was rejected.
    */
   public async drainLiveEvents(): Promise<void> {
@@ -294,14 +319,17 @@ export class WorkerTranscriptWriter {
    * Appends a JSONL record to the session directory.
    *
    * @param fileName Session file name.
-   * @param record Serializable record.
-   * @returns Promise that resolves after the record is appended.
+   * @param records Serializable record or restricted source records.
+   * @param admit Optional capture admission checked at the reserved queue position.
+   * @returns Promise that resolves after the append or its suppression.
    */
   private appendJsonl(
     fileName: string,
-    records: Record<string, unknown> | Record<string, unknown>[]
+    records: Record<string, unknown> | Record<string, unknown>[],
+    admit?: () => boolean | Promise<boolean>
   ): Promise<void> {
     this.appendQueue = this.appendQueue.then(async () => {
+      if (admit && !(await admit())) return;
       const path = join(this.sessionDir, fileName);
       const restricted = Array.isArray(records);
       const lines = (restricted ? records : [records]).map(

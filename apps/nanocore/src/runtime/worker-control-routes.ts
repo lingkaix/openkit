@@ -501,6 +501,9 @@ function observeControlRequest(
           lastWorkerSequence: lease?.lastWorkerSequence ?? null,
           deadlineAt: deadline,
           arrivedAt,
+          ...(operation === 'final_status' && status === 200
+            ? { acknowledgedAt: new Date().toISOString() }
+            : {}),
           deadlineDeltaMs: deadline ? Date.parse(arrivedAt) - Date.parse(deadline) : null,
           deadlineKind:
             lease && deadline

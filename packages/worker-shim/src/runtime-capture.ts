@@ -24,8 +24,10 @@ export interface RuntimeCaptureInput {
   readonly authoredVersion?: string | undefined;
   /** Known injected secret values, used only for rejection before transmission. */
   readonly credentialValues: readonly string[];
-  /** Resolves after Core accepts metadata and each restricted chunk, not after local buffering. */
+  /** Joins live acceptance of metadata and restricted chunks, including any append entered before delivery stops. */
   readonly emit: (record: RuntimeObservation, body?: Uint8Array) => Promise<void>;
+  /** Ends further runtime observation delivery after capture expires, preserving an entered append. */
+  readonly stopDelivery?: () => void;
 }
 
 /** Exact supervisor-owned publication stop; it proves neither receipt nor a native terminal outcome. */

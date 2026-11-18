@@ -1555,6 +1555,59 @@ describe('Pi controlled channel faults', () => {
     ).toBe(false);
   });
 
+  it('settles proved native work over a held capture sink and releases the next admission', async () => {
+    const { dirs, session } = await peer('ordinary');
+    const input = turnInput(dirs);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const accepted: RuntimeObservation[] = [];
+    let next: ReturnType<typeof session.startTurn> | undefined;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const turn = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value: 'on' },
+          emit: async (record) => {
+            if (record.fact.kind === 'origin' && record.fact.phase === 'completed') {
+              entered.resolve();
+              await release.promise;
+            }
+            accepted.push(record);
+          },
+        },
+      });
+      let result: Awaited<typeof turn.settled> | undefined;
+      next = turn.settled.then(async (settled) => {
+        result = settled;
+        return session.startTurn(turnInput(dirs, { turnId: allocateEntityId('tu') }));
+      });
+      await entered.promise;
+      const before = accepted.slice();
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(result).toMatchObject({
+        assistantText: 'answer',
+        status: 'completed',
+        diagnostics: { runtimeCapture: 'incomplete' },
+        nativeEvidence: { nativeTerminal: true },
+      });
+      expect(accepted).toEqual(before);
+      expect(await (await next).settled).toMatchObject({ status: 'completed' });
+      release.resolve();
+      await Promise.resolve();
+      expect(accepted.slice(before.length).map((record) => record.fact)).toEqual([
+        expect.objectContaining({ kind: 'origin', phase: 'completed' }),
+      ]);
+    } finally {
+      release.resolve();
+      vi.useRealTimers();
+      await next?.then((turn) => turn.settled).catch(() => undefined);
+      await session.close();
+    }
+  });
+
   it('landing settles interruption when capture-off finalization is held', async () => {
     const { dirs, session } = await peer('ordinary');
     const input = turnInput(dirs);
