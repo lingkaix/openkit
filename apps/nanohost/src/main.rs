@@ -51,8 +51,7 @@ use epoch_coordinator::{
 };
 use epoch_evidence::{
     AbsentEpochTrigger, EVIDENCE_ROOT, EpochEvidenceWriter, EpochInvalidationTrigger,
-    REBUILD_HARD_LIMIT, clear_fence_started, measure_fence_to_ready, observe_recovery,
-    record_fence_started,
+    REBUILD_HARD_LIMIT, measure_fence_to_ready,
 };
 use image_acquisition::BuildDefinition;
 use image_store::ImageStore;
@@ -78,10 +77,21 @@ fn is_definite_import_failure(command: &PolledEffectCommand, error: &str) -> boo
             || error == epoch_coordinator::REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE)
 }
 
-/// Only the storage owner's proved-clean seed refusal can settle without ending the Epoch.
+/// Only the storage owner's failures after proved cleanup can settle without ending the Epoch.
 fn is_definite_seed_failure(command: &PolledEffectCommand, error: &str) -> bool {
     command.kind == RuntimeEffectKind::CreateSandbox
-        && error == persistent_volume::IMAGE_SEED_REJECTED
+        && matches!(
+            error,
+            persistent_volume::IMAGE_SEED_REJECTED
+                | persistent_volume::IMAGE_SEED_COPY_FAILED
+                | persistent_volume::IMAGE_SEED_EXTRACTION_FAILED
+        )
+}
+
+/// Only complete create cleanup permits request-scoped failure without ending the Epoch.
+fn is_definite_create_failure(command: &PolledEffectCommand, error: &str) -> bool {
+    command.kind == RuntimeEffectKind::CreateSandbox
+        && error == epoch_coordinator::SANDBOX_CREATE_CLEANUP_PROVED_FAILURE
 }
 
 /// Parsed and verified NanoHost outer-session deployment inputs.
@@ -90,6 +100,8 @@ struct NanoHostSessionInputs {
     selection_context: CredentialSelectionContext,
     slot_paths: SlotPairPaths,
     transport: VerifiedSessionTransport,
+    /// Fixed marker owner; test fixtures bind it to their private root.
+    rebuild_marker: PathBuf,
 }
 
 /// Delay between failed successor connection attempts.
@@ -168,6 +180,7 @@ fn parse_nanohost_session_inputs(
     let transport = nanocore_session::prepare_verified_session_transport(&rendezvous_url, &trust)
         .map_err(|_| "nanohost rendezvous or trust input invalid")?;
     Ok(NanoHostSessionInputs {
+        rebuild_marker: PathBuf::from(epoch_evidence::REBUILD_FENCE_STARTED_PATH),
         rendezvous_url,
         selection_context: CredentialSelectionContext {
             identity_id,
@@ -526,7 +539,12 @@ fn execute_effect_command(
                     storage_mounts,
                     None,
                 )
-                .map_err(|_| "lifecycle effect failed")?;
+                .map_err(|error| match error {
+                    openshell_client::LifecycleEffectError::CreateCleanupProved => {
+                        epoch_coordinator::SANDBOX_CREATE_CLEANUP_PROVED_FAILURE
+                    }
+                    openshell_client::LifecycleEffectError::Epoch(_) => "lifecycle effect failed",
+                })?;
             let mut result = sandbox_lifecycle_result(command.kind, sandbox_id, state);
             if let Some(storage) = storage_attachment {
                 let inspection = coordinator
@@ -834,6 +852,91 @@ fn clear_pending_after_failure(
     }
 }
 
+/// Prepares one fresh process attempt after the supervisor proves its predecessor absent.
+///
+/// # Errors
+///
+/// Returns a bounded error if recovery observation, evidence, timing, or root cleanup fails.
+fn prepare_epoch_rebuild(
+    state_root: &Path,
+    run_root: &Path,
+    marker: &Path,
+    evidence: &mut EpochEvidenceWriter,
+    now: SystemTime,
+) -> Result<(Option<SystemTime>, tokio::time::Instant), &'static str> {
+    let recovery = epoch_evidence::observe_recovery_at(state_root, marker)
+        .map_err(|_| "nanohost recovery observation failed")?;
+    let elapsed = recovery
+        .fence_started
+        .map(|started| now.duration_since(started))
+        .transpose()
+        .map_err(|_| "epoch rebuild hard bound exceeded")?;
+    let expired = elapsed.is_some_and(|elapsed| elapsed > REBUILD_HARD_LIMIT);
+    let mut fence_started = recovery.fence_started;
+    let prior_epochs = if expired {
+        Some(recovery.prior_epoch_names.join(","))
+    } else {
+        recovery.absent_prior_epochs.clone()
+    };
+    if let Some(prior_epochs) = prior_epochs {
+        if fence_started.is_none() {
+            epoch_evidence::record_fence_started_at(marker, now)
+                .map_err(|_| "nanohost recovery measurement unavailable")?;
+            fence_started = Some(now);
+        }
+        let residual_inventory = format!(
+            "processes=0 roots={} networks=0 sockets=0 sandboxes=0",
+            recovery.residual_roots
+        );
+        let fence = if expired {
+            let elapsed_ms = elapsed
+                .expect("expired marker has elapsed time")
+                .as_millis();
+            eprintln!("nanohost epoch rebuild hard bound exceeded elapsed_ms={elapsed_ms}");
+            format!(
+                "supervisor-start-boundary-proved rebuild_hard_bound_exceeded=true elapsed_ms={elapsed_ms}"
+            )
+        } else {
+            "supervisor-start-boundary-proved".to_owned()
+        };
+        evidence
+            .export_absent_disposition(
+                AbsentEpochTrigger::NanoHostCrash,
+                &[
+                    ("classification", "nanohost-absent"),
+                    ("prior_epoch", prior_epochs.as_str()),
+                    ("residual_inventory", residual_inventory.as_str()),
+                    ("fence", fence.as_str()),
+                ],
+                Instant::now(),
+            )
+            .map_err(|_| "nanohost prior-epoch disposition unavailable")?;
+    }
+    // A missed interval remains a measured violation. Only a proved process-start
+    // boundary can preserve its roots and start another bounded fresh attempt.
+    let mut startup_deadline = tokio::time::Instant::now() + STARTUP_READINESS_HARD_LIMIT;
+    if expired {
+        recovery
+            .custody_prior_epoch_roots(state_root, run_root)
+            .map_err(|_| "nanohost prior-epoch custody failed")?;
+        epoch_evidence::clear_fence_started_at(marker)
+            .and_then(|()| epoch_evidence::record_fence_started_at(marker, now))
+            .map_err(|_| "nanohost recovery measurement unavailable")?;
+        fence_started = Some(now);
+    } else {
+        if let Some(elapsed) = elapsed {
+            let remaining = REBUILD_HARD_LIMIT
+                .checked_sub(elapsed)
+                .ok_or("epoch rebuild hard bound exceeded")?;
+            startup_deadline = startup_deadline.min(tokio::time::Instant::now() + remaining);
+        }
+        recovery
+            .remove_prior_epoch_roots(state_root, run_root)
+            .map_err(|_| "nanohost prior-epoch cleanup failed")?;
+    }
+    Ok((fence_started, startup_deadline))
+}
+
 /// Runs one fixed V1 Docker Runtime Epoch until a member exits.
 ///
 /// # Errors
@@ -856,47 +959,13 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         .map_err(|_| "nanohost resolver source invalid")?;
     let mut evidence = EpochEvidenceWriter::new(PathBuf::from(EVIDENCE_ROOT))
         .map_err(|_| "nanohost evidence root unavailable")?;
-    let recovery = observe_recovery(Path::new("/var/lib/openkit/nanohost"))
-        .map_err(|_| "nanohost recovery observation failed")?;
-    let mut fence_started = recovery.fence_started;
-    if let Some(prior_epochs) = &recovery.absent_prior_epochs {
-        let observed_fence = SystemTime::now();
-        record_fence_started(observed_fence)
-            .map_err(|_| "nanohost recovery measurement unavailable")?;
-        fence_started = Some(observed_fence);
-        let residual_inventory = format!(
-            "processes=0 roots={} networks=0 sockets=0 sandboxes=0",
-            recovery.residual_roots
-        );
-        evidence
-            .export_absent_disposition(
-                AbsentEpochTrigger::NanoHostCrash,
-                &[
-                    ("classification", "nanohost-absent"),
-                    ("prior_epoch", prior_epochs.as_str()),
-                    ("residual_inventory", residual_inventory.as_str()),
-                    ("fence", "supervisor-start-boundary-proved"),
-                ],
-                Instant::now(),
-            )
-            .map_err(|_| "nanohost prior-epoch disposition unavailable")?;
-    }
-    // Refuse an expired fence before cleanup: the failed epoch is operator-recovery evidence.
-    let mut startup_deadline = tokio::time::Instant::now() + STARTUP_READINESS_HARD_LIMIT;
-    if let Some(started) = fence_started {
-        let remaining = SystemTime::now()
-            .duration_since(started)
-            .ok()
-            .and_then(|elapsed| REBUILD_HARD_LIMIT.checked_sub(elapsed))
-            .ok_or("epoch rebuild hard bound exceeded")?;
-        startup_deadline = startup_deadline.min(tokio::time::Instant::now() + remaining);
-    }
-    recovery
-        .remove_prior_epoch_roots(
-            Path::new("/var/lib/openkit/nanohost"),
-            Path::new("/run/openkit/nanohost"),
-        )
-        .map_err(|_| "nanohost prior-epoch cleanup failed")?;
+    let (fence_started, startup_deadline) = prepare_epoch_rebuild(
+        Path::new("/var/lib/openkit/nanohost"),
+        Path::new("/run/openkit/nanohost"),
+        &session_inputs.rebuild_marker,
+        &mut evidence,
+        SystemTime::now(),
+    )?;
     let mut image_store = Some(match ImageStore::open_fixed() {
         Ok(image_store) => image_store,
         Err(_) => {
@@ -1106,10 +1175,22 @@ async fn run_sessions(
                         terminal_connect("outer-session startup hard bound exceeded").into(),
                     );
                 }
-                Err(_reason) if reconnect_after.is_some() => {
-                    // Core unavailability cannot invalidate an already-admitted healthy epoch.
+                Err(reason)
+                    if reconnect_after.is_some()
+                        || (initial_startup_deadline.is_some()
+                            && reason == "nanohost NanoCore rendezvous failed") =>
+                {
+                    // Initial refusal cannot outlive startup; a healthy successor
+                    // retains its existing delay even after a timed-out connect.
+                    let retry_deadline =
+                        tokio::time::Instant::now() + OUTER_SESSION_RECONNECT_DELAY;
+                    let retry_deadline = if initial_startup_deadline.is_some() {
+                        retry_deadline.min(startup_deadline)
+                    } else {
+                        retry_deadline
+                    };
                     tokio::select! {
-                        () = tokio::time::sleep(OUTER_SESSION_RECONNECT_DELAY) => {}
+                        () = tokio::time::sleep_until(retry_deadline) => {}
                         fault = coordinator.wait() => {
                             return Err(attach_member_failure(
                                 terminal_connect("nanohost epoch member failed"),
@@ -1166,8 +1247,8 @@ async fn run_sessions(
                     &mut coordinator,
                     &mut fence_started,
                     &mut initial_startup_deadline,
-                    clear_fence_started,
-                    record_fence_started,
+                    || epoch_evidence::clear_fence_started_at(&session_inputs.rebuild_marker),
+                    |started| epoch_evidence::record_fence_started_at(&session_inputs.rebuild_marker, started),
                 );
                 let coordinator = &mut coordinator;
                 let pending_result = &mut pending_result;
@@ -1334,6 +1415,7 @@ async fn run_sessions(
                                 Err(_error)
                                     if is_definite_import_failure(&command, _error)
                                         || is_definite_seed_failure(&command, _error)
+                                        || is_definite_create_failure(&command, _error)
                                         || matches!(
                                         command.kind,
                                         RuntimeEffectKind::AcquireImage
@@ -1591,6 +1673,9 @@ mod openshell_upgrade_tests;
 mod startup_tls_tests;
 
 #[cfg(test)]
+mod epoch_rebuild_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
@@ -1705,7 +1790,10 @@ mod tests {
         .collect()
     }
 
-    fn loopback_session_inputs(root: &std::path::Path, url: &str) -> super::NanoHostSessionInputs {
+    pub(super) fn loopback_session_inputs(
+        root: &std::path::Path,
+        url: &str,
+    ) -> super::NanoHostSessionInputs {
         use crate::credential_slots::{
             CredentialSlot, SlotPairPaths, SlotWriteMaterial, write_credential_slot,
         };
@@ -1739,6 +1827,7 @@ mod tests {
         )
         .unwrap();
         super::NanoHostSessionInputs {
+            rebuild_marker: root.join("fence-started"),
             transport: prepare_verified_session_transport(url, &TlsTrustMaterial::Platform)
                 .unwrap(),
             rendezvous_url: url.to_string(),
@@ -1770,12 +1859,280 @@ mod tests {
         }
     }
 
+    /// Proved native create cleanup settles once and retains the same healthy transport session.
+    #[test]
+    fn create_failure_keeps_session_only_after_proved_cleanup() {
+        crate::openshell_client::tests::on_create_fixture_stack(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    use crate::epoch_coordinator::{EpochCoordinator, EpochFault};
+                    use crate::openshell_client::tests::create_gateway_fixture;
+                    use tokio::net::TcpListener;
+
+                    for case in [
+                        "error-phase",
+                        "invalid-argument",
+                        "invalid-argument-delete-not-found",
+                        "failed-precondition",
+                        "resource-exhausted",
+                        "delete-unproved",
+                        "absence-error",
+                        "delete-not-found-unproved",
+                        "unavailable",
+                        "deadline",
+                        "aborted",
+                        "already-exists",
+                        "invalid-response",
+                        "wrong-name",
+                        "wrong-id",
+                        "wrong-error-id",
+                        "wrong-pending-name",
+                        "observation-unproved",
+                    ] {
+                        let clean = matches!(
+                            case,
+                            "error-phase"
+                                | "invalid-argument"
+                                | "invalid-argument-delete-not-found"
+                                | "failed-precondition"
+                                | "resource-exhausted"
+                        );
+                        let root = std::env::temp_dir().join(format!(
+                            "nanohost-create-session-{}-{case}",
+                            std::process::id()
+                        ));
+                        std::fs::create_dir_all(&root).unwrap();
+                        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                        let inputs = loopback_session_inputs(
+                            &root,
+                            &format!("http://{}", listener.local_addr().unwrap()),
+                        );
+                        let (client, gateway) = create_gateway_fixture(case).await;
+                        let (mut coordinator, worktree) = EpochCoordinator::collection_fixture(&root);
+                        let layout = crate::persistent_volume::tests::stored_layout();
+                        let storage = coordinator.inspect_storage("storage-one", 1);
+                        coordinator.fixture_storage_layout = Some(layout.clone());
+                        coordinator.fixture_gateway(client);
+                        let reports = coordinator.fixture_invalidation_reports(&root);
+                        let members = coordinator.fixture_invalidation_requester();
+                        std::fs::write(worktree.join("retained"), b"retained Worker bytes").unwrap();
+                        let (continued_tx, continued_rx) = tokio::sync::oneshot::channel();
+                        let mut peer = tokio::spawn(async move {
+                            let (socket, _) = listener.accept().await.unwrap();
+                            let mut connection = h2::server::handshake(socket).await.unwrap();
+                            let mut command_issued = false;
+                            let mut result_seen = false;
+                            let mut followup_create_poll = false;
+                            let mut continued = Some(continued_tx);
+                            while let Some(request) = connection.accept().await {
+                                let (request, mut respond) = request.unwrap();
+                                let path = request.uri().path().to_string();
+                                let mut body = request.into_body();
+                                let mut bytes = Vec::new();
+                                while let Some(chunk) = body.data().await {
+                                    let chunk = chunk.unwrap();
+                                    body.flow_control().release_capacity(chunk.len()).unwrap();
+                                    bytes.extend_from_slice(&chunk);
+                                }
+                                let payload = if path.ends_with("/session/admit") {
+                                    Some(
+                                        serde_json::json!({"connectionGeneration": 1, "deploymentId": "deployment-main",
+                                        "identityId": "integration_nanohost_main", "mayCarryWork": true, "role": "authoritative"}),
+                                    )
+                                } else if path.ends_with("/sandbox.create/result") {
+                                    assert!(
+                                        clean,
+                                        "uncertain create cannot publish a definite result: {case}"
+                                    );
+                                    assert!(!result_seen, "exactly one failed-create result");
+                                    assert_eq!(
+                                        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                                        serde_json::json!({"requestId": "a".repeat(64), "failureCode": "effect_failed"})
+                                    );
+                                    result_seen = true;
+                                    None
+                                } else if path.ends_with("/sandbox.create") && !command_issued {
+                                    command_issued = true;
+                                    let fixture: serde_json::Value =
+                                        serde_json::from_str(include_str!("core-effect-command-fixture.json"))
+                                            .unwrap();
+                                    let mut command = fixture
+                                        .as_array()
+                                        .unwrap()
+                                        .iter()
+                                        .find(|entry| entry["kind"] == "sandbox.create")
+                                        .unwrap()["command"]
+                                        .clone();
+                                    command["sandboxId"] = serde_json::json!("sandbox-one");
+                                    command["storage"] = serde_json::json!({"storageRef": "storage-one",
+                                        "scopeDigest": storage["scopeDigest"], "attachmentGeneration": 1,
+                                        "layoutDigest": layout.layout_digest(),
+                                        "targets": [{"target": "/workspace", "volumeRef": "storage-one-volume"}]});
+                                    Some(command)
+                                } else {
+                                    if result_seen && path.ends_with("/sandbox.create") {
+                                        followup_create_poll = true;
+                                    } else if result_seen
+                                        && followup_create_poll
+                                        && let Some(tx) = continued.take()
+                                    {
+                                        let _ = tx.send(());
+                                    }
+                                    None
+                                };
+                                let response = http::Response::builder()
+                                    .status(if payload.is_some() { 200 } else { 204 })
+                                    .header(
+                                        crate::nanocore_session::NANOHOST_TRANSPORT_REVISION_HEADER,
+                                        crate::nanocore_session::NANOHOST_TRANSPORT_REVISION.trim(),
+                                    )
+                                    .body(())
+                                    .unwrap();
+                                let mut stream = respond.send_response(response, payload.is_none()).unwrap();
+                                if let Some(payload) = payload {
+                                    stream
+                                        .send_data(
+                                            bytes::Bytes::from(serde_json::to_vec(&payload).unwrap()),
+                                            true,
+                                        )
+                                        .unwrap();
+                                }
+                            }
+                        });
+                        let host = super::run_sessions(
+                            inputs,
+                            coordinator,
+                            None,
+                            tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT,
+                        );
+                        tokio::pin!(host);
+                        if clean {
+                            tokio::select! {
+                                biased;
+                                result = &mut peer => { result.expect("Core peer assertions"); panic!("Core peer ended"); }
+                                result = &mut host => {
+                                    let failure = result.unwrap_err();
+                                    let observed: Vec<serde_json::Value> = std::fs::read_dir(&reports).unwrap()
+                                        .map(|entry| serde_json::from_slice(&std::fs::read(entry.unwrap().path()).unwrap()).unwrap())
+                                        .collect();
+                                    let expected_loss = if case == "error-phase" { "ready-error-phase" } else { "create-request-unproved" };
+                                    assert!(observed.iter().any(|report| report["fields"]["certainty_loss"] == expected_loss),
+                                        "the intended native create failure must precede Host termination");
+                                    panic!("proved-clean create ended Host for {case}: observed_create_loss={expected_loss} {failure}");
+                                },
+                                continued = tokio::time::timeout(Duration::from_secs(5), continued_rx) => continued.expect("continued poll").unwrap(),
+                            }
+                            assert!(!root.join("fence-started").exists());
+                            // This is the real retained store after detach, not the create return value.
+                            let store = crate::persistent_volume::tests::test_store(&root.join("volumes"));
+                            let inspection = store.inspect("storage-one", 1);
+                            assert_eq!(inspection["state"], "available");
+                            assert_eq!(inspection["attachment"], serde_json::Value::Null);
+                            members.send(Some(EpochFault::MemberExited(None))).unwrap();
+                        }
+                        let outcome = tokio::time::timeout(Duration::from_secs(5), &mut host)
+                            .await
+                            .unwrap()
+                            .unwrap_err();
+                        peer.abort();
+                        if let Err(error) = peer.await {
+                            assert!(error.is_cancelled(), "Core peer assertions: {error}");
+                        }
+                        gateway.peer.abort();
+                        if let Err(error) = gateway.peer.await {
+                            assert!(error.is_cancelled(), "Gateway peer assertions: {error}");
+                        }
+                        let super::NanoHostRunFailure::OuterSession(failure) = outcome else {
+                            panic!("outer failure expected")
+                        };
+                        assert_eq!(
+                            failure.disposition(),
+                            crate::nanocore_session::OuterSessionDisposition::Terminal
+                        );
+                        assert!(
+                            root.join("fence-started").exists(),
+                            "terminal create must fence"
+                        );
+                        assert_eq!(
+                            std::fs::read(worktree.join("retained")).unwrap(),
+                            b"retained Worker bytes"
+                        );
+                        if matches!(
+                            case,
+                            "delete-unproved" | "absence-error" | "delete-not-found-unproved"
+                        ) {
+                            // Runtime spec "Redacted contents and bounds": unknown create cleanup
+                            // keeps the original bounded request lineage rather than erasing it.
+                            let reports: Vec<serde_json::Value> = std::fs::read_dir(&reports)
+                                .unwrap()
+                                .map(|entry| {
+                                    serde_json::from_slice(&std::fs::read(entry.unwrap().path()).unwrap())
+                                        .unwrap()
+                                })
+                                .collect();
+                            assert_eq!(reports.len(), 1);
+                            assert_eq!(reports[0]["fields"]["operation"], "sandbox.create");
+                            assert_eq!(reports[0]["fields"]["sandbox"], "sandbox-one");
+                            assert_eq!(reports[0]["fields"]["attempt"], "a".repeat(64));
+                            assert_eq!(
+                                reports[0]["fields"]["certainty_loss"],
+                                if case == "delete-not-found-unproved" {
+                                    "create-request-unproved"
+                                } else {
+                                    "ready-error-phase"
+                                }
+                            );
+                        }
+                        let calls = gateway.calls.lock().unwrap();
+                        assert_eq!(
+                            calls
+                                .iter()
+                                .filter(|(method, _)| method == "CreateSandbox")
+                                .count(),
+                            1
+                        );
+                        let deletes: Vec<_> = calls
+                            .iter()
+                            .filter(|(method, _)| method == "DeleteSandbox")
+                            .collect();
+                        assert_eq!(
+                            deletes.len(),
+                            usize::from(
+                                clean
+                                    || matches!(
+                                        case,
+                                        "delete-unproved" | "absence-error" | "delete-not-found-unproved"
+                                    )
+                            )
+                        );
+                        if let Some((_, request)) = deletes.first() {
+                            let name = b"sandbox-one";
+                            let mut exact = vec![0, 0, 0, 0, (name.len() + 2) as u8, 0x0a, name.len() as u8];
+                            exact.extend_from_slice(name);
+                            assert_eq!(*request, exact, "delete must use the exact expected name");
+                        }
+                        drop(calls);
+                        std::fs::remove_dir_all(&root).unwrap();
+                    }
+                });
+        });
+    }
+
     /// A clean seed refusal settles once and continues; cleanup uncertainty still fences the Host.
     #[tokio::test]
     async fn seed_refusal_keeps_the_session_only_after_proved_cleanup() {
         use tokio::net::TcpListener;
 
-        for clean in [true, false] {
+        for (clean, storage_error) in [
+            (true, crate::persistent_volume::IMAGE_SEED_REJECTED),
+            (true, "private Docker seed copy failed"),
+            (true, "private Docker seed extraction failed"),
+            (false, "persistent storage seed cleanup uncertain"),
+        ] {
             let root = std::env::temp_dir().join(format!(
                 "nanohost-seed-session-{}-{clean}",
                 std::process::id()
@@ -1788,11 +2145,7 @@ mod tests {
             );
             let (mut coordinator, _) =
                 crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root);
-            coordinator.fixture_storage_failure = Some(if clean {
-                crate::persistent_volume::IMAGE_SEED_REJECTED
-            } else {
-                "persistent storage seed cleanup uncertain"
-            });
+            coordinator.fixture_storage_failure = Some(storage_error);
             coordinator.fixture_invalidation_reports(&root);
             let members = coordinator.fixture_invalidation_requester();
             let (continued_tx, continued_rx) = tokio::sync::oneshot::channel();
@@ -1981,6 +2334,7 @@ mod tests {
         );
         let url = format!("https://{address}");
         let inputs = super::NanoHostSessionInputs {
+            rebuild_marker: root.0.join("fence-started"),
             transport: prepare_verified_session_transport(&url, &TlsTrustMaterial::Platform)
                 .unwrap(),
             rendezvous_url: url,
@@ -2096,6 +2450,7 @@ mod tests {
         )
         .unwrap();
         let inputs = super::NanoHostSessionInputs {
+            rebuild_marker: root.0.join("fence-started"),
             transport: prepare_verified_session_transport(&url, &TlsTrustMaterial::Platform)
                 .unwrap(),
             rendezvous_url: url,
@@ -2750,6 +3105,14 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("main production section");
+        let rebuild = production
+            .split_once("fn prepare_epoch_rebuild(")
+            .expect("epoch rebuild preparation owner")
+            .1
+            .split_once("async fn run()")
+            .expect("end of epoch rebuild preparation")
+            .0;
+        assert!(rebuild.contains("epoch_evidence::observe_recovery_at("));
         let run = production
             .split_once("fn run()")
             .expect("NanoHost run path")
@@ -2770,7 +3133,9 @@ mod tests {
         let evidence = run
             .find("EpochEvidenceWriter::new")
             .expect("private evidence writer");
-        let recovery = run.find("observe_recovery(").expect("recovery observation");
+        let recovery = run
+            .find("prepare_epoch_rebuild(")
+            .expect("recovery observation");
         let image_store = run.find("ImageStore::open").expect("Image Store open");
         let plan = run.find("EpochPlan::fresh").expect("Runtime Epoch plan");
         let image_backend = run
@@ -3206,8 +3571,16 @@ mod tests {
             .expect("end of rendezvous connect handling")
             .0;
         assert!(connect.contains("connect_verified_session_transport("));
-        assert!(connect.contains("Err(_reason) if reconnect_after.is_some()"));
-        assert!(connect.contains("tokio::time::sleep(OUTER_SESSION_RECONNECT_DELAY)"));
+        assert!(
+            connect.contains("if reconnect_after.is_some()")
+                && connect.contains("|| (initial_startup_deadline.is_some()")
+                && connect.contains("&& reason == \"nanohost NanoCore rendezvous failed\"")
+        );
+        let retry_timer = connect.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            retry_timer.contains("let retry_deadline = tokio::time::Instant::now() + OUTER_SESSION_RECONNECT_DELAY; let retry_deadline = if initial_startup_deadline.is_some() { retry_deadline.min(startup_deadline) } else { retry_deadline };")
+                && connect.contains("tokio::time::sleep_until(retry_deadline)")
+        );
         assert!(connect.contains("Err(reason) =>"));
         assert!(connect.contains("OuterSessionFailure::terminal("));
         assert!(connect.contains("OuterSessionStage::Connect"));
@@ -3372,28 +3745,6 @@ mod tests {
         assert!(startup[gateway_connected..].contains("terminate_children"));
     }
 
-    /// Refuses an expired fence before the normal prior-epoch cleanup can delete its evidence.
-    #[test]
-    fn prior_epoch_cleanup_follows_the_rebuild_hard_bound_check() {
-        let run_source = include_str!("main.rs")
-            .split_once("fn run()")
-            .expect("NanoHost run path")
-            .1
-            .split_once("fn main()")
-            .expect("end of NanoHost run path")
-            .0;
-        let hard_bound = run_source
-            .find("\"epoch rebuild hard bound exceeded\"")
-            .expect("rebuild hard-bound check");
-        let prior_epoch_cleanup = run_source
-            .find("remove_prior_epoch_roots(")
-            .expect("prior epoch cleanup");
-        assert!(
-            hard_bound < prior_epoch_cleanup,
-            "an expired fence must be refused before prior epoch cleanup deletes the failed epoch"
-        );
-    }
-
     #[test]
     fn readiness_accepts_an_empty_image_store_without_acquisition() {
         let main_source = include_str!("main.rs")
@@ -3404,6 +3755,14 @@ mod tests {
             .split("\n#[cfg(test)]\nmod tests")
             .next()
             .expect("coordinator production section");
+        let rebuild = main_source
+            .split_once("fn prepare_epoch_rebuild(")
+            .expect("epoch rebuild preparation owner")
+            .1
+            .split_once("async fn run()")
+            .expect("end of epoch rebuild preparation")
+            .0;
+        assert!(rebuild.contains("remove_prior_epoch_roots("));
         let run_source = main_source
             .split_once("fn run()")
             .expect("NanoHost run path")
@@ -3412,7 +3771,7 @@ mod tests {
             .expect("end of NanoHost run path")
             .0;
         let prior_epoch_cleanup = run_source
-            .find("remove_prior_epoch_roots(")
+            .find("prepare_epoch_rebuild(")
             .expect("prior epoch cleanup");
         let store_open = run_source
             .find("ImageStore::open")

@@ -65,7 +65,7 @@ const READY_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 enum ReadinessFailure {
     /// The observation lost certainty at one closed point.
     Uncertain(CreateCertaintyLossPoint),
-    /// A Ready identity differed from the accepted create identity.
+    /// An observed identity differed from the accepted create identity.
     IdentityMismatch,
 }
 
@@ -79,10 +79,10 @@ fn classify_ready_observation(
     let (phase, observed_id, observed_name) = observation.map_err(|()| {
         ReadinessFailure::Uncertain(CreateCertaintyLossPoint::ReadyObservationUnproved)
     })?;
+    if observed_id != accepted_id || observed_name != accepted_name {
+        return Err(ReadinessFailure::IdentityMismatch);
+    }
     match phase {
-        SandboxPhase::Ready if observed_id != accepted_id || observed_name != accepted_name => {
-            Err(ReadinessFailure::IdentityMismatch)
-        }
         SandboxPhase::Ready => Ok(true),
         SandboxPhase::Error => Err(ReadinessFailure::Uncertain(
             CreateCertaintyLossPoint::ReadyErrorPhase,
@@ -312,9 +312,26 @@ impl LifecycleEffectRequest {
     }
 }
 
+/// Separates native absence after a failed create from an Epoch-invalidating fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleEffectError {
+    /// The existing fail-stop fault still owns the complete Epoch.
+    Epoch(EpochFault),
+    /// Native absence is proved; the coordinator exposes this only after credential and attachment cleanup.
+    CreateCleanupProved,
+}
+
+impl From<EpochFault> for LifecycleEffectError {
+    fn from(fault: EpochFault) -> Self {
+        Self::Epoch(fault)
+    }
+}
+
 /// Direct result of one existing OpenShell lifecycle owner.
 #[allow(dead_code)]
 pub enum LifecycleEffectResult {
+    /// Failed creation after exact native Sandbox absence; coordinator cleanup is still required.
+    SandboxCreateFailed,
     /// Exact created sandbox identity returned by OpenShell.
     SandboxCreated(SandboxRef),
     /// Definite sandbox deletion and terminal absence.
@@ -909,15 +926,15 @@ impl NanoHostOpenShellClient {
     ///
     /// # Errors
     ///
-    /// Returns one bounded create certainty-loss point, or identity mismatch
-    /// when the accepted sandbox does not match the requested name.
+    /// Returns proved native cleanup for a definite create failure. Identity mismatch,
+    /// ambiguous creation, and unproved cleanup remain Epoch faults.
     pub async fn create_sandbox(
         &self,
         spec: SandboxSpec,
         policy: SandboxPolicy,
         attempt_lineage: &str,
         storage_mounts: &[StorageMount],
-    ) -> Result<SandboxRef, EpochFault> {
+    ) -> Result<SandboxRef, LifecycleEffectError> {
         let started = Instant::now();
         let expected_name = spec
             .name
@@ -926,7 +943,7 @@ impl NanoHostOpenShellClient {
             .ok_or(EpochFault::IdentityMismatch)?
             .to_string();
         if attempt_lineage.is_empty() {
-            return Err(EpochFault::IdentityMismatch);
+            return Err(EpochFault::IdentityMismatch.into());
         }
         let uncertain = |certainty_loss| {
             EpochFault::CreateOutcomeUncertain(CreateUncertainty::new(
@@ -958,25 +975,53 @@ impl NanoHostOpenShellClient {
             annotations: HashMap::new(),
             workspace: String::new(),
         };
-        let sandbox = client
-            .raw_grpc()
-            .create_sandbox(request)
-            .await
-            .map_err(|_| uncertain(CreateCertaintyLossPoint::CreateRequestUnproved))?
-            .into_inner()
-            .sandbox
-            .and_then(|sandbox| sandbox.metadata)
-            .ok_or_else(|| uncertain(CreateCertaintyLossPoint::CreateResponseInvalid))?;
+        let response = client.raw_grpc().create_sandbox(request).await;
+        let sandbox = match response {
+            Ok(response) => response,
+            // These statuses reject the request before an accepted identity. A status
+            // alone never proves absence; exact deletion below must also settle.
+            Err(status)
+                if matches!(
+                    status.code(),
+                    tonic::Code::InvalidArgument
+                        | tonic::Code::FailedPrecondition
+                        | tonic::Code::ResourceExhausted
+                ) =>
+            {
+                return Err(self
+                    .failed_create_after_absence(
+                        &expected_name,
+                        uncertain(CreateCertaintyLossPoint::CreateRequestUnproved),
+                    )
+                    .await);
+            }
+            Err(_) => return Err(uncertain(CreateCertaintyLossPoint::CreateRequestUnproved).into()),
+        }
+        .into_inner()
+        .sandbox
+        .and_then(|sandbox| sandbox.metadata)
+        .ok_or_else(|| uncertain(CreateCertaintyLossPoint::CreateResponseInvalid))?;
         if sandbox.id.is_empty() || sandbox.name.is_empty() {
-            return Err(uncertain(CreateCertaintyLossPoint::CreateResponseInvalid));
+            return Err(uncertain(CreateCertaintyLossPoint::CreateResponseInvalid).into());
         }
         if expected_name != sandbox.name {
-            return Err(EpochFault::IdentityMismatch);
+            return Err(EpochFault::IdentityMismatch.into());
         }
-        let deadline = Instant::now() + READY_POLL_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + READY_POLL_TIMEOUT;
         let mut delay = READY_POLL_INITIAL_DELAY;
         loop {
-            let observation = client.get_sandbox(&sandbox.name).await;
+            let observation =
+                match tokio::time::timeout_at(deadline, client.get_sandbox(&sandbox.name)).await {
+                    Ok(observation) => observation,
+                    Err(_) => {
+                        return Err(self
+                            .failed_create_after_absence(
+                                &expected_name,
+                                uncertain(CreateCertaintyLossPoint::ReadyTimeout),
+                            )
+                            .await);
+                    }
+                };
             let classified = classify_ready_observation(
                 observation
                     .as_ref()
@@ -984,21 +1029,48 @@ impl NanoHostOpenShellClient {
                     .map_err(|_| ()),
                 &sandbox.id,
                 &sandbox.name,
-                Instant::now() >= deadline,
+                tokio::time::Instant::now() >= deadline,
             );
             match classified {
                 Ok(true) => {
                     return observation.map_err(|_| {
-                        uncertain(CreateCertaintyLossPoint::ReadyObservationUnproved)
+                        uncertain(CreateCertaintyLossPoint::ReadyObservationUnproved).into()
                     });
                 }
-                Ok(false) => tokio::time::sleep(delay).await,
-                Err(ReadinessFailure::Uncertain(point)) => return Err(uncertain(point)),
+                Ok(false) => {
+                    tokio::time::sleep_until((tokio::time::Instant::now() + delay).min(deadline))
+                        .await;
+                }
+                Err(ReadinessFailure::Uncertain(
+                    point @ (CreateCertaintyLossPoint::ReadyErrorPhase
+                    | CreateCertaintyLossPoint::ReadyTimeout),
+                )) => {
+                    return Err(self
+                        .failed_create_after_absence(&expected_name, uncertain(point))
+                        .await);
+                }
+                Err(ReadinessFailure::Uncertain(point)) => return Err(uncertain(point).into()),
                 Err(ReadinessFailure::IdentityMismatch) => {
-                    return Err(EpochFault::IdentityMismatch);
+                    return Err(EpochFault::IdentityMismatch.into());
                 }
             }
             delay = (delay * 2).min(READY_POLL_MAX_DELAY);
+        }
+    }
+
+    /// Bounds the complete exact-name delete and native absence proof after failed creation.
+    async fn failed_create_after_absence(
+        &self,
+        name: &str,
+        unproved: EpochFault,
+    ) -> LifecycleEffectError {
+        let deadline = tokio::time::Instant::now() + READY_POLL_TIMEOUT;
+        match tokio::time::timeout_at(deadline, self.delete_sandbox(name, READY_POLL_TIMEOUT)).await
+        {
+            Ok(Ok(())) => LifecycleEffectError::CreateCleanupProved,
+            // Keep the original create lineage, loss point, and elapsed evidence
+            // when compensating cleanup cannot prove the request has no effects.
+            _ => unproved.into(),
         }
     }
 
@@ -1046,13 +1118,15 @@ impl NanoHostOpenShellClient {
     ///
     /// # Errors
     ///
-    /// Returns delete uncertainty unless both acknowledgement and terminal
-    /// absence are proved by the typed SDK.
+    /// Returns delete uncertainty unless a native acknowledgement or NotFound
+    /// is followed by a separate terminal-absence proof through the typed SDK.
     pub async fn delete_sandbox(&self, name: &str, timeout: Duration) -> Result<(), EpochFault> {
-        self.connected()?
-            .delete_sandbox(name)
-            .await
-            .map_err(|_| EpochFault::DeleteOutcomeUncertain)?;
+        match self.connected()?.delete_sandbox(name).await {
+            Ok(_) | Err(openshell_sdk::SdkError::NotFound { .. }) => {}
+            Err(_) => return Err(EpochFault::DeleteOutcomeUncertain),
+        }
+        // A missing delete target is not enough: a separate exact-name observation
+        // must still prove native NotFound before any owner releases resources.
         self.wait_deleted(name, timeout).await
     }
 
@@ -1298,9 +1372,16 @@ impl NanoHostOpenShellClient {
                 if spec.name.as_deref() != Some(request.sandbox_id()) {
                     return Err(EpochFault::IdentityMismatch);
                 }
-                let sandbox = self
+                let sandbox = match self
                     .create_sandbox(spec, policy, request.request_id(), &storage_mounts)
-                    .await?;
+                    .await
+                {
+                    Ok(sandbox) => sandbox,
+                    Err(LifecycleEffectError::CreateCleanupProved) => {
+                        return Ok(LifecycleEffectResult::SandboxCreateFailed);
+                    }
+                    Err(LifecycleEffectError::Epoch(fault)) => return Err(fault),
+                };
                 request
                     .validate_result_identity(request.request_id(), &sandbox.name)
                     .map_err(|_| EpochFault::IdentityMismatch)?;
@@ -1766,6 +1847,14 @@ pub(crate) async fn dormant_provider_refresh_status(
 }
 
 #[cfg(test)]
+impl NanoHostOpenShellClient {
+    /// Installs a fixture-owned channel at the external Gateway boundary.
+    pub(crate) fn fixture_client(&mut self, client: OpenShellClient) {
+        self.client = Some(client);
+    }
+}
+
+#[cfg(test)]
 impl WorkerBootstrapMonitor {
     /// Creates a real response-task monitor for coordinator lifecycle regressions.
     pub(crate) fn from_test_task(
@@ -1780,7 +1869,7 @@ impl WorkerBootstrapMonitor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::PathBuf;
 
     use openshell_sdk::SandboxPhase;
@@ -1803,6 +1892,306 @@ mod tests {
 
     /// Exact fixed worker-entry vocabulary accepted from stdout.
     const WORKER_ENTRY_MARKER: &[u8] = b"OPENKIT_WORKER_SHIM_ENTRY_V1\n";
+
+    /// Gives the composed debug SDK/session fixture enough stack without changing production.
+    pub(crate) fn on_create_fixture_stack(test: impl FnOnce() + Send + 'static) {
+        if let Err(panic) = std::thread::Builder::new()
+            .name("native-create-fixture".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(test)
+            .expect("create fixture thread")
+            .join()
+        {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    /// Shares RPC observations between the fixture peer and its assertions.
+    type GatewayCalls = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
+
+    /// Records only fixture-owned RPC methods and request bytes for exact-name cleanup checks.
+    pub(crate) struct CreateGatewayFixture {
+        pub peer: tokio::task::JoinHandle<()>,
+        pub calls: GatewayCalls,
+    }
+
+    /// Encodes one pinned SandboxResponse without introducing another protobuf dependency.
+    fn sandbox_response(id: &str, name: &str, phase: u8) -> Vec<u8> {
+        fn field(tag: u8, value: &[u8]) -> Vec<u8> {
+            assert!(value.len() < 128);
+            [vec![tag, value.len() as u8], value.to_vec()].concat()
+        }
+        // openshell.proto: response.sandbox=1; sandbox.metadata=1, status=3;
+        // datamodel.proto: metadata.id=1, name=2; SandboxStatus.phase=6.
+        let metadata = [field(0x0a, id.as_bytes()), field(0x12, name.as_bytes())].concat();
+        field(
+            0x0a,
+            &[field(0x0a, &metadata), field(0x1a, &[0x30, phase])].concat(),
+        )
+    }
+
+    /// Runs only the external gRPC peer; the production SDK and lifecycle mapping stay intact.
+    pub(crate) async fn create_gateway_fixture(
+        case: &'static str,
+    ) -> (openshell_sdk::OpenShellClient, CreateGatewayFixture) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = calls.clone();
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut connection = h2::server::handshake(socket).await.unwrap();
+            let mut handlers = tokio::task::JoinSet::new();
+            let deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            loop {
+                tokio::select! {
+                    completion = handlers.join_next(), if !handlers.is_empty() => {
+                        completion.unwrap().expect("Gateway handler assertions");
+                    }
+                    stream = connection.accept() => {
+                        let Some(stream) = stream else { break };
+                        let (request, mut respond) = stream.expect("Gateway H2 stream");
+                        let method = request.uri().path().rsplit('/').next().unwrap().to_string();
+                        let observed = observed.clone();
+                        let deleted = deleted.clone();
+                        handlers.spawn(async move {
+                            let mut body = request.into_body();
+                            let mut bytes = Vec::new();
+                            while let Some(chunk) = body.data().await {
+                                let chunk = chunk.unwrap();
+                                body.flow_control().release_capacity(chunk.len()).unwrap();
+                                bytes.extend_from_slice(&chunk);
+                            }
+                            if matches!(method.as_str(), "GetSandbox" | "DeleteSandbox") {
+                                // Name is the pinned native lookup key for both deletion and NotFound proof.
+                                let name = b"sandbox-one";
+                                let mut expected = vec![0, 0, 0, 0, (name.len() + 2) as u8, 0x0a, name.len() as u8];
+                                expected.extend_from_slice(name);
+                                assert_eq!(bytes, expected, "native cleanup must address the exact expected name");
+                            }
+                            observed.lock().unwrap().push((method.clone(), bytes));
+                            let absent = deleted.load(std::sync::atomic::Ordering::SeqCst);
+                            if (method == "DeleteSandbox" && case == "delete-stalled")
+                                || (method == "GetSandbox" && absent && case == "absence-stalled") {
+                                std::future::pending::<()>().await;
+                            }
+                            let (code, payload) = match method.as_str() {
+                                "CreateSandbox" => match case {
+                                    "invalid-argument" | "invalid-argument-delete-not-found"
+                                        | "delete-not-found-unproved" => ("3", Vec::new()),
+                                    "failed-precondition" => ("9", Vec::new()),
+                                    "resource-exhausted" => ("8", Vec::new()),
+                                    "unavailable" => ("14", Vec::new()),
+                                    "deadline" => ("4", Vec::new()),
+                                    "aborted" => ("10", Vec::new()),
+                                    "already-exists" => ("6", Vec::new()),
+                                    "invalid-response" => ("0", Vec::new()),
+                                    "wrong-name" => ("0", sandbox_response("native-id", "other-name", 1)),
+                                    _ => ("0", sandbox_response("native-id", "sandbox-one", 1)),
+                                },
+                                "GetSandbox" if absent && matches!(case, "absence-error" | "delete-not-found-unproved") => ("14", Vec::new()),
+                                "GetSandbox" if absent && case != "absence-unproved" => ("5", Vec::new()),
+                                "GetSandbox" => match case {
+                                    "observation-unproved" => ("14", Vec::new()),
+                                    "wrong-id" => ("0", sandbox_response("other-id", "sandbox-one", 2)),
+                                    "wrong-error-id" => ("0", sandbox_response("other-id", "sandbox-one", 3)),
+                                    "wrong-pending-name" => ("0", sandbox_response("native-id", "other-name", 1)),
+                                    "timeout" => ("0", sandbox_response("native-id", "sandbox-one", 1)),
+                                    _ => ("0", sandbox_response("native-id", "sandbox-one", 3)),
+                                },
+                                "DeleteSandbox" => {
+                                    deleted.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    (match case {
+                                        "delete-unproved" => "14",
+                                        "invalid-argument-delete-not-found" | "delete-not-found-unproved" => "5",
+                                        _ => "0",
+                                    }, vec![0x08, 1])
+                                }
+                                _ => panic!("unexpected Gateway method"),
+                            };
+                            if code != "0" {
+                                respond.send_response(http::Response::builder().status(200)
+                                    .header("content-type", "application/grpc")
+                                    .header("grpc-status", code).body(()).unwrap(), true).unwrap();
+                            } else {
+                                let mut stream = respond.send_response(http::Response::builder().status(200)
+                                    .header("content-type", "application/grpc").body(()).unwrap(), false).unwrap();
+                                let mut frame = vec![0];
+                                frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+                                frame.extend_from_slice(&payload);
+                                stream.send_data(bytes::Bytes::from(frame), false).unwrap();
+                                let mut trailers = http::HeaderMap::new();
+                                trailers.insert("grpc-status", http::HeaderValue::from_static("0"));
+                                stream.send_trailers(trailers).unwrap();
+                            }
+                        });
+                    }
+                }
+            }
+            while let Some(completion) = handlers.join_next().await {
+                completion.expect("Gateway handler assertions");
+            }
+        });
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        (
+            openshell_sdk::OpenShellClient::from_parts(
+                channel,
+                openshell_sdk::EdgeAuthInterceptor::noop(),
+            ),
+            CreateGatewayFixture { peer, calls },
+        )
+    }
+
+    /// Both the ready deadline and failed absence proof use the production bounded cleanup path.
+    #[test]
+    fn create_failure_ready_timeout_and_unproved_absence_are_bounded() {
+        on_create_fixture_stack(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    for case in [
+                        "timeout",
+                        "absence-unproved",
+                        "delete-stalled",
+                        "absence-stalled",
+                    ] {
+                        let (sdk, fixture) = create_gateway_fixture(case).await;
+                        let mut client = super::NanoHostOpenShellClient::new("fixture".into(), PathBuf::new());
+                        client.fixture_client(sdk);
+                        tokio::time::pause();
+                        let started = tokio::time::Instant::now();
+                        let create = client.create_sandbox(
+                            openshell_sdk::SandboxSpec {
+                                name: Some("sandbox-one".into()),
+                                image: Some("fixture-image".into()),
+                                labels: Default::default(),
+                                environment: Default::default(),
+                                providers: Vec::new(),
+                                gpu: false,
+                            },
+                            SandboxPolicy::default(),
+                            "request-one",
+                            &[],
+                        );
+                        tokio::pin!(create);
+                        let mut advanced = false;
+                        let mut result = None;
+                        for _ in 0..100_000 {
+                            tokio::select! {
+                                biased;
+                                outcome = &mut create => { result = Some(outcome); break; }
+                                () = tokio::task::yield_now() => {}
+                            }
+                            let advance = {
+                                let calls = fixture.calls.lock().unwrap();
+                                let deleted_at = calls
+                                    .iter()
+                                    .position(|(method, _)| method == "DeleteSandbox");
+                                !advanced
+                                    && if case == "timeout" {
+                                        calls.iter().any(|(method, _)| method == "GetSandbox")
+                                    } else if case == "delete-stalled" {
+                                        deleted_at.is_some()
+                                    } else {
+                                        deleted_at.is_some_and(|at| {
+                                            calls[at + 1..]
+                                                .iter()
+                                                .any(|(method, _)| method == "GetSandbox")
+                                        })
+                                    }
+                            };
+                            if advance {
+                                tokio::time::advance(Duration::from_secs(119)).await;
+                                for _ in 0..1_000 {
+                                    tokio::select! {
+                                        biased;
+                                        _ = &mut create => panic!("the production deadline expired before 120 seconds"),
+                                        () = tokio::task::yield_now() => {}
+                                    }
+                                }
+                                if case == "timeout" {
+                                    assert!(
+                                        !fixture
+                                            .calls
+                                            .lock()
+                                            .unwrap()
+                                            .iter()
+                                            .any(|(method, _)| method == "DeleteSandbox"),
+                                        "a pending create cannot enter timeout cleanup before its ready deadline"
+                                    );
+                                }
+                                tokio::time::advance(Duration::from_secs(1)).await;
+                                // Tokio's timer driver can settle the deadline on its next millisecond tick.
+                                tokio::time::advance(Duration::from_millis(1)).await;
+                                advanced = true;
+                            }
+                        }
+                        assert!(
+                            advanced,
+                            "fixture must reach the bounded production observation"
+                        );
+                        let result = result.unwrap_or_else(|| {
+                            let calls = fixture.calls.lock().unwrap();
+                            let methods: Vec<_> = calls.iter().map(|(method, _)| method.as_str()).collect();
+                            panic!("case={case}: native deadline did not settle; elapsed={:?}; RPCs={methods:?}",
+                                tokio::time::Instant::now() - started);
+                        });
+                        eprintln!("native deadline case={case} elapsed={:?} result={result:?}",
+                            tokio::time::Instant::now() - started);
+                        if case == "timeout" {
+                            assert!(
+                                matches!(
+                                    result,
+                                    Err(super::LifecycleEffectError::CreateCleanupProved)
+                                ),
+                                "ready timeout is request-local only after native absence"
+                            );
+                        } else {
+                            assert!(
+                                matches!(
+                                    result,
+                                    Err(super::LifecycleEffectError::Epoch(
+                                        crate::epoch_coordinator::EpochFault::CreateOutcomeUncertain(_)
+                                    ))
+                                ),
+                                "missing NotFound proof cannot become definite failure"
+                            );
+                        }
+                        let elapsed = tokio::time::Instant::now() - started;
+                        assert!(
+                            elapsed >= Duration::from_secs(120)
+                                && elapsed <= Duration::from_secs(120) + Duration::from_millis(1)
+                        );
+                        {
+                            let calls = fixture.calls.lock().unwrap();
+                            let deletion = calls
+                                .iter()
+                                .position(|(method, _)| method == "DeleteSandbox")
+                                .expect("exact-name cleanup");
+                            if case != "delete-stalled" {
+                                assert!(
+                                    calls[deletion + 1..]
+                                        .iter()
+                                        .any(|(method, _)| method == "GetSandbox"),
+                                    "delete acknowledgement alone cannot prove absence"
+                                );
+                            }
+                        }
+                        fixture.peer.abort();
+                        if let Err(error) = fixture.peer.await {
+                            assert!(error.is_cancelled(), "Gateway peer assertions: {error}");
+                        }
+                        tokio::time::resume();
+                    }
+                });
+        });
+    }
 
     #[tokio::test]
     async fn dropping_an_unfinished_route_join_aborts_it() {

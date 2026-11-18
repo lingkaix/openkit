@@ -21,6 +21,12 @@ pub const PERSISTENT_VOLUME_ROOT: &str = "/var/lib/openkit/nanohost-work";
 /// Definite seed refusal after the stopped container and staging are removed.
 pub(crate) const IMAGE_SEED_REJECTED: &str = "persistent storage image seed failed";
 
+/// Failed Docker copy after the stopped container and staging are removed.
+pub(crate) const IMAGE_SEED_COPY_FAILED: &str = "private Docker seed copy failed";
+
+/// Unwound extractor after the stopped container and staging are removed.
+pub(crate) const IMAGE_SEED_EXTRACTION_FAILED: &str = "private Docker seed extraction failed";
+
 const METADATA_NAME: &str = "identity.json";
 const MAX_TARGETS: usize = 32;
 const MAX_SEED_ENTRIES: u64 = 1_000_000;
@@ -994,18 +1000,9 @@ impl PersistentVolumeStore {
         staging: &Path,
     ) -> Result<u32, SeedCopyFailure> {
         let source = format!("{container}:{target}/.");
-        let mut child = self
-            .docker_command()
-            .args(["cp", "--archive", &source, "-"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|_| SeedCopyFailure::CopyFailed)?;
-        let stdout = child.stdout.take().ok_or(SeedCopyFailure::CopyFailed)?;
-        let staging = staging.to_path_buf();
-        let extractor = thread::spawn(move || extract_seed_archive(stdout, &staging));
-        finish_seed_extraction(&mut child, extractor, DOCKER_TIMEOUT)
+        let mut command = self.docker_command();
+        command.args(["cp", "--archive", &source, "-"]);
+        extract_seed_from_command(&mut command, staging, DOCKER_TIMEOUT)
     }
 
     fn docker_command(&self) -> Command {
@@ -1016,6 +1013,24 @@ impl PersistentVolumeStore {
         );
         command
     }
+}
+
+/// Owns process start, bounded completion, and the real archive-reader join for one seed copy.
+fn extract_seed_from_command(
+    command: &mut Command,
+    staging: &Path,
+    limit: Duration,
+) -> Result<u32, SeedCopyFailure> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|_| SeedCopyFailure::CopyFailed)?;
+    let stdout = child.stdout.take().ok_or(SeedCopyFailure::CopyFailed)?;
+    let staging = staging.to_path_buf();
+    let extractor = thread::spawn(move || extract_seed_archive(stdout, &staging));
+    finish_seed_extraction(&mut child, extractor, limit)
 }
 
 /// Keeps a normal archive refusal distinct from backend failure and an unwound extractor.
@@ -1043,7 +1058,7 @@ fn finish_seed_extraction(
     extracted.map_err(|_| SeedCopyFailure::ArchiveRefused)
 }
 
-/// A classified archive refusal is effect-local only after both disposable resources are gone.
+/// A failed copy is effect-local only after both disposable resources are gone.
 fn settle_seed_copy(
     copied: Result<u32, SeedCopyFailure>,
     removed: Result<(), &'static str>,
@@ -1055,8 +1070,8 @@ fn settle_seed_copy(
             fs::remove_dir_all(staging).map_err(|_| "persistent storage seed cleanup uncertain")?;
             Err(match cause {
                 SeedCopyFailure::ArchiveRefused => IMAGE_SEED_REJECTED,
-                SeedCopyFailure::CopyFailed => "private Docker seed copy failed",
-                SeedCopyFailure::ExtractorPanicked => "private Docker seed extraction failed",
+                SeedCopyFailure::CopyFailed => IMAGE_SEED_COPY_FAILED,
+                SeedCopyFailure::ExtractorPanicked => IMAGE_SEED_EXTRACTION_FAILED,
             })
         }
         (_, Err(_)) => {
@@ -2171,15 +2186,11 @@ pub(crate) mod tests {
         PersistentVolumeStore::open_at(root.to_path_buf(), PathBuf::from("/missing"), uid).unwrap()
     }
 
-    pub(crate) fn stored_association(
-        store: &PersistentVolumeStore,
-        storage_ref: &str,
-        sandbox_id: &str,
-        generation: u64,
-    ) -> (PathBuf, PathBuf) {
+    /// Returns the image facts used by the admitted retained-volume fixture.
+    pub(crate) fn stored_layout() -> ImageStorageLayout {
         let uid = unsafe { libc::geteuid() };
         let gid = unsafe { libc::getegid() };
-        let layout = ImageStorageLayout {
+        ImageStorageLayout {
             release_identity: Value::Null,
             digest: digest('a'),
             family: Some("openkit-worker".into()),
@@ -2191,7 +2202,16 @@ pub(crate) mod tests {
             architecture: "arm64".into(),
             targets: vec!["/workspace".into()],
             environment_defaults: parse_environment_defaults(None).unwrap(),
-        };
+        }
+    }
+
+    pub(crate) fn stored_association(
+        store: &PersistentVolumeStore,
+        storage_ref: &str,
+        sandbox_id: &str,
+        generation: u64,
+    ) -> (PathBuf, PathBuf) {
+        let layout = stored_layout();
         let request = StorageAttachmentRequest {
             storage_ref: storage_ref.into(),
             scope_digest: digest('b'),
@@ -2840,6 +2860,57 @@ pub(crate) mod tests {
             settle_seed_copy(Err(SeedCopyFailure::CopyFailed), Ok(()), &missing_staging),
             Err("persistent storage seed cleanup uncertain"),
         );
+    }
+
+    /// A real spawn refusal stays request-local only after disposable-resource cleanup succeeds.
+    #[test]
+    fn seed_spawn_failure_requires_proved_container_and_staging_cleanup() {
+        for removed in [Ok(()), Err("injected container removal failure")] {
+            let root = temporary_root();
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("partial"), b"unpublished seed bytes").unwrap();
+            let copied = extract_seed_from_command(
+                &mut Command::new(root.join("missing-copy-program")),
+                &root,
+                Duration::from_secs(1),
+            );
+            assert_eq!(copied, Err(SeedCopyFailure::CopyFailed));
+            let outcome = settle_seed_copy(copied, removed, &root);
+            assert_eq!(
+                outcome,
+                Err(if removed.is_ok() {
+                    IMAGE_SEED_COPY_FAILED
+                } else {
+                    "persistent storage seed cleanup uncertain"
+                })
+            );
+            assert!(
+                !root.exists(),
+                "unpublished staging is removed in either case"
+            );
+        }
+    }
+
+    /// A joined extractor panic cannot hide failed cleanup of its stopped seed container.
+    #[test]
+    fn seed_extractor_panic_keeps_uncertain_cleanup_terminal() {
+        let root = temporary_root();
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("partial"), b"unpublished seed bytes").unwrap();
+        let mut child = Command::new("/bin/true").spawn().unwrap();
+        let extractor =
+            thread::spawn(|| -> io::Result<u32> { panic!("injected extractor unwind") });
+        let copied = finish_seed_extraction(&mut child, extractor, Duration::from_secs(5));
+        assert_eq!(copied, Err(SeedCopyFailure::ExtractorPanicked));
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "copy child is reaped before cleanup"
+        );
+        assert_eq!(
+            settle_seed_copy(copied, Err("injected container removal failure"), &root),
+            Err("persistent storage seed cleanup uncertain")
+        );
+        assert!(!root.exists(), "unpublished staging is still removed");
     }
 
     /// Real child completion and thread joins must not turn panic or timeout into archive refusal.

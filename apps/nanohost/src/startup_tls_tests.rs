@@ -41,6 +41,7 @@ async fn initial_tls_rejection_exports_epoch_creation_failure() {
     )
     .unwrap();
     let inputs = crate::NanoHostSessionInputs {
+        rebuild_marker: root.join("fence-started"),
         transport: prepare_verified_session_transport(
             &origin,
             &TlsTrustMaterial::ConfiguredRef {

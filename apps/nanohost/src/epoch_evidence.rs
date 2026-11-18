@@ -28,7 +28,7 @@ pub const RETAINED_ARTIFACTS: usize = 20;
 /// Accepted fence-to-ready target for one fresh Runtime Epoch.
 pub const REBUILD_TARGET: Duration = Duration::from_secs(90);
 
-/// Inclusive hard fence-to-ready limit after which NanoHost stays non-ready.
+/// Inclusive fence-to-ready hard bound; a violation is reported before the next process rebuilds.
 pub const REBUILD_HARD_LIMIT: Duration = Duration::from_secs(300);
 
 static NEXT_ARTIFACT: AtomicU64 = AtomicU64::new(0);
@@ -314,10 +314,72 @@ pub struct RecoveryObservation {
     pub absent_prior_epochs: Option<String>,
     /// Number of residual prior epoch roots observed at startup.
     pub residual_roots: usize,
-    prior_epoch_names: Vec<String>,
+    /// Exact root names observed before cleanup or custody.
+    pub prior_epoch_names: Vec<String>,
 }
 
 impl RecoveryObservation {
+    /// Moves expired-interval roots into private custody on each root's own filesystem.
+    ///
+    /// The old operational marker names the custody set. A process interrupted between
+    /// renames resumes that same set without reading forensic contents as authority.
+    /// Only the newest completed set is kept; an interrupted replacement can also keep
+    /// its predecessor until every root has moved. Retained Worker roots are never used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unproved timestamp, changed root, mount cleanup failure,
+    /// conflicting destination, or failed durable rename. The caller must keep the marker.
+    pub fn custody_prior_epoch_roots(&self, state_root: &Path, run_root: &Path) -> io::Result<()> {
+        let started = self
+            .fence_started
+            .ok_or_else(|| io::Error::other("custody fence missing"))?;
+        let nanos = started
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos();
+        let name = format!("rebuild-{nanos}");
+        let state_custody = recovery_custody_root(state_root)?;
+        let run_custody = recovery_custody_root(run_root)?;
+        for root in [&state_custody, &run_custody] {
+            private_custody_directory(root)?;
+            private_custody_directory(&root.join(&name))?;
+        }
+        record_fence_started_at(
+            &state_custody.join(&name).join(".rebuild-fence-started"),
+            started,
+        )?;
+        for epoch in &self.prior_epoch_names {
+            let runtime_path = run_root.join(epoch);
+            match fs::symlink_metadata(&runtime_path) {
+                Ok(metadata) if metadata.file_type().is_dir() => {
+                    crate::credential_carrier::remove_fenced_epoch_carriers(&runtime_path)?;
+                    custody_rename(&runtime_path, &run_custody.join(&name).join(epoch))?;
+                }
+                Ok(_) => return Err(io::Error::other("prior runtime root changed shape")),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            let state_path = state_root.join(epoch);
+            if !fs::symlink_metadata(&state_path)?.file_type().is_dir() {
+                return Err(io::Error::other("prior epoch root changed shape"));
+            }
+            custody_rename(&state_path, &state_custody.join(&name).join(epoch))?;
+        }
+        for (source, custody) in [(state_root, &state_custody), (run_root, &run_custody)] {
+            sync_directory(&custody.join(&name))?;
+            sync_directory(custody)?;
+            // /run can already be absent after a host restart.
+            match sync_directory(source) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            prune_custody(custody, &name)?;
+        }
+        Ok(())
+    }
+
     /// Removes the exact prior state and runtime roots observed before fresh planning.
     ///
     /// # Errors
@@ -351,19 +413,91 @@ impl RecoveryObservation {
     }
 }
 
-/// Observes prior epoch roots and the separate temporary rebuild marker.
-///
-/// This function never reads an invalidation report or disposition note.
+/// Refuses to overwrite any earlier custody copy before moving one complete root.
+fn custody_rename(source: &Path, destination: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(destination) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::rename(source, destination),
+        Err(error) => Err(error),
+        Ok(_) => Err(io::Error::other("custody destination occupied")),
+    }
+}
+
+/// Returns the custody sibling of one fixed operational root.
+fn recovery_custody_root(root: &Path) -> io::Result<PathBuf> {
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::other("custody root invalid"))?;
+    Ok(root.with_file_name(format!("{name}-recovery")))
+}
+
+/// Creates only a private directory, rejecting a pre-existing symlink or other shape.
+fn private_custody_directory(path: &Path) -> io::Result<()> {
+    match DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            if !fs::symlink_metadata(path)?.file_type().is_dir() {
+                return Err(io::Error::other("custody directory changed shape"));
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // A host restart can remove the complete /run/openkit parent.
+            let parent = path
+                .parent()
+                .ok_or_else(|| io::Error::other("custody parent missing"))?;
+            private_custody_directory(parent)?;
+            return private_custody_directory(path);
+        }
+        Err(error) => return Err(error),
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    sync_directory(path)?;
+    // Persist this directory's name before any source rename can become durable.
+    // Also sync on resume: a prior process may have created it without finishing.
+    sync_directory(
+        path.parent()
+            .ok_or_else(|| io::Error::other("custody parent missing"))?,
+    )
+}
+
+/// Syncs a proved directory without following its final symlink.
+fn sync_directory(path: &Path) -> io::Result<()> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)?
+        .sync_all()
+}
+
+/// Keeps only this completed custody set and leaves unrelated entries untouched.
+fn prune_custody(root: &Path, current: &str) -> io::Result<()> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name != current
+            && name.strip_prefix("rebuild-").is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        {
+            if !entry.file_type()?.is_dir() {
+                return Err(io::Error::other("custody set changed shape"));
+            }
+            fs::remove_dir_all(entry.path())?;
+        }
+    }
+    sync_directory(root)
+}
+
+/// Observes prior roots against one explicit first-fence marker without reading forensic artifacts.
 ///
 /// # Errors
 ///
 /// Returns an I/O or invalid-data error when observable recovery state cannot be read safely.
-pub fn observe_recovery(state_root: &Path) -> io::Result<RecoveryObservation> {
-    observe_recovery_at(state_root, Path::new(REBUILD_FENCE_STARTED_PATH))
-}
-
-/// Observes recovery roots against one explicit first-fence marker path.
-fn observe_recovery_at(state_root: &Path, fence_path: &Path) -> io::Result<RecoveryObservation> {
+pub(crate) fn observe_recovery_at(
+    state_root: &Path,
+    fence_path: &Path,
+) -> io::Result<RecoveryObservation> {
     let fence_started = read_fence_started(fence_path)?;
     let mut prior_epochs = Vec::new();
     match fs::read_dir(state_root) {
@@ -406,15 +540,6 @@ fn read_fence_started(path: &Path) -> io::Result<Option<SystemTime>> {
     }
 }
 
-/// Persists the first temporary wall-clock fence timestamp outside forensic artifacts.
-///
-/// # Errors
-///
-/// Returns an I/O or clock error when the marker cannot be written durably.
-pub fn record_fence_started(fence_started: SystemTime) -> io::Result<()> {
-    record_fence_started_at(Path::new(REBUILD_FENCE_STARTED_PATH), fence_started)
-}
-
 /// Creates one marker atomically and preserves an existing first-fence timestamp.
 pub(crate) fn record_fence_started_at(path: &Path, fence_started: SystemTime) -> io::Result<()> {
     let nanos = u64::try_from(
@@ -437,15 +562,6 @@ pub(crate) fn record_fence_started_at(path: &Path, fence_started: SystemTime) ->
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     write!(file, "{nanos}")?;
     file.sync_all()
-}
-
-/// Removes the consumed temporary fence timestamp after readiness is proved.
-///
-/// # Errors
-///
-/// Returns an I/O error when an existing marker cannot be removed.
-pub fn clear_fence_started() -> io::Result<()> {
-    clear_fence_started_at(Path::new(REBUILD_FENCE_STARTED_PATH))
 }
 
 /// Removes one consumed marker at an explicit path while preserving removal failures.

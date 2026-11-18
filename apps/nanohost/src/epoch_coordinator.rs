@@ -40,8 +40,8 @@ use crate::image_acquisition::{
 use crate::image_store::{ImageStore, StoreError};
 use crate::nanocore_session::OuterRouteProjection;
 use crate::openshell_client::{
-    HarnessTaskHandles, LifecycleEffectKind, LifecycleEffectRequest, LifecycleEffectResult,
-    NanoHostOpenShellClient, WorkerBootstrapMonitor, WorkerBootstrapRequest,
+    HarnessTaskHandles, LifecycleEffectError, LifecycleEffectKind, LifecycleEffectRequest,
+    LifecycleEffectResult, NanoHostOpenShellClient, WorkerBootstrapMonitor, WorkerBootstrapRequest,
 };
 use crate::openshell_release;
 use crate::persistent_volume::{PersistentVolumeStore, StorageAttachmentRequest, StorageMount};
@@ -68,6 +68,10 @@ pub const STARTUP_READINESS_HARD_LIMIT: Duration = Duration::from_secs(120);
 /// Definite import failure after the exact Sandbox and its accepted effects are absent.
 pub(crate) const REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE: &str =
     "reference.import failed after proved Sandbox cleanup";
+
+/// Definite create failure after native absence, credential cleanup, and attachment release.
+pub(crate) const SANDBOX_CREATE_CLEANUP_PROVED_FAILURE: &str =
+    "sandbox.create failed after proved Sandbox cleanup";
 
 /// Last successful readiness observation, used only by private forensic reports.
 #[derive(Clone, Copy)]
@@ -1342,6 +1346,9 @@ pub struct EpochCoordinator {
     /// Injects a storage-owner refusal before any native Sandbox effect.
     #[cfg(test)]
     pub(crate) fixture_storage_failure: Option<&'static str>,
+    /// Substitutes immutable Docker image observations while retaining real attachment operations.
+    #[cfg(test)]
+    pub(crate) fixture_storage_layout: Option<crate::persistent_volume::ImageStorageLayout>,
 }
 
 /// Wakes the outer session when the member monitor has decided to fence.
@@ -2308,6 +2315,8 @@ impl EpochCoordinator {
             fixture_settle_named_sandbox: false,
             #[cfg(test)]
             fixture_storage_failure: None,
+            #[cfg(test)]
+            fixture_storage_layout: None,
         })
     }
 
@@ -2413,9 +2422,17 @@ impl EpochCoordinator {
                 collection_test_sandbox: Some("sandbox-one".into()),
                 fixture_settle_named_sandbox: false,
                 fixture_storage_failure: None,
+                #[cfg(test)]
+                fixture_storage_layout: None,
             },
             worktree,
         )
+    }
+
+    /// Substitutes only the Gateway endpoint; all create and cleanup owners remain real.
+    #[cfg(test)]
+    pub(crate) fn fixture_gateway(&mut self, client: openshell_sdk::OpenShellClient) {
+        self.client.fixture_client(client);
     }
 
     /// Uses the production invalidation monitor with only fixture-owned report and marker paths.
@@ -2495,6 +2512,25 @@ impl EpochCoordinator {
         #[cfg(test)]
         if let Some(error) = self.fixture_storage_failure {
             return Err(error);
+        }
+        #[cfg(test)]
+        if let Some(layout) = &self.fixture_storage_layout {
+            let mut mounts = self
+                .persistent_volumes
+                .attach(sandbox_id, request, layout)?;
+            // The fake Gateway has no filesystem. Project only its mount sources
+            // beneath the fixed native root; keep actual attachment bytes in TMPDIR.
+            for mount in &mut mounts {
+                mount.source = Path::new(crate::persistent_volume::PERSISTENT_VOLUME_ROOT)
+                    .join("create-fixture")
+                    .join(
+                        mount
+                            .source
+                            .file_name()
+                            .ok_or("fixture volume name unavailable")?,
+                    );
+            }
+            return Ok(mounts);
         }
         let layout = self.persistent_volumes.inspect_image(image_digest)?;
         self.persistent_volumes.attach(sandbox_id, request, &layout)
@@ -2619,21 +2655,32 @@ impl EpochCoordinator {
     ///
     /// # Errors
     ///
-    /// Returns the fail-stop lifecycle fault after terminating all members.
+    /// Returns request-local failure only after complete failed-create cleanup.
+    /// An unproved outcome retains the existing fail-stop Epoch fault.
     #[allow(dead_code)]
     pub fn create_sandbox(
         &mut self,
         spec: SandboxSpec,
         policy: SandboxPolicy,
         attempt_lineage: &str,
-    ) -> Result<SandboxRef, EpochFault> {
+    ) -> Result<SandboxRef, LifecycleEffectError> {
+        let name = spec.name.clone();
         let result = tokio::task::block_in_place(|| {
             self.runtime.block_on(
                 self.client
                     .create_sandbox(spec, policy, attempt_lineage, &[]),
             )
         });
-        self.settle(result)
+        match result {
+            Err(LifecycleEffectError::CreateCleanupProved) => {
+                let name = self.settle(name.as_deref().ok_or(EpochFault::IdentityMismatch))?;
+                self.remove_credentials_after_absence()?;
+                self.release_deleted_sandbox_attachment(name)?;
+                Err(LifecycleEffectError::CreateCleanupProved)
+            }
+            Err(LifecycleEffectError::Epoch(fault)) => self.settle(Err(fault)).map_err(Into::into),
+            Ok(sandbox) => Ok(sandbox),
+        }
     }
 
     /// Gets a sandbox and invalidates the epoch on transport or identity failure.
@@ -2748,8 +2795,8 @@ impl EpochCoordinator {
     ///
     /// # Errors
     ///
-    /// Returns the existing fail-stop lifecycle fault after the monitor fences
-    /// every member on an uncertain or identity-mismatched effect.
+    /// Returns request-local failed creation only after native absence, credential cleanup and attachment release.
+    /// Uncertainty or identity mismatch keeps the existing monitor fence over every member.
     pub fn execute_lifecycle_effect(
         &mut self,
         request: &LifecycleEffectRequest,
@@ -2757,18 +2804,18 @@ impl EpochCoordinator {
         create_policy: Option<SandboxPolicy>,
         storage_mounts: Vec<StorageMount>,
         worker_bootstrap: Option<WorkerBootstrapRequest>,
-    ) -> Result<LifecycleEffectOutput, EpochFault> {
+    ) -> Result<LifecycleEffectOutput, LifecycleEffectError> {
         // For OpenBridge the client composes the fixed Harness bootstrap before
         // `open_sandbox_bridge`, then proves the exact private-poll readiness latch.
         if request.kind() == LifecycleEffectKind::OpenBridge
             && (self.bridge.is_some() || self.worker_bootstrap_monitor.is_some())
         {
-            return Err(EpochFault::IdentityMismatch);
+            return Err(EpochFault::IdentityMismatch.into());
         }
         let create = match (create_spec, create_policy) {
             (Some(spec), Some(policy)) => Some((spec, policy, storage_mounts)),
             (None, None) if storage_mounts.is_empty() => None,
-            _ => return Err(EpochFault::IdentityMismatch),
+            _ => return Err(EpochFault::IdentityMismatch.into()),
         };
         if let Some(result) = preflight_lifecycle_result(
             request,
@@ -2806,7 +2853,7 @@ impl EpochCoordinator {
                 .as_ref()
                 .ok_or(EpochFault::IdentityMismatch)?;
             if sandbox.name.as_str() != request.sandbox_id() {
-                return Err(EpochFault::IdentityMismatch);
+                return Err(EpochFault::IdentityMismatch.into());
             }
             let mut worker_bootstrap = worker_bootstrap.ok_or(EpochFault::IdentityMismatch)?;
             worker_bootstrap.sandbox_id = sandbox.id.clone();
@@ -2871,13 +2918,15 @@ impl EpochCoordinator {
                         .block_on(self.client.delete_sandbox(&sandbox.name, lifecycle_timeout))
                 });
                 if deletion.is_err() {
-                    return self.settle(Err(EpochFault::DeleteOutcomeUncertain));
+                    return self
+                        .settle(Err(EpochFault::DeleteOutcomeUncertain))
+                        .map_err(Into::into);
                 }
                 self.release_deleted_sandbox_attachment(&sandbox.name)?;
                 self.remove_credentials_after_absence()?;
                 self.current_sandbox = None;
                 self.worker_bootstrap_monitor = None;
-                return self.settle(Err(fault));
+                return self.settle(Err(fault)).map_err(Into::into);
             }
             result => result,
         };
@@ -2889,13 +2938,21 @@ impl EpochCoordinator {
                         .detach(request.sandbox_id())
                         .map_err(|_| EpochFault::IdentityMismatch)?;
                 }
-                return Err(fault);
+                return Err(fault.into());
             }
         };
         let state = match result {
+            LifecycleEffectResult::SandboxCreateFailed => {
+                // Native absence alone cannot release credential sources or retained writers.
+                self.remove_credentials_after_absence()?;
+                self.release_deleted_sandbox_attachment(request.sandbox_id())?;
+                return Err(LifecycleEffectError::CreateCleanupProved);
+            }
             LifecycleEffectResult::SandboxCreated(sandbox) => {
                 if self.current_sandbox.replace(sandbox.clone()).is_some() {
-                    return self.settle(Err(EpochFault::IdentityMismatch));
+                    return self
+                        .settle(Err(EpochFault::IdentityMismatch))
+                        .map_err(Into::into);
                 }
                 if let Some(carrier) = &self.credential_carrier
                     && tokio::task::block_in_place(|| {
@@ -2911,27 +2968,31 @@ impl EpochCoordinator {
                     .is_err()
                 {
                     self.delete_sandbox(&sandbox.name, Duration::from_secs(120))?;
-                    return Err(EpochFault::IdentityMismatch);
+                    return Err(EpochFault::IdentityMismatch.into());
                 }
-                Ok(sandbox.name)
+                sandbox.name
             }
             LifecycleEffectResult::SandboxDeleted => {
                 self.settle_definite_sandbox_deletion(request.sandbox_id())?;
-                Ok("deleted".to_string())
+                "deleted".to_string()
             }
             LifecycleEffectResult::BridgeOpened {
                 bridge,
                 exec_monitor,
             } => {
                 if self.bridge.replace(bridge).is_some() {
-                    return self.settle(Err(EpochFault::IdentityMismatch));
+                    return self
+                        .settle(Err(EpochFault::IdentityMismatch))
+                        .map_err(Into::into);
                 }
                 if self
                     .worker_bootstrap_monitor
                     .replace(exec_monitor)
                     .is_some()
                 {
-                    return self.settle(Err(EpochFault::IdentityMismatch));
+                    return self
+                        .settle(Err(EpochFault::IdentityMismatch))
+                        .map_err(Into::into);
                 }
                 let watched = self.monitor.watch_harness(
                     self.worker_bootstrap_monitor
@@ -2944,12 +3005,14 @@ impl EpochCoordinator {
                     .as_ref()
                     .is_some_and(OpenSandboxBridge::harness_ready);
                 if !harness_ready {
-                    return self.settle(Err(EpochFault::MemberExited(None)));
+                    return self
+                        .settle(Err(EpochFault::MemberExited(None)))
+                        .map_err(Into::into);
                 }
-                Ok("open".to_string())
+                "open".to_string()
             }
-            LifecycleEffectResult::BridgeClosed => Ok("closed".to_string()),
-        }?;
+            LifecycleEffectResult::BridgeClosed => "closed".to_string(),
+        };
         Ok(LifecycleEffectOutput {
             state,
             resource_summary,
