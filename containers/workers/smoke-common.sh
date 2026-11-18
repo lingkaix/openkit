@@ -38,7 +38,7 @@ command -v uv >/dev/null
 command -v uvx >/dev/null
 command -v vim >/dev/null
 
-test "$(node --version)" = "v26.13.0"
+test "$(node --version)" = "v26.13.1"
 test "$(pnpm --version)" = "10.34.9"
 # Native worker processes can start with only PATH and their retained HOME.
 test "$(env -i PATH="${PATH}" HOME="${HOME}" pnpm --version)" = "10.34.9"

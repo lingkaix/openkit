@@ -1242,7 +1242,7 @@ async function actualWorkerComponent(input: {
       10_000,
       signal
     );
-    if (installed.nodeVersion !== 'v26.13.0')
+    if (installed.nodeVersion !== 'v26.13.1')
       throw new Error('Selected Worker image has a different Node toolchain.');
     transport = await connectCoreH2({
       socketPath: join(ipc, 'integration.sock'),

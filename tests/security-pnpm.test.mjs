@@ -119,7 +119,7 @@ function run(args, cwd, env) {
 }
 
 test('native pnpm enforces release age and explicit build review', async () => {
-  assert.equal(process.version, 'v26.13.0', 'Pinned Node required');
+  assert.equal(process.version, 'v26.13.1', 'Pinned Node required');
   assert.ok(pnpm, 'Pinned package manager required');
   const base = mkdtempSync(join(tmpdir(), 'security-pnpm-'));
   const tarballs = Object.fromEntries(['1.0.0', '1.0.1'].map((v) => [v, archive(base, v)]));

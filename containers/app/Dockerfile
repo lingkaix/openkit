@@ -1,4 +1,4 @@
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS retrieval-builder
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS retrieval-builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV RUST_VERSION=1.97.1
@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=openkit-retrieval-reg
   && cp target/release/retrieval-kernel /out/retrieval-kernel \
   && python3 scripts/retrieval-notices.py --output /out/licenses/crates
 
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS builder
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -74,7 +74,7 @@ RUN pnpm --filter @openkit/nanocore... --filter @openkit/web... build
 # Pin Zod exactly across the workspace because legacy deploy re-resolves schema-package ranges independently of NanoCore's locked converter; remove the pin once App deploy uses the shared lockfile.
 RUN pnpm --filter @openkit/nanocore deploy --prod --legacy /deploy/nanocore
 
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS runtime-base
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS runtime-base
 
 ARG TARGETARCH
 
