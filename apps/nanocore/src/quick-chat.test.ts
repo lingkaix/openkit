@@ -1922,7 +1922,7 @@ describe('quick chat app API', () => {
 
     expect(parsed).toMatchObject({
       outcome: 'answered',
-      explanation: 'The Knowledge Manager answered from Workspace Knowledge.',
+      explanation: 'The Knowledge Manager answered the Workspace Knowledge query.',
       handoff: null,
       item: {
         type: 'assistant-message',
@@ -1967,7 +1967,7 @@ describe('quick chat app API', () => {
       'workspaces',
       'ws_00000000-0000-7000-8000-000000000001',
       'threads',
-      'th_00000000-0000-7000-8000-000000000001',
+      parsed.receivingThreadId,
       'turns',
       parsed.turn.id,
       'retrieval-traces'

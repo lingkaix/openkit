@@ -20,6 +20,7 @@ import {
   type Item,
   ItemSchema,
   isCheckpointCollectableTurnStatus,
+  isSealedTurnTerminal,
   type RetrievalTraceReference,
   responsibleUserIdForActor,
   type StopReason,
@@ -558,8 +559,51 @@ function replayConversationCommand(
         status: metadata.status,
       };
     }
-    // The receipt keeps the original command scope; Items belong to its explicit receiving segment.
-    if (currentTurn.threadId !== threadId) {
+    const knowledgeReceivingThread =
+      metadata.resultKind === 'knowledge-answer' && currentTurn.threadId !== threadId;
+    if (knowledgeReceivingThread) {
+      const origin = store.getThread(workspaceId, threadId);
+      const receiving = store.getThread(workspaceId, currentTurn.threadId);
+      const originTurn = store.getTurn(
+        workspaceId,
+        threadId,
+        providerChatTurnId(triggerActor, workspaceId, threadId, record.requestId)
+      );
+      const reference = originTurn.items.find(
+        (item) => item.id === deriveEntityId('it', ['chat-knowledge-handoff', originTurn.id])
+      );
+      if (
+        metadata.targetRef !== 'internal-role:knowledge-manager' ||
+        metadata.receivingWorkspaceId !== workspaceId ||
+        currentTurn.agentId !== 'knowledge-manager' ||
+        currentTurn.id !==
+          providerChatTurnId(triggerActor, workspaceId, receiving.id, record.requestId) ||
+        receiving.id !==
+          conversationKnowledgeThreadId(triggerActor, workspaceId, threadId, record.requestId) ||
+        receiving.entryPath !== 'knowledge-manager' ||
+        receiving.parentThreadId !== threadId ||
+        receiving.visibility !== origin.visibility ||
+        receiving.privateOwnerUserId !== origin.privateOwnerUserId ||
+        originTurn.agentId !== QUICK_CHAT_AGENT_ID ||
+        originTurn.status !== 'completed' ||
+        canonicalIdentifierName(originTurn.triggerActor) !==
+          canonicalIdentifierName(triggerActor) ||
+        reference?.type !== 'status' ||
+        reference.status !== 'completed' ||
+        reference.threadId !== threadId ||
+        reference.turnId !== originTurn.id ||
+        workspaceIdForOwner(reference.owner) !== workspaceId ||
+        reference.causationId !== currentTurn.id ||
+        reference.title !== 'Knowledge Manager handoff' ||
+        reference.summary !== `Work directed to Thread ${receiving.id}.` ||
+        reference.createdAt !== originTurn.startedAt ||
+        reference.completedAt !== originTurn.completedAt
+      )
+        throw new Error('Conversation Knowledge Manager receiving owner is contradictory.');
+      threadId = receiving.id;
+    } else if (currentTurn.threadId !== threadId) {
+      // Assistant segmentation preserves the original command scope. Historical Knowledge
+      // Manager results in Chat retain their original Thread and receipt semantics.
       if (
         !store
           .getThreadSegmentHistory(workspaceId, currentTurn.threadId)
@@ -702,7 +746,9 @@ function replayConversationCommand(
       outcome = 'answered';
       explanation =
         metadata.resultKind === 'knowledge-answer'
-          ? 'The Knowledge Manager answered from Workspace Knowledge.'
+          ? knowledgeReceivingThread
+            ? 'The Knowledge Manager answered the Workspace Knowledge query.'
+            : 'The Knowledge Manager answered from Workspace Knowledge.'
           : 'The Assistant answered directly.';
     } else if (metadata.resultKind === 'task-handoff') {
       if (
@@ -824,7 +870,10 @@ function replayConversationCommand(
   } catch {
     throw new TurnStartValidationError(
       'recovery_required',
-      'The Chat command receipt does not match its durable Turn lineage.',
+      record.response.conversationMetadata?.resultKind === 'knowledge-answer' &&
+        record.response.conversationMetadata.receivingThreadId !== record.scope.threadId
+        ? 'The Knowledge Manager receipt conflicts with retained history. Inspect the originating and receiving Threads, then start a new request with a new requestId.'
+        : 'The Chat command receipt does not match its durable Turn lineage.',
       409
     );
   }
@@ -844,6 +893,22 @@ function providerChatTurnId(
     threadId,
     requestId,
   });
+}
+
+/** Names the receiving Knowledge Manager Thread from the unchanged originating command scope. */
+function conversationKnowledgeThreadId(
+  actor: ActorRef,
+  workspaceId: string,
+  threadId: string,
+  requestId: string
+): string {
+  return deriveEntityId('th', [
+    'conversation-knowledge-manager',
+    actor,
+    workspaceId,
+    threadId,
+    requestId,
+  ]);
 }
 
 /**
@@ -3166,17 +3231,19 @@ export function createConversationService({
       };
 
       /**
-       * Creates the durable Chat Mode turn and its user-message item.
+       * Creates a conversation entry Turn and its user-message Item in the selected Thread.
        *
        * @param completedAt Completion timestamp shared by first-slice Chat Mode items.
        * @param turnId Request-derived identity for provider work whose receipt may fail to persist.
        * @param inputFileOptions Verified originals, omitted for an origin-only handoff reference.
+       * @param agentId Role that owns this Turn in its actual receiving Thread.
        * @returns Created turn.
        */
       const createChatTurn = async (
         completedAt: string,
         turnId?: string,
-        inputFileOptions = fileOptions
+        inputFileOptions = fileOptions,
+        agentId = QUICK_CHAT_AGENT_ID
       ) => {
         const turn = await store.createTurn(
           workspaceId,
@@ -3193,10 +3260,7 @@ export function createConversationService({
           }
         );
         newlyAdmittedTurn = turn;
-        await store.updateTurn(turn.id, {
-          agentId:
-            acceptedTarget.kind === 'knowledge-manager' ? 'knowledge-manager' : QUICK_CHAT_AGENT_ID,
-        });
+        await store.updateTurn(turn.id, { agentId });
 
         await store.createItem({
           id: deriveEntityId('it', ['chat-user', turn.id]),
@@ -3280,10 +3344,102 @@ export function createConversationService({
         });
       };
 
-      /** Runs the explicitly selected Knowledge Manager and projects its answer into this Thread. */
+      /** Runs the selected Knowledge Manager with its inputs and answer in a linked role Thread. */
       const answerFromWorkspaceKnowledge = async (): Promise<ConversationCommandResult | null> => {
         if (!store.getDataRoot()) return null;
-        const inputTurn = await createChatTurn(new Date().toISOString(), providerTurnId);
+        const receivingThreadId = conversationKnowledgeThreadId(
+          triggerActor,
+          workspaceId,
+          threadId,
+          chatInput.requestId
+        );
+        if (store.listThreads(workspaceId).some((thread) => thread.id === receivingThreadId))
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The Knowledge Manager receiving Thread has no conversation receipt. Inspect its history, then start a new request with a new requestId.',
+            409
+          );
+        const origin = store.getThread(workspaceId, threadId);
+        // The Assistant claims the origin before receiving work, as for a Worker handoff.
+        const originTurn = await createChatTurn(new Date().toISOString(), providerTurnId, {});
+        const receivingTurnId = providerChatTurnId(
+          triggerActor,
+          workspaceId,
+          receivingThreadId,
+          chatInput.requestId
+        );
+        let inputTurn: z.infer<typeof TurnSchema>;
+        try {
+          const receiving = await store.createThread(
+            workspaceId,
+            'Knowledge question',
+            receivingThreadId,
+            'knowledge-manager',
+            {
+              visibility: origin.visibility,
+              ...(origin.privateOwnerUserId
+                ? { privateOwnerUserId: origin.privateOwnerUserId }
+                : {}),
+              parentThreadId: origin.id,
+            }
+          );
+          threadId = receiving.id;
+          inputTurn = await createChatTurn(
+            new Date().toISOString(),
+            receivingTurnId,
+            fileOptions,
+            'knowledge-manager'
+          );
+          const handedOffAt = new Date().toISOString();
+          await store.completeTurn(
+            originTurn.id,
+            { status: 'completed', completedAt: handedOffAt },
+            {
+              requestId: chatInput.requestId,
+              items: [
+                {
+                  id: deriveEntityId('it', ['chat-knowledge-handoff', originTurn.id]),
+                  owner: originTurn.owner,
+                  threadId: origin.id,
+                  turnId: originTurn.id,
+                  type: 'status',
+                  status: 'completed',
+                  level: 'info',
+                  title: 'Knowledge Manager handoff',
+                  summary: `Work directed to Thread ${receivingThreadId}.`,
+                  causationId: receivingTurnId,
+                  createdAt: originTurn.startedAt!,
+                  completedAt: handedOffAt,
+                },
+              ],
+            }
+          );
+        } catch (error) {
+          // Receiving preparation has made no query call. End only this origin claim
+          // truthfully, so a local preparation fault does not block another action.
+          if (!isSealedTurnTerminal(store.getTurnById(originTurn.id).status))
+            await store.completeTurn(originTurn.id, {
+              status: 'failed',
+              completedAt: new Date().toISOString(),
+              error: {
+                code: 'chat_mode_failed',
+                message: 'Knowledge Manager handoff preparation failed before query execution.',
+              },
+            });
+          if (
+            error instanceof TurnStartValidationError ||
+            error instanceof HTTPException ||
+            error instanceof FileAdmissionError ||
+            error instanceof OperationError ||
+            error instanceof IdempotencyKeyConflictError
+          )
+            throw error;
+          throw new TurnStartValidationError(
+            'chat_mode_failed',
+            'Knowledge Manager receiving work could not be prepared. Inspect this request history, then retry with a new requestId.',
+            500
+          );
+        }
         const knowledgeAnswer = await createOperationInvocation({
           coreDb,
           store,
@@ -3300,7 +3456,7 @@ export function createConversationService({
           }
         );
         const completedAt = new Date().toISOString();
-        const turn = inputTurn ?? (await createChatTurn(completedAt));
+        const turn = inputTurn;
         const sourceTitles = knowledgeAnswer.citations
           .map((citation) => citation.reference)
           .join(', ');
@@ -3333,10 +3489,7 @@ export function createConversationService({
         return {
           body: ConversationCommandBodySchema.parse({
             outcome: 'answered',
-            explanation:
-              knowledgeAnswer.citations.length > 0
-                ? 'The Knowledge Manager answered from Workspace Knowledge.'
-                : 'The Knowledge Manager found insufficient Workspace evidence.',
+            explanation: 'The Knowledge Manager answered the Workspace Knowledge query.',
             turn: completedTurn,
             item: answerItem,
             handoff: null,
@@ -4521,7 +4674,10 @@ export function createConversationService({
       if (error instanceof TurnStartValidationError) {
         throw new TurnStartValidationError(
           error.code,
-          redactInternalAgentText(error.message),
+          chatInput.targetRef === 'internal-role:knowledge-manager' &&
+            error.code === 'recovery_required'
+            ? 'The Knowledge Manager request needs history inspection. Read the originating and receiving Threads, then start a new request with a new requestId.'
+            : redactInternalAgentText(error.message),
           error.status
         );
       }

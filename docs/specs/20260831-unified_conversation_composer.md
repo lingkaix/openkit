@@ -144,7 +144,6 @@ One end-to-end proof selects New Shard + Worker, submits a supported Artifact an
 
 - The Goal target wire kind is `goal-orchestrator` - code emits `goal-coordinator` - #744
 - Advanced settings offer a fresh Sandbox, a published template revision, and an existing shared Sandbox - the shared control emits only a selected work environment - #122
-- The Knowledge Manager opens its own Thread - submission still creates the origin Chat Turn - #790
 
 ## Decisions
 
