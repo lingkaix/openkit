@@ -60,6 +60,12 @@ export async function createNativeTaskAdmissionFixture(
   > & {
     /** Outside checkout HEAD/tree; Core verifies its commit against the admitted source pin. */
     workspaceGitBaseline?: { commit: string; tree: string };
+    /** Models a stale Harness interrupt after observing the exact cancellation before polling. */
+    beforeStaleInterruptPoll?: () => Promise<void>;
+    /** Delegates only interrupt refusal to the receiving Harness under test. */
+    interruptRefusal?: (
+      command: harnessOwner.NanoHostHarnessCommand
+    ) => Promise<'stale' | 'conflict'>;
     /**
      * Optional real Worker consumer for a component fixture. Image/transport facts
      * remain the explicit outside peer; Harness results and file bytes do not.
@@ -413,6 +419,8 @@ export async function createNativeTaskAdmissionFixture(
   const observeQueue = async (
     ...args: Parameters<typeof harnessOwner.queueNanoHostHarnessOperation>
   ) => {
+    if (!stopped && args[0] === coreDb && args[1].operation === 'turn.interrupt')
+      await options.beforeStaleInterruptPoll?.();
     const sequence = await queueOperation(...args);
     if (!stopped && args[0] === coreDb) available.resolve();
     return sequence;
@@ -648,16 +656,22 @@ export async function createNativeTaskAdmissionFixture(
                 .then(() => original.reportFinal!(false))
                 .catch((error: unknown) => failTurn(original, error));
             }
-            const closeRefusal =
-              command.operation === 'session.close' ? peerFaults.closeRefusal : undefined;
-            if (!closeRefusal) binding.state = next!;
+            const refusal =
+              command.operation === 'turn.interrupt'
+                ? options.interruptRefusal
+                  ? await options.interruptRefusal(wire)
+                  : options.beforeStaleInterruptPoll && 'stale'
+                : command.operation === 'session.close'
+                  ? peerFaults.closeRefusal
+                  : undefined;
+            if (!refusal) binding.state = next!;
             const result = {
               schemaVersion: 2 as const,
               harnessInstanceId: command.harnessInstanceId,
               operationId: command.operationId,
               sequence: command.sequence,
-              disposition: closeRefusal ? ('refused' as const) : ('succeeded' as const),
-              body: closeRefusal ? { reasonCode: closeRefusal } : body,
+              disposition: refusal ? ('refused' as const) : ('succeeded' as const),
+              body: refusal ? { reasonCode: refusal } : body,
             };
             const completedAt = new Date().toISOString();
             const settlement = await settleNanoHostHarnessOperation(coreDb, {

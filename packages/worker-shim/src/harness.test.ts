@@ -3976,14 +3976,17 @@ describe('Worker Harness resident AgentSessions', () => {
       body: { reasonCode: 'busy', exhaustedBound: 'agentSession.activeTurn' },
     });
     expect(await interrupt('tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4', 'lease-other')).toEqual(
-      expect.objectContaining({ body: { reasonCode: 'stale' } })
+      expect.objectContaining({ disposition: 'refused', body: { reasonCode: 'conflict' } })
     );
     expect(
       await interrupt(
         'tu_00000000-0000-7e49-8268-e35715b55d0c',
         'lease-tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'
       )
-    ).toEqual(expect.objectContaining({ body: { reasonCode: 'stale' } }));
+    ).toEqual(
+      expect.objectContaining({ disposition: 'refused', body: { reasonCode: 'conflict' } })
+    );
+    expect(f.fake.residents[0]?.interrupts).toBe(0);
     expect(
       await interrupt(
         'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',

@@ -792,14 +792,9 @@ export class WorkerHarness {
   private async interruptTurn(body: HarnessTurnInterruptBody) {
     const session = this.requireSession(body);
     const active = session.activeTurn;
-    if (
-      !active ||
-      active.barrierReached ||
-      body.turnId !== active.turnId ||
-      body.leaseId !== active.leaseId
-    ) {
-      throw harnessError('stale');
-    }
+    if (active && (body.turnId !== active.turnId || body.leaseId !== active.leaseId))
+      throw harnessError('conflict');
+    if (!active || active.barrierReached) throw harnessError('stale');
     active.abort.abort(new Error('Harness turn.interrupt'));
     await active.promise;
     if (session.cleanupState === 'unknown') {

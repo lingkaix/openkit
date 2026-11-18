@@ -20,6 +20,7 @@ import {
   deriveEntityId,
   GitFailureExplanationSchema,
   isEntityId,
+  isRecord,
   isSealedTurnTerminal,
   readRetainedV1,
   responsibleUserIdForActor,
@@ -4707,11 +4708,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       throw new Error(`Turn worker lineage is not live and exact: ${turnId}`);
     }
 
-    const attempts = listSchedulerExecutionAttemptsForTurn(this.coreDb!, {
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      turnId,
-    });
+    const scope = { workspaceId: workspaceIdForOwner(turn.owner), threadId: turn.threadId, turnId };
+    const attempts = listSchedulerExecutionAttemptsForTurn(this.coreDb!, scope);
     const attempt = attempts.find((candidate) => candidate.phase !== 'closed');
     if (
       context.stopReason &&
@@ -4748,10 +4746,64 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
       );
     }
-    await acceptSchedulerExecutionObservation(
-      this.coreDb!,
-      await this.executionBackend.cancel(schedulerExecutionCorrelation(closing))
-    );
+    try {
+      await acceptSchedulerExecutionObservation(
+        this.coreDb!,
+        await this.executionBackend.cancel(schedulerExecutionCorrelation(closing))
+      );
+    } catch (error) {
+      const receipt = context.command?.receipt;
+      if (
+        receipt?.command !== 'turn.interrupt' ||
+        !(error instanceof Error) ||
+        !('reasonCode' in error) ||
+        (error.reasonCode !== 'stale' && error.reasonCode !== 'conflict') ||
+        !('harnessInterrupt' in error) ||
+        !isRecord(error.harnessInterrupt) ||
+        error.harnessInterrupt.leaseId !== closing.attemptId ||
+        error.harnessInterrupt.turnId !== turnId ||
+        error.harnessInterrupt.agentSessionId !== agentSession.id
+      )
+        throw error;
+
+      if (error.reasonCode === 'conflict')
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The worker has conflicting active work. The cancellation owner requires inspection.',
+          409
+        );
+
+      // A stale refusal answers only the dispatch. The receipt and exact cancellation owner decide
+      // the public response, while the outstanding native barriers keep their own proof requirements.
+      try {
+        const retained = store.getCommandRequest(receipt.command, receipt.requestId, receipt.scope);
+        const current = listSchedulerExecutionAttemptsForTurn(this.coreDb!, scope).at(-1);
+        if (
+          current?.attemptId === closing.attemptId &&
+          current.phase !== 'open' &&
+          current.terminalCause === 'turn-cancelled' &&
+          current.agentSessionId === agentSession.id &&
+          current.inputRef === snapshot.packageSnapshotId &&
+          store.getTurnById(turnId).agentSessionId === agentSession.id &&
+          receipt.requestId === context.requestId &&
+          receipt.scope.workspaceId === scope.workspaceId &&
+          receipt.scope.threadId === scope.threadId &&
+          receipt.scope.turnId === turnId &&
+          retained?.inputHash === receipt.inputHash &&
+          retained.createdAt === receipt.createdAt &&
+          retained.response.kind === 'turn' &&
+          retained.response.id === turnId
+        )
+          return;
+      } catch {
+        // Unreadable owner evidence has the same recovery boundary as absent evidence.
+      }
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The accepted worker interruption requires inspection of its cancellation owner.',
+        409
+      );
+    }
   }
 
   /**

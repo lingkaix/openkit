@@ -6599,17 +6599,30 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public async interruptTurn(packageSnapshotId: string): Promise<void> {
     const session = this.requireSession(packageSnapshotId);
     this.failHarnessLoginExchange(session.refreshHarnessLogin);
-    const settlement = this.queueAndWaitForHarnessOperation(session, 'turn.interrupt', {
+    const body = {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
       leaseId: session.attemptId,
       purpose: 'interrupt',
       turnId: session.environmentPackage.scope.turnId,
-    }).then((result) => {
-      if (result.state !== 'interrupted') {
-        throw new Error('NanoHost Harness turn.interrupt result is incompatible.');
+    };
+    const settlement = this.queueAndWaitForHarnessOperation(session, 'turn.interrupt', body).then(
+      (result) => {
+        if (result.state !== 'interrupted') {
+          throw new Error('NanoHost Harness turn.interrupt result is incompatible.');
+        }
+      },
+      (error: unknown) => {
+        // The public interrupt response needs the identity of the refused dispatch.
+        if (
+          error instanceof Error &&
+          'reasonCode' in error &&
+          (error.reasonCode === 'stale' || error.reasonCode === 'conflict')
+        )
+          Object.defineProperty(error, 'harnessInterrupt', { value: body });
+        throw error;
       }
-    });
+    );
     session.turnStopSettlement = settlement;
     await settlement;
   }

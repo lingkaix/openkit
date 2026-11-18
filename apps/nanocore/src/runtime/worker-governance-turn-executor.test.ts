@@ -91,6 +91,7 @@ import {
   onTestFinished,
   vi,
 } from 'vitest';
+import { WorkerHarness } from '../../../../packages/worker-shim/src/harness.js';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
 import { NativeRuntimeCapture } from '../../../../packages/worker-shim/src/runtime-capture.js';
 import { openEphemeralSandboxIntegration } from '../../../../packages/worker-shim/src/test-support/ephemeral-integration.js';
@@ -232,6 +233,7 @@ import { readRetainedBodyBytes } from '../test-support/retained-body-observation
 import { closeTestCoreDb, createTestUserDb, createTestWorkspaceDb } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
+import { interruptProductTurn } from '../turn-routes.js';
 import * as credentialAuthority from '../vault/codex-login-refresh.js';
 import { createVaultGrant, getVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
@@ -3521,6 +3523,161 @@ describe('WorkerGovernanceTurnExecutor', () => {
       } finally {
         await f.dispose();
         vi.useRealTimers();
+      }
+    }
+  );
+
+  it.each(['inactive', 'lease mismatch'] as const)(
+    'returns the interrupt response when the receiving Harness sees %s',
+    async (receiverState) => {
+      const beforeStaleInterruptPoll = vi.fn<() => Promise<void>>();
+      const interruptRefusal =
+        vi.fn<NonNullable<NativeFinalReviewWorkerOptions['interruptRefusal']>>();
+      const f = await launchFinalReviewWorker(
+        'stale_native_interrupt',
+        async (coreDb) => {
+          const agentSetup = createTestAgentSetup({
+            requiredCapabilities: ['trusted-worker-inference-relay'],
+          });
+          admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+          return { agentSetup };
+        },
+        { realNative: true, beforeStaleInterruptPoll, interruptRefusal }
+      );
+      const requestId = '00000000-0000-4000-8000-000000000291';
+      const { workspaceId, threadId, turnId } = f.lineage;
+      const scope = { workspaceId, threadId, turnId };
+      const conflictingWork = new AbortController();
+      const receiver = new WorkerHarness({
+        adapters: {},
+        environment: {},
+        integration: {} as SandboxIntegrationClient,
+      });
+      interruptRefusal.mockImplementation(async (command) => {
+        expect(command.body).toMatchObject({ leaseId: f.attemptId, turnId });
+        const activeTurn =
+          receiverState === 'inactive'
+            ? null
+            : {
+                abort: conflictingWork,
+                barrierReached: false,
+                leaseId: 'different-receiver-lease',
+                turnId,
+              };
+        // Model the outside active lease while delivering the actual Core command to the real receiver.
+        Reflect.get(receiver, 'sessions').set(command.body.agentSessionRuntimeBindingId, {
+          agentSessionId: f.lineage.agentSessionId,
+          activeTurn,
+        });
+        const refusal = await receiver.handle(command);
+        expect(refusal.disposition).toBe('refused');
+        const reason = refusal.body.reasonCode;
+        if (reason !== 'stale' && reason !== 'conflict')
+          throw new Error('Unexpected Harness interrupt refusal.');
+        return reason;
+      });
+      try {
+        beforeStaleInterruptPoll.mockImplementation(async () => {
+          expect(f.store.getCommandRequest('turn.interrupt', requestId, scope)?.response).toEqual({
+            kind: 'turn',
+            id: turnId,
+          });
+          await expect(
+            Promise.resolve().then(() =>
+              f.gateway.recordHeartbeat({
+                authorization: `Bearer ${f.token}`,
+                lineage: f.lineage,
+                operation: 'heartbeat',
+                schemaVersion: 2,
+                sequence: 1,
+                body: { status: 'running' },
+              })
+            )
+          ).rejects.toMatchObject({ code: 'worker_control_lease_not_live', status: 403 });
+        });
+        const app = createApp({
+          coreDb: f.coreDb,
+          dataRoot: f.coreDb.dataRoot,
+          store: f.store,
+          runtimeConfigManager: f.runtimeConfigManager,
+          turnExecutor: f.executor,
+          workerLifecycleRuntime: f.workerLifecycleRuntime,
+          workerControlGateway: f.gateway,
+          gatewayConfig: f.gatewayConfig,
+        });
+        const response = await app.request('/api/app/operations/turn.interrupt', {
+          body: JSON.stringify({ ...scope, requestId }),
+          headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+          method: 'POST',
+        });
+        expect(beforeStaleInterruptPoll).toHaveBeenCalledOnce();
+        expect(interruptRefusal).toHaveBeenCalledOnce();
+        expect(conflictingWork.signal.aborted).toBe(false);
+        expect(response.status, await response.clone().text()).toBe(
+          receiverState === 'lease mismatch' ? 409 : 200
+        );
+        if (receiverState === 'inactive') {
+          const accepted = await response.json();
+          expect(accepted).toMatchObject({ id: turnId });
+          expect(['running', 'interrupted']).toContain(accepted.status);
+        } else {
+          await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
+        }
+        await expect(interruptRefusal.mock.results[0]?.value).resolves.toBe(
+          receiverState === 'lease mismatch' ? 'conflict' : 'stale'
+        );
+        await f.execution;
+        expect(f.store.getTurnById(turnId)).toMatchObject({ status: 'interrupted' });
+      } finally {
+        await f.dispose();
+      }
+    }
+  );
+
+  it.each([
+    { reasonCode: 'stale', owner: 'different lease' },
+    { reasonCode: 'stale', owner: 'unresolved owner' },
+    { reasonCode: 'conflict', owner: 'different lease' },
+  ] as const)(
+    'keeps the refusal boundary for a $reasonCode interrupt with a $owner',
+    async ({ reasonCode, owner }) => {
+      const f = await launchFinalReviewWorker(`interrupt_${reasonCode}_${owner}`);
+      const requestId = '00000000-0000-4000-8000-000000000292';
+      const { workspaceId, threadId, turnId, agentSessionId } = f.lineage;
+      const refusal = Object.assign(
+        new Error(`NanoHost Harness turn.interrupt refused: ${reasonCode}.`),
+        {
+          reasonCode,
+          harnessInterrupt: {
+            agentSessionId,
+            turnId,
+            leaseId: owner === 'different lease' ? 'different-lease' : f.attemptId,
+          },
+        }
+      );
+      const readReceipt = vi.spyOn(f.store, 'getCommandRequest');
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.spyOn(f.backend, 'cancel').mockImplementationOnce(async () => {
+          if (owner === 'unresolved owner') readReceipt.mockReturnValueOnce(null);
+          throw refusal;
+        });
+        const stopped = interruptProductTurn({
+          coreDb: f.coreDb,
+          store: f.store,
+          turnExecutor: f.executor,
+          inflightCommands: new WeakMap(),
+          workspaceId,
+          threadId,
+          turnId,
+          requestId,
+        });
+        if (owner === 'different lease') await expect(stopped).rejects.toBe(refusal);
+        else
+          await expect(stopped).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
+      } finally {
+        readReceipt.mockRestore();
+        await f.dispose().finally(() => vi.useRealTimers());
       }
     }
   );
@@ -17175,10 +17332,15 @@ type NativeFinalReviewWorkerFixture = Omit<
   gatewayConfig: ReturnType<typeof createTestGatewayConfig>;
 };
 
+type NativeFinalReviewWorkerOptions = Pick<
+  NonNullable<Parameters<typeof createNativeTaskAdmissionFixture>[2]>,
+  'beforeStaleInterruptPoll' | 'interruptRefusal'
+>;
+
 function launchFinalReviewWorker(
   suffix: string,
   prepare: FinalReviewWorkerPreparation | undefined,
-  options: { realNative: true }
+  options: { realNative: true } & NativeFinalReviewWorkerOptions
 ): Promise<NativeFinalReviewWorkerFixture>;
 function launchFinalReviewWorker(
   suffix: string,
@@ -17188,7 +17350,7 @@ function launchFinalReviewWorker(
 async function launchFinalReviewWorker(
   suffix: string,
   prepare?: FinalReviewWorkerPreparation,
-  options: { realNative?: boolean } = {}
+  options: { realNative?: boolean } & NativeFinalReviewWorkerOptions = {}
 ): Promise<FinalReviewWorkerFixture | NativeFinalReviewWorkerFixture> {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-review-')));
   applyMigrations(coreDb);
@@ -17332,6 +17494,10 @@ async function launchFinalReviewWorker(
       ...(prepared.vaultBackend ? { vaultBackend: prepared.vaultBackend } : {}),
       ...(prepared.policyInterception ? { policyInterception: prepared.policyInterception } : {}),
       readRuntimeConfig: () => runtimeConfigManager.current(),
+      ...(options.beforeStaleInterruptPoll
+        ? { beforeStaleInterruptPoll: options.beforeStaleInterruptPoll }
+        : {}),
+      ...(options.interruptRefusal ? { interruptRefusal: options.interruptRefusal } : {}),
     });
     const entry = nativeEntry;
     if (!entry) throw new Error('Real native setup omitted its canonical pending admission.');
