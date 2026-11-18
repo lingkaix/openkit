@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   type ActorRef,
   deriveEntityId,
@@ -14,6 +15,7 @@ import {
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { ControlCheckpointCommandInput } from '../storage/control-store-checkpoints.js';
 import { presentControlFacts } from '../storage/control-store-input.js';
+import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { recordWorkerCheckpointRuntimeEvidence } from './runtime-evidence.js';
@@ -381,12 +383,12 @@ export function upsertWorkerCheckpointInDb(
 }
 
 /**
- * Updates an existing worker checkpoint.
+ * Updates an existing worker checkpoint or acknowledges an identical terminal record.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param input Worker checkpoint update input.
  * @returns Updated worker checkpoint record.
- * @throws Error when the checkpoint does not exist.
+ * @throws Error when the checkpoint does not exist or the update contradicts its terminal state.
  */
 export function updateWorkerCheckpointInDb(
   workspaceDb: WorkspaceDb,
@@ -398,6 +400,23 @@ export function updateWorkerCheckpointInDb(
     input.threadId,
     input.turnId
   );
+  const next = {
+    ...existing,
+    stage: input.stage ?? existing.stage,
+    iteration: input.iteration ?? existing.iteration,
+    workerSessionId: input.workerSessionId ?? existing.workerSessionId,
+    contextDigest: input.contextDigest ?? existing.contextDigest,
+    stopReason: input.stopReason ?? existing.stopReason,
+    diagnosticsSummary:
+      input.diagnosticsSummary === undefined
+        ? existing.diagnosticsSummary
+        : redactOptionalText(input.diagnosticsSummary),
+  };
+  if (isTerminalWorkerTurnStage(existing.stage)) {
+    if (!isDeepStrictEqual(existing, next)) throw new ControlProductPreconditionError();
+    // A collector can already hold this full record for native comparison.
+    return existing;
+  }
   const timestamp = input.now?.() ?? new Date().toISOString();
 
   workspaceDb.sqlite
@@ -414,14 +433,12 @@ export function updateWorkerCheckpointInDb(
       WHERE checkpoint_id = ?`
     )
     .run(
-      input.stage ?? existing.stage,
-      input.iteration ?? existing.iteration,
-      input.workerSessionId ?? existing.workerSessionId,
-      input.contextDigest ?? existing.contextDigest,
-      input.stopReason ?? existing.stopReason,
-      input.diagnosticsSummary === undefined
-        ? existing.diagnosticsSummary
-        : redactOptionalText(input.diagnosticsSummary),
+      next.stage,
+      next.iteration,
+      next.workerSessionId,
+      next.contextDigest,
+      next.stopReason,
+      next.diagnosticsSummary,
       timestamp,
       existing.checkpointId
     );

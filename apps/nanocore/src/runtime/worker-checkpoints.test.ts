@@ -10,7 +10,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { openTestNativeWorkspace } from '../test-support/store.js';
+import { closeTestCoreDb, openTestNativeWorkspace } from '../test-support/store.js';
 import {
   listWorkspaceRuntimeEvidence,
   recordWorkerBackendTeardownEvidence,
@@ -37,6 +37,67 @@ async function createWorkspaceDb(): Promise<WorkspaceDb> {
 }
 
 describe('worker checkpoint storage', () => {
+  it('preserves the exact terminal checkpoint and refuses contradictory promotions', async () => {
+    const workspaceDb = await createWorkspaceDb();
+    const scope = {
+      workspaceId: workspaceDb.workspaceId,
+      threadId: testEntityId('th', 'terminal-checkpoint'),
+      turnId: testEntityId('tu', 'terminal-checkpoint'),
+    };
+    const promotion = {
+      ...scope,
+      authorityActor: { kind: 'user', id: testEntityId('usr', 'terminal-checkpoint') },
+      stage: 'completed',
+      stopReason: 'completed',
+      diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics({
+        itemIds: [testEntityId('it', 'terminal-checkpoint-evidence')],
+        artifactIds: [],
+      }),
+    } as const;
+
+    try {
+      await upsertWorkerCheckpoint(workspaceDb, {
+        ...scope,
+        requestId: 'req_exact_terminal_checkpoint',
+        requestInputHash: 'sha256:exact_terminal_checkpoint',
+        stage: 'running_worker',
+        iteration: 0,
+        workerSessionId: testEntityId('as', 'terminal-checkpoint'),
+        contextDigest: 'sha256:original-context',
+        now: () => '2026-05-31T00:00:00.000Z',
+      });
+      const terminal = await updateWorkerCheckpoint(workspaceDb, {
+        ...promotion,
+        now: () => '2026-05-31T00:10:00.000Z',
+      });
+      const repeat = { ...promotion, now: () => '2026-05-31T00:11:00.000Z' };
+      await expect(updateWorkerCheckpoint(workspaceDb, repeat)).resolves.toEqual(terminal);
+
+      for (const changed of [
+        { stage: 'running_worker' },
+        { stage: 'failed', stopReason: 'error' },
+        { stopReason: 'length' },
+        { iteration: 1 },
+        { workerSessionId: testEntityId('as', 'contradictory-session') },
+        { contextDigest: 'sha256:contradictory-context' },
+        { diagnosticsSummary: null },
+      ] as const) {
+        await expect(
+          updateWorkerCheckpoint(workspaceDb, { ...repeat, ...changed })
+        ).rejects.toMatchObject({
+          code: 'precondition',
+          commit: 'not-committed',
+        });
+        expect(
+          getWorkerCheckpoint(workspaceDb, scope.workspaceId, scope.threadId, scope.turnId)
+        ).toEqual(terminal);
+      }
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      closeTestCoreDb(workspaceDb);
+    }
+  });
+
   it('creates compact evidence diagnostics for checkpoint summaries', () => {
     expect(createWorkerCheckpointEvidenceDiagnostics({ itemIds: [], artifactIds: [] })).toBeNull();
     expect(

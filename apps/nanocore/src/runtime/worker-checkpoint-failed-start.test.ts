@@ -35,6 +35,7 @@ import {
 import { getWorkerCheckpoint, listExportableWorkerCheckpoints } from './worker-checkpoints.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
+import { hasWorkerCheckpointNeverSubmittedProof } from './worker-recovery.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -372,6 +373,99 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
 }
 
 describe('checkpoint-owned never-submitted failed start', () => {
+  it('replays one proved never-submitted failure while another replay collects its checkpoint', async () => {
+    const f = await failedStart('direct', true);
+    const readCheckpoint = () =>
+      getWorkerCheckpoint(f.workspaceDb, f.checkpoint.workspaceId, f.checkpoint.threadId, f.turnId);
+    const client = getControlStoreWorkerClient();
+    const capability = client.workspaceCapability.bind(client);
+    const firstClearEntered = Promise.withResolvers<void>();
+    const allowFirstClear = Promise.withResolvers<void>();
+    const firstClearFinished = Promise.withResolvers<void>();
+    const secondReceiptRead = Promise.withResolvers<void>();
+    let first: Promise<Response> | undefined;
+    let second: Promise<Response> | undefined;
+    let retainCheckpoint = true;
+    let clears = 0;
+    vi.spyOn(client, 'workspaceCapability').mockImplementation(async (db, command) => {
+      if (
+        command.kind !== 'checkpoint' ||
+        command.input.kind !== 'clear-terminal' ||
+        command.input.turnId !== f.turnId
+      )
+        return capability(db, command);
+      if (retainCheckpoint) return false;
+      if (++clears === 1) {
+        firstClearEntered.resolve();
+        await allowFirstClear.promise;
+        try {
+          return await capability(db, command);
+        } finally {
+          firstClearFinished.resolve();
+        }
+      }
+      await firstClearFinished.promise;
+      return capability(db, command);
+    });
+
+    try {
+      await expect(f.classify()).rejects.toMatchObject({
+        code: 'recovery_required',
+        message: 'The boot Task checkpoint is not ready for cleanup.',
+      });
+      const retained = readCheckpoint();
+      expect(retained).toMatchObject({ stage: 'failed', stopReason: 'error' });
+      expect(
+        hasWorkerCheckpointNeverSubmittedProof(f.coreDb, f.store, f.workspaceDb, retained!)
+      ).toBe(true);
+      expect(f.store.getTurnById(f.turnId).status).toBe('failed');
+      const receipts = f.store.listCommandRequests();
+      expect(receipts.filter((receipt) => receipt.command === 'task.start')).toEqual([
+        expect.objectContaining({ response: { kind: 'turn', id: f.turnId } }),
+      ]);
+      const events = f.store.getTurnEvents(f.turnId);
+
+      retainCheckpoint = false;
+      first = Promise.resolve(f.replay());
+      await Promise.race([firstClearEntered.promise, first]);
+      expect(clears).toBe(1);
+      const getReceipt = f.store.getCommandRequest.bind(f.store);
+      vi.spyOn(f.store, 'getCommandRequest').mockImplementation((...args) => {
+        const result = getReceipt(...args);
+        if (
+          args[0] === 'task.start' &&
+          args[1] === f.checkpoint.requestId &&
+          result?.response.id === f.turnId
+        )
+          secondReceiptRead.resolve();
+        return result;
+      });
+      second = Promise.resolve(f.replay());
+      await Promise.race([secondReceiptRead.promise, second]);
+      await setImmediate();
+      allowFirstClear.resolve();
+
+      const responses = await Promise.all([first, second]);
+      for (const response of responses) {
+        expect(response.status, await response.clone().text()).toBe(202);
+        expect(await response.json()).toMatchObject({
+          state: 'failed',
+          turn: { id: f.turnId, status: 'failed' },
+        });
+      }
+      expect(readCheckpoint()).toBeNull();
+      expect(f.store.listCommandRequests()).toEqual(receipts);
+      expect(f.store.getTurnEvents(f.turnId)).toEqual(events);
+      expect(f.backend.submit).not.toHaveBeenCalled();
+      expect(f.backend.release).not.toHaveBeenCalled();
+    } finally {
+      allowFirstClear.resolve();
+      await Promise.allSettled([first, second]);
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  }, 60_000);
+
   it('settles with an earlier proved busy refusal at the same creation timestamp', async () => {
     const f = await failedStart('conversation', true);
     try {

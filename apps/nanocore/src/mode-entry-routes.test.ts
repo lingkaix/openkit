@@ -2400,6 +2400,87 @@ describe('exact Task Agent selection', () => {
   );
 });
 
+/** Holds duplicate sessionless promotions on either side of the first native clear snapshot. */
+async function replaySessionlessTaskConcurrently(input: {
+  store: FsStore;
+  requestId: string;
+  turnId: string;
+  replay: () => Response | Promise<Response>;
+}): Promise<Response[]> {
+  const client = getControlStoreWorkerClient();
+  const capability = client.workspaceCapability.bind(client);
+  const firstPromotion = Promise.withResolvers<void>();
+  const releasePromotion = Promise.withResolvers<void>();
+  const secondReceipt = Promise.withResolvers<void>();
+  const firstComparison = Promise.withResolvers<void>();
+  const secondPromotion = Promise.withResolvers<void>();
+  const firstResponse = Promise.withResolvers<void>();
+  let promotions = 0;
+  let comparisons = 0;
+  let secondStarted = false;
+  let first: Promise<Response> | undefined;
+  let second: Promise<Response> | undefined;
+  const writes = vi.spyOn(client, 'workspaceCapability').mockImplementation(async (db, command) => {
+    if (command.kind === 'checkpoint' && command.input.turnId === input.turnId) {
+      const mutation = command.input;
+      if (mutation.kind === 'update' && mutation.stage === 'failed') {
+        if (++promotions === 1) {
+          firstPromotion.resolve();
+          await releasePromotion.promise;
+        } else if (promotions === 2) {
+          await firstComparison.promise;
+          try {
+            const now = new Date(Date.parse(mutation.now) + 1000).toISOString();
+            return await capability(db, { ...command, input: { ...mutation, now } });
+          } finally {
+            secondPromotion.resolve();
+          }
+        }
+      }
+      if (mutation.kind === 'clear-terminal') {
+        if (++comparisons === 1) {
+          firstComparison.resolve();
+          if (promotions > 1) await secondPromotion.promise;
+        } else if (promotions > 1) {
+          // A stale compare must still see the retained row while handling its result.
+          await firstResponse.promise;
+        }
+      }
+    }
+    return capability(db, command);
+  });
+  const readReceipt = input.store.getCommandRequest.bind(input.store);
+  const receipts = vi.spyOn(input.store, 'getCommandRequest').mockImplementation((...args) => {
+    const record = readReceipt(...args);
+    if (
+      secondStarted &&
+      args[0] === 'task.start' &&
+      args[1] === input.requestId &&
+      record?.response.id === input.turnId
+    )
+      secondReceipt.resolve();
+    return record;
+  });
+  try {
+    first = Promise.resolve(input.replay()).finally(() => firstResponse.resolve());
+    await Promise.race([firstPromotion.promise, first]);
+    expect(promotions).toBe(1);
+    secondStarted = true;
+    second = Promise.resolve(input.replay());
+    await Promise.race([secondReceipt.promise, second]);
+    await setImmediate();
+    releasePromotion.resolve();
+    return await Promise.all([first, second]);
+  } finally {
+    releasePromotion.resolve();
+    firstComparison.resolve();
+    firstResponse.resolve();
+    await Promise.allSettled([first, second]);
+    receipts.mockRestore();
+    writes.mockRestore();
+  }
+}
+
 describe('route B queued Task receipts', () => {
   it.each(['direct', 'selected-conversation'] as const)(
     'acknowledges capacity waiting through %s and replays the original pending Turn after reload',
@@ -2503,6 +2584,7 @@ describe('route B queued Task receipts', () => {
     { failPreparation: false, entry: 'direct' },
     { failPreparation: true, entry: 'direct', replayBeforeCollection: false },
     { failPreparation: true, entry: 'direct', replayBeforeCollection: true },
+    { failPreparation: true, entry: 'direct', replayBeforeCollection: 'concurrent' },
     { failPreparation: true, entry: 'selected-conversation' },
     { failPreparation: true, entry: 'direct', proofGap: 'native' },
     { failPreparation: true, entry: 'direct', proofGap: 'input' },
@@ -2542,6 +2624,11 @@ describe('route B queued Task receipts', () => {
           return originalPrepare(...args);
         });
       const requestId = '0190f4c8-0000-7000-8000-000000000993';
+      const concurrentReplay =
+        'replayBeforeCollection' in scenario && scenario.replayBeforeCollection === 'concurrent';
+      const taskObservation = concurrentReplay
+        ? vi.spyOn(productTurnOwners, 'observeTurnAdmission')
+        : undefined;
       let observed: Response | undefined;
       const pending = Promise.resolve(
         app.request(
@@ -2857,7 +2944,35 @@ describe('route B queued Task receipts', () => {
                 checkpoint: { ...checkpoint, requestInputHash: 'contradictory-hash' },
               })
             ).rejects.toMatchObject({ code: 'recovery_required' });
-            if ('replayBeforeCollection' in scenario && scenario.replayBeforeCollection) {
+            if (concurrentReplay) {
+              const closeout = taskObservation?.mock.results.find(
+                (result) => result.type === 'return'
+              )?.value.closeout;
+              expect(closeout).toBeDefined();
+              await expect(closeout).rejects.toThrow();
+              expect(store.getTurnById(admittedId).agentSessionId ?? null).toBeNull();
+              expect(checkpoint.stopReason).toBeNull();
+              const responses = await replaySessionlessTaskConcurrently({
+                store,
+                requestId,
+                turnId: admittedId,
+                replay,
+              });
+              const bodies = await Promise.all(responses.map((response) => response.json()));
+              expect(
+                responses.map((response) => response.status),
+                JSON.stringify(bodies)
+              ).toEqual([202, 202]);
+              for (const body of bodies)
+                expect(body).toMatchObject({
+                  state: 'failed',
+                  turn: {
+                    id: admittedId,
+                    status: 'failed',
+                    error: store.getTurnById(admittedId).error,
+                  },
+                });
+            } else if ('replayBeforeCollection' in scenario && scenario.replayBeforeCollection) {
               const response = await replay();
               expect(response.status, await response.clone().text()).toBe(202);
               expect(await response.json()).toMatchObject({
@@ -2946,6 +3061,7 @@ describe('route B queued Task receipts', () => {
         await pending;
         if (executor.launches) await executor.finished.promise;
         await setImmediate();
+        taskObservation?.mockRestore();
         prepare.mockRestore();
         await shutdownControlStoreWorkerClient();
         coreDb.sqlite.close();

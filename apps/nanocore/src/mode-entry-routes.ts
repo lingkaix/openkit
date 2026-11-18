@@ -166,6 +166,7 @@ import {
 } from './runtime/worker-checkpoints.js';
 import { turnStatusForCanonicalWorkerStopReason } from './runtime/worker-control-records.js';
 import {
+  type ClearWorkerCheckpointAfterTerminalStateInput,
   cancelNeverAllocatedWorkerJournal,
   classifyClosedWorkerApprovalGate,
   classifyClosedWorkerUserInputGate,
@@ -919,12 +920,13 @@ function conversationKnowledgeThreadId(
  * Rebuilds one accepted Task Mode response from its receipt and durable Turn owners.
  *
  * @param store Store that owns the original Task Turn and Items.
+ * @param actorId Actor bound into the command scope.
  * @param coreDb Optional Core storage needed for Goal and review owners.
  * @param repositoryWorkspaceDb Opens the Workspace database for Goal-owner validation.
  * @param workspaceId Workspace bound into the command scope.
  * @param threadId Thread bound into the command scope.
  * @param record Completed command receipt.
- * @param joinTerminalCloseout Joins the original live owner before terminal recovery.
+ * @param joinTerminalCloseout Joins the original live owner when closeout still needs to settle.
  * @returns Original Task response without rerunning Coordinator or downstream effects.
  * @throws TurnStartValidationError when the receipt and durable owners disagree.
  */
@@ -936,7 +938,7 @@ async function replayTaskModeCommand(
   workspaceId: string,
   threadId: string,
   record: CommandRequestRecord,
-  joinTerminalCloseout: (turn: z.infer<typeof TurnSchema>) => Promise<void>
+  joinTerminalCloseout?: (turn: z.infer<typeof TurnSchema>) => Promise<void>
 ): Promise<StartTaskModeResponse> {
   try {
     let currentTurn = store.getTurnById(record.response.id);
@@ -991,7 +993,7 @@ async function replayTaskModeCommand(
         }
       }
       // A receipt published at admission cannot bypass an unfinished or contradictory closeout.
-      await joinTerminalCloseout(currentTurn);
+      if (joinTerminalCloseout) await joinTerminalCloseout(currentTurn);
       if (coreDb) {
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
         try {
@@ -1133,14 +1135,8 @@ async function publishCheckpointNeverSubmittedFailure(input: {
   );
 }
 
-/**
- * Rebuilds one direct Task result from its exact request-bound worker checkpoint.
- *
- * @param input Direct Task command identity and durable owners.
- * @returns Current Task projection without rerunning Coordinator or the worker.
- * @throws TurnStartValidationError when the checkpoint owner tuple is incomplete.
- */
-async function recoverDirectTaskModeCheckpoint(input: {
+/** Exact command and retained owners for direct Task checkpoint recovery. */
+type DirectTaskCheckpointRecoveryInput = {
   readonly coreDb: CoreDb;
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
@@ -1150,7 +1146,76 @@ async function recoverDirectTaskModeCheckpoint(input: {
   readonly requestInputHash: string;
   readonly turnId: string;
   readonly checkpoint: WorkerCheckpointRecord;
-}): Promise<StartTaskModeResponse> {
+};
+
+/** Exact Core, product, and Workspace owners of a retained Task checkpoint. */
+type TaskCheckpointOwners = Pick<
+  DirectTaskCheckpointRecoveryInput,
+  'coreDb' | 'store' | 'workspaceDb' | 'checkpoint'
+>;
+
+type TaskCheckpointRepairResults = {
+  projection: StartTaskModeResponse;
+  classification: 'complete' | 'live';
+};
+
+type TaskCheckpointRepairs = {
+  [K in keyof TaskCheckpointRepairResults]: Map<
+    string,
+    { checkpoint: WorkerCheckpointRecord; result: Promise<TaskCheckpointRepairResults[K]> }
+  >;
+};
+
+const taskCheckpointRepairs = new WeakMap<CoreDb, TaskCheckpointRepairs>();
+
+/** Joins one request-bound repair of the same retained checkpoint snapshot. */
+async function joinTaskCheckpointRepair<K extends keyof TaskCheckpointRepairResults>(
+  input: Pick<TaskCheckpointOwners, 'coreDb' | 'workspaceDb' | 'checkpoint'>,
+  kind: K,
+  repair: () => Promise<TaskCheckpointRepairResults[K]>
+): Promise<TaskCheckpointRepairResults[K]> {
+  let repairs = taskCheckpointRepairs.get(input.coreDb);
+  if (!repairs) {
+    repairs = { projection: new Map(), classification: new Map() };
+    taskCheckpointRepairs.set(input.coreDb, repairs);
+  }
+  const { checkpoint } = input;
+  // Native commit can expose the promoted stage before the original repair is acknowledged.
+  const key = `${checkpoint.checkpointId}:${checkpoint.stage}`;
+  const active = repairs[kind].get(key);
+  if (active) {
+    if (!isDeepStrictEqual(active.checkpoint, checkpoint))
+      throw directTaskModeRecoveryError('The Task checkpoint changed during terminal repair.');
+    return await active.result;
+  }
+  // A maintenance scan can hold a snapshot across an earlier checkpoint's asynchronous repair.
+  const current = getWorkerCheckpoint(
+    input.workspaceDb,
+    checkpoint.workspaceId,
+    checkpoint.threadId,
+    checkpoint.turnId
+  );
+  if (!isDeepStrictEqual(current, checkpoint))
+    throw directTaskModeRecoveryError('The Task checkpoint changed before terminal repair.');
+  const result = repair();
+  repairs[kind].set(key, { checkpoint, result });
+  try {
+    return await result;
+  } finally {
+    repairs[kind].delete(key);
+  }
+}
+
+/**
+ * Rebuilds one direct Task result from its exact request-bound worker checkpoint.
+ *
+ * @param input Direct Task command identity and durable owners.
+ * @returns Current Task projection without rerunning Coordinator or the worker.
+ * @throws TurnStartValidationError when the checkpoint owner tuple is incomplete.
+ */
+async function recoverDirectTaskModeCheckpoint(
+  input: DirectTaskCheckpointRecoveryInput
+): Promise<StartTaskModeResponse> {
   const { checkpoint } = input;
   if (
     checkpoint.requestId === input.requestId &&
@@ -1203,8 +1268,27 @@ async function recoverDirectTaskModeCheckpoint(input: {
     throw directTaskModeRecoveryError('The Task checkpoint worker input is not authoritative.');
   }
 
+  // A running checkpoint can need terminal promotion. A failed-start checkpoint can
+  // still need product or journal repair even after its failed stage is durable.
+  if (
+    !(checkpoint.stage === 'running_worker' && checkpoint.stopReason === null) &&
+    !(checkpoint.stage === 'failed' && checkpoint.stopReason === 'error')
+  ) {
+    return await projectDirectTaskModeCheckpoint(input);
+  }
+
+  return await joinTaskCheckpointRepair(input, 'projection', () =>
+    projectDirectTaskModeCheckpoint(input)
+  );
+}
+
+/** Publishes any required repair and projects the Task through the complete terminal proof. */
+async function projectDirectTaskModeCheckpoint(
+  input: DirectTaskCheckpointRecoveryInput
+): Promise<StartTaskModeResponse> {
+  const { checkpoint } = input;
   await publishCheckpointNeverSubmittedFailure(input);
-  turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
 
   let stopReason: StopReason;
   let stage = checkpoint.stage;
@@ -1243,7 +1327,11 @@ async function recoverDirectTaskModeCheckpoint(input: {
       turnId: input.turnId,
       stage,
       stopReason,
-      diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(evidence, contextAssembly),
+      diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
+        evidence,
+        contextAssembly,
+        taskWorkerFailureSummary(turn)
+      ),
     });
   }
 
@@ -1289,6 +1377,17 @@ async function recoverDirectTaskModeCheckpoint(input: {
   });
 }
 
+/** Collects a proved terminal Task or observes that another collector already removed it. */
+async function collectProvenTaskCheckpoint(
+  workspaceDb: WorkspaceDb,
+  input: Omit<ClearWorkerCheckpointAfterTerminalStateInput, 'skipRuntimeProvenance'>
+): Promise<boolean> {
+  return (
+    (await clearWorkerCheckpointAfterTerminalState(workspaceDb, input)) ||
+    !getWorkerCheckpoint(workspaceDb, input.workspaceId, input.threadId, input.turnId)
+  );
+}
+
 /**
  * Classifies one conversation-owned Task checkpoint or one direct task.start checkpoint after scheduler restart fencing.
  *
@@ -1296,12 +1395,9 @@ async function recoverDirectTaskModeCheckpoint(input: {
  * @returns `live` for queued or reconnectable work, otherwise `complete` after receipt-first cleanup.
  * @throws TurnStartValidationError when the durable owner tuple cannot prove one safe outcome.
  */
-export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: {
-  readonly coreDb: CoreDb;
-  readonly store: FsStore;
-  readonly workspaceDb: WorkspaceDb;
-  readonly checkpoint: WorkerCheckpointRecord;
-}): Promise<'complete' | 'live'> {
+export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(
+  input: TaskCheckpointOwners
+): Promise<'complete' | 'live'> {
   const { checkpoint } = input;
   const attempts = listSchedulerExecutionAttemptsForTurn(input.coreDb, {
     workspaceId: checkpoint.workspaceId,
@@ -1318,7 +1414,7 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
         throw directTaskModeRecoveryError('The sessionless Task has no unique admission owner.');
       const recovered = await recoverSessionlessTaskAdmission({ ...checkpoint, ...input });
       if (recovered.turn.status !== 'failed') return 'live';
-      if (!(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, checkpoint)))
+      if (!(await collectProvenTaskCheckpoint(input.workspaceDb, checkpoint)))
         throw directTaskModeRecoveryError(
           'The sessionless Task checkpoint is not ready for cleanup.'
         );
@@ -1350,109 +1446,10 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     requestInputHash: checkpoint.requestInputHash,
     turnId: checkpoint.turnId,
   });
-  if (conversationOwner) {
-    if (checkpoint.goalId !== null || checkpoint.taskId !== null || checkpoint.iteration !== 0) {
-      throw directTaskModeRecoveryError(
-        'The boot Task checkpoint contradicts its command identity.'
-      );
-    }
-    const conversationRetryDecision = resolveInterruptedWorkerRetryDecision(
-      input.coreDb,
-      input.store,
-      input.workspaceDb,
-      checkpoint
+  if (conversationOwner)
+    return await joinTaskCheckpointRepair(input, 'classification', () =>
+      classifyConversationWorkerCheckpoint(input)
     );
-    if (conversationRetryDecision.status === 'reconnect-pending') {
-      return 'live';
-    }
-    const conversationTurn = input.store.getTurnById(checkpoint.turnId);
-    const neverSubmitted = hasWorkerCheckpointNeverSubmittedProof(
-      input.coreDb,
-      input.store,
-      input.workspaceDb,
-      checkpoint
-    );
-    if (neverSubmitted) {
-      const resultItem = conversationTurn.items.find(
-        (item) => item.id === deriveEntityId('it', ['worker-result', conversationTurn.id])
-      );
-      if (
-        resultItem?.type !== 'status' ||
-        resultItem.status !== 'completed' ||
-        workspaceIdForOwner(resultItem.owner) !== checkpoint.workspaceId ||
-        resultItem.threadId !== checkpoint.threadId ||
-        resultItem.turnId !== checkpoint.turnId
-      )
-        throw directTaskModeRecoveryError('The conversation Worker result is contradictory.');
-      await publishCheckpointNeverSubmittedFailure(input);
-    }
-    const stopReason = recoverWorkerCheckpointStopReason(
-      input.coreDb,
-      input.store,
-      input.workspaceDb,
-      checkpoint
-    );
-    if (neverSubmitted)
-      await persistConversationWorkerResultItem(
-        input.store,
-        checkpoint.workspaceId,
-        checkpoint.threadId,
-        checkpoint.turnId,
-        conversationTurn.agentId!
-      );
-    if (checkpoint.stage === 'running_worker' && checkpoint.stopReason === null) {
-      const turn = input.store.getTurn(
-        checkpoint.workspaceId,
-        checkpoint.threadId,
-        checkpoint.turnId
-      );
-      const evidence = taskModeEvidenceForTurn(
-        input.store,
-        input.workspaceDb,
-        checkpoint.workspaceId,
-        checkpoint.threadId,
-        turn
-      );
-      await updateWorkerCheckpoint(input.workspaceDb, {
-        authorityActor: turn.triggerActor,
-        workspaceId: checkpoint.workspaceId,
-        threadId: checkpoint.threadId,
-        turnId: checkpoint.turnId,
-        stage: workerTurnStageForStopReason(stopReason),
-        stopReason,
-        diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
-          evidence,
-          parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)
-        ),
-      });
-    }
-    const recoveredConversationCheckpoint = getWorkerCheckpoint(
-      input.workspaceDb,
-      checkpoint.workspaceId,
-      checkpoint.threadId,
-      checkpoint.turnId
-    );
-    if (!recoveredConversationCheckpoint) {
-      throw directTaskModeRecoveryError(
-        'The boot Task checkpoint disappeared during classification.'
-      );
-    }
-    if (recoveredConversationCheckpoint.stage === 'waiting_for_user') {
-      return 'live';
-    }
-    if (
-      !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
-        coreDb: input.coreDb,
-        store: input.store,
-        workspaceId: checkpoint.workspaceId,
-        threadId: checkpoint.threadId,
-        turnId: checkpoint.turnId,
-      }))
-    ) {
-      throw directTaskModeRecoveryError('The boot Task checkpoint is not ready for cleanup.');
-    }
-    return 'complete';
-  }
   const outcomeSource = readAssistantTaskHandoffSource(input.store, input.workspaceDb, {
     ...checkpoint,
     turnInput: admission.turnInput,
@@ -1554,20 +1551,22 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     checkpoint.threadId,
     checkpoint.turnId
   );
-  if (!recoveredCheckpoint) {
+  const turn = TurnSchema.parse(response.turn);
+  if (!recoveredCheckpoint && (!receipt || !isSealedTurnTerminal(turn.status))) {
     throw directTaskModeRecoveryError(
       'The boot Task checkpoint disappeared during classification.'
     );
   }
-  if (recoveredCheckpoint.stage === 'waiting_for_user' && response.state !== 'awaiting-human') {
+  if (recoveredCheckpoint?.stage === 'waiting_for_user' && response.state !== 'awaiting-human') {
     throw directTaskModeRecoveryError('The active Task Gate contradicts its Task projection.');
   }
-  if (!hasClosedDirectTaskGateReceipt(input.store, TurnSchema.parse(response.turn))) {
+  if (!hasClosedDirectTaskGateReceipt(input.store, turn)) {
     throw directTaskModeRecoveryError('The closed Task Gate has no response command receipt.');
   }
+  // The exact receipt and completed terminal proof allow collection by a peer.
+  if (!recoveredCheckpoint) return 'complete';
   if (!receipt) {
     // Recovery replays the complete native terminal owner; a receipt cannot escape its original execution proof.
-    const turn = TurnSchema.parse(response.turn);
     if (
       turn.status !== 'completed' &&
       turn.status !== 'failed' &&
@@ -1620,7 +1619,116 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     return 'live';
   }
   if (
-    !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
+    !(await collectProvenTaskCheckpoint(input.workspaceDb, {
+      coreDb: input.coreDb,
+      store: input.store,
+      workspaceId: checkpoint.workspaceId,
+      threadId: checkpoint.threadId,
+      turnId: checkpoint.turnId,
+    }))
+  ) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint is not ready for cleanup.');
+  }
+  return 'complete';
+}
+
+/** Repairs the checkpoint and collects it after the exact conversation receipt is proved. */
+async function classifyConversationWorkerCheckpoint(
+  input: TaskCheckpointOwners
+): Promise<'complete' | 'live'> {
+  const { checkpoint } = input;
+  if (checkpoint.goalId !== null || checkpoint.taskId !== null || checkpoint.iteration !== 0) {
+    throw directTaskModeRecoveryError('The boot Task checkpoint contradicts its command identity.');
+  }
+  const conversationRetryDecision = resolveInterruptedWorkerRetryDecision(
+    input.coreDb,
+    input.store,
+    input.workspaceDb,
+    checkpoint
+  );
+  if (conversationRetryDecision.status === 'reconnect-pending') {
+    return 'live';
+  }
+  const conversationTurn = input.store.getTurnById(checkpoint.turnId);
+  const neverSubmitted = hasWorkerCheckpointNeverSubmittedProof(
+    input.coreDb,
+    input.store,
+    input.workspaceDb,
+    checkpoint
+  );
+  if (neverSubmitted) {
+    const resultItem = conversationTurn.items.find(
+      (item) => item.id === deriveEntityId('it', ['worker-result', conversationTurn.id])
+    );
+    if (
+      resultItem?.type !== 'status' ||
+      resultItem.status !== 'completed' ||
+      workspaceIdForOwner(resultItem.owner) !== checkpoint.workspaceId ||
+      resultItem.threadId !== checkpoint.threadId ||
+      resultItem.turnId !== checkpoint.turnId
+    )
+      throw directTaskModeRecoveryError('The conversation Worker result is contradictory.');
+    await publishCheckpointNeverSubmittedFailure(input);
+  }
+  const stopReason = recoverWorkerCheckpointStopReason(
+    input.coreDb,
+    input.store,
+    input.workspaceDb,
+    checkpoint
+  );
+  if (neverSubmitted)
+    await persistConversationWorkerResultItem(
+      input.store,
+      checkpoint.workspaceId,
+      checkpoint.threadId,
+      checkpoint.turnId,
+      conversationTurn.agentId!
+    );
+  if (checkpoint.stage === 'running_worker' && checkpoint.stopReason === null) {
+    const turn = input.store.getTurn(
+      checkpoint.workspaceId,
+      checkpoint.threadId,
+      checkpoint.turnId
+    );
+    const evidence = taskModeEvidenceForTurn(
+      input.store,
+      input.workspaceDb,
+      checkpoint.workspaceId,
+      checkpoint.threadId,
+      turn
+    );
+    await updateWorkerCheckpoint(input.workspaceDb, {
+      authorityActor: turn.triggerActor,
+      workspaceId: checkpoint.workspaceId,
+      threadId: checkpoint.threadId,
+      turnId: checkpoint.turnId,
+      stage: workerTurnStageForStopReason(stopReason),
+      stopReason,
+      diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
+        evidence,
+        parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)
+      ),
+    });
+  }
+  const recoveredConversationCheckpoint = getWorkerCheckpoint(
+    input.workspaceDb,
+    checkpoint.workspaceId,
+    checkpoint.threadId,
+    checkpoint.turnId
+  );
+  if (
+    !recoveredConversationCheckpoint &&
+    !isSealedTurnTerminal(input.store.getTurnById(checkpoint.turnId).status)
+  ) {
+    throw directTaskModeRecoveryError(
+      'The boot Task checkpoint disappeared during classification.'
+    );
+  }
+  if (recoveredConversationCheckpoint?.stage === 'waiting_for_user') {
+    return 'live';
+  }
+  if (
+    !(await collectProvenTaskCheckpoint(input.workspaceDb, {
       coreDb: input.coreDb,
       store: input.store,
       workspaceId: checkpoint.workspaceId,
@@ -1882,7 +1990,21 @@ async function recoverSessionlessTaskAdmission(input: {
     throw directTaskModeRecoveryError(
       'The sessionless Task failure evidence contradicts its owners.'
     );
-  if (checkpoint?.stage === 'preparing')
+  const projectFailure = () =>
+    StartTaskModeResponseSchema.parse({
+      state: pendingRequestTaskState(
+        input.store,
+        input.workspaceDb,
+        input.workspaceId,
+        input.threadId,
+        'failed'
+      ),
+      turn,
+      completion: taskModeCompletionForTurn(input.store, input.workspaceId, input.threadId, turn),
+      evidence,
+    });
+  if (checkpoint?.stage !== 'preparing') return projectFailure();
+  return await joinTaskCheckpointRepair({ ...input, checkpoint }, 'projection', async () => {
     await updateWorkerCheckpoint(input.workspaceDb, {
       authorityActor: turn.triggerActor,
       workspaceId: input.workspaceId,
@@ -1892,17 +2014,7 @@ async function recoverSessionlessTaskAdmission(input: {
       stopReason: 'error',
       diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(evidence, context),
     });
-  return StartTaskModeResponseSchema.parse({
-    state: pendingRequestTaskState(
-      input.store,
-      input.workspaceDb,
-      input.workspaceId,
-      input.threadId,
-      'failed'
-    ),
-    turn,
-    completion: taskModeCompletionForTurn(input.store, input.workspaceId, input.threadId, turn),
-    evidence,
+    return projectFailure();
   });
 }
 
@@ -2397,6 +2509,14 @@ function taskModeStateForStopReason(stopReason: StopReason) {
   return stopReason === 'length' || stopReason === 'budget_exhausted'
     ? 'blocked'
     : taskModeStateForTurn(turnStatusForCanonicalWorkerStopReason(stopReason));
+}
+
+/** Derives the same checkpoint failure summary for live closeout and recovery. */
+function taskWorkerFailureSummary(turn: z.infer<typeof TurnSchema>): string | null {
+  return (
+    turn.error?.message ??
+    (turn.status === 'completed' ? null : 'Worker turn ended without success.')
+  );
 }
 
 /**
@@ -5528,6 +5648,7 @@ export function createTaskStartOperation({
     });
     let backgroundCloseout: Promise<void> | undefined;
     let joinedCloseout = false;
+    let replayReceipt: CommandRequestRecord | undefined;
 
     /**
      * Collects a terminal checkpoint only after the exact receipt and closeout owners agree.
@@ -5570,7 +5691,7 @@ export function createTaskStartOperation({
       }
       if (
         checkpoint.stage !== 'waiting_for_user' &&
-        !(await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+        !(await collectProvenTaskCheckpoint(workspaceDb, {
           coreDb: coreDb!,
           store,
           workspaceId,
@@ -5795,9 +5916,7 @@ export function createTaskStartOperation({
                   stopReason,
                   itemIds: evidence.itemIds,
                   artifactIds: evidence.artifactIds,
-                  diagnosticsSummary:
-                    turn.error?.message ??
-                    (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
+                  diagnosticsSummary: taskWorkerFailureSummary(turn),
                 };
               } finally {
                 workspaceDb.sqlite.close();
@@ -5881,6 +6000,7 @@ export function createTaskStartOperation({
         inflightCommands,
         input: requestInput,
         replay: async (record) => {
+          replayReceipt = record;
           const turnId = directTaskModeTurnId(actorId, workspaceId, threadId, record.requestId);
           const closeout = activeTaskCloseouts.get(turnId);
           if (
@@ -5979,6 +6099,33 @@ export function createTaskStartOperation({
                 throw directTaskModeRecoveryError('The original Task worker closeout failed.');
               }
             } else await closeoutTaskCommand(workspaceDb);
+
+            if (result.turn.status !== 'pending' && result.turn.status !== 'running') return result;
+            // A caller that joined an in-flight admission can reach this point without a replay receipt.
+            const record =
+              replayReceipt ??
+              store.getCommandRequest('task.start', taskInput.requestId, {
+                actorId,
+                workspaceId,
+                threadId,
+              });
+            if (
+              !record ||
+              record.inputHash !== requestInputHash ||
+              record.response.kind !== 'turn' ||
+              record.response.id !== turn.id
+            ) {
+              throw directTaskModeRecoveryError('The Task receipt contradicts its terminal Turn.');
+            }
+            return await replayTaskModeCommand(
+              store,
+              actorId,
+              coreDb,
+              repositoryWorkspaceDb,
+              workspaceId,
+              threadId,
+              record
+            );
           }
         } finally {
           workspaceDb.sqlite.close();
