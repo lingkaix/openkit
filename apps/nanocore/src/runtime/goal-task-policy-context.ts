@@ -5,6 +5,7 @@ import {
   isSealedTurnTerminal,
   type PolicyResourceV1Schema,
   responsibleUserIdForActor,
+  type Turn,
   TurnSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
@@ -35,6 +36,11 @@ import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import {
+  conversationTaskThreadId,
+  conversationTaskTurnId,
+  providerChatTurnId,
+} from './conversation-identity.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { readExternalTriggerPollSource } from './external-trigger-source.js';
 import { goalPlanDigest, readNativeGoalView } from './goal-owner.js';
@@ -66,7 +72,10 @@ export interface GoalTaskPolicyContext {
 }
 
 /** Canonical Turn content remains required; a metadata-only projection cannot establish Task authority. */
-export type GoalTaskPolicyReadPort = Pick<FsStore, 'getTurnMetadata' | 'getThread' | 'getTurn'>;
+export type GoalTaskPolicyReadPort = Pick<
+  FsStore,
+  'getTurnMetadata' | 'getThread' | 'getTurn' | 'getThreadItem'
+>;
 
 /** Reads the canonical Task link without loading immutable Turn content. */
 function readTaskLink(db: WorkspaceDb, threadId: string) {
@@ -306,6 +315,52 @@ export function requiredTaskTurn(input: {
   return original;
 }
 
+/** Proves an original conversation Task from the retained native handoff and both Turn identities. */
+function hasCollectedConversationTaskOrigin(input: {
+  readonly workspaceId: string;
+  readonly store: GoalTaskPolicyReadPort;
+  readonly turn: Turn;
+  readonly requestId: string;
+}): boolean {
+  const { workspaceId, store, turn, requestId } = input;
+  const { threadId, triggerActor } = turn;
+  const originThreadId = store.getThread(workspaceId, threadId).parentThreadId;
+  if (
+    !originThreadId ||
+    originThreadId === threadId ||
+    conversationTaskThreadId(triggerActor, workspaceId, originThreadId, requestId) !== threadId ||
+    conversationTaskTurnId(triggerActor, workspaceId, originThreadId, threadId, requestId) !==
+      turn.id
+  )
+    return false;
+
+  const originTurnId = providerChatTurnId(triggerActor, workspaceId, originThreadId, requestId);
+  const origin = store.getTurnMetadata(workspaceId, originThreadId, originTurnId);
+  if (
+    origin.id !== originTurnId ||
+    origin.status !== 'completed' ||
+    workspaceIdForOwner(origin.owner) !== workspaceId ||
+    origin.threadId !== originThreadId ||
+    !isDeepStrictEqual(origin.triggerActor, triggerActor)
+  )
+    return false;
+
+  // The conversation producer commits this exact link before admitting the receiving Worker.
+  const reference = store.getThreadItem(
+    workspaceId,
+    originThreadId,
+    deriveEntityId('it', ['chat-worker-handoff', originTurnId])
+  );
+  return (
+    reference.type === 'status' &&
+    reference.status === 'completed' &&
+    workspaceIdForOwner(reference.owner) === workspaceId &&
+    reference.threadId === originThreadId &&
+    reference.turnId === originTurnId &&
+    reference.causationId === turn.id
+  );
+}
+
 /**
  * Reads retained native Task bounds; live and captured-call entry owners check their own liveness.
  * @param input Exact authenticated Worker package lineage and its existing stores.
@@ -480,12 +535,24 @@ export function readGoalTaskPolicyContext(input: {
         new Date().toISOString()
       )
     : null;
-  // A closed Task can lose its live checkpoint, not its exact native command/manifest selection.
+  // The original source above already proves a closed, accepted and fenced attempt
+  // when the terminal checkpoint is absent.
+  const conversationSelection =
+    nativeSelection &&
+    !source.checkpoint &&
+    !originalCommand &&
+    source.turn.triggerSource?.kind === 'handoff' &&
+    hasCollectedConversationTaskOrigin({
+      workspaceId: lineage.workspaceId,
+      store,
+      turn: source.turn,
+      requestId: source.admission.requestId!,
+    });
   const naturalSelection =
     nativeSelection &&
     (originalCommand
       ? originalCommand.inputHash !== structuredInputHash
-      : Boolean(source.checkpoint));
+      : Boolean(source.checkpoint) || conversationSelection);
   const environmentRecord =
     naturalSelection || selected.some((resource) => resource.kind === 'mcp-tool')
       ? requireAgentEnvironmentPackageSnapshot(db, lineage.workspaceId, originalAttempt.inputRef)
@@ -497,7 +564,10 @@ export function readGoalTaskPolicyContext(input: {
       environment.scope.threadId !== lineage.threadId ||
       environment.scope.turnId !== original.turnId ||
       environment.scope.agentSessionId !== originalAttempt.agentSessionId ||
-      environment.agent.agentId !== source.admission.requestedAgentId)
+      environment.agent.agentId !== source.admission.requestedAgentId ||
+      (conversationSelection &&
+        (environment.scope.requestId !== source.admission.requestId ||
+          !isDeepStrictEqual(environment.scope.triggerActor, source.turn.triggerActor))))
   )
     throw unavailable();
   // Resolved credentials belong to the validated immutable AEP, not the authored grammar,
@@ -505,7 +575,7 @@ export function readGoalTaskPolicyContext(input: {
   const selectsCredentials = (environment?.credentials.declarations.length ?? 0) > 0;
   if (
     (nativeSelection &&
-      source.checkpoint &&
+      (source.checkpoint || conversationSelection) &&
       (!environment || selectsCredentials) &&
       !originalCommand) ||
     (originalCommand &&

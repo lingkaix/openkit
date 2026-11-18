@@ -30,10 +30,10 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import {
-  commandInputHash,
   conversationTaskThreadId,
   conversationTaskTurnId,
-} from '../runtime/idempotent-command.js';
+} from '../runtime/conversation-identity.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';

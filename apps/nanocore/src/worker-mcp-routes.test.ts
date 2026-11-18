@@ -44,6 +44,7 @@ import {
   GENERATIVE_UI_PROTOCOL_VERSION,
   operationToolName,
   StartTaskModeResponseSchema,
+  SubmitConversationResponseSchema,
   WorkspaceExportResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -104,6 +105,7 @@ import { publishGenerativePresentation } from './generative-ui/commands.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
+import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from './policy/configuration.js';
 import { PolicyInterception } from './policy/interception.js';
 import { listExportableWorkspacePermissionDecisions } from './policy/permission-decisions.js';
@@ -159,6 +161,7 @@ import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
 } from './runtime/scheduler-dispatch-loop.js';
+import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { isAlreadyDecidedWorkerMcpItem } from './runtime/worker-mcp-decision.js';
 import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
@@ -5599,6 +5602,245 @@ describe('worker MCP routes', () => {
         await native.restore();
         await workerMcpGateway.close();
         await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    { policy: 'unchanged', receipt: 'retained' },
+    { policy: 'changed', receipt: 'retained' },
+    { policy: 'unchanged', receipt: 'pruned at day eight' },
+    { policy: 'changed', receipt: 'pruned at day eight' },
+  ] as const)(
+    're-evaluates $policy captured MCP authority after collecting a conversation Task checkpoint (receipt $receipt)',
+    { timeout: 60_000 },
+    async ({ policy, receipt }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-conversation-mcp-'));
+      const coreDb = openCopiedMcpCore(dataRoot);
+      const userId = ensureLocalUser(coreDb);
+      const store = await reopenCopiedMcpStore(dataRoot);
+      const workspaceId = DEMO_WORKSPACE_ID;
+      const origin = await store.createThread(workspaceId, 'Conversation before Task');
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      const upstream = await createMcpHttpStub();
+      const calls = () =>
+        upstream.observed.filter((request) => request.endsWith('|POST|tools/call'));
+      const catalog = {
+        schemaVersion: 1 as const,
+        servers: [
+          {
+            id: 'echo',
+            enabled: true,
+            allowedTools: ['echo'],
+            credentialBindings: [],
+            pinnedSchemaSnapshotId: null,
+            schemaPolicy: 'tracking' as const,
+            timeoutMs: 2_000,
+            transport: { kind: 'http' as const, endpoint: upstream.url },
+          },
+        ],
+      };
+      const { manifest } = createTestAgentSetup({
+        mcpIds: ['echo'],
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      });
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        dataRoot,
+        openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+        workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Agent OpenRouter',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        agentManifests: [manifest],
+        workspaceMcpServerCatalogs: [
+          { catalog, path: join(dataRoot, 'catalog.json'), workspaceId },
+        ],
+      });
+      const mediation = await admitTestMcpApproval({
+        coreDb,
+        workspaceId,
+        serverId: 'echo',
+        toolName: 'echo',
+        userId,
+        threadId: origin.id,
+        turnId: testEntityId('tu', 'conversation-mcp-policy'),
+      });
+      snapshot.openKitConfig.policy = { ...snapshot.openKitConfig.policy, mediation };
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => snapshot,
+      });
+      admitTestNativeEnvironment(coreDb, manifest);
+      const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+      const app = createApp({
+        coreDb,
+        store,
+        workerMcpGateway,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: snapshot,
+        }),
+      });
+      let taskThreadId: string | undefined;
+      const client = new Client({ name: 'conversation-pending-echo', version: '1' });
+      try {
+        const requestId = randomUUID();
+        const started = await app.request(
+          ...operationRequest(
+            'conversation.submit',
+            { workspaceId, threadId: origin.id },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                input: 'Call echo',
+                requestId,
+                targetRef: 'new-task-worker',
+                artifactRefs: [],
+              }),
+            }
+          )
+        );
+        expect(started.status, await started.clone().text()).toBe(202);
+        const { turn, receivingThreadId: threadId } = SubmitConversationResponseSchema.parse(
+          await started.json()
+        );
+        taskThreadId = threadId;
+        expect(threadId).not.toBe(origin.id);
+        const execution = native.executionFor(turn.id);
+        await execution.launched.promise;
+        await native.waitForStartup(turn.id);
+        await client.connect(
+          new StreamableHTTPClientTransport(
+            new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
+            {
+              fetch: (input, init) => app.fetch(new Request(input, init)),
+              requestInit: {
+                headers: { authorization: `Bearer ${native.executor.capabilityToken}` },
+              },
+            }
+          )
+        );
+        await client.listTools();
+        const pending = await client.callTool({
+          name: 'echo',
+          arguments: { message: 'captured effect' },
+        });
+        expect(pending.structuredContent).toMatchObject({ status: 'pending-approval' });
+        expect(calls()).toHaveLength(0);
+        const [captured] = listThreadPendingRequests(workspaceDb.sqlite, workspaceId, threadId);
+        expect(captured).toMatchObject({
+          kind: 'approval',
+          state: 'pending',
+          raisingTurnId: turn.id,
+        });
+
+        await client.close();
+        execution.completion.resolve();
+        await execution.execution;
+        const checkpoint = await vi.waitFor(() => {
+          const record = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turn.id);
+          expect(record?.stage).toBe('completed');
+          return record!;
+        });
+        expect(
+          await classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            coreDb,
+            store,
+            workspaceDb,
+            checkpoint,
+          })
+        ).toBe('complete');
+        expect(getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turn.id)).toBeNull();
+
+        if (receipt === 'pruned at day eight') {
+          const originalReceipt = workspaceDb.sqlite.prepare(
+            "SELECT 1 FROM idempotency_requests WHERE command_name = 'conversation.submit' AND request_id = ?"
+          );
+          expect(originalReceipt.get(requestId)).toBeDefined();
+          vi.useFakeTimers({ toFake: ['Date'] });
+          vi.setSystemTime(Date.now() + 8 * 24 * 60 * 60 * 1000);
+          const write = await app.request(
+            ...operationRequest(
+              'thread.create',
+              { workspaceId },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  name: 'Prune expired Workspace receipts',
+                  visibility: 'workspace',
+                  requestId: randomUUID(),
+                }),
+              }
+            )
+          );
+          expect(write.status, await write.clone().text()).toBe(200);
+          expect(originalReceipt.get(requestId)).toBeUndefined();
+          expect(readPendingRequest(workspaceDb.sqlite, captured!.requestId)?.state).toBe(
+            'pending'
+          );
+        }
+        if (policy === 'changed') snapshot.openKitConfig.policy.mediation = EMPTY_POLICY_DOCUMENT;
+        const response = await app.request(
+          ...operationRequest(
+            'approval.respond',
+            {
+              workspaceId,
+              threadId,
+              turnId: turn.id,
+              approvalRequestId: captured!.requestId,
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ decision: 'granted', requestId: randomUUID() }),
+            }
+          )
+        );
+        expect(response.status, await response.clone().text()).toBe(200);
+        expect(ApprovalRequestSchema.parse(await response.json()).status).toBe('granted');
+        expect.soft(readPendingRequest(workspaceDb.sqlite, captured!.requestId)).toMatchObject({
+          resolution: 'granted',
+          disposition: policy === 'unchanged' ? 'approved-executed' : 'execution-error',
+          dispositionReason: policy === 'unchanged' ? null : 'policy-changed',
+        });
+        expect.soft(calls()).toHaveLength(policy === 'unchanged' ? 1 : 0);
+        expect(listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)).toContainEqual(
+          expect.objectContaining({
+            approvalId: captured!.requestId,
+            result: policy === 'unchanged' ? 'allow' : 'deny',
+            ...(policy === 'changed' ? { reasonCode: 'mcp_approval_submission_refused' } : {}),
+            contextSummary: expect.objectContaining({
+              capabilityCallId: executionCallIdForRequest(captured!.requestId),
+            }),
+          })
+        );
+      } finally {
+        vi.useRealTimers();
+        await client.close();
+        native.executor.completion.resolve();
+        if (taskThreadId) {
+          for (const turn of store.listThreadTurns(workspaceId, taskThreadId))
+            native.executionFor(turn.id).completion.resolve();
+        }
+        await Promise.allSettled(getSchedulerPreparationClaims(coreDb).values());
+        await native.restore();
+        await workerMcpGateway.close();
+        await upstream.close();
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(dataRoot);
         workspaceDb.sqlite.close();
         coreDb.sqlite.close();
         rmSync(dataRoot, { recursive: true, force: true });

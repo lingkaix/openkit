@@ -6,8 +6,6 @@ import { IdempotencyKeyConflictError } from '../operation-error.js';
 
 export { IdempotencyKeyConflictError } from '../operation-error.js';
 
-import { deriveEntityId } from '@openkit/protocol';
-
 import {
   type CommandRequestName,
   type CommandRequestRecord,
@@ -194,31 +192,4 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   } finally {
     if (inflight.get(key)?.promise === promise) inflight.delete(key);
   }
-}
-
-/** Derives the receiving Thread of an admitted command-initiated conversation handoff. */
-export function conversationTaskThreadId(
-  actor: import('@openkit/protocol').ActorRef,
-  workspaceId: string,
-  originatingThreadId: string,
-  requestId: string
-): string {
-  return deriveEntityId('th', [actor, workspaceId, originatingThreadId, requestId]);
-}
-
-/** Derives the first Task Turn inside that handoff's exact receiving Thread. */
-export function conversationTaskTurnId(
-  actor: import('@openkit/protocol').ActorRef,
-  workspaceId: string,
-  originatingThreadId: string,
-  receivingThreadId: string,
-  requestId: string
-): string {
-  return deriveEntityId('tu', [
-    actor,
-    workspaceId,
-    originatingThreadId,
-    receivingThreadId,
-    requestId,
-  ]);
 }

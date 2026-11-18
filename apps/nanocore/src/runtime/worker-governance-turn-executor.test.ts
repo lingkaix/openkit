@@ -261,6 +261,7 @@ import {
   resolveAgentEnvironmentPackage as resolveLoginEnvironmentPackage,
 } from './agent-environment.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
+import { conversationTaskThreadId, conversationTaskTurnId } from './conversation-identity.js';
 import { createCredentialHelperHandler } from './credential-helper-exchange.js';
 import * as attempts from './execution-attempt-records.js';
 import * as nativeExecutionAttempts from './execution-attempts.js';
@@ -268,12 +269,7 @@ import { createExecutionStepJournalReader } from './execution-journal.js';
 import type { ExecutionJournalRef } from './execution-step-journal.js';
 import { executeGoalOperation, readGoalView, requireNativeCoordinatorGoal } from './goal-owner.js';
 import { readGoalTaskPolicyContext, requiredTaskTurn } from './goal-task-policy-context.js';
-import {
-  commandInputHash,
-  conversationTaskThreadId,
-  conversationTaskTurnId,
-  type IdempotentCommandReceipt,
-} from './idempotent-command.js';
+import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
 import {
   acceptNanoHostAttemptHeartbeat,
   bindNanoHostAttemptRouteTokenHashes,

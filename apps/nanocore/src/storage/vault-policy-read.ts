@@ -39,6 +39,7 @@ import {
   type PreparedNativeTurnHistoryRead,
   prepareNativeTurnHistoryRead,
   readNativeProduct,
+  readNativeThreadItem,
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
 
@@ -318,6 +319,12 @@ async function prepareVaultPolicyRead(
       return turn;
     },
     getTurnById: metadata,
+    getThreadItem(id, threadId, itemId) {
+      if (id !== workspaceId) throw new ControlProductPreconditionError();
+      const item = readNativeThreadItem(scope, threadId, itemId, reader);
+      if (!item) throw new ControlProductPreconditionError();
+      return item;
+    },
     getTurn(id, threadId, turnId) {
       if (id !== workspaceId) throw new ControlProductPreconditionError();
       const prepared = histories.find((value) => value.turnId === turnId);

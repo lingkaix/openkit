@@ -109,6 +109,11 @@ import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import { RetrievalServiceError } from './retrieval-service.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './runtime/aep-snapshot-ledger.js';
 import {
+  conversationTaskThreadId,
+  conversationTaskTurnId,
+  providerChatTurnId,
+} from './runtime/conversation-identity.js';
+import {
   conversationWorkerTurnPresentation,
   reconcileInterruptedConversationWorkerClaim,
 } from './runtime/conversation-worker-claim.js';
@@ -124,8 +129,6 @@ import {
 } from './runtime/goal-owner.js';
 import {
   commandInputHash,
-  conversationTaskThreadId,
-  conversationTaskTurnId,
   findExactConversationWorkerOwnerReceipt,
   IdempotencyKeyConflictError,
   type IdempotentCommandReceipt,
@@ -878,22 +881,6 @@ function replayConversationCommand(
       409
     );
   }
-}
-
-/** Derives the provider Chat Turn identity from its exact command scope, excluding private input. */
-function providerChatTurnId(
-  actor: ActorRef,
-  workspaceId: string,
-  threadId: string,
-  requestId: string
-): string {
-  return deriveEntityId('tu', {
-    command: 'conversation.submit',
-    actor,
-    workspaceId,
-    threadId,
-    requestId,
-  });
 }
 
 /** Names the receiving Knowledge Manager Thread from the unchanged originating command scope. */

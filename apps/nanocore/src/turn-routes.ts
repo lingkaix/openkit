@@ -15,6 +15,7 @@ import { readStrictWorkerContextPackageDigest } from './context/worker-context-p
 import type { FsStore } from './lib/store.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
 import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
+import { conversationTaskTurnId } from './runtime/conversation-identity.js';
 import {
   conversationWorkerTurnPresentation,
   reconcileInterruptedConversationWorkerClaim,
@@ -27,7 +28,6 @@ import {
 } from './runtime/execution-attempts.js';
 import {
   commandInputHash,
-  conversationTaskTurnId,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';

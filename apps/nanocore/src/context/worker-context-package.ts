@@ -42,7 +42,10 @@ import {
   STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
   StructuredWorkerDelegationRequestSchema,
 } from '../internal-agents/delegation.js';
-import { conversationTaskThreadId, conversationTaskTurnId } from '../runtime/idempotent-command.js';
+import {
+  conversationTaskThreadId,
+  conversationTaskTurnId,
+} from '../runtime/conversation-identity.js';
 import { OUTCOME_DELIVERY_BOUND } from '../runtime/pending-request-codecs.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
