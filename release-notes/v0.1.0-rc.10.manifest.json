@@ -1,0 +1,8 @@
+{
+  "previousAppImageId": "sha256:586128812860c50c38269790b5212749bef5aee183be4b9cba5f8511e5d8b7b5",
+  "migrationFree": true,
+  "configurationCompatible": true,
+  "retainedDataCompatible": true,
+  "recovery": "previous-image-compatible",
+  "provenance": "rc10-in-place-rc9-freeze-assessment"
+}
