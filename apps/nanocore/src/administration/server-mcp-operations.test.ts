@@ -1,5 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type OperationOutput, SERVER_MCP_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
@@ -18,6 +19,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { users } from '../storage/schema/index.js';
+import { requireVaultReference, vaultCredentialWriterOf } from '../storage/vault-native-codecs.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
@@ -278,6 +280,108 @@ describe('Server MCP administration owner and recovery', () => {
         }),
       ])
     );
+  });
+
+  it('refuses rotation after a committed Core-to-Gateway-to-Core writer ABA', async () => {
+    const f = fixture();
+    const reference = await f.call('vault.server-mcp-secret-create', {
+      material: 'synthetic-writer-aba-original',
+    });
+    const before = requireVaultReference(f.coreDb, reference.referenceId);
+    const writer = vaultCredentialWriterOf(before);
+    expect(writer).toEqual({ generation: 0, mode: 'core', holder: null, state: 'active' });
+    const receiptId = 'receipt_server_mcp_writer_aba';
+    const transitionScript = join(f.dataRoot, 'writer-aba.mjs');
+    // A file entry avoids passing --input-type to the child's native writer thread.
+    writeFileSync(
+      transitionScript,
+      `
+const { openCoreDb } = await import(${JSON.stringify(new URL('../storage/db.ts', import.meta.url).href)});
+const { getControlStoreWorkerClient, shutdownControlStoreWorkerClient } = await import(${JSON.stringify(new URL('../storage/control-store-worker-client.ts', import.meta.url).href)});
+const { dataRoot, ...record } = JSON.parse(process.argv[2]);
+const db = openCoreDb(dataRoot);
+try {
+  const client = getControlStoreWorkerClient();
+  const delegated = await client.vault(db, 'reference-writer', { ...record, action: 'delegate' });
+  const abandoned = await client.vault(db, 'reference-writer', {
+    ...record,
+    action: 'abandon',
+    expectedGeneration: record.expectedGeneration + 1,
+    neverSent: { receiptId: record.receiptId },
+  });
+  process.stdout.write(JSON.stringify({ delegated, abandoned }));
+} finally {
+  await shutdownControlStoreWorkerClient();
+  db.sqlite.close();
+}
+`
+    );
+    const rotate = f.backend.rotate.bind(f.backend);
+    const rotation = vi.spyOn(f.backend, 'rotate').mockImplementation((input) => {
+      const result = rotate(input);
+      // Rotation is synchronous. Commit real native transitions in another process before
+      // returning, so even a caller that re-reads ownership would see Core at g+2.
+      const transitions = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            transitionScript,
+            JSON.stringify({
+              dataRoot: f.dataRoot,
+              referenceId: reference.referenceId,
+              receiptId,
+              expectedVersion: before.currentVersion,
+              expectedGeneration: writer.generation,
+            }),
+          ],
+          { encoding: 'utf8', timeout: 15_000 }
+        )
+      );
+      expect(vaultCredentialWriterOf(transitions.delegated)).toEqual({
+        generation: writer.generation + 1,
+        mode: 'gateway',
+        holder: receiptId,
+        state: 'pending',
+      });
+      expect(vaultCredentialWriterOf(transitions.abandoned)).toEqual({
+        generation: writer.generation + 2,
+        mode: 'core',
+        holder: null,
+        state: 'active',
+      });
+      expect(transitions.abandoned.currentVersion).toBe(before.currentVersion);
+      return result;
+    });
+    const requestId = randomUUID();
+
+    await expect(
+      f.call('vault.server-mcp-secret-rotate', {
+        referenceId: reference.referenceId,
+        material: 'synthetic-writer-aba-successor',
+        requestId,
+      })
+    ).rejects.toMatchObject({ code: 'credential_family_busy', status: 409 });
+
+    expect(rotation).toHaveBeenCalledOnce();
+    const after = requireVaultReference(f.coreDb, reference.referenceId);
+    expect(after.currentVersion).toBe(before.currentVersion);
+    expect(vaultCredentialWriterOf(after)).toEqual({
+      generation: writer.generation + 2,
+      mode: 'core',
+      holder: null,
+      state: 'active',
+    });
+    expect(
+      f.store.getCommandRequest(
+        'vault.server-mcp-secret-rotate',
+        requestId,
+        { actorId: f.actor.userId, coreId: 'server' },
+        f.coreDb
+      )
+    ).toBeNull();
+    // Backend rotation is a separate effect; canonical refusal does not roll it back.
   });
 
   it('excludes Provider and bootstrap Server references from every shared-MCP lifecycle', async () => {
