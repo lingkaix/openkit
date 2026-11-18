@@ -71,7 +71,9 @@ import {
   requireWorkerCredentialCheckValues,
 } from './worker-credential-guard.js';
 import {
+  eligibleWorkerArtifactOutputs,
   validateWorkerArtifactPath,
+  WORKER_ARTIFACT_PATH_OUTSIDE_OUTPUT_ROOTS,
   type WorkerArtifactCapture,
 } from './worker-governance-backend.js';
 import { MCP_RESULT_TOO_LARGE_MESSAGE } from './worker-mcp-gateway.js';
@@ -615,6 +617,14 @@ export function preflightWorkRequestInput(
   }
 }
 
+/** Formats the calling binding's eligible Artifact output roots for discovery and correction. */
+export function workArtifactEligibleRootsGuidance(
+  environmentPackage: AgentEnvironmentPackage
+): string {
+  const paths = eligibleWorkerArtifactOutputs(environmentPackage).map((output) => output.path);
+  return `Eligible roots: ${paths.join(', ') || 'none'}.`;
+}
+
 /** Captures once, then publishes a complete request-owned tuple before acknowledging the id. @param input Authenticated owners/capture. @param args Model metadata. @returns Durable id, never a transport acknowledgement. */
 async function submitArtifact(
   input: Parameters<typeof dispatchOpenkitWorkTool>[0],
@@ -628,10 +638,13 @@ async function submitArtifact(
   const { scope } = environmentPackage;
   try {
     validateWorkerArtifactPath(environmentPackage, metadata.path);
-  } catch {
+  } catch (error) {
+    const message = 'Choose one canonical file strictly inside an eligible output root.';
     throw new OperationError(
       'invalid_request',
-      'Choose one canonical file strictly inside an eligible output root.',
+      error instanceof Error && error.cause === WORKER_ARTIFACT_PATH_OUTSIDE_OUTPUT_ROOTS
+        ? `${message} ${workArtifactEligibleRootsGuidance(environmentPackage)}`
+        : message,
       400
     );
   }

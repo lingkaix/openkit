@@ -147,6 +147,10 @@ export type WorkerNetworkEndpoint = z.infer<typeof WorkerNetworkEndpointSchema>;
 export const MAX_RUNTIME_PROVENANCE_MANIFEST_BYTES = 1024 * 1024;
 /** Internal code translated by the existing Turn validation boundary. */
 export const WORKER_ARTIFACT_COLLECTION_INVALID = 'worker_artifact_collection_invalid';
+/** Private cause for a canonical Artifact path that matches no eligible output root. */
+export const WORKER_ARTIFACT_PATH_OUTSIDE_OUTPUT_ROOTS = Symbol(
+  'Artifact path outside output roots'
+);
 /** Internal error code requiring restored-session cleanup before returning recovery_required. */
 export const WORKER_ARTIFACT_RECOVERY_REQUIRED = 'worker_artifact_recovery_required';
 
@@ -1660,6 +1664,13 @@ export function openShellNetworkEndpointsFromPackagePolicy(
   });
 }
 
+/** Selects the output declarations that permit Artifact submission in the authenticated binding. */
+export function eligibleWorkerArtifactOutputs(environmentPackage: AgentEnvironmentPackage) {
+  return environmentPackage.workspace.outputs.filter(
+    (output) => output.registerAsArtifacts && output.retention === 'sync-on-turn-end'
+  );
+}
+
 /** Validates intentional submission eligibility before the broader transcript/output mapper. @param environmentPackage Trusted AEP. @param artifactPath Canonical absolute file path. */
 export function validateWorkerArtifactPath(
   environmentPackage: AgentEnvironmentPackage,
@@ -1675,9 +1686,7 @@ export function validateWorkerArtifactPath(
   ) {
     throw invalidWorkerArtifactCollection('Worker Artifact path is not canonical.');
   }
-  const roots = environmentPackage.workspace.outputs.filter(
-    (output) => output.registerAsArtifacts && output.retention === 'sync-on-turn-end'
-  );
+  const roots = eligibleWorkerArtifactOutputs(environmentPackage);
   if (roots.some((output) => output.path === artifactPath)) {
     throw invalidWorkerArtifactCollection('Worker Artifact path equals an eligible output root.');
   }
@@ -1691,7 +1700,8 @@ export function validateWorkerArtifactPath(
   });
   if (matching.length !== 1)
     throw invalidWorkerArtifactCollection(
-      'Worker Artifact path does not belong to one eligible output root.'
+      'Worker Artifact path does not belong to one eligible output root.',
+      matching.length === 0 ? { cause: WORKER_ARTIFACT_PATH_OUTSIDE_OUTPUT_ROOTS } : undefined
     );
 }
 
@@ -1714,10 +1724,14 @@ export type WorkerArtifactCapture = (input: {
  * Creates one redacted fail-closed Artifact collection error.
  *
  * @param message Product-safe failure summary.
+ * @param options Optional private classification for the caller.
  * @returns Structural error consumed by the existing turn failure boundary.
  */
 function invalidWorkerArtifactCollection(
-  message: string
+  message: string,
+  options?: ErrorOptions
 ): Error & { readonly code: typeof WORKER_ARTIFACT_COLLECTION_INVALID } {
-  return Object.assign(new Error(message), { code: 'worker_artifact_collection_invalid' as const });
+  return Object.assign(new Error(message, options), {
+    code: 'worker_artifact_collection_invalid' as const,
+  });
 }

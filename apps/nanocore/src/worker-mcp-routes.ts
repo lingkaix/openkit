@@ -125,6 +125,7 @@ import {
   OPENKIT_WORK_MCP_ID,
   OPENKIT_WORK_TOOLS,
   preflightWorkRequestInput,
+  workArtifactEligibleRootsGuidance,
   workRequestInputIsSecret,
 } from './runtime/openkit-work-mcp.js';
 import { approvalCardCopy } from './runtime/pending-request-disclosure.js';
@@ -589,15 +590,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 name: tool.name,
                 description:
                   tool.name === 'work_artifact_submit'
-                    ? `${tool.description} Eligible roots: ${
-                        environmentPackage.workspace.outputs
-                          .filter(
-                            (output) =>
-                              output.registerAsArtifacts && output.retention === 'sync-on-turn-end'
-                          )
-                          .map((output) => output.path)
-                          .join(', ') || 'none'
-                      }.`
+                    ? `${tool.description} ${workArtifactEligibleRootsGuidance(environmentPackage)}`
                     : tool.description,
                 inputSchema: tool.inputSchema,
               })),

@@ -345,6 +345,37 @@ function acknowledgedArtifactId(
 }
 
 describe('synchronous Worker file submission', () => {
+  it('names only the binding’s current eligible root after a stale-root submission', async () => {
+    const fixture = await submissionFixture();
+    const outputs = fixture.environmentPackage.workspace.outputs;
+    const eligible = outputs[0]!;
+    const staleRoot = '/openkit/sessions/as_00000000-0000-7000-8000-000000000000/outputs';
+    outputs.push(
+      {
+        ...eligible,
+        id: 'unregistered-output',
+        path: '/workspace/unregistered',
+        registerAsArtifacts: false,
+      },
+      { ...eligible, id: 'manual-output', path: '/workspace/manual', retention: 'manual' }
+    );
+
+    await expect(
+      fixture.submit('stale-root', { path: `${staleRoot}/report.md` })
+    ).rejects.toMatchObject({
+      code: 'invalid_request',
+      message: `Choose one canonical file strictly inside an eligible output root. Eligible roots: ${eligible.path}.`,
+      status: 400,
+    });
+    expect(fixture.captureArtifact).not.toHaveBeenCalled();
+    const path = `${eligible.path}/report.md`;
+    const artifactId = acknowledgedArtifactId(await fixture.submit('current-root', { path }));
+    expect(fixture.captureArtifact).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ path })
+    );
+    expect(fixture.readBytes(artifactId)).toEqual(Buffer.from('Finished report\n'));
+  });
+
   it('captures a real finished file from the empty-roots package output and reads back its Artifact', async () => {
     const fixture = await submissionFixture();
     const path = '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md';
@@ -625,11 +656,11 @@ describe('submission authority and byte evidence', () => {
     '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs',
     '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/../report.md',
     '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs//report.md',
-    '/undeclared/report.md',
   ])('rejects path %s before export', async (path) => {
     const fixture = await submissionFixture();
     await expect(fixture.submit('bad-path', { path })).rejects.toMatchObject({
       code: 'invalid_request',
+      message: 'Choose one canonical file strictly inside an eligible output root.',
     });
     expect(fixture.captureArtifact).not.toHaveBeenCalled();
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
