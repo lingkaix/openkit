@@ -29,22 +29,93 @@ export function localTarget(value) {
   return url.origin;
 }
 
+/** Require each socket serving the loopback address to bind it explicitly and have a container owner. */
+function hostNetworkAddress(addresses, port, { containerId, processId }, run) {
+  if (
+    typeof containerId !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(containerId) ||
+    !Number.isSafeInteger(processId) ||
+    processId < 1
+  )
+    return;
+  const socketRows = run('ss', ['-HOltnpe', `sport = :${port}`], { timeout: 5000 });
+  const sockets = [];
+  for (const line of socketRows.split('\n').filter(Boolean)) {
+    const socket = /^LISTEN\s+\d+\s+\d+\s+(\S+):(\d+)\s+\S+(?:\s+(.*))?$/.exec(line);
+    if (!socket || socket[2] !== port) return;
+    const [, endpoint, , details = ''] = socket;
+    const owners =
+      /^users:\((\("[^"\\]*",pid=[1-9]\d*,fd=\d+\)(?:,\("[^"\\]*",pid=[1-9]\d*,fd=\d+\))*)\)(?=\s|$)/.exec(
+        details
+      );
+    const pids = Array.from(
+      (owners?.[1] ?? '').matchAll(/",pid=(\d+),fd=\d+\)/g),
+      ([, pid]) => pid
+    );
+    const metadata =
+      owners || !details.startsWith('users:') ? details.slice(owners?.[0].length ?? 0) : '';
+    sockets.push({
+      endpoint,
+      wildcard6: endpoint === '*' || endpoint === '[::]',
+      v6Only: /(?:^|\s)v6only:([01])(?:\s|$)/.exec(metadata)?.[1],
+      pids,
+    });
+  }
+  const cgroupsFor = (pid) =>
+    run('cat', [`/proc/${pid}/cgroup`], { timeout: 5000 })
+      .split('\n')
+      .filter((line) => {
+        const path = /^\d+:[^:]*:(\/.*)$/.exec(line)?.[1];
+        return path && !path.endsWith(' (deleted)') && !path.split('/').includes('..');
+      });
+  // Match the full cgroup of Docker's reported init PID, including its parent path.
+  const dockerGroup = new RegExp(`/(?:docker-${containerId}\\.scope|docker/${containerId})(?:/|$)`);
+  const containerGroups = cgroupsFor(processId).filter((line) => dockerGroup.test(line));
+  if (containerGroups.length === 0) return;
+  const belongsToContainer = (pid) =>
+    cgroupsFor(pid).some((line) =>
+      containerGroups.some((group) => line === group || line.startsWith(`${group}/`))
+    );
+  return addresses.find((address) => {
+    const ipv6 = address === '::1';
+    const direct = ipv6 ? ['[::1]'] : [address, `[::ffff:${address}]`];
+    const candidates = sockets.filter(
+      ({ endpoint, wildcard6, v6Only }) =>
+        direct.includes(endpoint) ||
+        (!ipv6 && endpoint === '0.0.0.0') ||
+        (wildcard6 && (ipv6 || v6Only !== '1'))
+    );
+    return (
+      candidates.length > 0 &&
+      candidates.every(
+        ({ endpoint, pids }) =>
+          direct.includes(endpoint) && pids.length > 0 && pids.every(belongsToContainer)
+      )
+    );
+  });
+}
+
 /** Bind the inspected running container to the explicit loopback HTTP port before using its identity. */
-export function verifyLocalBinding(target, state) {
+export function verifyLocalBinding(target, state, run = command) {
   const url = new URL(localTarget(target));
   const port = url.port || (url.protocol === 'https:' ? '443' : '80');
   const host = url.hostname === '[::1]' ? '::1' : url.hostname;
   const addresses = host === 'localhost' ? ['127.0.0.1', '::1'] : [host];
+  const bindingError = 'Target must be the running App container direct loopback HTTP binding';
+  if (state.running !== true || url.protocol !== 'http:') throw Error(bindingError);
   const bindings = state.ports?.['8080/tcp'];
-  const concrete = addresses.find((address) =>
-    bindings?.some(
-      (b) =>
-        b.HostPort === port &&
-        (b.HostIp === address || b.HostIp === (address.includes(':') ? '::' : '0.0.0.0'))
-    )
-  );
-  if (state.running !== true || url.protocol !== 'http:' || !Array.isArray(bindings) || !concrete)
-    throw Error('Target must be the running App container direct loopback HTTP binding');
+  const concrete =
+    state.networkMode === 'host'
+      ? hostNetworkAddress(addresses, port, state, run)
+      : Array.isArray(bindings) &&
+        addresses.find((address) =>
+          bindings.some(
+            (b) =>
+              b.HostPort === port &&
+              (b.HostIp === address || b.HostIp === (address.includes(':') ? '::' : '0.0.0.0'))
+          )
+        );
+  if (!concrete) throw Error(bindingError);
   url.hostname = concrete.includes(':') ? `[${concrete}]` : concrete;
   return url.origin;
 }
@@ -229,35 +300,25 @@ export function postPublicationSmoke(
       assets,
     ]);
     const published = decode(readFileSync(join(assets, 'app.json'), 'utf8'));
-    target = verifyLocalBinding(target, {
-      running:
-        docker([
-          'inspect',
-          '--type',
-          'container',
-          '--format',
-          '{{.State.Running}}',
-          params.container,
-        ]) === 'true',
-      ports: decode(
-        docker([
-          'inspect',
-          '--type',
-          'container',
-          '--format',
-          '{{json .NetworkSettings.Ports}}',
-          params.container,
-        ])
-      ),
-    });
-    const imageId = docker([
-      'inspect',
-      '--type',
-      'container',
-      '--format',
-      '{{.Image}}',
-      params.container,
-    ]);
+    const state = decode(
+      docker([
+        'inspect',
+        '--type',
+        'container',
+        '--format',
+        [
+          '{"containerId":{{json .Id}}',
+          '"running":{{json .State.Running}}',
+          '"networkMode":{{json .HostConfig.NetworkMode}}',
+          '"processId":{{json .State.Pid}}',
+          '"ports":{{json .NetworkSettings.Ports}}',
+          '"imageId":{{json .Image}}}',
+        ].join(','),
+        params.container,
+      ])
+    );
+    target = verifyLocalBinding(target, state, run);
+    const { imageId } = state;
     const local = {
       imageId,
       platform: docker(['image', 'inspect', '--format', '{{.Os}}/{{.Architecture}}', imageId]),

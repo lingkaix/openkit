@@ -145,12 +145,17 @@ for (const outcome of [
         assert.equal(options.env.DOCKER_CONTEXT, undefined);
         assert.equal(options.env.DOCKER_HOST, undefined);
         const field = args[args.indexOf('--format') + 1];
+        if (args[2] === 'inspect') {
+          return JSON.stringify({
+            containerId: 'd'.repeat(64),
+            running: outcome !== 'stopped',
+            networkMode: 'bridge',
+            processId: 41,
+            ports: { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '4321' }] },
+            imageId,
+          });
+        }
         return {
-          '{{.State.Running}}': outcome === 'stopped' ? 'false' : 'true',
-          '{{json .NetworkSettings.Ports}}': JSON.stringify({
-            '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '4321' }],
-          }),
-          '{{.Image}}': imageId,
           '{{.Os}}/{{.Architecture}}': 'linux/amd64',
           '{{json .Config.Labels}}': JSON.stringify(labels),
           '{{json .RepoDigests}}': JSON.stringify([`${image}@${digest}`]),
@@ -218,4 +223,59 @@ test('loopback bindings preserve address family and replace localhost with the c
   const ipv6 = { running: true, ports: { '8080/tcp': [{ HostIp: '::', HostPort: '4321' }] } };
   assert.throws(() => verifyLocalBinding('http://127.0.0.1:4321', ipv6));
   assert.equal(verifyLocalBinding('http://localhost:4321', ipv6), 'http://[::1]:4321');
+});
+
+test('host-network loopback requires explicit binds owned by the exact running container', () => {
+  const containerId = 'd'.repeat(64);
+  const state = { running: true, networkMode: 'host', ports: {}, containerId, processId: 41 };
+  const sameContainer = `0::/system.slice/docker-${containerId}.scope`;
+  const wrongContainer = `0::/user.slice/docker-${containerId}.scope`;
+  const target = 'http://localhost:4321';
+  const listener = (address, pid) =>
+    `LISTEN 0 128 ${address}:4321 *:* users:(("caddy",pid=${pid},fd=6))`;
+  const run = (rows, groups) => (exe, args) => {
+    if (exe === 'ss') {
+      assert.equal(args.at(-1), 'sport = :4321');
+      return rows;
+    }
+    assert.equal(exe, 'cat');
+    return groups[args[0]];
+  };
+  const groups = {
+    '/proc/41/cgroup': sameContainer,
+    '/proc/42/cgroup': `${sameContainer}/workers`,
+    '/proc/43/cgroup': wrongContainer,
+  };
+  assert.equal(
+    verifyLocalBinding(target, state, run(listener('127.0.0.1', 42), groups)),
+    'http://127.0.0.1:4321'
+  );
+  assert.equal(
+    verifyLocalBinding(target, state, run(listener('[::ffff:127.0.0.1]', 42), groups)),
+    'http://127.0.0.1:4321'
+  );
+  assert.equal(
+    verifyLocalBinding(target, state, run(listener('[::1]', 42), groups)),
+    'http://[::1]:4321'
+  );
+  for (const rows of [
+    '',
+    'LISTEN 0 128 127.0.0.1:4321 *:*',
+    listener('0.0.0.0', 42),
+    `${listener('*', 42)} v6only:0`,
+    `${listener('[::]', 42)} v6only:1`,
+    listener('127.0.0.1', 43),
+    `${listener('127.0.0.1', 42)}\n${listener('0.0.0.0', 42)}`,
+    `${listener('[::1]', 42)}\n${listener('[::]', 42)} v6only:1`,
+    `${listener('127.0.0.1', 42)}\n${listener('0.0.0.0', 43)}`,
+  ]) {
+    assert.throws(() => verifyLocalBinding(target, state, run(rows, groups)), /direct loopback/);
+  }
+  assert.throws(
+    () =>
+      verifyLocalBinding(target, { ...state, running: false }, () => {
+        assert.fail('a stopped container has no admissible listener');
+      }),
+    /direct loopback/
+  );
 });
