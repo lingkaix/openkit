@@ -577,8 +577,9 @@ describe('Worker environment App composition', () => {
           values,
         });
         expect(nativeAtReload).toEqual([{ imageDigest: IMAGE_DIGEST, defaultsDigest, values }]);
-        expect(reload).toHaveReturnedWith(expect.objectContaining({ status: 'applied' }));
         expect(reload).toHaveBeenCalledTimes(1);
+        // Reload can await native Policy publication before it reports the applied snapshot.
+        expect(await reload.mock.results[0]?.value).toMatchObject({ status: 'applied' });
         const effectsBeforeReplay = nanoHostEffect.mock.calls.length;
         const replay = await app.request(
           ...operationRequest(

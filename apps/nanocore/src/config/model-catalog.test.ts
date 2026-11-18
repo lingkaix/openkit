@@ -273,6 +273,69 @@ describe('deployment model extension catalog', () => {
     ).toBe(320000);
   });
 
+  it.each(['safe', 'strict'] as const)(
+    'rejects removal of the final extension context during %s reload without replacing active supply',
+    async (mode) => {
+      const { root, path, catalog } = fixture();
+      const manager = createRuntimeConfigManager({ dataRoot: root });
+      const active = manager.current();
+      const edited = structuredClone(catalog);
+      delete (edited.providers.openai.models['future-model'].limit as { context?: number }).context;
+      writeFileSync(path, JSON.stringify(edited));
+      expect(await manager.reload({ mode, dryRun: false })).toMatchObject({ status: 'failed' });
+      expect(manager.current()).toBe(active);
+      expect(manager.status().pendingRestart).toEqual([]);
+      expect(
+        resolveLogicalModelCatalog(active.gatewayConfig, active.providerRegistry)[0]?.contract
+          ?.context
+      ).toBe(300000);
+    }
+  );
+
+  it.each(['snapshot', 'profile'] as const)(
+    'allows extension context removal with a remaining %s context source',
+    async (source) => {
+      const { root, path, profilePath, profile, catalog } = fixture();
+      const manager = createRuntimeConfigManager({ dataRoot: root });
+      const active = manager.current();
+      const edited = structuredClone(catalog);
+      if (source === 'snapshot') {
+        delete (edited.providers.openai.models['gpt-5'].limit as { context?: number }).context;
+      } else {
+        delete (edited.providers.openai.models['future-model'].limit as { context?: number })
+          .context;
+        writeFileSync(
+          profilePath,
+          JSON.stringify({
+            ...profile,
+            modelMetadata: {
+              ...profile.modelMetadata,
+              'future-model': { limit: { context: 320000 } },
+            },
+          })
+        );
+      }
+      writeFileSync(path, JSON.stringify(edited));
+      expect(await manager.reload({ mode: 'safe', dryRun: false })).toMatchObject({
+        status: 'applied',
+      });
+      expect(manager.current().providerRegistry).toBe(active.providerRegistry);
+      expect(manager.status().pendingRestart.map((change) => change.path)).toContain(
+        'modelCatalog'
+      );
+    }
+  );
+
+  it('allows catalog context removal when the model is explicitly delisted', async () => {
+    const { root, path, profilePath, profile } = fixture();
+    const manager = createRuntimeConfigManager({ dataRoot: root });
+    writeFileSync(profilePath, JSON.stringify({ ...profile, models: ['gpt-5'] }));
+    rmSync(path);
+    expect(await manager.reload({ mode: 'safe', dryRun: false })).toMatchObject({
+      status: 'applied',
+    });
+  });
+
   it.each(['openai-codex', 'openai_codex'])(
     'passes catalog-only %s context 268000 through the shared resolver and request-local adapter, then a smaller profile overlay wins',
     async (vendor) => {

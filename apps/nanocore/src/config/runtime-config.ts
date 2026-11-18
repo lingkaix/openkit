@@ -771,6 +771,7 @@ export function createRuntimeConfigManager(
           providerCredentialConfigured: options.providerCredentialConfigured,
         });
         assertNoBlockingDiagnostics(next);
+        assertCatalogContextRemovalIsValid(current, next);
         const plan = diffRuntimeConfig(current, next);
 
         if (input.mode === 'strict' && plan.requiresRestart.length > 0) {
@@ -855,6 +856,28 @@ export function createRuntimeConfigManager(
       pendingRestart: restartChanges,
     };
   }
+}
+
+/** Rejects a catalog edit that removes the last context source for a still-listed model; new unknown models keep their warning. */
+function assertCatalogContextRemovalIsValid(
+  previous: RuntimeConfigSnapshot,
+  next: RuntimeConfigSnapshot
+): void {
+  const profiles = next.providerRegistry.list().flatMap((profile) => {
+    const before = previous.providerRegistry.get(profile.id);
+    if (!before) return [];
+    const key = before.vendor ?? before.id;
+    const previousModels = previous.modelCatalog.providers[key]?.models;
+    const nextModels = next.modelCatalog.providers[key]?.models;
+    const models = profile.models.filter(
+      (id) =>
+        before.models.includes(id) &&
+        previousModels?.[id]?.limit?.context !== undefined &&
+        nextModels?.[id]?.limit?.context === undefined
+    );
+    return models.length ? [{ ...profile, models }] : [];
+  });
+  assertConfiguredModelsHaveKnownContext(new ProviderRegistry(profiles), next.gatewayConfig);
 }
 
 /**
