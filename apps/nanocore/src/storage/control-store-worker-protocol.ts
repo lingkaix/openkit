@@ -91,6 +91,7 @@ import {
   type ControlGenerativePresentationWire,
   ControlGenerativePresentationWireSchema,
 } from '../generative-ui/native-publication-codecs.js';
+import { ITEM_DELTA_PROTOCOL_MESSAGE } from '../lib/item-delta-validation.js';
 import {
   type AttentionEnqueueResult,
   AttentionEnqueueResultSchema,
@@ -1120,7 +1121,9 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'products'
     | 'transition'
     | 'item'
-    | 'event';
+    | 'event'
+    | 'terminal'
+    | 'publication';
   readonly code: string;
   readonly message: string;
   readonly status: number;
@@ -1695,12 +1698,18 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'goal' || value.operation === 'capability') &&
         value.message === 'Unsupported retained record format.' &&
         value.status === 409)) &&
-    ((value.operation === 'provenance' &&
-      value.code === 'conflict' &&
-      value.status === 409 &&
-      ['Runtime evidence replay conflict.', 'Runtime provenance replay conflict.'].includes(
-        String(value.message)
-      )) ||
+    ((['event', 'products', 'transition', 'terminal', 'publication'].includes(
+      String(value.operation)
+    ) &&
+      value.code === 'core.protocol.invalid_delta' &&
+      value.message === ITEM_DELTA_PROTOCOL_MESSAGE &&
+      value.status === 409) ||
+      (value.operation === 'provenance' &&
+        value.code === 'conflict' &&
+        value.status === 409 &&
+        ['Runtime evidence replay conflict.', 'Runtime provenance replay conflict.'].includes(
+          String(value.message)
+        )) ||
       ((value.operation === 'item' || value.operation === 'event') &&
         value.code === 'conflict' &&
         value.status === 409) ||

@@ -578,7 +578,6 @@ The prompt-cap test passes and the package trace records the digest. Delivery of
 
 ## Implementation Gaps
 
-- A second submission to a Thread with a nonterminal Turn returns `thread_busy` - Assistant admission has no uniform `thread_busy` check - #787
 - Discarding a draft can be undone for 10 seconds - no timed discard undo exists - #791
 - Busy retry honors HTTP `Retry-After` - the client reads `error.details.retryAfter` only - #791
 - Outputs over 1 MB never render inline - no common media-size guard enforces that cap - #791

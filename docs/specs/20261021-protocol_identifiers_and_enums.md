@@ -466,8 +466,6 @@ not-run
 ## Implementation Gaps
 
 - Mutating command UUID `requestId` admission - Some mutation request schemas admit arbitrary nonempty `requestId` strings instead of enforcing UUID syntax - #638
-- Item delta correlation sequence validation - Event envelope validation checks correlation field presence per event but does not enforce prior part introduction or matching request resolution across an Item event sequence - #763
-- Audited `core.protocol.*` delta violation handling - Undeclared item-type and delta-kind combinations fail schema parsing without emitting an audit event or a `core.protocol.*` error code - #763
 
 ## Decisions
 

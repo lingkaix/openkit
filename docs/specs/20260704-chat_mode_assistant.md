@@ -404,7 +404,6 @@ Local integration does not prove live Provider, host, or browser acceptance.
 ## Implementation Gaps
 
 - The Core Assistant is the only agent in a Chat Thread - On main, Knowledge Manager runs its outer Turn in the addressed Chat Thread - #786
-- A second submission to a Thread with a nonterminal Turn returns thread_busy - On main, Assistant admission has no uniform thread_busy check - #787
 - Repository inspection uses a selected Gateway vendor MCP read Tool - On main, the ordinary Assistant factory supplies no such Tool - #743
 - A request for another entry proposes a new Thread - On main, an unknown Tool returns an unavailable Tool result and does not propose that Thread - #630
 - A post-provider persistence failure returns chat_mode_persistence_failed - On main, that failure is generic HTTP 500 chat_mode_failed - #730

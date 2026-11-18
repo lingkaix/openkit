@@ -1,5 +1,6 @@
 import {
   type ActorRef,
+  deriveEntityId,
   isSealedTurnTerminal,
   type SubmitTurnInputRequestSchema,
   TurnReadProjectionSchema,
@@ -15,6 +16,10 @@ import type { FsStore } from './lib/store.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
 import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import {
+  conversationWorkerTurnPresentation,
+  reconcileInterruptedConversationWorkerClaim,
+} from './runtime/conversation-worker-claim.js';
+import {
   closeSchedulerExecutionAttemptWithoutEffects,
   listSchedulerExecutionAttemptsForTurn,
   markSchedulerAttemptForTerminalTurn,
@@ -22,6 +27,7 @@ import {
 } from './runtime/execution-attempts.js';
 import {
   commandInputHash,
+  conversationTaskTurnId,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
@@ -332,6 +338,89 @@ export async function interruptProductTurn(input: {
           workspaceId,
           statuses: ['queued', 'denied', 'admitted'],
         }).filter((entry) => entry.turnId === turnId && entry.threadId === threadId);
+        if (
+          entries.length === 0 &&
+          currentTurn.status === 'pending' &&
+          !currentTurn.agentSessionId &&
+          currentTurn.agentId &&
+          currentTurn.triggerSource?.kind === 'handoff'
+        ) {
+          const claimRequestId = store.readConversationWorkerClaimRequest(currentTurn);
+          const allAdmissions = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId,
+            statuses: ['queued', 'denied', 'admitted', 'cancelled', 'expired'],
+          }).filter((entry) => entry.turnId === turnId && entry.threadId === threadId);
+          if (
+            claimRequestId &&
+            allAdmissions.length === 0 &&
+            conversationTaskTurnId(
+              currentTurn.triggerActor,
+              workspaceId,
+              threadId,
+              threadId,
+              claimRequestId
+            ) === turnId &&
+            listSchedulerExecutionAttemptsForTurn(coreDb, { workspaceId, threadId, turnId })
+              .length === 0
+          ) {
+            try {
+              const completedAt = new Date().toISOString();
+              const itemId = deriveEntityId('it', ['worker-result', turnId]);
+              const previous = currentTurn.items.find((item) => item.id === itemId);
+              if (previous && previous.type !== 'status')
+                throw new Error('Claim result lineage conflicts.');
+              const presentation = conversationWorkerTurnPresentation(
+                { status: 'interrupted' },
+                currentTurn.agentId
+              );
+              await store.completeTurn(
+                turnId,
+                {
+                  status: 'interrupted',
+                  completedAt,
+                  error: {
+                    code: 'turn_cancelled',
+                    message: 'Worker claim was interrupted before execution. Submit a new request.',
+                  },
+                },
+                {
+                  requireUnboundPending: true,
+                  requestId,
+                  command,
+                  items: [
+                    {
+                      ...previous,
+                      id: itemId,
+                      owner: currentTurn.owner,
+                      threadId,
+                      turnId,
+                      type: 'status',
+                      status: 'completed',
+                      level: presentation.level,
+                      title: presentation.title,
+                      summary: presentation.summary,
+                      createdAt: previous?.createdAt ?? completedAt,
+                      completedAt,
+                    },
+                  ],
+                }
+              );
+              await reconcileInterruptedConversationWorkerClaim(
+                coreDb,
+                store,
+                turnId,
+                claimRequestId
+              );
+              return acceptedTurn();
+            } catch {
+              throw new TurnStartValidationError(
+                'recovery_required',
+                'Worker admission raced interruption. Retry this interruption request to reconcile its current owner.',
+                409
+              );
+            }
+          }
+        }
         if (entries.length !== 1)
           throw new TurnStartValidationError(
             'recovery_required',
@@ -408,7 +497,28 @@ export async function interruptProductTurn(input: {
       });
       return acceptedTurn();
     },
-    replay: (record) => TurnSchema.parse(store.getTurn(workspaceId, threadId, record.response.id)),
+    replay: async (record) => {
+      const current = store.getTurn(workspaceId, threadId, record.response.id);
+      const claimRequestId = coreDb ? store.readConversationWorkerClaimRequest(current) : null;
+      if (
+        coreDb &&
+        claimRequestId &&
+        conversationTaskTurnId(
+          current.triggerActor,
+          workspaceId,
+          threadId,
+          threadId,
+          claimRequestId
+        ) === current.id
+      )
+        await reconcileInterruptedConversationWorkerClaim(
+          coreDb,
+          store,
+          current.id,
+          claimRequestId
+        );
+      return TurnSchema.parse(store.getTurn(workspaceId, threadId, record.response.id));
+    },
     responseId: (result) => result.id,
   }).catch((error: unknown) => {
     if (error instanceof TurnStartValidationError && error.code === 'recovery_required')

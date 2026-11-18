@@ -14,7 +14,7 @@ import {
 import { basename, dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, parentPort } from 'node:worker_threads';
-import { writeRetainedV1 } from '@openkit/protocol';
+import { PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
 import {
   changeVerifiedFileMode,
   copyFileForCut,
@@ -31,7 +31,11 @@ import {
   prepareControlReviewCommand,
   readControlReviewMaterialId,
 } from '../artifact-reviews.js';
-import { prepareAuditEventStatement, recordServerAuditEvent } from '../audit-events.js';
+import {
+  prepareAuditEvent,
+  prepareAuditEventStatement,
+  recordServerAuditEvent,
+} from '../audit-events.js';
 import { applyControlAccessTokenLifecycle } from '../auth/access-token-lifecycle-native.js';
 import {
   getOpenKitAccessTokenRecord,
@@ -79,6 +83,7 @@ import {
   type PreparedNativeSchemaApplication,
   prepareNativeSchemaApplication,
 } from '../knowledge/schema-application.js';
+import { ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
 import {
   enqueueAttentionInDb,
   reconcileIncompleteAttentionAttemptsInDb,
@@ -472,6 +477,8 @@ type WriteRequest = WriteCommand & {
   ready: boolean;
   predecessorFailed: boolean;
   refusal?: ControlWorkerReply;
+  /** Only a redacted diagnostic commits when fresh protocol publication is refused. */
+  protocolAudit?: ReturnType<typeof prepareAuditEventStatement>;
   readonly preparedWorkspaceCapture?: RawWorkspaceCapture | null;
   readonly preparedApp?: PreparedControlApp;
   readonly preparedSchemaApplication?: PreparedNativeSchemaApplication;
@@ -739,6 +746,22 @@ function domainRefusal(
   error: unknown,
   request?: ControlWorkerRequest | WriteRequest
 ): ControlWorkerDomainRefusal | undefined {
+  if (
+    error instanceof ItemDeltaProtocolError &&
+    ['event', 'products', 'transition', 'terminal', 'publication', 'pending'].includes(operation)
+  )
+    return {
+      operation: operation as
+        | 'event'
+        | 'products'
+        | 'transition'
+        | 'terminal'
+        | 'publication'
+        | 'pending',
+      code: error.code,
+      message: error.message,
+      status: error.status,
+    };
   const schedulerWork =
     request?.operation === 'transition' &&
     'kind' in request.transition &&
@@ -2063,6 +2086,12 @@ function refuseSuccessors(
   failed: WriteRequest,
   excluded: ReadonlySet<WriteRequest> = new Set()
 ): void {
+  if (
+    failed.protocolAudit &&
+    failed.refusal?.status === 'error' &&
+    failed.refusal.commit === 'not-committed'
+  )
+    return;
   if (isolatedSchemaRefusal(owner, failed)) return;
   const turns = new Set(failed.lanes);
   let barrierFailed = failed.barrier;
@@ -2285,7 +2314,11 @@ function flush(owner: OwnedDatabase): void {
     }
   }
   const batch = selected;
-  if (batch.every((request) => request.refusal || request.predecessorFailed)) {
+  if (
+    batch.every(
+      (request) => (request.refusal || request.predecessorFailed) && !request.protocolAudit
+    )
+  ) {
     for (const request of batch)
       complete(
         owner,
@@ -2339,12 +2372,17 @@ function flush(owner: OwnedDatabase): void {
     replies = owner.writer.write((sqlite) => {
       const outcomes: ControlWorkerReply[] = [];
       for (const request of batch) {
-        if (request.refusal || request.predecessorFailed) {
-          outcomes.push(request.refusal ?? failure(request.id, 'precondition', 'not-committed'));
-          continue;
-        }
         sqlite.exec('SAVEPOINT control_transition');
         try {
+          if (request.refusal || request.predecessorFailed) {
+            // The attempted product tuple stays absent. Its existing Audit owner alone
+            // joins this FULL commit before the protocol refusal is acknowledged.
+            if (request.protocolAudit && !request.predecessorFailed)
+              apply(sqlite, [request.protocolAudit]);
+            sqlite.exec('RELEASE control_transition');
+            outcomes.push(request.refusal ?? failure(request.id, 'precondition', 'not-committed'));
+            continue;
+          }
           let outcome: ControlWorkerReply;
           if (request.operation === 'schema-application') {
             if (!request.preparedSchemaApplication) throw new ControlProductPreconditionError();
@@ -3494,7 +3532,7 @@ function flush(owner: OwnedDatabase): void {
     for (const request of batch) refuseSuccessors(owner, request, new Set(batch));
     replies = batch.map(
       (request) =>
-        request.refusal ??
+        (request.protocolAudit ? undefined : request.refusal) ??
         (request.predecessorFailed
           ? failure(request.id, 'precondition', 'not-committed')
           : failure(
@@ -4669,16 +4707,6 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value.content))
               );
             }
-            if (value.operation === 'pending' && !value.input.terminal) {
-              if (!owner.productOwner) throw new ControlProductPreconditionError();
-              preparedEntries = await prepareControlEntries(
-                owner.productOwner,
-                owner.contentMount,
-                value.input.entries,
-                newDirectories
-              );
-              Object.assign(queued, { preparedEntries });
-            }
             // Canonical-dependent preparation observes its admitted predecessor's committed state.
             if (
               [
@@ -4694,6 +4722,18 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               ].includes(value.operation)
             )
               await prepareAfterPredecessors(owner, queued, earlier);
+            if (value.operation === 'pending' && !value.input.terminal) {
+              if (!owner.productOwner) throw new ControlProductPreconditionError();
+              preparedEntries = await prepareControlEntries(
+                owner.productOwner,
+                owner.contentMount,
+                value.input.entries,
+                newDirectories,
+                owner.scopeDb?.scope === 'workspace' ? owner.scopeDb : undefined,
+                value.input.products
+              );
+              Object.assign(queued, { preparedEntries });
+            }
             if (value.operation === 'generative-presentation') {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
               preparedGenerativePresentation = await prepareControlGenerativePresentation(
@@ -4907,6 +4947,9 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 if (owner.scopeDb?.scope !== 'workspace')
                   throw new ControlProductPreconditionError();
               }
+              // Correlation must observe committed predecessor events, including compound publishers.
+              if (value.transition.entries.some((entry) => entry.kind === 'event'))
+                await prepareAfterPredecessors(owner, queued, earlier);
               if (!owner.productOwner) throw new ControlProductPreconditionError();
               preparedEntries = await prepareControlEntries(
                 owner.productOwner,
@@ -4915,7 +4958,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 newDirectories,
                 owner.scopeDb?.scope === 'workspace' || owner.scopeDb?.scope === 'core'
                   ? owner.scopeDb
-                  : undefined
+                  : undefined,
+                value.transition.products
               );
               Object.assign(queued, { preparedEntries });
               if (value.transition.pending?.length && archivedThreads(value).length === 0) {
@@ -5029,6 +5073,38 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               : domain
                 ? { ...failure(value.id, 'precondition'), domain }
                 : failure(value.id, failureCode(error, [value.id]), 'not-committed');
+            if (error instanceof ItemDeltaProtocolError && owner.productOwner && !owner.poisoned) {
+              try {
+                const turn = error.turnId
+                  ? readProduct(owner.sqlite, owner.productOwner, 'turn', error.turnId)
+                  : undefined;
+                queued.protocolAudit = prepareAuditEventStatement(
+                  prepareAuditEvent({
+                    workspaceId:
+                      owner.productOwner.kind === 'workspace'
+                        ? owner.productOwner.workspaceId
+                        : null,
+                    protocolVersion: PROTOCOL_VERSION,
+                    threadId:
+                      typeof turn?.record.threadId === 'string' ? turn.record.threadId : null,
+                    turnId: turn ? (error.turnId ?? null) : null,
+                    category: 'system',
+                    action: error.code,
+                    errorCode: error.code,
+                    outcome: 'denied',
+                    severity: 'warning',
+                    summary: 'Item delta violates the declared Item protocol.',
+                  })
+                );
+              } catch (auditError) {
+                // A failed diagnostic write retains ordinary request-scoped storage recovery.
+                queued.refusal = failure(
+                  value.id,
+                  failureCode(auditError, [value.id]),
+                  'not-committed'
+                );
+              }
+            }
             refuseSuccessors(owner, queued);
             await releaseContentPreparation(newDirectories);
             queued.ready = true;

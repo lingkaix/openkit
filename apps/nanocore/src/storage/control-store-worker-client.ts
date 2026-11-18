@@ -26,6 +26,7 @@ import {
   ControlDiscordChannelResultSchema,
 } from '../channels/discord-codecs.js';
 import { BootConfigError } from '../config/mode.js';
+import { ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
 import type { AttentionDelivery } from '../notifications/attention.js';
 import {
   type AttentionEnqueueCommand,
@@ -7502,17 +7503,19 @@ class ControlStoreWorkerClient {
       this.complete(
         value.id,
         undefined,
-        (entry.command.operation === 'products' || entry.command.operation === 'transition') &&
-          value.commit === 'not-committed' &&
-          value.domain &&
-          value.domain.operation !== 'resolved-agent-setup' &&
-          ['request_executing', 'thread_busy', 'conflict'].includes(value.domain.code)
-          ? new PendingRequestCommandError(
-              value.domain.code,
-              value.domain.message,
-              value.domain.status
-            )
-          : new ControlStoreWorkerError(value.code, value.commit, value.domain)
+        value.commit === 'not-committed' && value.domain?.code === 'core.protocol.invalid_delta'
+          ? new ItemDeltaProtocolError(undefined, true)
+          : (entry.command.operation === 'products' || entry.command.operation === 'transition') &&
+              value.commit === 'not-committed' &&
+              value.domain &&
+              value.domain.operation !== 'resolved-agent-setup' &&
+              ['request_executing', 'thread_busy', 'conflict'].includes(value.domain.code)
+            ? new PendingRequestCommandError(
+                value.domain.code,
+                value.domain.message,
+                value.domain.status
+              )
+            : new ControlStoreWorkerError(value.code, value.commit, value.domain)
       );
     else this.complete(value.id, value);
     // Native outer-commit uncertainty/integrity poison cannot leave dependent borrowers

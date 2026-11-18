@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
 import {
   AuditEventSchema,
+  ItemDeltaEventSchema,
   ItemSchema,
   PROTOCOL_VERSION,
   RequestIdSchema,
@@ -19,6 +20,7 @@ import {
 import type { StorageContent } from '@openkit/storage';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
+import { assertItemDeltaSequence, ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
 import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
 import {
   createExecutionStepJournalReader,
@@ -26,6 +28,7 @@ import {
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalSettlement } from '../runtime/execution-step-journal.js';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
 import { applyControlPendingCommand } from '../runtime/pending-requests.js';
 import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
@@ -325,6 +328,34 @@ function applyProducts(
   terminalTurnId?: string
 ): void {
   assertControlProductWriter(sqlite);
+  // Decide exclusion before incidental Thread CAS writes. Two prepared admissions
+  // must still return thread_busy when the first commits during their preparation.
+  const admittedThreads = new Set<string>();
+  for (const input of mutations) {
+    if (input.kind !== 'turn' || input.expectedRevision !== 0) continue;
+    const record = decode('turn', input.record, owner);
+    // Born-terminal observations (for example a skipped automation) claim no execution.
+    if (!['pending', 'running'].includes(String(record.status))) continue;
+    if (
+      admittedThreads.has(String(record.threadId)) ||
+      sqlite
+        .prepare(
+          `WITH RECURSIVE segments(id) AS (
+            SELECT ? UNION SELECT child.id FROM control_threads child JOIN segments
+            ON json_extract(child.record_json,'$.parentThreadId')=segments.id
+            WHERE json_extract(child.record_json,'$.segment')>0
+          ) SELECT 1 FROM control_turns WHERE thread_id IN (SELECT id FROM segments)
+            AND id<>? AND status IN ('pending','running') LIMIT 1`
+        )
+        .get(record.threadId as string, record.id as string)
+    )
+      throw new PendingRequestCommandError(
+        'thread_busy',
+        'Thread already has a nonterminal Turn. Wait for it to finish or interrupt it before submitting again.',
+        409
+      );
+    admittedThreads.add(String(record.threadId));
+  }
   mutations = withReceivedInfluence(sqlite, owner, mutations, entries);
   if (owner.kind === 'workspace' && !mutations.some((input) => input.kind === 'workspace')) {
     const createdThreads = mutations
@@ -678,7 +709,8 @@ export async function prepareControlEntries(
   contentMount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[],
   newDirectories?: ControlContentPreparation,
-  db?: CoreDb | WorkspaceDb
+  db?: CoreDb | WorkspaceDb,
+  products: readonly ControlProductMutation[] = []
 ): Promise<PreparedControlEntry[]> {
   const prepared = await prepareEntries(
     owner,
@@ -687,7 +719,8 @@ export async function prepareControlEntries(
     undefined,
     undefined,
     newDirectories,
-    db
+    db,
+    products
   );
   // New-write dependency preparation is separate from verification of retained history.
   // In particular, reading a completed instruction must not recursively prepare its prior revision.
@@ -976,7 +1009,8 @@ async function prepareEntries(
   terminal?: Record<string, unknown>,
   sealedTurn?: Record<string, unknown>,
   newDirectories?: ControlContentPreparation | null,
-  retainedDb?: CoreDb | WorkspaceDb
+  retainedDb?: CoreDb | WorkspaceDb,
+  products: readonly ControlProductMutation[] = []
 ): Promise<PreparedControlEntry[]> {
   if (isMainThread) throw new ControlProductPreconditionError();
   if (
@@ -985,6 +1019,7 @@ async function prepareEntries(
   )
     throw new ControlProductPreconditionError();
   const result: PreparedControlEntry[] = [];
+  const freshEvents = new Set<PreparedControlEntry>();
   const prepare = async (input: ControlProductEntry): Promise<PreparedControlEntry> => {
     if (
       sealedTurn &&
@@ -1028,6 +1063,20 @@ async function prepareEntries(
       preparedOriginals.set(prepared, value);
       return prepared;
     }
+    // Fresh agent deltas receive the protocol refusal before strict retained decoding.
+    // Historical reads keep their existing decoder and never publish a new diagnostic.
+    if (
+      newDirectories !== null &&
+      value &&
+      typeof value === 'object' &&
+      'data' in value &&
+      value.data &&
+      typeof value.data === 'object' &&
+      'type' in value.data &&
+      value.data.type === 'item-delta' &&
+      !ItemDeltaEventSchema.safeParse(value.data).success
+    )
+      throw new ItemDeltaProtocolError(input.turnId);
     const event = readRetainedV1(value, () =>
       owner.kind === 'server'
         ? StoredServerEventV1Schema.parse(value)
@@ -1103,6 +1152,7 @@ async function prepareEntries(
       readMetadataJson: prepareControlReadMetadata('event', value),
       referencedItemIds: [...referencedItemIds],
     };
+    if (newDirectories !== null) freshEvents.add(prepared);
     preparedPayloads.set(prepared, event);
     preparedOriginals.set(prepared, value);
     return prepared;
@@ -1113,7 +1163,136 @@ async function prepareEntries(
     if (failure) throw failure.reason;
     for (const entry of cohort) if (entry.status === 'fulfilled') result.push(entry.value);
   }
+  if (newDirectories?.db) {
+    const preceding: { data: unknown }[] = [];
+    for (const entry of result) {
+      if (entry.input.kind !== 'event' || !freshEvents.has(entry)) continue;
+      const event = readPreparedControlEntry(entry) as {
+        turnId: string;
+        sequence: number;
+        data: unknown;
+      };
+      try {
+        await assertControlItemDelta(
+          newDirectories.db,
+          contentMount,
+          event,
+          result,
+          preceding,
+          terminal ??
+            products.find((input) => input.kind === 'turn' && input.record.id === event.turnId)
+              ?.record
+        );
+      } catch (error) {
+        if (error instanceof ItemDeltaProtocolError) throw new ItemDeltaProtocolError(event.turnId);
+        throw error;
+      }
+      preceding.push(event);
+    }
+  }
   return result;
+}
+
+/** Reconstructs correlation only from verified retained events and actual Item bytes, never a retained cursor. */
+async function assertControlItemDelta(
+  db: CoreDb | WorkspaceDb,
+  mount: ControlProductContentMount | undefined,
+  event: { turnId: string; sequence: number; data: unknown },
+  entries: readonly PreparedControlEntry[] = [],
+  preceding: readonly { data: unknown }[] = [],
+  proposedTurn?: Record<string, unknown>
+): Promise<void> {
+  const data = event.data;
+  if (!data || typeof data !== 'object' || !('type' in data) || data.type !== 'item-delta') return;
+  const owner: ControlProductOwner =
+    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId };
+  const retained = readProduct(db.sqlite, owner, 'turn', event.turnId);
+  const turn = retained?.record ?? (proposedTurn && decode('turn', proposedTurn, owner));
+  if (!turn || turn.id !== event.turnId) throw new ItemDeltaProtocolError(event.turnId);
+  const itemId = 'itemId' in data ? data.itemId : undefined;
+  let item = entries.find(
+    (entry) =>
+      entry.input.kind === 'item' && entry.input.turnId === event.turnId && entry.id === itemId
+  );
+  if (!item && typeof itemId === 'string') {
+    const row = db.sqlite
+      .prepare(
+        "SELECT turn_id,sequence,revision,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+      )
+      .get(itemId) as
+      | { turn_id: string; sequence: number; revision: number; content_json: string }
+      | undefined;
+    if (row && row.turn_id === event.turnId)
+      [item] = await prepareRetainedControlEntries(db, mount, [
+        {
+          kind: 'item',
+          turnId: row.turn_id,
+          sequence: row.sequence,
+          expectedRevision: row.revision - 1,
+          content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
+        },
+      ]);
+  }
+  const actualItem = item ? ItemSchema.parse(readPreparedControlEntry(item)) : undefined;
+  // Ordinary streamed text needs the actual Item matrix, but no correlation census.
+  if (
+    !('deltaKind' in data) ||
+    !['indexed-text-delta', 'request-resolved'].includes(String(data.deltaKind))
+  ) {
+    assertItemDeltaSequence(data, actualItem, []);
+    return;
+  }
+  const history: { data: unknown }[] = [];
+  let sequence = 0;
+  for (;;) {
+    const rows = db.sqlite
+      .prepare(
+        "SELECT sequence,content_json FROM control_product_entries WHERE kind='event' AND turn_id=? AND sequence>? AND sequence<? ORDER BY sequence LIMIT ?"
+      )
+      .all(event.turnId, sequence, event.sequence, CONTROL_PRODUCT_LIMITS.pageRows) as {
+      sequence: number;
+      content_json: string;
+    }[];
+    if (!rows.length) break;
+    for (const row of rows) {
+      if (row.sequence !== sequence + 1) throw new ControlProductPreconditionError();
+      sequence = row.sequence;
+      const [entry] = await prepareRetainedControlEntries(
+        db,
+        mount,
+        [
+          {
+            kind: 'event',
+            turnId: event.turnId,
+            sequence,
+            expectedRevision: 0,
+            content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
+          },
+        ],
+        turn,
+        turn
+      );
+      if (!entry) throw new ControlProductPreconditionError();
+      const recorded = readPreparedControlEntry(entry) as z.infer<typeof SseEventEnvelopeSchema>;
+      if (recorded.data.type !== 'item-delta' || recorded.data.itemId !== itemId) continue;
+      const delta = recorded.data;
+      const identity = {
+        type: delta.type,
+        itemId: delta.itemId,
+        itemType: delta.itemType,
+        deltaKind: delta.deltaKind,
+      };
+      if (delta.deltaKind === 'part-started')
+        history.push({ data: { ...identity, partId: delta.partId } });
+      if (delta.deltaKind === 'request-started')
+        history.push({ data: { ...identity, requestRefId: delta.requestRefId } });
+      if (delta.deltaKind === 'request-resolved')
+        history.push({
+          data: { ...identity, requestRefId: delta.requestRefId, status: delta.status },
+        });
+    }
+  }
+  assertItemDeltaSequence(data, actualItem, [...history, ...preceding]);
 }
 
 /** Closed existing Item/event admissions; each category keeps its accepted equality rule. */
@@ -1638,7 +1817,8 @@ export async function prepareControlPublication(
     input.entries,
     turn.record,
     turn.record,
-    newDirectories
+    newDirectories,
+    db
   );
   if (entries.some((entry) => entry.input.turnId !== input.turnId))
     throw new ControlProductPreconditionError();

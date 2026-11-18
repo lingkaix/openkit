@@ -1,4 +1,4 @@
-import { AuditEventIdSchema } from '@openkit/protocol';
+import { AuditEventIdSchema, ItemDeltaEventSchema, RequestIdSchema } from '@openkit/protocol';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   contextInfluenceWasCleared,
@@ -28,6 +28,7 @@ import {
   threadSegmentUsage,
 } from '../storage/thread-segmentation.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
+import { assertItemDeltaSequence, ItemDeltaProtocolError } from './item-delta-validation.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
 
 export { StoreRecordNotFoundError } from './store-errors.js';
@@ -447,6 +448,8 @@ type TurnEventInput = Omit<
 
 /** Actual products and evidence that must commit with a service or Worker Turn outcome. */
 export interface TerminalTurnPublication {
+  /** Request-local cancellation condition; it is never sent as retained or private wire data. */
+  readonly requireUnboundPending?: true;
   /** Exact assigned Session projection decided with this Turn; it supplies no cleanup or release proof. */
   readonly agentSession?: Pick<AgentSession, 'id' | 'status' | 'message' | 'updatedAt'>;
   /** New or changed Items included in the terminal snapshot, in publication order. */
@@ -3328,7 +3331,15 @@ export class FsStore {
       },
       turns,
       input,
-      prepare,
+      async (owned) => {
+        try {
+          return await prepare(owned);
+        } catch (error) {
+          if (error instanceof ItemDeltaProtocolError && !error.audited)
+            await this.recordItemDeltaViolation(owner, turns[0]!);
+          throw error;
+        }
+      },
       closeoutCallId,
       progressItem
     );
@@ -4819,6 +4830,7 @@ export class FsStore {
     event: ServerTurnEventInput,
     admission?: Pick<ControlPublicationInput, 'category'>
   ): Promise<ServerTurnEventEnvelope> {
+    this.validateItemDeltaPublication({ kind: 'server' }, turnId, event.data);
     const itemId =
       'item' in event.data
         ? event.data.item.id
@@ -4889,7 +4901,6 @@ export class FsStore {
       const state = this.serverTurnStream(turnId);
       state.sequence = envelope.sequence;
       state.events.push(envelope);
-      if (state.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) state.events.shift();
     }
     this.acknowledgedTurnEvents.set(envelope, structuredClone(envelope));
     return envelope;
@@ -5276,6 +5287,48 @@ export class FsStore {
     return this.createTurnPublication(...args).finally(release);
   }
 
+  /** Reads the exact native conversation admission Audit, including after ordinary receipt expiry. */
+  public readConversationWorkerClaimRequest(turn: Turn): string | null {
+    if (!this.dataRoot || turn.owner.kind !== 'workspace') return null;
+    const scope = this.nativeScope(turn.owner);
+    const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+    try {
+      const rows = reader.sqlite
+        .prepare(`SELECT request_id,actor_json,schema_version FROM audit_events
+        WHERE workspace_id=? AND thread_id=? AND turn_id=? AND action='conversation.submit'
+          AND category='command' AND outcome='succeeded' AND resource=? LIMIT 2`)
+        .all(turn.owner.workspaceId, turn.threadId, turn.id, `turn:${turn.id}`) as {
+        request_id: string | null;
+        actor_json: string | null;
+        schema_version: number;
+      }[];
+      const row = rows[0];
+      if (
+        rows.length !== 1 ||
+        !row ||
+        row.schema_version !== 1 ||
+        !row.actor_json ||
+        !RequestIdSchema.safeParse(row.request_id).success ||
+        !isDeepStrictEqual(JSON.parse(row.actor_json), turn.triggerActor)
+      )
+        return null;
+      return row.request_id;
+    } finally {
+      reader.close();
+    }
+  }
+
+  /** Refuses new work on a busy origin; native Turn creation repeats this check atomically. */
+  public assertThreadIdle(workspaceId: string, threadId: string): void {
+    const head = this.getThreadSegmentHead(workspaceId, threadId);
+    if (this.readThreadNavigationFacts(workspaceId, head.id).activeTurn)
+      throw new OperationError(
+        'thread_busy',
+        'Thread already has a nonterminal Turn. Wait for it to finish or interrupt it before submitting again.',
+        409
+      );
+  }
+
   /** Prepares and publishes one Turn while its common admission remains held. */
   private async createTurnPublication(
     workspaceId: string,
@@ -5286,6 +5339,8 @@ export class FsStore {
     options: CreateTurnOptions = {}
   ): Promise<Turn> {
     const thread = this.getThread(workspaceId, threadId);
+    if (!isSealedTurnTerminal(options.status ?? 'running'))
+      this.assertThreadIdle(workspaceId, threadId);
     // Task Mode addresses its receiving Thread; checkpoints deliberately retain no Task record id.
     const taskId =
       thread.threadSource === 'worker' || options.executorKind === 'worker' ? threadId : undefined;
@@ -5876,6 +5931,12 @@ export class FsStore {
     const before =
       history?.turn ??
       (owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId));
+    if (publication.requireUnboundPending && (before.status !== 'pending' || before.agentSessionId))
+      throw new OperationError(
+        'recovery_required',
+        'Worker admission raced interruption. Retry this interruption request to use its current owner.',
+        409
+      );
     const completedAt = patch.completedAt ?? before.completedAt;
     const items = new Map(before.items.map((item) => [item.id, item]));
     for (const input of publication.items ?? []) {
@@ -5909,6 +5970,25 @@ export class FsStore {
         ? this.getServerTurnTranscript(turnId)
         : this.getTurnEventsForExport(turnId);
     const prior = events.find((event) => event.data.type === 'turn-completed');
+    const precedingHistory: { data: unknown }[] = [...events];
+    for (const draft of publication.precedingEvents ?? []) {
+      if (
+        prior &&
+        events.some((event) => alreadyDecidedPublicationBytesEqual(event.data, draft.data))
+      )
+        continue;
+      try {
+        assertItemDeltaSequence(
+          draft.data,
+          turn.items.find((item) => 'itemId' in draft.data && item.id === draft.data.itemId),
+          precedingHistory
+        );
+      } catch (error) {
+        if (!(error instanceof ItemDeltaProtocolError)) throw error;
+        throw error;
+      }
+      precedingHistory.push(draft);
+    }
     const precedingEvents = (publication.precedingEvents ?? []).map((draft, index, drafts) => {
       if (owner.kind !== 'workspace' || draft.data.type === 'turn-completed')
         throw new Error('Terminal preceding events require an existing Workspace projection.');
@@ -6141,7 +6221,6 @@ export class FsStore {
           owner.kind === 'server' ? this.serverTurnStream(turnId) : this.turnStream(turnId);
         stream.sequence = event.sequence;
         stream.events.push(...([...precedingEvents, event] as never[]));
-        if (stream.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) stream.events.shift();
       }
     }
     // Feedback is a separate file owner and can publish only after native terminal acknowledgement.
@@ -8827,6 +8906,11 @@ export class FsStore {
     event: TurnEventInput,
     admission?: Pick<ControlPublicationInput, 'category'>
   ): Promise<SseEventEnvelope> {
+    this.validateItemDeltaPublication(
+      { kind: 'workspace', workspaceId: event.workspaceId },
+      turnId,
+      event.data
+    );
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'workspace', workspaceId: event.workspaceId });
       const client = getControlStoreWorkerClient();
@@ -8910,9 +8994,73 @@ export class FsStore {
     const state = this.turnStream(turnId);
     state.sequence = envelope.sequence;
     state.events.push(envelope);
-    if (state.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) state.events.shift();
     this.acknowledgedTurnEvents.set(envelope, structuredClone(envelope));
     return envelope;
+  }
+
+  /** Validates new deltas from retained evidence; ordinary non-delta publication keeps its bounded read path. */
+  private validateItemDeltaPublication(owner: Turn['owner'], turnId: string, data: unknown): void {
+    if (!data || typeof data !== 'object' || !('type' in data) || data.type !== 'item-delta')
+      return;
+    // Native publication reconstructs the actual Item and correlations off Main.
+    // Reject malformed agent payloads before the transport's strict envelope parser.
+    if (this.dataRoot) {
+      if (!ItemDeltaEventSchema.safeParse(data).success) throw new ItemDeltaProtocolError();
+      return;
+    }
+    const turn =
+      owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId);
+    const events =
+      owner.kind === 'server'
+        ? this.getServerTurnTranscript(turnId)
+        : this.getTurnEventsForExport(turnId);
+    // Exact sealed publication replay does not resolve a request a second time.
+    if (
+      isSealedTurnTerminal(turn.status) &&
+      events.some((event) => alreadyDecidedPublicationBytesEqual(event.data, data))
+    )
+      return;
+    assertItemDeltaSequence(
+      data,
+      turn.items.find((item) => 'itemId' in data && item.id === data.itemId),
+      events
+    );
+  }
+
+  /** Records a redacted refusal through the existing Audit writer before reporting the protocol error. */
+  private async recordItemDeltaViolation(owner: Turn['owner'], turnId: string): Promise<void> {
+    if (!this.dataRoot) return;
+    const scope = this.nativeScope(owner);
+    const head = readNativeProduct(scope, 'turn', turnId);
+    if (!head) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
+    const turn = TurnReaderSchema.parse({ ...head.record, items: [] });
+    const client = getControlStoreWorkerClient();
+    const database = `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: this.dataRoot,
+      create: false,
+      initialize: owner.kind === 'server' ? 'core' : 'workspace',
+      productOwner: owner,
+      contentMount: scope.contentMount,
+    });
+    await client.write(database, [
+      prepareAuditEventStatement(
+        prepareAuditEvent({
+          workspaceId: owner.kind === 'workspace' ? owner.workspaceId : null,
+          protocolVersion: PROTOCOL_VERSION,
+          threadId: turn.threadId,
+          turnId,
+          category: 'system',
+          action: 'core.protocol.invalid_delta',
+          errorCode: 'core.protocol.invalid_delta',
+          outcome: 'denied',
+          severity: 'warning',
+          summary: 'Item delta violates the declared Item protocol.',
+        })
+      ),
+    ]);
   }
 
   /** Publishes a durable event synchronously after all awaited persistence and cleanup preparation. */
@@ -8976,7 +9124,7 @@ export class FsStore {
   public getTurnEvents(turnId: string): SseEventEnvelope[] {
     return this.dataRoot
       ? this.getTurnEventsForExport(turnId).slice(-TURN_STREAM_EVENT_WINDOW_SIZE)
-      : [...(this.streams.get(turnId)?.events ?? [])];
+      : (this.streams.get(turnId)?.events ?? []).slice(-TURN_STREAM_EVENT_WINDOW_SIZE);
   }
 
   /**
@@ -8989,6 +9137,6 @@ export class FsStore {
     const turn = this.getTurnById(turnId);
     return this.dataRoot
       ? readWorkspaceTurnEvents(this.workspaceRootPath(workspaceIdForOwner(turn.owner)), turn)
-      : this.getTurnEvents(turnId);
+      : [...this.turnStream(turnId).events];
   }
 }

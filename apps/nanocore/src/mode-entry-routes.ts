@@ -108,6 +108,10 @@ import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import { RetrievalServiceError } from './retrieval-service.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './runtime/aep-snapshot-ledger.js';
 import {
+  conversationWorkerTurnPresentation,
+  reconcileInterruptedConversationWorkerClaim,
+} from './runtime/conversation-worker-claim.js';
+import {
   isSchedulerExecutionBusyRefusal,
   listSchedulerExecutionAttemptsForTurn,
 } from './runtime/execution-attempt-records.js';
@@ -129,6 +133,7 @@ import {
 } from './runtime/idempotent-command.js';
 import { hasNanoHostAttemptPreEffectProof } from './runtime/nanohost-attempt-recovery.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
+import { PendingRequestCommandError } from './runtime/pending-request-error.js';
 import {
   raiseRecordedPendingRequest,
   requireUsableRecord,
@@ -252,50 +257,6 @@ function existingSharedConversation(
     // A Worker handoff always records its status Item and does not qualify.
     return turn.status === 'completed' && turn.items.length === 0;
   });
-}
-
-/**
- * Projects the selected-Worker conversation status Item from the durable Turn outcome.
- *
- * The conversation command receipt stays `accepted`; only the status Item and explanation
- * name a failed or interrupted Worker Turn. Summaries are fixed product-safe text and never
- * copy Turn.error, which may carry Worker, backend, or cleanup diagnostics.
- *
- * @param turn Durable Worker Turn after its unique terminal outcome.
- * @param agentId Selected Worker identity used by the successful continuation summary.
- * @returns Status Item fields and explanation for the live write and exact replay.
- */
-function conversationWorkerTurnPresentation(
-  turn: Pick<z.infer<typeof TurnSchema>, 'status'>,
-  agentId: string
-): {
-  readonly level: 'info' | 'warning';
-  readonly title: string;
-  readonly summary: string;
-  readonly explanation: string;
-} {
-  if (turn.status === 'failed') {
-    return {
-      level: 'warning',
-      title: 'Worker Turn failed',
-      summary: 'Worker turn ended without success.',
-      explanation: 'The selected Worker failed the conversation Turn.',
-    };
-  }
-  if (turn.status === 'interrupted') {
-    return {
-      level: 'warning',
-      title: 'Worker Turn interrupted',
-      summary: 'Worker turn ended without success.',
-      explanation: 'The selected Worker interrupted the conversation Turn.',
-    };
-  }
-  return {
-    level: turn.status === 'completed' ? 'info' : 'warning',
-    title: 'Worker Turn accepted',
-    summary: `Conversation continued with ${agentId}.`,
-    explanation: 'The selected Worker accepted the conversation Turn.',
-  };
 }
 
 /**
@@ -2894,6 +2855,7 @@ export function createConversationService({
     }
     const actorId = responsibleUserIdForActor(triggerActor)!;
     let freshLogicalModelId: string | null = null;
+    let newlyAdmittedTurn: z.infer<typeof TurnSchema> | null = null;
 
     /**
      * Executes one fresh Chat command after the command ledger accepts its identity.
@@ -2938,6 +2900,9 @@ export function createConversationService({
           409
         );
       const sourceThread = store.getThread(workspaceId, threadId);
+      // This runs only for fresh commands; exact receipt and in-flight replays
+      // retain their original result even while the origin has later live work.
+      store.assertThreadIdle(workspaceId, threadId);
       if (
         sourceThread.entryPath === 'conversation' &&
         ((sourceThread.visibility === 'private' &&
@@ -3227,6 +3192,7 @@ export function createConversationService({
               : {}),
           }
         );
+        newlyAdmittedTurn = turn;
         await store.updateTurn(turn.id, {
           agentId:
             acceptedTarget.kind === 'knowledge-manager' ? 'knowledge-manager' : QUICK_CHAT_AGENT_ID,
@@ -3420,6 +3386,7 @@ export function createConversationService({
         }
         const snapshot = runtimeConfig();
         let receivingThreadId = threadId;
+        let originTurn: z.infer<typeof TurnSchema> | undefined;
         let agentId: string | null = null;
         if (acceptedTarget.kind === 'warm-worker') {
           agentId = decodeURIComponent(
@@ -3446,6 +3413,9 @@ export function createConversationService({
         } else {
           agentId = resolveDefaultAgentId(snapshot, workspaceId, actorId);
         }
+        // Claim the origin in native SQL before creating or mutating receiving work.
+        if (acceptedTarget.kind !== 'running-worker' || receivingThreadId !== threadId)
+          originTurn = await createChatTurn(new Date().toISOString(), providerTurnId, {});
         if (acceptedTarget.kind !== 'running-worker') {
           const createdThreadId = conversationTaskThreadId(
             triggerActor,
@@ -3540,9 +3510,70 @@ export function createConversationService({
             409
           );
         }
+        const admittedDb = repositoryWorkspaceDb(workspaceId);
+        const workspaceScope = {
+          dataRoot: admittedDb.dataRoot,
+          workspaceId: admittedDb.workspaceId,
+        };
+        admittedDb.sqlite.close();
+        // Continuation owns the actual pending Worker Turn before Knowledge,
+        // checkpoint, scheduler or backend effects. Product startup reuses this ID.
+        let pendingWorker: z.infer<typeof TurnSchema> | undefined;
+        let workerAdmissionStarted = false;
+        if (receivingThreadId === threadId) {
+          const manifest = snapshot.agentManifests.find((entry) => entry.id === agentId)!;
+          const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
+          const userConfig = snapshot.userConfigs.find((entry) => entry.userId === actorId)?.config;
+          const setup = resolveAgentSetup(manifest, {
+            ...setupProviderSupply,
+            gatewayConfig: snapshot.gatewayConfig,
+            providerRegistry: snapshot.providerRegistry,
+            workspaceId,
+            selectedProfileId: acceptedTarget.profileId,
+            requestedLogicalModelId: logicalModelId,
+            ...(workspaceConfig ? { workspaceConfig } : {}),
+            ...(userConfig ? { userConfig } : {}),
+          }).setup;
+          if (!setup)
+            throw new TurnStartValidationError(
+              'target_unavailable',
+              'The selected Worker setup is unavailable. Refresh the target catalog.',
+              409
+            );
+          pendingWorker = await store.createTurn(
+            workspaceId,
+            receivingThreadId,
+            serializeStructuredWorkerDelegationRequest(workerRequest),
+            triggerActor,
+            snapshot.version,
+            {
+              ...fileOptions,
+              turnId: reservedTurnId,
+              status: 'pending',
+              agentId: agentId!,
+              executorKind: 'worker',
+              reasoningEffort: chatInput.reasoningEffort ?? setup.manifest.models.reasoningEffort,
+              triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
+              commandReceipt,
+              commandReceiptResponse: {
+                kind: 'turn',
+                id: reservedTurnId,
+                conversationMetadata: {
+                  targetRef: chatInput.targetRef,
+                  logicalModelId: freshLogicalModelId,
+                  receivingWorkspaceId: workspaceId,
+                  receivingThreadId,
+                  downstream: { kind: 'task', turnId: reservedTurnId },
+                  resultKind: 'worker-turn',
+                  status: 202,
+                },
+              },
+            }
+          );
+        }
         if (receivingThreadId !== threadId) {
           const at = new Date().toISOString();
-          const origin = await createChatTurn(at, providerTurnId, {});
+          const origin = originTurn!;
           // Publish the exact Thread reference before downstream admission can retain its receipt.
           await store.completeTurn(
             origin.id,
@@ -3567,12 +3598,14 @@ export function createConversationService({
             }
           );
         }
-        const admittedDb = repositoryWorkspaceDb(workspaceId);
-        const workspaceScope = {
-          dataRoot: admittedDb.dataRoot,
-          workspaceId: admittedDb.workspaceId,
+        const assertPendingClaim = () => {
+          if (pendingWorker && store.getTurnById(pendingWorker.id).status !== 'pending')
+            throw new TurnStartValidationError(
+              'turn_cancelled',
+              'The Worker claim was interrupted before execution. Submit a new request.',
+              409
+            );
         };
-        admittedDb.sqlite.close();
         let resolveAccepted!: () => void;
         const accepted = new Promise<void>((resolve) => {
           resolveAccepted = resolve;
@@ -3599,6 +3632,7 @@ export function createConversationService({
             requestInputHash: commandInputHash(conversationCommandInput(chatInput)),
             reviewRequired: false,
             prepare: async () => {
+              assertPendingClaim();
               const dataRoot = store.getDataRoot();
               if (!dataRoot) {
                 throw directTaskModeRecoveryError(
@@ -3634,6 +3668,7 @@ export function createConversationService({
                   error
                 );
               }
+              assertPendingClaim();
               if (filePayloadPaths) files!.assertCurrent();
               return {
                 delegationRequest: workerRequest,
@@ -3644,6 +3679,8 @@ export function createConversationService({
             reservedTurnId,
             reserveTurn: () => ({ turnId: reservedTurnId }),
             startWorker: async ({ turnId, prepared, onAdmitted }) => {
+              assertPendingClaim();
+              workerAdmissionStarted = true;
               const workerStorageChoice = directTaskWorkerStorageChoice(
                 chatInput.workerStorageChoice
               );
@@ -3680,6 +3717,15 @@ export function createConversationService({
                 reservedTurnId: turnId,
                 ...(workerStorageChoice ? { workerStorageChoice } : {}),
                 onTurnCreated: async (created, agentSessionId) => {
+                  if (
+                    pendingWorker &&
+                    !['pending', 'running'].includes(store.getTurnById(created.id).status)
+                  )
+                    throw new TurnStartValidationError(
+                      'turn_cancelled',
+                      'The Worker claim was interrupted before execution. Submit a new request.',
+                      409
+                    );
                   await onAdmitted(created, agentSessionId);
                   const createdAt = created.startedAt ?? new Date().toISOString();
                   for (const artifact of artifacts) {
@@ -3738,7 +3784,48 @@ export function createConversationService({
         const observedLoop = workerLoop.then(
           () => persistWorkerResult(),
           async (error: unknown) => {
+            if (pendingWorker)
+              await reconcileInterruptedConversationWorkerClaim(
+                coreDb!,
+                store,
+                pendingWorker.id,
+                chatInput.requestId
+              );
             if (!acceptSignalled) {
+              if (
+                pendingWorker &&
+                !(error instanceof ControlStoreWorkerError && error.commit === 'unknown') &&
+                (!workerAdmissionStarted ||
+                  (store.getTurnById(pendingWorker.id).status === 'pending' &&
+                    !store.getTurnById(pendingWorker.id).agentSessionId &&
+                    !(
+                      error instanceof TurnStartValidationError &&
+                      error.code === 'recovery_required'
+                    ) &&
+                    !coreDb!.sqlite
+                      .prepare(
+                        'SELECT 1 FROM scheduler_admission_entries WHERE turn_id = ? LIMIT 1'
+                      )
+                      .get(pendingWorker.id) &&
+                    listSchedulerExecutionAttemptsForTurn(coreDb!, {
+                      workspaceId,
+                      threadId: receivingThreadId,
+                      turnId: pendingWorker.id,
+                    }).length === 0))
+              ) {
+                await terminalizeGovernedWorkerTurn({
+                  store,
+                  turnId: pendingWorker.id,
+                  agentSessionId: null,
+                  requestId: chatInput.requestId,
+                  outcome: 'failed',
+                  completedAt: new Date().toISOString(),
+                  errorCode: 'chat_mode_failed',
+                  message:
+                    'Worker preparation failed before dispatch. Inspect the failure and submit a new request.',
+                });
+                await persistWorkerResult();
+              }
               throw error;
             }
             await persistWorkerResult();
@@ -3837,6 +3924,7 @@ export function createConversationService({
           const goal = readGoalView(store, goalDb, goalId).goal;
           if (!goal || goal.disposition)
             throw new TurnStartValidationError('target_unavailable', 'Goal is unavailable.', 409);
+          const turn = await createChatTurn(new Date().toISOString());
           await executeGoalOperation(
             'goal.intent.revise',
             {
@@ -3852,7 +3940,6 @@ export function createConversationService({
             goalDb,
             goalServices?.()
           );
-          const turn = await createChatTurn(new Date().toISOString());
           const at = new Date().toISOString();
           const item: Item = {
             id: deriveEntityId('it', ['chat-goal-intent', turn.id]),
@@ -3935,6 +4022,8 @@ export function createConversationService({
       }
 
       const turn = await createChatTurn(new Date().toISOString(), providerTurnId);
+      // The Assistant execution below owns terminal failure and Stop reconciliation.
+      newlyAdmittedTurn = null;
       const controller = new AbortController();
       let cancellationPersisted = false;
       const execution = (async (): Promise<ConversationCommandResult> => {
@@ -4226,11 +4315,36 @@ export function createConversationService({
     try {
       const result = await runIdempotentCommand({
         command: 'conversation.submit',
-        execute: (commandReceipt) =>
-          executeChatCommand(store, workspaceId, threadId, commandReceipt),
+        execute: async (commandReceipt) => {
+          try {
+            return await executeChatCommand(store, workspaceId, threadId, commandReceipt);
+          } catch (error) {
+            // Admission excludes another submission, not recovery from this request's
+            // preparation failure. Close only the Turn acknowledged by this execution;
+            // downstream owners retain their independent outcomes and reconciliation.
+            if (newlyAdmittedTurn) {
+              const current = store.getTurnById(newlyAdmittedTurn.id);
+              if (current.status === 'pending' || current.status === 'running')
+                await store.completeTurn(current.id, {
+                  status: 'failed',
+                  completedAt: new Date().toISOString(),
+                  error: {
+                    code: 'chat_mode_failed',
+                    message:
+                      'Conversation submission failed. Inspect the selected target before submitting a new request.',
+                  },
+                });
+            }
+            throw error;
+          }
+        },
         inflightCommands,
         input: conversationCommandInput(chatInput),
         replay: async (record) => {
+          // A native origin receipt can precede healthy preparation. Join its
+          // existing in-flight owner after the command helper verifies input identity.
+          const original = inflightCommands.get(store)?.get(record.key);
+          if (original) return (await original.promise) as ConversationCommandResult;
           if (chatInput.fileInputs?.length) {
             try {
               const metadata = record.response.conversationMetadata;
@@ -4423,6 +4537,12 @@ export function createConversationService({
           redactInternalAgentText(error.message),
           error.status
         );
+      }
+      if (
+        (error instanceof OperationError || error instanceof PendingRequestCommandError) &&
+        error.code === 'thread_busy'
+      ) {
+        throw new TurnStartValidationError(error.code, error.message, error.status);
       }
       if (error instanceof OperationError && error.code === 'history_unavailable') {
         throw new TurnStartValidationError(error.code, error.message, error.status);

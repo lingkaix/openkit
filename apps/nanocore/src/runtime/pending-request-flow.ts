@@ -17,6 +17,7 @@ import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import type { FsStore } from '../lib/store.js';
 
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
+import { OperationError } from '../operation-error.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
@@ -1261,10 +1262,13 @@ async function admitNextOutcome(
     // Native freezing owns the winner. A competing answer can win after this wake selected
     // the same batch; its valid different owner fulfils this wake without another effect.
     // Unknown native results and incomplete or changed associations must still fail closed.
+    const busyAdmission =
+      (error instanceof OperationError || error instanceof PendingRequestCommandError) &&
+      error.code === 'thread_busy';
     if (
       choice.executor === 'worker' &&
-      error instanceof PendingRequestCommandError &&
-      error.code === 'recovery_required' &&
+      (busyAdmission ||
+        (error instanceof PendingRequestCommandError && error.code === 'recovery_required')) &&
       storeProvesTurnAbsent(store, turnId) &&
       withWorkspace(dependencies, workspaceId, (sqlite) => {
         let winnerId: string | undefined;
@@ -1301,6 +1305,12 @@ async function admitNextOutcome(
       outcomeCauses.delete(turnId);
       return;
     }
+    if (choice.executor === 'worker' && busyAdmission)
+      throw new PendingRequestCommandError(
+        'recovery_required',
+        'Pending outcome admission lost a race without complete winner proof. Retry pending delivery reconciliation.',
+        409
+      );
     throw error;
   }
   if (

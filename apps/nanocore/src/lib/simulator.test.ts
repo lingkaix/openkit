@@ -342,6 +342,26 @@ describe('SimulatedTurnExecutor', () => {
         timeout: 15_000,
       });
       const storedTurn = store.getTurnById(turn.id);
+      const reasoningDeltas = store
+        .getTurnEventsForExport(turn.id)
+        .flatMap((event) =>
+          event.event === 'item.delta' &&
+          event.data.type === 'item-delta' &&
+          event.data.itemType === 'reasoning'
+            ? [event.data]
+            : []
+        );
+      const indexed = reasoningDeltas.findIndex(
+        (delta) => delta.deltaKind === 'indexed-text-delta'
+      );
+      expect(indexed).toBeGreaterThan(0);
+      expect(reasoningDeltas.slice(0, indexed)).toContainEqual(
+        expect.objectContaining({
+          itemId: reasoningDeltas[indexed]!.itemId,
+          deltaKind: 'part-started',
+          partId: 'default',
+        })
+      );
       expect(storedTurn).toMatchObject({
         agentId: 'agent_codex_host',
         agentProfileId: 'default',

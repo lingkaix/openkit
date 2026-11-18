@@ -187,6 +187,7 @@ export const SIMULATOR_ITEM_TYPES: readonly RuntimeItemType[] = [
 export const SIMULATOR_ITEM_DELTA_KINDS: readonly RuntimeItemDeltaKind[] = [
   'text-delta',
   'indexed-text-delta',
+  'part-started',
   'output-delta',
   'artifact-updated',
 ];
@@ -1658,6 +1659,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       store,
       state,
       reasoningItem.id,
+      'part-started',
+      'default',
+      'reasoning'
+    );
+    await this.emitItemDelta(
+      store,
+      state,
+      reasoningItem.id,
       'indexed-text-delta',
       'Check simulator branch coverage.',
       'reasoning'
@@ -2085,6 +2094,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     deltaKind:
       | 'text-delta'
       | 'indexed-text-delta'
+      | 'part-started'
       | 'output-delta'
       | 'interaction-delta'
       | 'artifact-updated',
@@ -2099,9 +2109,11 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     const data = ItemDeltaEventSchema.parse(
       deltaKind === 'indexed-text-delta'
         ? { ...base, deltaKind, partId: 'default', delta }
-        : deltaKind === 'artifact-updated'
-          ? { ...base, deltaKind, artifactId: delta, summary: null }
-          : { ...base, deltaKind, delta }
+        : deltaKind === 'part-started'
+          ? { ...base, deltaKind, partId: delta }
+          : deltaKind === 'artifact-updated'
+            ? { ...base, deltaKind, artifactId: delta, summary: null }
+            : { ...base, deltaKind, delta }
     );
 
     const itemDeltaEvent = await store.publishSettledTurnEvent(state.turnId, {

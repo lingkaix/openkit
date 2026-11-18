@@ -3029,7 +3029,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it.each([
     {
       name: 'active Turn',
-      expected: 'constraint',
+      expected: 'thread_busy',
       setup: 'active' as const,
     },
     {
@@ -3088,7 +3088,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             )
           ).rejects.toMatchObject({
             code: expected,
-            commit: 'not-committed',
+            status: 409,
           });
           expect(() => store.getTurnById(refusedTurnId)).toThrow();
           expect(
