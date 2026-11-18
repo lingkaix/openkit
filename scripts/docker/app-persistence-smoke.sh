@@ -197,7 +197,7 @@ assert_data_root_layout() {
   assert_directory_exists "${data_root}/users/${local_user_id}/config" "data-root users/${local_user_id}/config"
   assert_directory_exists "${data_root}/workspaces" "data-root workspaces"
   assert_directory_exists "${workspace_root}" "data-root workspaces/${workspace_id}"
-  assert_file_exists "${workspace_root}/workspace-record.json" "data-root workspaces/${workspace_id}/workspace-record.json"
+  # workspace.list checks the SQLite-owned Workspace record after restart.
   assert_file_exists "${workspace_root}/config/workspace.jsonc" "data-root workspaces/${workspace_id}/config/workspace.jsonc"
   assert_directory_exists "${workspace_root}/files" "data-root workspaces/${workspace_id}/files"
   assert_directory_exists "${workspace_root}/data" "data-root workspaces/${workspace_id}/data"

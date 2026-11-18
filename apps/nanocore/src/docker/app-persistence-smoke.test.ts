@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -68,10 +68,6 @@ async function createMountedDataRootFixture(workspaceId: string): Promise<string
   }
   writeFileSync(join(dataRoot, 'config', 'server.jsonc'), '{ "schemaVersion": 1 }\n');
   writeFileSync(
-    join(workspaceRoot, 'workspace-record.json'),
-    '{ "id": "ws_00000000-0000-73c3-900f-8d310e4ba201", "kind": "general", "status": "active", "createdAt": "2026-08-31T00:00:00.000Z", "updatedAt": "2026-08-31T00:00:00.000Z" }\n'
-  );
-  writeFileSync(
     join(workspaceRoot, 'config', 'workspace.jsonc'),
     '{ "schemaVersion": 1, "workspace": { "name": "Smoke Workspace", "defaultAgentId": null } }\n'
   );
@@ -113,12 +109,15 @@ describe('app persistence smoke script', () => {
     expect(() => OpenKitConfigSchema.parse(JSON.parse(seededConfig?.[1] ?? ''))).not.toThrow();
   });
 
-  it('passes when the mounted data root contains the canonical layout', async () => {
+  it('passes with the canonical layout and no obsolete Workspace record projection', async () => {
     const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
     const dataRoot = await createMountedDataRootFixture(workspaceId);
 
     const result = runAssertOnlySmoke(dataRoot, workspaceId);
 
+    expect(existsSync(join(dataRoot, 'workspaces', workspaceId, 'workspace-record.json'))).toBe(
+      false
+    );
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('PASS data-root server/db/core.sqlite');
     expect(result.stdout).toContain('PASS data-root config/server.jsonc');
