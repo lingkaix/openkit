@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -33,7 +34,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createAdministrationConfiguration } from './administration-configuration.js';
-import { createRuntimeConfigManager } from './runtime-config.js';
+import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
 const receiptFault = vi.hoisted(() => ({
@@ -245,7 +246,8 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
         policy: { mediation: policy(entries) },
       })
     );
-  saveAssignments([issuedAssignment]);
+  // Original source admission precedes the later maintenance delegation.
+  saveAssignments([]);
   writeFileSync(
     join(dataRoot, 'config/providers/local.provider.jsonc'),
     JSON.stringify({
@@ -273,6 +275,33 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
   admitTestNativeEnvironment(coreDb, setup.manifest);
   const sourceIds = Array.from({ length: repositoryCount }, (_, index) => `repository-${index}`);
   const commit = 'a'.repeat(40);
+  const sourceCatalog = parseWorkspaceDataSourceCatalog({
+    schemaVersion: 1,
+    requiredFeatures: [],
+    extensions: {},
+    sources: sourceIds.map((id) => ({
+      id,
+      displayName: id,
+      kind: 'git' as const,
+      locator: { url: `https://git.example.test${repositoryPath}`, commit },
+      access: 'read-write' as const,
+      allowedSlotKinds: ['worktree' as const],
+      sensitivity: 'internal' as const,
+      status: 'active' as const,
+      syncHints: {},
+      requiredFeatures: [],
+      extensions: {},
+    })),
+  });
+  const sourceConfigDirectory = join(
+    dataRoot,
+    'workspaces',
+    'ws_00000000-0000-7000-8000-000000000001',
+    'config'
+  );
+  const sourceCatalogPath = join(sourceConfigDirectory, 'data-sources.jsonc');
+  mkdirSync(sourceConfigDirectory, { recursive: true });
+  writeFileSync(sourceCatalogPath, JSON.stringify(sourceCatalog));
   const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb,
     agentSetup: setup,
@@ -291,24 +320,8 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
       workerPath: `/workspace/${id}`,
     })),
     workspaceSourceRefs: Object.fromEntries(sourceIds.map((id) => [id, id])),
-    workspaceDataSourceCatalog: {
-      schemaVersion: 1,
-      requiredFeatures: [],
-      extensions: {},
-      sources: sourceIds.map((id) => ({
-        id,
-        displayName: id,
-        kind: 'git' as const,
-        locator: { url: `https://git.example.test${repositoryPath}`, commit },
-        access: 'read-write' as const,
-        allowedSlotKinds: ['worktree' as const],
-        sensitivity: 'internal' as const,
-        status: 'active' as const,
-        syncHints: {},
-        requiredFeatures: [],
-        extensions: {},
-      })),
-    },
+    workspaceDataSourceCatalog: sourceCatalog,
+    readRuntimeConfig: () => loadRuntimeConfig(dataRoot),
   });
   const retained = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
     environmentPackage,
@@ -318,6 +331,8 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
     environmentPackageSnapshotId: retained.snapshotId,
     updatedAt: '2026-10-16T00:00:01.000Z',
   });
+
+  saveAssignments([issuedAssignment]);
 
   const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
   const thread = await store.createThread(
@@ -371,6 +386,7 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
     manager,
     dataRoot,
     agentPath,
+    sourceCatalogPath,
     authored,
     workspaceId,
     home,
@@ -441,6 +457,10 @@ function blockOriginalReceipt(f: Awaited<ReturnType<typeof fixture>>, requestId:
 describe('finite delegated Worker Git-read application', () => {
   it('binds a real failed Turn to an immutable candidate and writes once across receipt replay and reopen', async () => {
     const f = await fixture();
+    // Historical maintenance must remain possible when its original source is no longer selectable.
+    unlinkSync(f.sourceCatalogPath);
+    await f.manager.reload({ mode: 'safe', dryRun: false });
+    expect(f.manager.current().workspaceDataSourceCatalogs).toEqual([]);
     const original = readFileSync(f.agentPath, 'utf8');
     const proposal = await f.propose();
     expect(readFileSync(f.agentPath, 'utf8')).toBe(original);

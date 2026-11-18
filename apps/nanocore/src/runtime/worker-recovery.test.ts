@@ -11,7 +11,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import {
+  AgentEnvironmentPackageSchema,
+  parseWorkspaceDataSourceCatalog,
+} from '@openkit/config-schema';
 import {
   allocateEntityId,
   RequestIdSchema,
@@ -254,6 +257,26 @@ async function createCheckpointCloseoutFixture(
     requestId,
   };
   const commit = 'e'.repeat(40);
+  const sourceCatalog = parseWorkspaceDataSourceCatalog({
+    schemaVersion: 1,
+    sources: [
+      {
+        id: 'repo',
+        displayName: 'Repository',
+        kind: 'git',
+        locator: { commit, url: 'https://example.invalid/repo.git' },
+        access: 'read-write',
+        allowedSlotKinds: ['worktree'],
+        sensitivity: 'internal',
+        status: 'active',
+      },
+    ],
+  });
+  const sourceConfigDirectory = join(dataRoot, 'workspaces', workspaceId, 'config');
+  const sourceCatalogPath = join(sourceConfigDirectory, 'data-sources.jsonc');
+  mkdirSync(sourceConfigDirectory, { recursive: true });
+  // This fixture admits real native work before it exercises retained recovery.
+  writeFileSync(sourceCatalogPath, JSON.stringify(sourceCatalog));
   const peerProcessKey = randomBytes(32);
   let terminalRecord: ReturnType<typeof buildWorkerCanonicalTerminalEventRecord> | undefined;
   let finalWaitEntered = false;
@@ -471,21 +494,7 @@ async function createCheckpointCloseoutFixture(
         },
       ],
       workspaceSourceRefs: { repo: 'repo' },
-      workspaceDataSourceCatalog: {
-        schemaVersion: 1,
-        sources: [
-          {
-            id: 'repo',
-            displayName: 'Repository',
-            kind: 'git',
-            locator: { commit, url: 'https://example.invalid/repo.git' },
-            access: 'read-write',
-            allowedSlotKinds: ['worktree'],
-            sensitivity: 'internal',
-            status: 'active',
-          },
-        ],
-      },
+      workspaceDataSourceCatalog: sourceCatalog,
     })
     .catch((error: unknown) => {
       failure = error;
@@ -719,6 +728,7 @@ async function createCheckpointCloseoutFixture(
     checkpoint,
     attempt,
     environmentPackage,
+    sourceCatalogPath,
     agentSessionId,
     publicationStart,
     retainedTerminal,
@@ -1083,6 +1093,30 @@ describe('worker recovery materialization', () => {
             f.checkpoint.turnId
           )
         ).toEqual(f.checkpoint);
+      } finally {
+        await f.close();
+      }
+    }
+  );
+
+  it.each(['removed', 'disabled'] as const)(
+    'keeps admitted closeout recovery available after its source catalog is %s',
+    async (change) => {
+      const f = await createCheckpointCloseoutFixture('failed');
+      try {
+        if (change === 'removed') unlinkSync(f.sourceCatalogPath);
+        else {
+          const catalog = JSON.parse(readFileSync(f.sourceCatalogPath, 'utf8'));
+          catalog.sources[0].status = 'disabled';
+          writeFileSync(f.sourceCatalogPath, JSON.stringify(catalog));
+        }
+        const current = loadRuntimeConfig(f.workspaceDb.dataRoot);
+        expect(current.workspaceDataSourceCatalogs[0]?.catalog.sources[0]?.status).not.toBe(
+          'active'
+        );
+        expect(
+          recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
+        ).toBe('error');
       } finally {
         await f.close();
       }
