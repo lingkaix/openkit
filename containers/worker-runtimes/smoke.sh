@@ -46,7 +46,7 @@ import { PiRuntimeHost } from '/usr/local/lib/openkit/pi-runtime-host/dist/host.
 
 const manifest = JSON.parse(readFileSync('/usr/local/lib/openkit/worker-runtimes-versions.json', 'utf8'));
 const packageFixture = JSON.parse(readFileSync('/usr/local/lib/openkit/image-smoke-package.json', 'utf8'));
-assert.deepEqual(Object.keys(WORKER_ADAPTERS).sort(), ['codex', 'deepseek', 'opencode', 'pi']);
+assert.deepEqual(Object.keys(WORKER_ADAPTERS).sort(), ['codex', 'opencode', 'pi']);
 const shimRequire = createRequire('/usr/local/lib/openkit/worker-shim/package.json');
 const piRoot = realpathSync('/usr/local/lib/openkit/pi-runtime-host/node_modules/@earendil-works/pi-coding-agent');
 const piRequire = createRequire(join(piRoot, 'package.json'));
@@ -83,7 +83,8 @@ for (const require of [shimRequire, hostRequire, piRequire]) {
 }
 console.log('Pinned runtime identities and patched Pi SDK/search closure OK');
 
-// Packaging dry run: real static adapters open, inspect and close without a provider Turn.
+// Packaging dry run: admitted static adapters open, inspect and close without a provider Turn.
+// The installed DeepSeek pin must refuse admission before native work (#773).
 // The in-memory Integration boundary admits only synthetic session loopback credentials.
 for (const [index, runtime] of ['codex', 'pi', 'opencode', 'deepseek'].entries()) {
   const suffix = String(index + 1).padStart(12, '0');
@@ -140,6 +141,14 @@ for (const [index, runtime] of ['codex', 'pi', 'opencode', 'deepseek'].entries()
       effectiveSetupGeneration: 1, resume: null,
       threadId, workspaceId: packageFixture.scope.workspaceId,
     });
+    if (runtime === 'deepseek') {
+      assert.equal(opened.disposition, 'refused', 'DeepSeek ambiguous pin must refuse');
+      assert.equal(opened.body.reasonCode, 'unsupported');
+      assert.equal(loopbacks.size, 0);
+      await assert.rejects(lstat(join(runtimeRoot, 'native')), { code: 'ENOENT' });
+      console.log('DeepSeek ambiguous pin refused before native work OK');
+      continue;
+    }
     assert.equal(opened.disposition, 'succeeded', `${runtime} shim dry run open: ${JSON.stringify(opened)}`);
     const inspected = await send('session.inspect', selector);
     assert.equal(inspected.disposition, 'succeeded', `${runtime} shim dry run inspect`);
@@ -152,10 +161,12 @@ for (const [index, runtime] of ['codex', 'pi', 'opencode', 'deepseek'].entries()
     await rm(output);
     console.log(`${runtime} retained capture read/write OK`);
   } finally {
-    const closed = await send('session.close', selector);
-    assert.equal(closed.disposition, 'succeeded', `${runtime} shim dry run close: ${JSON.stringify(closed)}`);
-    assert.equal(loopbacks.size, 0);
-    console.log(`${runtime} shim dry run close OK`);
+    if (runtime !== 'deepseek') {
+      const closed = await send('session.close', selector);
+      assert.equal(closed.disposition, 'succeeded', `${runtime} shim dry run close: ${JSON.stringify(closed)}`);
+      assert.equal(loopbacks.size, 0);
+      console.log(`${runtime} shim dry run close OK`);
+    }
     await rm(root, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
     await rm(workSlot, { recursive: true, force: true });

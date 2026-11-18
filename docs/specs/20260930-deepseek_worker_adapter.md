@@ -115,7 +115,7 @@ A future steer mapping needs an accepted interface and pin, plus exact native sa
 
 ## Implementation Gaps
 
-- Native `completed` is distinguishable from aborted and unknown - On main, `dsh` 0.2.1-rc.5 folds those outcomes, and error and the vendor default, into `end_turn` - #773
+- Native `completed` is distinguishable from aborted and unknown - Released native terminal evidence remains unavailable because `dsh` 0.2.1-rc.5 folds those outcomes, error and the vendor default into `end_turn`; the production registry refuses fresh and resumed admission before native work - #773
 - A future steer mapping proves exact native same-Turn admission and the terminal, interrupt, lost-response, restart, and no-spill cases - On main, this pin has no such native operation - #773
 - An anonymous protected group row can be addressed without failing model proof - On main, that row cannot be addressed and the host stops with unchanged bytes - #773
 - Resume under the currently admitted selection survives removal of the recorded model - On main, that resume fails closed until a native release can represent it - #773

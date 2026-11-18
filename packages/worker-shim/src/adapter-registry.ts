@@ -1,7 +1,6 @@
 import type { ReasoningEffort } from '@openkit/protocol';
 import type { WorkerLineage } from '@openkit/worker-protocol';
 import { codexResidentAdapter } from './adapters/codex.js';
-import { deepseekResidentAdapter } from './adapters/deepseek.js';
 import { opencodeAdapter } from './adapters/opencode.js';
 import { piResidentAdapter } from './adapters/pi.js';
 import type { LifecycleDeadline } from './lifecycle-deadline.js';
@@ -302,11 +301,13 @@ export interface WorkerResidentAdapter {
 /**
  * Static production adapter registry bundled into every governed worker image. The per-Turn
  * Codex, OpenCode, and Pi adapters were removed with bounded-turn and per-Turn launch. The
- * resident Codex App Server v2, DeepSeek, OpenCode, and Pi adapters are registered here.
+ * resident Codex App Server v2, OpenCode, and Pi adapters are registered here.
+ * DeepSeek 0.2.1-rc.5 stays unregistered: its `end_turn` folds completed, aborted and unknown
+ * outcomes (#773). The Harness refuses new and resumed bindings before native work until
+ * released, correlated terminal evidence meets the DeepSeek adapter specification.
  */
 export const WORKER_ADAPTERS: Readonly<Record<string, WorkerResidentAdapter>> = {
   codex: codexResidentAdapter,
-  deepseek: deepseekResidentAdapter,
   opencode: opencodeAdapter,
   pi: piResidentAdapter,
 };

@@ -17451,6 +17451,7 @@ describe('createConfiguredTurnExecutor', () => {
 
   // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
+    'deepseek_unqualified',
     'retained_baseline_unavailable',
     'retained_baseline_conflict',
     'git_fetch_commit_unavailable',
@@ -17536,6 +17537,9 @@ describe('createConfiguredTurnExecutor', () => {
         backend.requireAttemptId = (packageSnapshotId) =>
           testEntityId('attempt', `lease-${packageSnapshotId}`);
         const firstPackage = await completeNanoHostPackage({
+          ...(startupRefused === 'deepseek_unqualified'
+            ? { agentSetup: createTestAgentSetup({ adapter: 'deepseek' }) }
+            : {}),
           runtime: {
             image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
           },
@@ -17609,6 +17613,18 @@ describe('createConfiguredTurnExecutor', () => {
           }
         );
         const launch = submitTestNanoHostTurn(coreDb, backend, firstMaterialization);
+
+        if (startupRefused === 'deepseek_unqualified') {
+          const rejected = expect(launch).rejects.toMatchObject({
+            reasonCode: 'unsupported',
+            message: expect.stringMatching(
+              /DeepSeek Worker pin cannot prove Turn completion; select another Worker agent for this request/
+            ),
+          });
+          await settleNext('session.open', { reasonCode: 'unsupported' }, 'refused');
+          await rejected;
+          return;
+        }
 
         if (startupRefused && !startupRefused.startsWith('predecessor-')) {
           const observedFailure =

@@ -34,6 +34,7 @@ import type {
   WorkerResidentOpenInput,
   WorkerResidentTurnInput,
 } from './adapter-registry.js';
+import { deepseekResidentAdapter } from './adapters/deepseek.js';
 import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
 import { runWorkerHarness, WorkerHarness } from './harness.js';
 import type {
@@ -2102,6 +2103,87 @@ describe('Worker Harness resident AgentSessions', () => {
       disposition: 'succeeded',
     });
   });
+
+  it.each(['fresh', 'resume'] as const)(
+    'refuses the ambiguous DeepSeek pin before native work on %s admission',
+    async (kind) => {
+      const fake = fakeAdapter({ readyAtOpen: true });
+      // The old registry reaches this fake instead of launching the ambiguous runtime.
+      const nativeOpen = vi
+        .spyOn(deepseekResidentAdapter, 'openSession')
+        .mockImplementation(fake.adapter.openSession);
+      const f = harnessFixture({ registryAdapterId: 'deepseek' });
+      const sessionId = 'as_00000000-0000-75b0-a387-3019b80ed6d1';
+      const predecessorId = 'as_00000000-0000-7f6a-bdd8-7ee572509572';
+      const nativeRoot = join(
+        f.nativeRoot,
+        'th_00000000-0000-730e-88b8-d76794f39a2f',
+        'deepseek',
+        'native'
+      );
+      const retainedPath = join(nativeRoot, 'retained-conversation');
+      const referencePath = f.referencePath(predecessorId);
+      const retained = 'existing native conversation bytes';
+      const reference = 'recorded-deepseek-session';
+      mkdirSync(nativeRoot, { recursive: true });
+      mkdirSync(join(referencePath, '..'), { recursive: true });
+      writeFileSync(retainedPath, retained);
+      writeFileSync(referencePath, reference);
+      try {
+        expect(
+          await f.open(sessionId, {
+            resume:
+              kind === 'resume' ? { locator: predecessorId, digest: sha256(reference) } : null,
+          })
+        ).toMatchObject({ disposition: 'refused', body: { reasonCode: 'unsupported' } });
+        expect(nativeOpen).not.toHaveBeenCalled();
+        expect(f.integration.calls).toEqual([]);
+        expect(f.integration.loopbacks.size).toBe(0);
+        expect(existsSync(f.privateRoot)).toBe(false);
+        expect(readFileSync(retainedPath, 'utf8')).toBe(retained);
+        expect(readFileSync(referencePath, 'utf8')).toBe(reference);
+        expect(await f.start(sessionId, 'tu_00000000-0000-7e49-8268-e35715b55d0c')).toMatchObject({
+          disposition: 'refused',
+        });
+        expect(nativeOpen).not.toHaveBeenCalled();
+        expect(f.integration.finalStatuses).toEqual([]);
+        // Refusal reserves no Thread: another qualified agent can serve this exact Thread.
+        const alternativeFake = fakeAdapter();
+        registryFixture.adapter = alternativeFake.adapter;
+        const alternative = harnessFixture({ root: f.root, registryAdapterId: 'fixture-fourth' });
+        alternative.writePackage(sessionId, 'initial');
+        try {
+          expect(
+            await f.send('session.open', {
+              ...f.selector(sessionId),
+              adapterId: 'fixture-fourth',
+              agentSessionCompatibilityKey: DIGEST,
+              capabilityLoopbackCredential: credential(`alternative-capability-${sessionId}`),
+              inferenceLoopbackCredential: credential(`alternative-inference-${sessionId}`),
+              effectiveSetupGeneration: 1,
+              resume: null,
+              threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+              workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
+            })
+          ).toMatchObject({ disposition: 'succeeded' });
+          const nextTurn = 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4';
+          alternative.writePackage(sessionId, nextTurn);
+          expect(
+            await f.send('turn.start', alternative.startBody(sessionId, nextTurn))
+          ).toMatchObject({ disposition: 'succeeded' });
+          await f.settle(sessionId);
+          expect(f.integration.finalStatuses).toMatchObject([{ body: { status: 'completed' } }]);
+          expect(nativeOpen).not.toHaveBeenCalled();
+        } finally {
+          await f.send('session.close', f.selector(sessionId));
+          registryFixture.adapter = null;
+        }
+      } finally {
+        await f.send('session.close', f.selector(sessionId));
+        nativeOpen.mockRestore();
+      }
+    }
+  );
 
   it('runs a further runtime through one static registry entry and the unchanged Harness', async () => {
     const fake = fakeAdapter();

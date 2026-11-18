@@ -1693,12 +1693,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const reason = result.body.reasonCode;
     const startup = WorkerStartupFailureSchema.safeParse(result.body.startupFailure);
     const detail = startup.success ? ` (${startup.data.stage}: ${startup.data.reason})` : '';
-    const explanation = workspaceMaterializationRefusalExplanation(
-      pending.operation,
-      result.disposition,
-      reason,
-      startup.success ? startup.data : null
-    );
+    const explanation =
+      pending.operation === 'session.open' &&
+      result.disposition === 'refused' &&
+      reason === 'unsupported' &&
+      sharedHarness?.adapterId === 'deepseek'
+        ? ' The deployed DeepSeek Worker pin cannot prove Turn completion; select another Worker agent for this request.'
+        : workspaceMaterializationRefusalExplanation(
+            pending.operation,
+            result.disposition,
+            reason,
+            startup.success ? startup.data : null
+          );
     if (session && result.disposition === 'refused' && reason === 'cleanup_required') {
       session.cleanupOwnershipRequired = true;
       await drainNanoHostHarnessAdmission(this.coreDb, {
