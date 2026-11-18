@@ -3,10 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { afterAll } from 'vitest';
 import type { AgentManifest } from '../agents/manifest.js';
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { ResolveAgentEnvironmentPackageInput } from '../runtime/agent-environment.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import {
@@ -85,12 +86,38 @@ export function withTestPreparedNativeEnvironment<
   >,
 >(actual: T) {
   const fixtureDb = createTestNativeEnvironmentDb();
-  const prepared = <I extends Pick<ResolveAgentEnvironmentPackageInput, 'agentSetup' | 'coreDb'>>(
+  const prepared = <
+    I extends Pick<ResolveAgentEnvironmentPackageInput, 'agentSetup' | 'coreDb'> &
+      Partial<
+        Pick<
+          ResolveAgentEnvironmentPackageInput,
+          'readRuntimeConfig' | 'workspaceDataSourceCatalog' | 'turn'
+        >
+      >,
+  >(
     input: I
   ) => {
     const coreDb = input.coreDb ?? fixtureDb;
     if (input.agentSetup?.manifest) admitTestNativeEnvironment(coreDb, input.agentSetup.manifest);
-    return { ...input, coreDb };
+    // Other-contract source fixtures explicitly install their supplied catalog as current authority.
+    // Tests of missing, changed or conditional authority call the production resolver directly.
+    const readRuntimeConfig =
+      input.readRuntimeConfig ??
+      (input.workspaceDataSourceCatalog && input.turn
+        ? () =>
+            createInMemoryRuntimeConfigSnapshot({
+              dataRoot: null,
+              agentManifests: [input.agentSetup.manifest],
+              workspaceDataSourceCatalogs: [
+                {
+                  workspaceId: workspaceIdForOwner(input.turn!.owner),
+                  path: 'data-sources.jsonc',
+                  catalog: input.workspaceDataSourceCatalog!,
+                },
+              ],
+            })
+        : undefined);
+    return { ...input, coreDb, ...(readRuntimeConfig ? { readRuntimeConfig } : {}) };
   };
   return {
     ...actual,

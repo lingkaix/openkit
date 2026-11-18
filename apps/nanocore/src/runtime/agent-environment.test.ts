@@ -87,7 +87,22 @@ function preparedInput<T extends Parameters<typeof resolveMetadata>[0]>(
 ): T & { coreDb: typeof environmentFixtureDb } {
   const coreDb = input.coreDb ?? environmentFixtureDb;
   admitTestNativeEnvironment(coreDb, input.agentSetup.manifest);
-  return { ...input, coreDb };
+  const readRuntimeConfig =
+    input.readRuntimeConfig ??
+    (input.workspaceDataSourceCatalog
+      ? () =>
+          createInMemoryRuntimeConfigSnapshot({
+            dataRoot: null,
+            workspaceDataSourceCatalogs: [
+              {
+                workspaceId: workspaceIdForOwner(input.turn.owner),
+                path: 'data-sources.jsonc',
+                catalog: input.workspaceDataSourceCatalog!,
+              },
+            ],
+          })
+      : undefined);
+  return { ...input, coreDb, ...(readRuntimeConfig ? { readRuntimeConfig } : {}) };
 }
 const resolveAgentEnvironmentPackage: typeof resolvePackage = (input) =>
   resolvePackage(preparedInput(input));

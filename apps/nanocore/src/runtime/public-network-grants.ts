@@ -167,7 +167,10 @@ export type PublicNetworkConfiguration = Pick<
   | 'openKitConfig'
   | 'workspaceConfigs'
   | 'workspaceMcpServerCatalogs'
->;
+> &
+  Partial<
+    Pick<import('../config/runtime-config.js').RuntimeConfigSnapshot, 'workspaceDataSourceCatalogs'>
+  >;
 
 /** Revalidates public grants against the current setup and trusted composed MCP destination metadata. */
 export function assertCurrentPublicNetworkGrants(

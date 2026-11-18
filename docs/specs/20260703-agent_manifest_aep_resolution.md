@@ -442,7 +442,7 @@ Proof requires admitted-default inspection; a revision-checked override, edit, s
 
 - A profile extends only behavior lists the manifest marks composable - Skill and MCP additions merge without that declaration; exact conflicting Skill digests are still refused - #636
 - An authored MCP item carries an exact version, tool, or visibility constraint - the authored item is only an id - #781
-- Source resolution applies requested narrowing and the Policy, Vault, and grant intersection, and returns a source remediation category - the resolver checks existence, status, slot, and access only - #782
+- Source resolution implements supported narrowing and conditional Policy/Vault/grant intersections, and returns a source remediation category - unsupported constraints and unproved current authority are refused before dispatch; richer narrowing, conditional source authority, and remediation categories remain unavailable - #782
 - A nonempty worker `resources` map is enforced - the value is retained and then refused - #781
 - The manifest admits the seven scale preferences - the schema rejects `scale` - #781
 - A Workspace-local Agent definition is a policy-reviewed proposal and then an accepted catalog entry - ordinary Workspace bindings work; that proposal path does not - #356

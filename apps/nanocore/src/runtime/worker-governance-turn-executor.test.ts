@@ -56,6 +56,7 @@ import {
   resolveWorkspaceMcpServer,
   validateAgentEnvironmentPackageForBackend,
   WorkspaceConfigSchema,
+  WorkspaceDataSourceCatalogSchema,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import {
@@ -255,6 +256,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as snapshotLedger from './aep-snapshot-ledger.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
+  type ResolveAgentEnvironmentPackageInput,
   resolveAgentEnvironmentPackageMetadata,
   resolveAgentEnvironmentPackage as resolveLoginEnvironmentPackage,
 } from './agent-environment.js';
@@ -16756,13 +16758,41 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
     .prepare("UPDATE scheduler_execution_attempts SET startup_deadline='2999-01-01T00:00:00.000Z'")
     .run();
   const commit = 'e'.repeat(40);
+  const sourceCatalog: NonNullable<
+    ResolveAgentEnvironmentPackageInput['workspaceDataSourceCatalog']
+  > = WorkspaceDataSourceCatalogSchema.parse({
+    schemaVersion: 1,
+    sources: [
+      {
+        access: 'read-write',
+        allowedSlotKinds: ['worktree'],
+        displayName: 'Main repository',
+        id: 'repo_default',
+        kind: 'git',
+        locator: { url: 'https://example.invalid/source.git', commit },
+        sensitivity: 'internal',
+        status: 'active',
+      },
+    ],
+  });
   const effects: NanoHostSessionEffectRequest[] = [];
   const runtime = createConfiguredWorkerLifecycleRuntime({
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     coreDb,
     store,
-    readRuntimeConfig: () => loadRuntimeConfig(coreDb.dataRoot),
+    readRuntimeConfig: () =>
+      createInMemoryRuntimeConfigSnapshot({
+        ...loadRuntimeConfig(coreDb.dataRoot),
+        dataRoot: coreDb.dataRoot,
+        workspaceDataSourceCatalogs: [
+          {
+            workspaceId: workspaceIdForOwner(turn.owner),
+            path: 'data-sources.jsonc',
+            catalog: sourceCatalog,
+          },
+        ],
+      }),
     env: {},
     workerControlGateway: new WorkerControlGateway(),
     nanoHostSessionDispatch: {
@@ -16952,21 +16982,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
       agentSetup: createTestAgentSetup({
         requiredCapabilities: ['trusted-worker-inference-relay'],
       }),
-      workspaceDataSourceCatalog: {
-        schemaVersion: 1,
-        sources: [
-          {
-            access: 'read-write',
-            allowedSlotKinds: ['worktree'],
-            displayName: 'Main repository',
-            id: 'repo_default',
-            kind: 'git',
-            locator: { url: 'https://example.invalid/source.git', commit },
-            sensitivity: 'internal',
-            status: 'active',
-          },
-        ],
-      },
+      workspaceDataSourceCatalog: sourceCatalog,
       workspaceRoots: [
         {
           access: 'read-write',

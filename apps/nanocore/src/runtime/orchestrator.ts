@@ -36,6 +36,7 @@ import type { getControlStoreWorkerClient } from '../storage/control-store-worke
 import type { WorkspaceDb } from '../storage/db.js';
 import type { IdempotentCommandReceipt } from './idempotent-command.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
+import { assertSupportedWorkspaceSourceInputs } from './workspace-source-admission.js';
 
 /**
  * Input for starting a turn through the minimal orchestrator.
@@ -207,6 +208,7 @@ export function workspaceSourceRefsFromAgentManifest(
   manifest: AgentManifest,
   workspaceRoots: MaterializedWorkspaceRoot[]
 ): Record<string, string> | undefined {
+  assertSupportedWorkspaceSourceInputs(manifest);
   const rootIds = new Set(workspaceRoots.map((root) => root.id));
   const sourceRefs: Record<string, string> = {};
 

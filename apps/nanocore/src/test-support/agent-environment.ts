@@ -7,6 +7,7 @@ import type {
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -173,6 +174,24 @@ export async function recordTestAgentEnvironmentPackage(
   const sourceCommit = 'a'.repeat(40);
   const coreDb = input.coreDb ?? createTestNativeEnvironmentDb();
   admitTestNativeEnvironment(coreDb, createTestAgentSetup().manifest);
+  const catalog = {
+    schemaVersion: 1 as const,
+    requiredFeatures: [],
+    extensions: {},
+    sources: input.workspaceInputIds.map((id) => ({
+      id,
+      displayName: id,
+      kind: 'git' as const,
+      locator: { commit: sourceCommit, url: 'https://example.invalid/recovery.git' },
+      access: 'read-write' as const,
+      allowedSlotKinds: ['worktree' as const],
+      sensitivity: 'internal' as const,
+      status: 'active' as const,
+      syncHints: {},
+      requiredFeatures: [],
+      extensions: {},
+    })),
+  };
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     await resolveAgentEnvironmentPackage({
       coreDb,
@@ -207,24 +226,14 @@ export async function recordTestAgentEnvironmentPackage(
         workerPath: `/workspace/${inputId}`,
       })),
       workspaceSourceRefs: Object.fromEntries(input.workspaceInputIds.map((id) => [id, id])),
-      workspaceDataSourceCatalog: {
-        schemaVersion: 1,
-        requiredFeatures: [],
-        extensions: {},
-        sources: input.workspaceInputIds.map((id) => ({
-          id,
-          displayName: id,
-          kind: 'git' as const,
-          locator: { commit: sourceCommit, url: 'https://example.invalid/recovery.git' },
-          access: 'read-write' as const,
-          allowedSlotKinds: ['worktree' as const],
-          sensitivity: 'internal' as const,
-          status: 'active' as const,
-          syncHints: {},
-          requiredFeatures: [],
-          extensions: {},
-        })),
-      },
+      workspaceDataSourceCatalog: catalog,
+      readRuntimeConfig: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot: null,
+          workspaceDataSourceCatalogs: [
+            { workspaceId: workspaceDb.workspaceId, path: 'data-sources.jsonc', catalog },
+          ],
+        }),
     })
   );
 

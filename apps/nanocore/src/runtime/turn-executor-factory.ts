@@ -306,6 +306,7 @@ import {
   WorkspaceCaptureRecoveryRequired,
   type WorkspaceCollectionIdentity,
 } from './workspace-snapshot-chain.js';
+import { assertCurrentWorkspaceSources } from './workspace-source-admission.js';
 
 /** Exact V1 maximum for one raw NanoHost file export. */
 const NANO_HOST_FILE_EXPORT_MAX_BYTES = 256 * 1024 * 1024;
@@ -4303,6 +4304,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     environmentPackage: AgentEnvironmentPackage,
     context: WorkerGovernanceMaterializationContext = { workspaceRoots: [] }
   ): Promise<WorkerGovernanceMaterializationRecord> {
+    assertCurrentWorkspaceSources(environmentPackage, this.readRuntimeConfig, this.coreDb);
     const identity = this.planSession(environmentPackage);
     this.failedPreSandboxPreparations.delete(identity.packageSnapshotId);
     const attemptId = this.requireAttemptId(environmentPackage.snapshotId);
@@ -4467,6 +4469,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     // Both resident refusal routes precede publication.
     // Every incoming reservation or effect requires its durable Core AgentSession, checkpoint, package and backend anchor.
+    assertCurrentWorkspaceSources(environmentPackage, this.readRuntimeConfig, this.coreDb);
     await context.beforeMaterialization?.();
     const originPhysicalEpoch = this.requireCurrentBackendPhysicalEpoch(
       identity,

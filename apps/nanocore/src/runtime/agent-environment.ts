@@ -97,6 +97,12 @@ import {
   type PublicNetworkConfiguration,
 } from './public-network-grants.js';
 import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
+import {
+  assertCurrentWorkspaceSources,
+  assertSupportedWorkspaceSourceInputs,
+  assertWorkspaceSourcePolicy,
+  blockedWorkspaceSource,
+} from './workspace-source-admission.js';
 
 type Turn = z.infer<typeof TurnSchema>;
 
@@ -247,8 +253,14 @@ export async function resolveAgentEnvironmentPackage(
 ): Promise<AgentEnvironmentPackage> {
   if (input.backend?.kind === 'openshell') {
     const captureCoverage = AgentEnvironmentCaptureCoverageSchema.parse(input.captureCoverage);
+    const resolved = await resolveOpenShellAgentEnvironmentPackage(
+      input,
+      input.backend,
+      'materialize'
+    );
+    assertCurrentWorkspaceSources(resolved, input.readRuntimeConfig, input.coreDb);
     return AgentEnvironmentPackageSchema.parse({
-      ...(await resolveOpenShellAgentEnvironmentPackage(input, input.backend, 'materialize')),
+      ...resolved,
       observability: {
         captureCoverage,
         audit: { required: true, formats: { preferred: 'ocsf-json' } },
@@ -492,12 +504,21 @@ function resolveOpenShellAgentEnvironmentPackage(
   const responsibleUserId =
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
   const manifest = input.agentSetup.manifest;
+  assertSupportedWorkspaceSourceInputs(manifest);
   // No execution backend currently enforces authored resource limits; preserve intent by refusing it.
   if (manifest.resources && Object.keys(manifest.resources).length > 0) {
     throw new DeterministicAgentPreparationError(
       'Agent resources is not supported; leave resources empty or absent.'
     );
   }
+  const workspaceSourceInputs = input.workspaceRoots.map((root) => ({
+    access: root.access,
+    id: root.id,
+    kind: 'directory' as const,
+    materialization: workspaceInputMaterialization(root),
+    source: workspaceInputSource(root, input),
+    target: root.workerPath,
+  }));
   const agent = projectAgentEnvironmentIdentity(input.agentSetup);
   const logicalModels = input.agentSetup.logicalModels;
   const sandboxAccess = manifest.sandbox ?? {
@@ -655,14 +676,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   const contextPackageContentDigest =
     preparedContextPackage?.contentDigest ?? `sha256:${'0'.repeat(64)}`;
   const workspaceInputs = [
-    ...input.workspaceRoots.map((root) => ({
-      access: root.access,
-      id: root.id,
-      kind: 'directory' as const,
-      materialization: workspaceInputMaterialization(root),
-      source: workspaceInputSource(root, input),
-      target: root.workerPath,
-    })),
+    ...workspaceSourceInputs,
     ...(contextPackageWorkspaceRoot
       ? [
           {
@@ -1182,31 +1196,60 @@ function workspaceInputSource(
   input: Omit<ResolveAgentEnvironmentPackageInput, 'captureCoverage'>
 ): Record<string, unknown> {
   const sourceRef = input.workspaceSourceRefs?.[root.id];
-
   if (!sourceRef || !input.workspaceDataSourceCatalog) {
-    throw new Error(
-      `Workspace data source catalog required for sourceRef: ${sourceRef ?? root.id}`
+    throw blockedWorkspaceSource(
+      `Workspace data source catalog required for sourceRef: ${sourceRef ?? root.id}. Reload source configuration and submit a new request, or remove this source input.`
+    );
+  }
+  const workspaceId = workspaceIdForOwner(input.turn.owner);
+  let current: ReturnType<NonNullable<typeof input.readRuntimeConfig>> | undefined;
+  try {
+    current = input.readRuntimeConfig?.();
+  } catch {
+    throw blockedWorkspaceSource(
+      'Current workspace source authority is unavailable. Reload source configuration and submit a new request, or remove this source input.'
+    );
+  }
+  assertWorkspaceSourcePolicy(current, workspaceId, input.turn.threadId, input.coreDb);
+  const currentCatalog = current.workspaceDataSourceCatalogs?.find(
+    (entry) => entry.workspaceId === workspaceId
+  )?.catalog;
+  if (!currentCatalog) {
+    throw blockedWorkspaceSource(
+      'Current workspace source catalog is unavailable. Reload source configuration and submit a new request, or remove this source input.'
+    );
+  }
+  const authored = input.agentSetup.manifest.workspace?.inputs?.find(
+    (entry) => entry.id === root.id
+  );
+  if (authored && (authored.sourceRef !== sourceRef || authored.access !== root.access)) {
+    throw blockedWorkspaceSource(
+      'Workspace source selection changed before dispatch. Refresh the selected source and submit a new request.'
     );
   }
 
-  const resolved = resolveWorkspaceDataSourceReference({
-    access: root.access,
-    catalog: input.workspaceDataSourceCatalog,
-    slotKind: 'worktree',
-    sourceRef,
-  });
+  let resolved: ReturnType<typeof resolveWorkspaceDataSourceReference>;
   let locator: ReturnType<typeof requireCredentialFreeHttpsGitLocator>;
   try {
+    const request = { access: root.access, slotKind: 'worktree' as const, sourceRef };
+    resolved = resolveWorkspaceDataSourceReference({
+      ...request,
+      catalog: input.workspaceDataSourceCatalog,
+    });
+    const live = resolveWorkspaceDataSourceReference({ ...request, catalog: currentCatalog });
     locator = requireCredentialFreeHttpsGitLocator(resolved.locator);
-  } catch {
-    throw new Error(`Remote Git source changed after scheduler admission: ${sourceRef}`);
-  }
-  if (
-    resolved.sourceKind !== 'git' ||
-    resolved.vaultGrantRef ||
-    locator.commit !== root.sourceCommit
-  ) {
-    throw new Error(`Remote Git source changed after scheduler admission: ${sourceRef}`);
+    if (
+      live.catalogEntryDigest !== resolved.catalogEntryDigest ||
+      resolved.sourceKind !== 'git' ||
+      resolved.vaultGrantRef ||
+      locator.commit !== root.sourceCommit
+    ) {
+      throw new Error('Remote Git source authority changed before dispatch.');
+    }
+  } catch (error) {
+    throw blockedWorkspaceSource(
+      `${error instanceof Error ? error.message : String(error)} Refresh the selected source and submit a new request, or remove this source input.`
+    );
   }
 
   return {

@@ -28,10 +28,12 @@ import {
   AuthoredAgentConfigSchema,
   planSessionWorkspaceMaterialization,
   resolveWorkspaceMcpServer,
+  resolveWorkspaceDataSourceReference,
   type SessionWorkspaceMaterializationPlan,
   WORKSPACE_RESOURCE_POLICY_FEATURE,
   WorkerSandboxAccessSchema,
   WorkspaceConfigSchema,
+  WorkspaceDataSourceCatalogSchema,
 } from '@openkit/config-schema';
 import {
   deriveEntityId,
@@ -172,6 +174,7 @@ import {
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
 import {
+  type ResolveAgentEnvironmentPackageInput,
   resolveAgentEnvironmentPackageMetadata as resolveMetadata,
   resolveAgentEnvironmentPackage as resolvePackage,
 } from './agent-environment.js';
@@ -2438,6 +2441,8 @@ describe('createConfiguredTurnExecutor', () => {
       providerAccessShapes?: NonNullable<
         ReturnType<typeof loadRuntimeConfig>['gatewayConfig']['providerAccessShapes']
       >;
+      workspaceDataSourceCatalog?: ResolveAgentEnvironmentPackageInput['workspaceDataSourceCatalog'];
+      onSourceAuthorityRead?: () => void;
       gitBaseline?: { commit: string; tree: string };
       nativeValues?: Record<string, string>;
       inspection?: 'unavailable' | 'stale';
@@ -2556,6 +2561,22 @@ describe('createConfiguredTurnExecutor', () => {
               }),
           }),
       ...(providerConfiguration === undefined ? {} : { readRuntimeConfig: providerConfiguration }),
+      ...(options.workspaceDataSourceCatalog
+        ? {
+            readRuntimeConfig: () => {
+              options.onSourceAuthorityRead?.();
+              return createInMemoryRuntimeConfigSnapshot({
+              ...loadRuntimeConfig(coreDb.dataRoot),
+              dataRoot: coreDb.dataRoot,
+              workspaceDataSourceCatalogs: [{
+                workspaceId,
+                path: 'data-sources.jsonc',
+                catalog: options.workspaceDataSourceCatalog!,
+              }],
+            });
+            },
+          }
+        : {}),
       ...(options.policyInterception
         ? { policyInterception: () => options.policyInterception! }
         : {}),
@@ -6236,11 +6257,126 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
   // Real baseline admission and canonical-state checks use this local runner limit; product deadlines stay unchanged.
+  function collectionGitSource(commit: string) {
+    const catalog: NonNullable<ResolveAgentEnvironmentPackageInput['workspaceDataSourceCatalog']> = WorkspaceDataSourceCatalogSchema.parse({
+      schemaVersion: 1,
+      sources: [
+        {
+          id: 'source-repo',
+          displayName: 'Repository',
+          kind: 'git',
+          status: 'active',
+          sensitivity: 'internal',
+          access: 'read-write',
+          allowedSlotKinds: ['worktree'],
+          locator: { url: 'https://example.invalid/repository.git', commit },
+        },
+      ],
+    });
+    const resolved = resolveWorkspaceDataSourceReference({
+      catalog,
+      sourceRef: 'source-repo',
+      access: 'read-write',
+      slotKind: 'worktree',
+    });
+    return {
+      catalog,
+      source: {
+        kind: 'git' as const,
+        sourceRef: 'source-repo',
+        sourceId: resolved.sourceId,
+        sensitivity: resolved.sensitivity,
+        catalogEntryDigest: resolved.catalogEntryDigest,
+        url: 'https://example.invalid/repository.git',
+        commit,
+      },
+    };
+  }
+  it.each(['entry', 'awaited-preparation'] as const)(
+    'refuses a revoked pinned Git source at native materialization %s before publication',
+    async (boundary) => {
+      const source = collectionGitSource('a'.repeat(40));
+      const effects: NanoHostSessionEffectRequest[] = [];
+      let armed = false;
+      let scheduled = false;
+      let revoked = false;
+      const publication = vi.fn();
+      const refuse = () => {
+        source.catalog.sources[0]!.status = 'disabled';
+        revoked = true;
+      };
+      const rejected = admitIdleSupplyResident(`source_revoked_${boundary}`, {
+        effects,
+        gitBaseline: { commit: 'a'.repeat(40), tree: 'c'.repeat(40) },
+        workspaceDataSourceCatalog: source.catalog,
+        onSourceAuthorityRead: () => {
+          if (armed && boundary === 'awaited-preparation' && !scheduled) {
+            scheduled = true;
+            // The entry proof sees the admitted source. Revoke at the first preparation await.
+            queueMicrotask(refuse);
+          }
+        },
+        configurePackage: (env) => {
+          env.workspace.inputs = [
+            {
+              id: 'repo',
+              kind: 'repository',
+              access: 'read-write',
+              target: `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(env.scope.workspaceId, env.scope.threadId)}`,
+              source: source.source,
+            },
+          ];
+          (env.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+            planSessionWorkspaceMaterialization({ environmentPackage: env });
+        },
+        materializationContext: async () => {
+          armed = true;
+          if (boundary === 'entry') refuse();
+          return { workspaceRoots: [], beforeMaterialization: publication };
+        },
+      });
+      await expect(rejected).rejects.toMatchObject({
+        code: 'workspace_data_source_blocked',
+        status: 409,
+        message: expect.stringMatching(/new request|remove this source input/i),
+      });
+      expect(revoked).toBe(true);
+      expect(scheduled).toBe(boundary === 'awaited-preparation');
+      expect(publication).not.toHaveBeenCalled();
+      expect(effects).toEqual([]);
+      // A refusal has no process-wide fence or hold: another admitted source can still execute.
+      const independentSource = collectionGitSource('b'.repeat(40));
+      const independent = await admitIdleSupplyResident(`source_independent_${boundary}`, {
+        gitBaseline: { commit: 'b'.repeat(40), tree: 'd'.repeat(40) },
+        workspaceDataSourceCatalog: independentSource.catalog,
+        configurePackage: (env) => {
+          env.workspace.inputs = [
+            {
+              id: 'repo',
+              kind: 'repository',
+              access: 'read-write',
+              target: `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(env.scope.workspaceId, env.scope.threadId)}`,
+              source: independentSource.source,
+            },
+          ];
+          (env.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+            planSessionWorkspaceMaterialization({ environmentPackage: env });
+        },
+      });
+      try {
+        expect(independent.effects.some((effect) => effect.kind === 'sandbox.create')).toBe(true);
+      } finally {
+        independent.coreDb.sqlite.close();
+      }
+    }
+  );
   it('accepts a Sandbox-pinned Git baseline and closes with no host repository', async () => {
     const commit = 'a'.repeat(40);
     const tree = 'b'.repeat(40);
+    const source = collectionGitSource(commit);
     const f = await admitIdleSupplyResident('remote_git_baseline', {
       gitBaseline: { commit, tree },
+      workspaceDataSourceCatalog: source.catalog,
       configurePackage: (env) => {
         env.workspace.inputs = [
           {
@@ -6248,12 +6384,7 @@ describe('createConfiguredTurnExecutor', () => {
             kind: 'repository',
             access: 'read-write',
             target: `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(env.scope.workspaceId, env.scope.threadId)}`,
-            source: {
-              kind: 'git',
-              sourceId: 'source-repo',
-              url: 'https://example.invalid/repository.git',
-              commit,
-            },
+            source: source.source,
           },
         ];
         (env.extensions.openkit as Record<string, unknown>).sessionWorkspace =
@@ -6411,6 +6542,7 @@ describe('createConfiguredTurnExecutor', () => {
       git('add', '.');
       git('commit', '-m', 'base');
       const commit = git('rev-parse', 'HEAD');
+      const source = collectionGitSource(commit);
       const expectedTree = gitSource
         ? git('rev-parse', 'HEAD^{tree}')
         : '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -6434,7 +6566,7 @@ describe('createConfiguredTurnExecutor', () => {
       let serial = 1;
       let captureEmpty = false;
       const f = await admitIdleSupplyResident(`candidate_${gitSource}_${format}`, {
-        ...(gitSource ? { gitBaseline: { commit, tree: expectedTree } } : {}),
+        ...(gitSource ? { gitBaseline: { commit, tree: expectedTree }, workspaceDataSourceCatalog: source.catalog } : {}),
         ...(gitSource
           ? {
               configurePackage: (env: AgentEnvironmentPackage) => {
@@ -6444,12 +6576,7 @@ describe('createConfiguredTurnExecutor', () => {
                     kind: 'repository',
                     access: 'read-write',
                     target: `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(env.scope.workspaceId, env.scope.threadId)}`,
-                    source: {
-                      kind: 'git',
-                      sourceId: 'source-repo',
-                      url: 'https://example.invalid/repository.git',
-                      commit,
-                    },
+                    source: source.source,
                   },
                 ];
                 (env.extensions.openkit as Record<string, unknown>).sessionWorkspace =
@@ -12115,6 +12242,7 @@ describe('createConfiguredTurnExecutor', () => {
       environmentPackage.control.adapter.targetRuntime = adapterId;
       environmentPackage.agent.runtimeVersion = adapterId === 'pi' ? '0.85.1' : '0.153.4';
       let fixtureRepositoryPath: string | null = null;
+      let sourceCatalog: Parameters<typeof resolvePackage>[0]['workspaceDataSourceCatalog'];
       if (adapterId === 'pi' && purpose === 'completed') {
         fixtureRepositoryPath = mkdtempSync(join(tmpdir(), 'n6-comparable-repository-'));
         execFileSync('git', ['init', '--object-format=sha1', fixtureRepositoryPath], {
@@ -12140,6 +12268,29 @@ describe('createConfiguredTurnExecutor', () => {
           encoding: 'utf8',
         }).trim();
         const setup = createTestAgentSetup({ adapter: 'pi' });
+        sourceCatalog = {
+          schemaVersion: 1,
+          requiredFeatures: [],
+          extensions: {},
+          sources: [
+            {
+              access: 'read-write',
+              allowedSlotKinds: ['worktree'],
+              displayName: 'Remote repository',
+              extensions: {},
+              id: 'main-repo',
+              kind: 'git',
+              locator: {
+                url: 'https://git.example.test/openkit/repository.git',
+                commit: gitCommit,
+              },
+              requiredFeatures: [],
+              sensitivity: 'internal',
+              status: 'active',
+              syncHints: {},
+            },
+          ],
+        };
         environmentPackage = await resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSessionId: testEntityId('as', 'as_human_gate'),
@@ -12179,29 +12330,16 @@ describe('createConfiguredTurnExecutor', () => {
             },
           ],
           workspaceSourceRefs: { repo: 'main-repo' },
-          workspaceDataSourceCatalog: {
-            schemaVersion: 1,
-            requiredFeatures: [],
-            extensions: {},
-            sources: [
-              {
-                access: 'read-write',
-                allowedSlotKinds: ['worktree'],
-                displayName: 'Remote repository',
-                extensions: {},
-                id: 'main-repo',
-                kind: 'git',
-                locator: {
-                  url: 'https://git.example.test/openkit/repository.git',
-                  commit: gitCommit,
-                },
-                requiredFeatures: [],
-                sensitivity: 'internal',
-                status: 'active',
-                syncHints: {},
-              },
-            ],
-          },
+          workspaceDataSourceCatalog: sourceCatalog,
+          readRuntimeConfig: () =>
+            createInMemoryRuntimeConfigSnapshot({
+              dataRoot: null,
+              workspaceDataSourceCatalogs: [{
+                workspaceId: environmentPackage.scope.workspaceId,
+                path: 'data-sources.jsonc',
+                catalog: sourceCatalog!,
+              }],
+            }),
         });
         const canonicalKey = (
           environmentPackage.extensions.openkit as {
@@ -12324,6 +12462,15 @@ describe('createConfiguredTurnExecutor', () => {
       environmentPackage.credentials = produced.credentials;
       environmentPackage.vault = produced.vault;
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        readRuntimeConfig: () =>
+          createInMemoryRuntimeConfigSnapshot({
+            ...loadRuntimeConfig(coreDb.dataRoot),
+            ...(sourceCatalog ? { workspaceDataSourceCatalogs: [{
+              workspaceId: environmentPackage.scope.workspaceId,
+              path: 'data-sources.jsonc',
+              catalog: sourceCatalog,
+            }] } : {}),
+          }),
         releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         vaultBackend: () => vaultUnlockState.backend(),

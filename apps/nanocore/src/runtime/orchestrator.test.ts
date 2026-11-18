@@ -724,7 +724,6 @@ describe('startTurn orchestrator', () => {
           {
             id: 'repo_root',
             sourceRef: 'main-repo',
-            target: 'repo',
           },
         ],
       },
@@ -795,7 +794,6 @@ describe('startTurn orchestrator', () => {
           {
             id: 'repo_root',
             sourceRef: 'missing-repo',
-            target: 'repo',
           },
         ],
       },

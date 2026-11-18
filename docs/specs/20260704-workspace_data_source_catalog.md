@@ -90,7 +90,7 @@ A remote Turn does not accept a host path or an unpublished local commit. A cata
 
 ## Implementation Gaps
 
-- Resolution applies requested narrowing and the Policy, Vault, and grant intersection, and returns a source remediation category - the resolver checks existence, status, slot, and access, and refusal stays generic - #782
+- Source resolution implements supported narrowing and conditional Policy/Vault/grant intersections, and returns a source remediation category - unsupported constraints and unproved current authority are refused before dispatch; richer narrowing, conditional source authority, and remediation categories remain unavailable - #782
 - Shared Server and cross-Workspace catalogs - the loader reads the Workspace catalog only - #261
 
 ## Decisions

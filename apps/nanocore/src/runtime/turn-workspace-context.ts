@@ -13,7 +13,10 @@ import {
 } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
-import { TurnStartValidationError } from './orchestrator.js';
+import {
+  assertSupportedWorkspaceSourceInputs,
+  blockedWorkspaceSource,
+} from './workspace-source-admission.js';
 
 const REMOTE_GIT_WORKER_ROOT = '/workspace/openkit';
 
@@ -59,6 +62,7 @@ export function materializeWorkspaceRootsForTurn(
       );
     }
 
+    assertSupportedWorkspaceSourceInputs(selectedManifest);
     const catalog = workspaceDataSourceCatalog(snapshot, workspaceId);
     if (!catalog) {
       throw blockedWorkspaceSource(
@@ -129,9 +133,4 @@ function materializeConfiguredWorkspaceRoots(
 function workspaceDataSourceCatalog(snapshot: RuntimeConfigSnapshot, workspaceId: string) {
   return snapshot.workspaceDataSourceCatalogs.find((entry) => entry.workspaceId === workspaceId)
     ?.catalog;
-}
-
-/** Creates the product-safe pre-admission source failure. */
-function blockedWorkspaceSource(message: string): TurnStartValidationError {
-  return new TurnStartValidationError('workspace_data_source_blocked', message, 409);
 }
