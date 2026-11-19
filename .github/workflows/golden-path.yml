@@ -106,8 +106,8 @@ jobs:
       - name: Provision missing host prerequisite
         run: |
           if [ ! -x /usr/bin/slirp4netns ]; then
-            sudo apt-get update
-            sudo apt-get install -y slirp4netns
+            sudo apt-get update -o Acquire::Retries=5
+            sudo apt-get install -y -o Acquire::Retries=5 slirp4netns
           fi
 
       - name: Fresh install, first Worker Turn, restart, second Turn
