@@ -18,7 +18,7 @@ test('the invoked release-notes file matches the reviewed forward-migration admi
   // Retain an exact-byte assertion for shallow CI. Publication proofs still compare Git objects.
   assert.equal(
     createHash('sha256').update(readFileSync('scripts/release-notes.mjs')).digest('hex'),
-    '22c53a6ee1a187a388185dc95de7c08f70f72f37e8a1706640dc12f7e49d6f90'
+    '36ef8a8702cf9baea55f727b653108003fd4ddf5ca042a7faba3a4ef02ca2698'
   );
 });
 

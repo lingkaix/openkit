@@ -117,7 +117,7 @@ test('release notes check passes on a valid file', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('release notes generation includes the readiness sentence and the committed sections', () => {
+test('release notes generation dates the prerelease gates and includes the committed sections', () => {
   const repoRoot = fixtureRoot();
   writeInput(repoRoot, validInput);
   const records = join(repoRoot, 'release-records');
@@ -171,7 +171,16 @@ test('release notes generation includes the readiness sentence and the committed
   ]);
   assert.equal(result.status, 0, result.stderr);
   const notes = readFileSync(output, 'utf8');
-  assert.match(notes, /supported Worker Agent execution is not yet release-ready/);
+  assert.ok(
+    notes.includes(
+      '## Manual Gates\n\n- L4 Web e2e was not required by the automatic tag gate. This prerelease publication makes no claim that the L6 catalog stories passed. A stable release that promotes these bytes records their verdicts in its release record.\n'
+    )
+  );
+  assert.ok(
+    notes.includes(
+      '## Prerelease Readiness at Publication\n\n- At publication of this prerelease, the linux/amd64 and linux/arm64 NanoHost archives were installable and the exact-product Worker readiness gate (R001) was open. A stable release that promotes these bytes records its closure in its release record.\n'
+    )
+  );
   assert.match(notes, /Shipped the notes fix\./);
   assert.match(notes, /R001 remains open\./);
   assert.match(notes, new RegExp(`sha256:${'b'.repeat(64)}`));
