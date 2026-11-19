@@ -97,7 +97,9 @@ The helper refuses a configured NanoHost with `ready: false` before acquiring th
 
 In Web Administration, cached candidate facts do not grant current access to their private source Thread. If an authority or source read is pending, paused or failed, inspect or retry that read before a new preparation, recovery, Apply or activation. A typed denial hides private facts and any open review. Read Retry does not repeat the command. Keep an already dispatched command's exact candidate and result; after access returns, inspect that result instead of applying or activating again. An App update receipt and a Worker activation result remain separate component evidence.
 
-### Verify Workers After A Stopped-App Forward Migration
+### Verify Workers After An App Update
+
+For deployments that use Workers, complete these steps after the App-update helper finishes the migration-free rc.11-to-rc.12 update or after a stopped-App forward migration.
 
 - Before the first Worker Turn, acquire and activate the running App release's published `worker-runtimes` image. Read back the active resolved image digest and match it to the prepared platform manifest digest. NanoCore refuses an incompatible image before Worker effects with `worker_release_incompatible`. [Prepare And Reuse A Worker Environment](#prepare-and-reuse-a-worker-environment)
 - If the CLI reply times out while `image.acquire` is running, wait for the original preparation to settle, then use result-only recovery of that preparation through `worker-environment.recover`. Recover the settled result without starting another acquisition.
