@@ -8,18 +8,25 @@ import {
   type OperationDefinition,
   operationMcpEligible,
   operationToolName,
+  ReadSkillContentResponseSchema,
+  ReadSkillVersionResponseSchema,
 } from '@openkit/app-api-schemas';
-import { compareCodeUnits } from '@openkit/protocol';
+import { compareCodeUnits, WorkspaceIdSchema } from '@openkit/protocol';
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { isUsablePresentedCredential } from './auth/operation-authorizer.js';
 import { serveStatelessMcp } from './mcp-stateless-http.js';
 import {
   createOperationInvocation,
   type OperationInvocationDependencies,
 } from './operation-composition.js';
-import { OperationError, projectOperationError } from './operation-error.js';
+import {
+  OperationError,
+  projectOperationError,
+  WORKSPACE_ACCESS_DENIED,
+} from './operation-error.js';
 import { recordRemoteMcpAudit } from './remote-mcp-audit.js';
 import { compactInputContract } from './remote-mcp-input-contract.js';
 
@@ -59,7 +66,16 @@ const nativeByName = new Map(
   })
 );
 
-const querySchema = z.object({ query: z.string().max(500) }).strict();
+const querySchema = z
+  .object({
+    query: z.string().max(500),
+    kind: z.enum(['operation', 'skill']).optional(),
+    workspaceId: WorkspaceIdSchema.optional(),
+  })
+  .strict()
+  .refine(({ kind, workspaceId }) => workspaceId === undefined || kind === 'skill');
+const SKILL_INSTRUCTIONS = 'Search OpenKit Skills before acting.';
+const SKILL_GUIDANCE = `${SKILL_INSTRUCTIONS} Use openkit_search with kind "skill" and task terms; include workspaceId if known. Call catalog_skill-content-read with the Workspace, Skill id, exact digest and path "SKILL.md" for the document and file inventory. Read only needed references with the same tool and digest. Do not install a Skill or execute its scripts. A Skill does not grant permission.`;
 const describeSchema = z.object({ operation: z.string() }).strict();
 const guideSchema = z.object({}).strict();
 const callSchema = z
@@ -94,7 +110,9 @@ Keep credentials and one-time secrets out of conversation, logs, artifacts and k
 
 For real-use acceptance, reuse the persistent deployment and normal public operations. Keep the user's objective open-ended; do not inspect story answers, seed hidden state, or require a fixed call trajectory. Independently read back meaningful results and distinguish product, environment, tool and insufficient-evidence outcomes. Optional telemetry is diagnostic support. Preserve unknown effects and attempt attribution; a repair or upgrade begins a new attempt. Report actual identifiers, evidence and remaining limitations without closing untested work or user-reserved gates.
 
-Where your client supports tool-name approval rules, allow only selected reads and ask on mutations. NanoCore still enforces its own permission and approval requirements.`;
+Where your client supports tool-name approval rules, allow only selected reads and ask on mutations. NanoCore still enforces its own permission and approval requirements.
+
+${SKILL_GUIDANCE}`;
 
 /** Truthful operation metadata derived from the single definition, never a grant. */
 function descriptor(id: string, definition: OperationDefinition) {
@@ -160,6 +178,96 @@ function search(query: string) {
   };
 }
 
+/** Searches admitted metadata without loading Skill bytes or using an alternate authority. */
+async function searchSkills(
+  { query, workspaceId }: z.infer<typeof querySchema>,
+  invoke: ReturnType<typeof createOperationInvocation>,
+  context: Extract<Parameters<ReturnType<typeof createOperationInvocation>>[2], { kind: 'public' }>,
+  coreDb: OperationInvocationDependencies['coreDb']
+) {
+  const scoped = workspaceId !== undefined;
+  const { actor, signal } = context;
+  const credentialCurrent = () =>
+    coreDb !== undefined && isUsablePresentedCredential(coreDb, actor);
+  const workspaceIds = scoped
+    ? [workspaceId]
+    : (await invoke('workspace.list', {}, context)).items
+        .map(({ workspace }) => workspace.id)
+        .filter((id) =>
+          actor.tokenScope === 'workspace' || actor.tokenScope === 'workspace-readonly'
+            ? actor.tokenWorkspaceIds?.includes(id)
+            : true
+        );
+  const wanted = terms(query);
+  const read = async (id: string) => {
+    try {
+      const catalog = await invoke('catalog.read', { workspaceId: id }, context);
+      return catalog.skills.flatMap((entry) => {
+        const digest = entry.pinDigest ?? entry.currentDigest;
+        if (
+          entry.availability !== 'available' ||
+          !digest ||
+          !entry.versions.some(
+            (version) => version.digest === digest && version.contentState === 'retained'
+          )
+        )
+          return [];
+        const tokens = terms(`${entry.id} ${entry.displayName} ${entry.description ?? ''}`);
+        const score =
+          entry.id === query.trim().toLowerCase()
+            ? wanted.length + 1
+            : wanted.filter((term) => tokens.some((token) => token.startsWith(term))).length;
+        return wanted.length && !score
+          ? []
+          : [
+              {
+                workspaceId: id,
+                skillId: entry.id,
+                name: entry.displayName,
+                description: entry.description,
+                digest,
+                pinDigest: entry.pinDigest,
+                score,
+              },
+            ];
+      });
+    } catch (error) {
+      if (
+        !scoped &&
+        error instanceof OperationError &&
+        error.code === WORKSPACE_ACCESS_DENIED.code &&
+        credentialCurrent()
+      )
+        return [];
+      throw error;
+    }
+  };
+  const matches: Awaited<ReturnType<typeof read>> = [];
+  const concurrency = 4;
+  for (let i = 0; i < workspaceIds.length; i += concurrency) {
+    signal?.throwIfAborted();
+    const batch = await Promise.all(workspaceIds.slice(i, i + concurrency).map(read));
+    for (const rows of batch) matches.push(...rows);
+  }
+  signal?.throwIfAborted();
+  matches.sort(
+    (a, b) =>
+      b.score - a.score ||
+      compareCodeUnits(a.workspaceId, b.workspaceId) ||
+      compareCodeUnits(a.skillId, b.skillId)
+  );
+  // No previously admitted rows may leave a request whose bearer is no longer usable.
+  if (!credentialCurrent()) {
+    const { code, message, status } = WORKSPACE_ACCESS_DENIED;
+    throw new OperationError(code, message, status);
+  }
+  return {
+    items: matches.slice(0, SEARCH_LIMIT).map(({ score: _score, ...row }) => row),
+    total: matches.length,
+    hasMore: matches.length > SEARCH_LIMIT,
+  };
+}
+
 /** Registers stateless Streamable HTTP after Token admission, gating mutations on the shared current boot readiness. */
 export function registerRemoteMcpRoutes({
   app,
@@ -198,7 +306,7 @@ export function registerRemoteMcpRoutes({
       { name: 'openkit', version: '0.0.0' },
       {
         capabilities: { tools: {} },
-        instructions: GUIDE,
+        instructions: SKILL_INSTRUCTIONS,
       }
     );
     server.setRequestHandler('tools/list', async () => {
@@ -207,8 +315,7 @@ export function registerRemoteMcpRoutes({
         tools: [
           {
             name: operationToolName('openkit.search'),
-            description:
-              'Search bounded operation metadata by semantic id and description; discovery is not permission.',
+            description: `${SKILL_INSTRUCTIONS} Use kind "skill" for Workspace Skills (prefer workspaceId if known); omit kind for fallback operations. Discovery is not permission.`,
             inputSchema: mcpInputSchema(querySchema),
             annotations: { readOnlyHint: true, destructiveHint: false },
           },
@@ -254,6 +361,13 @@ export function registerRemoteMcpRoutes({
           requestId = z.uuid().safeParse(input.requestId).data;
           return definition;
         };
+        const context = {
+          kind: 'public',
+          actor,
+          delivery: 'model',
+          signal: c.req.raw.signal,
+          recheckEntry: async () => assertExposureAvailable(),
+        } as const;
         const invoke = async (
           operation: string,
           definition: OperationDefinition,
@@ -266,19 +380,27 @@ export function registerRemoteMcpRoutes({
               503
             );
           }
-          return createOperationInvocation(dependencies)(operation as JsonOperationId, input, {
-            kind: 'public',
-            actor,
-            delivery: 'model',
-            signal: c.req.raw.signal,
-            recheckEntry: async () => assertExposureAvailable(),
-          });
+          return createOperationInvocation(dependencies)(
+            operation as JsonOperationId,
+            input,
+            context
+          );
         };
         let result: unknown;
         switch (request.params.name) {
-          case 'openkit_search':
-            result = search(querySchema.parse(args).query);
+          case 'openkit_search': {
+            const query = querySchema.parse(args);
+            result =
+              query.kind === 'skill'
+                ? await searchSkills(
+                    query,
+                    createOperationInvocation(dependencies),
+                    context,
+                    dependencies.coreDb
+                  )
+                : search(query.query);
             break;
+          }
           case 'openkit_guide':
             guideSchema.parse(args);
             return { content: [{ type: 'text', text: GUIDE }] };
@@ -309,6 +431,42 @@ export function registerRemoteMcpRoutes({
             const native = nativeByName.get(request.params.name);
             if (!native) throw new OperationError('unsupported_operation', 'Unknown tool.', 400);
             result = await invoke(native.id, resolveInvocation(native.id, args), args);
+            if (native.id === 'catalog.skill-content-read' && args.path === 'SKILL.md') {
+              const root = ReadSkillContentResponseSchema.parse(result);
+              const { version } = ReadSkillVersionResponseSchema.parse(
+                await createOperationInvocation(dependencies)(
+                  'catalog.skill-version-read',
+                  {
+                    workspaceId: args.workspaceId,
+                    skillId: args.skillId,
+                    digest: args.digest,
+                  },
+                  context
+                )
+              );
+              if (version.contentState !== 'retained') {
+                throw new OperationError(
+                  'resource_unavailable',
+                  'The exact Skill content is unavailable.',
+                  503
+                );
+              }
+              return {
+                content: [
+                  { type: 'text', text: JSON.stringify(result) },
+                  {
+                    type: 'text',
+                    text: Buffer.from(root.contentBase64, 'base64').toString('utf8'),
+                  },
+                  {
+                    type: 'text',
+                    text: JSON.stringify({
+                      inventory: version.inventory.filter((entry) => entry.kind === 'file'),
+                    }),
+                  },
+                ],
+              };
+            }
           }
         }
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };

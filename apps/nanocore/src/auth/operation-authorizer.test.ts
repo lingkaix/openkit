@@ -2720,7 +2720,7 @@ describe('canonical administration Workspace admission', () => {
                       jsonrpc: '2.0',
                       id: 1,
                       method: 'tools/call',
-                      params: { name: 'openkit_call', arguments: { operation: id, input } },
+                      params: { name: 'openkit_read', arguments: { operation: id, input } },
                     }
               ),
             }

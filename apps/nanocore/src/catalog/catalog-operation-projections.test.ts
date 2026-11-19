@@ -589,7 +589,8 @@ async function mcp(
   f: Awaited<ReturnType<typeof fixture>>,
   operation: OperationId,
   input: unknown,
-  secret: string
+  secret: string,
+  tool: 'openkit_call' | 'openkit_read' = 'openkit_call'
 ) {
   const response = await f.app.request('/mcp', {
     method: 'POST',
@@ -602,7 +603,7 @@ async function mcp(
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: { name: 'openkit_call', arguments: { operation, input } },
+      params: { name: tool, arguments: { operation, input } },
     }),
   });
   expect(response.status).toBe(200);
@@ -772,7 +773,13 @@ it.each(['readiness', 'readonly'] as const)(
         expect(f.store.listCommandRequests()).toEqual([]);
         expect(refresh).not.toHaveBeenCalled();
       }
-      const read = await mcp(f, 'worker.list', { workspaceId: f.workspace.id }, token.secret);
+      const read = await mcp(
+        f,
+        'worker.list',
+        { workspaceId: f.workspace.id },
+        token.secret,
+        'openkit_read'
+      );
       expect(read.isError).not.toBe(true);
       expect(JSON.parse(read.content[0].text)).toEqual({ items: [], workspaceId: f.workspace.id });
     } finally {
