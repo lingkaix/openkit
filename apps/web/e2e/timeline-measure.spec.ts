@@ -346,7 +346,13 @@ test('measures the visible run while sustained deltas arrive at spec scale', asy
     console.log(line);
     testInfo.annotations.push({ type: 'measure', description: line });
   } finally {
-    await stack.stop();
+    // Drain routed dashboard polls while NanoCore is still listening.
+    try {
+      await page.unrouteAll({ behavior: 'wait' });
+      await page.close();
+    } finally {
+      await stack.stop();
+    }
   }
 });
 
