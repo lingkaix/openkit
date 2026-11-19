@@ -74,7 +74,7 @@ pub fn dispatch(args: &[String]) -> Result<ImageStoreCliOutcome, ImageStoreCliEr
         Command::Import(_, digest) => {
             let acquired_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map_err(|_| ImageStoreCliError::Store(StoreError::Io))?
+                .map_err(|error| StoreError::from(std::io::Error::other(error)))?
                 .as_secs();
             let archive_file = archive.expect("validated import command owns archive");
             let admitted = store
@@ -152,7 +152,7 @@ fn cli_acquisition_error(error: crate::image_acquisition::AcquisitionError) -> I
         | AcquisitionError::AmbiguousHostPlatform => {
             ImageStoreCliError::Reason(error.static_reason())
         }
-        AcquisitionError::Io => ImageStoreCliError::Store(StoreError::Io),
+        AcquisitionError::Io(error) => ImageStoreCliError::Store(StoreError::Io(error)),
         _ => ImageStoreCliError::Store(StoreError::DigestMismatch),
     }
 }

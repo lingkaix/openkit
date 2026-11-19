@@ -46,6 +46,30 @@ async function command(name, executable, args, options = {}) {
   return result.stdout;
 }
 
+/** Observe the filesystems the running NanoHost sees, including their available bytes. */
+async function observeEpochMounts() {
+  const pid = (
+    await command('nanohost-main-pid', 'systemctl', [
+      'show',
+      '--property=MainPID',
+      '--value',
+      'openkit-nanohost.service',
+    ])
+  ).trim();
+  assert.match(pid, /^[1-9]\d*$/, 'NanoHost must be running for mount evidence');
+  await command('nanohost-epoch-mounts', 'nsenter', [
+    '--target',
+    pid,
+    '--mount',
+    '--',
+    'df',
+    '-B1',
+    '--output=fstype,avail,target',
+    '/run/openkit/nanohost',
+    '/var/lib/openkit/nanohost',
+  ]);
+}
+
 /** Download only the same checksum-bound release inputs used by packaging CI. */
 async function download(url, destination, digest) {
   const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
@@ -588,6 +612,7 @@ async function run() {
   try {
     await command('disk-before', 'df', ['-B1', root, '/var/lib']);
     await install(server.address().port);
+    await observeEpochMounts();
     phase = 'administration';
     const administration = await operation('administration.conversation-submit', {
       requestId: randomUUID(),

@@ -7,6 +7,8 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
+use crate::image_acquisition::{AcquisitionError, ImageIoFailure, ImageIoStage};
+
 /// Default content ceiling for one NanoHost Image Store.
 pub const IMAGE_STORE_DEFAULT_CAPACITY_BYTES: u64 = 200 * 1024 * 1024 * 1024;
 
@@ -197,12 +199,12 @@ pub enum StoreError {
     /// The bounded local metadata is malformed.
     InvalidMetadata,
     /// A local filesystem operation failed.
-    Io,
+    Io(ImageIoFailure),
 }
 
 impl From<io::Error> for StoreError {
-    fn from(_: io::Error) -> Self {
-        Self::Io
+    fn from(error: io::Error) -> Self {
+        Self::Io(ImageIoFailure::new(ImageIoStage::Other, error.kind()))
     }
 }
 
@@ -310,7 +312,7 @@ impl ImageStore {
         source.seek(SeekFrom::Start(0))?;
         match crate::image_acquisition::verify_oci_archive(&mut source, Some(digest)) {
             Ok(_) => {}
-            Err(crate::image_acquisition::AcquisitionError::Io) => return Err(StoreError::Io),
+            Err(AcquisitionError::Io(error)) => return Err(StoreError::Io(error)),
             Err(_) => return Err(StoreError::DigestMismatch),
         }
         source.seek(SeekFrom::Start(0))?;
@@ -563,7 +565,7 @@ impl ImageStore {
         match root.try_lock() {
             Ok(()) => Ok(StoreLockGuard { root }),
             Err(TryLockError::WouldBlock) => Err(StoreError::Busy),
-            Err(TryLockError::Error(_)) => Err(StoreError::Io),
+            Err(TryLockError::Error(error)) => Err(error.into()),
         }
     }
 
@@ -845,14 +847,13 @@ impl ImageStore {
     fn handle_archive_failure<T>(
         &self,
         digest: &str,
-        error: crate::image_acquisition::AcquisitionError,
+        error: AcquisitionError,
     ) -> Result<T, StoreError> {
         match error {
-            crate::image_acquisition::AcquisitionError::DigestMismatch
-            | crate::image_acquisition::AcquisitionError::InvalidOciResult => {
+            AcquisitionError::DigestMismatch | AcquisitionError::InvalidOciResult => {
                 self.discard_corrupt_locked(digest)
             }
-            crate::image_acquisition::AcquisitionError::Io => Err(StoreError::Io),
+            AcquisitionError::Io(error) => Err(StoreError::Io(error)),
             _ => Err(StoreError::InvalidMetadata),
         }
     }
@@ -860,16 +861,15 @@ impl ImageStore {
     fn handle_staged_archive_failure<T>(
         &self,
         staged_path: &Path,
-        error: crate::image_acquisition::AcquisitionError,
+        error: AcquisitionError,
     ) -> Result<T, StoreError> {
         match error {
-            crate::image_acquisition::AcquisitionError::DigestMismatch
-            | crate::image_acquisition::AcquisitionError::InvalidOciResult => {
+            AcquisitionError::DigestMismatch | AcquisitionError::InvalidOciResult => {
                 remove_regular_if_present(staged_path)?;
                 sync_dir(&self.content_root)?;
                 Err(StoreError::DigestMismatch)
             }
-            crate::image_acquisition::AcquisitionError::Io => Err(StoreError::Io),
+            AcquisitionError::Io(error) => Err(StoreError::Io(error)),
             _ => Err(StoreError::InvalidMetadata),
         }
     }
@@ -941,7 +941,9 @@ fn read_entry_file(path: &Path) -> Result<StoreEntry, StoreEntryReadError> {
         .map_err(StoreError::from)
         .map_err(StoreEntryReadError::Unavailable)?;
     if contents.len() != capacity {
-        return Err(StoreEntryReadError::Unavailable(StoreError::Io));
+        return Err(StoreEntryReadError::Unavailable(StoreError::from(
+            io::Error::other("store metadata size changed during read"),
+        )));
     }
     let contents = String::from_utf8(contents).map_err(|_| StoreEntryReadError::Malformed)?;
     StoreEntry::decode(&contents).map_err(|_| StoreEntryReadError::Malformed)
@@ -954,11 +956,10 @@ fn inspect_retained_content(path: &Path, digest: &str) -> Result<RetainedContent
     let mut content = open_regular_nofollow(path)?;
     match crate::image_acquisition::verify_oci_archive(&mut content, Some(digest)) {
         Ok(_) => Ok(RetainedContentState::Valid(content.metadata()?.len())),
-        Err(crate::image_acquisition::AcquisitionError::DigestMismatch)
-        | Err(crate::image_acquisition::AcquisitionError::InvalidOciResult) => {
+        Err(AcquisitionError::DigestMismatch) | Err(AcquisitionError::InvalidOciResult) => {
             Ok(RetainedContentState::Invalid)
         }
-        Err(crate::image_acquisition::AcquisitionError::Io) => Err(StoreError::Io),
+        Err(AcquisitionError::Io(error)) => Err(StoreError::Io(error)),
         Err(_) => Err(StoreError::InvalidMetadata),
     }
 }
@@ -1116,11 +1117,13 @@ fn sync_dir(path: &Path) -> Result<(), StoreError> {
 #[cfg(test)]
 mod tests {
     use std::fs::{self, File, OpenOptions};
-    use std::io::{Read, Write};
+    use std::io::{self, Read, Write};
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
+
+    use crate::image_acquisition::{AcquisitionError, ImageIoFailure, ImageIoStage};
 
     use super::{
         IMAGE_STORE_DEFAULT_CAPACITY_BYTES, ImageStore, StoreEntry, StoreEntryStatus, StoreError,
@@ -1351,7 +1354,7 @@ mod tests {
             store
                 .read_verified_before(&digest, Instant::now() - Duration::from_millis(1))
                 .unwrap_err(),
-            StoreError::Io
+            StoreError::from(io::Error::from(io::ErrorKind::TimedOut))
         );
         assert_eq!(fs::read(&content_path).expect("retained content"), bytes);
         assert_eq!(fs::read(&index_path).expect("retained index"), index_before);
@@ -1602,12 +1605,10 @@ mod tests {
                 23,
             )
             .expect("admit archive");
+        let failure = ImageIoFailure::new(ImageIoStage::Other, io::ErrorKind::PermissionDenied);
         assert_eq!(
-            store.handle_archive_failure::<()>(
-                &digest,
-                crate::image_acquisition::AcquisitionError::Io
-            ),
-            Err(StoreError::Io)
+            store.handle_archive_failure::<()>(&digest, AcquisitionError::Io(failure)),
+            Err(StoreError::Io(failure))
         );
         assert!(store.content_path(&digest).is_file());
         assert!(store.index_path(&digest).unwrap().is_file());
@@ -1631,12 +1632,10 @@ mod tests {
             .unwrap();
         staged.write_all(b"captured bytes").unwrap();
         staged.sync_all().unwrap();
+        let failure = ImageIoFailure::new(ImageIoStage::Other, io::ErrorKind::StorageFull);
         assert_eq!(
-            store.handle_staged_archive_failure::<()>(
-                &staged_path,
-                crate::image_acquisition::AcquisitionError::Io
-            ),
-            Err(StoreError::Io)
+            store.handle_staged_archive_failure::<()>(&staged_path, AcquisitionError::Io(failure)),
+            Err(StoreError::Io(failure))
         );
         assert_eq!(fs::read(&staged_path).unwrap(), b"captured bytes");
         fs::remove_dir_all(root).expect("remove fixture");

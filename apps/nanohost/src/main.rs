@@ -4037,7 +4037,7 @@ mod tests {
         );
         for error in [
             ImageStoreCliError::Usage,
-            ImageStoreCliError::Store(StoreError::Io),
+            ImageStoreCliError::Store(StoreError::from(std::io::Error::other("fixture"))),
             ImageStoreCliError::Store(StoreError::Corrupt),
         ] {
             assert_eq!(
