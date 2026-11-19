@@ -486,3 +486,26 @@ test('missing target, production and unassessed compatibility refuse before effe
   p.manifest.assertions.migrationFree = false;
   assert.throws(() => validateUpdate(target, p));
 });
+
+test('the bounded deployment grant refuses a published forward migration before App effects', async (t) => {
+  const { p, calls, dir, io } = await setup(t);
+  Object.assign(p.manifest.assertions, {
+    migrationFree: false,
+    recovery: 'restore-pre-update-backup',
+    forwardMigration: {
+      previousTag: 'v0.1.0-rc.1',
+      ledgers: [{ ledger: 'drizzle.workspace', from: 1, to: 2 }],
+      preUpdateBackupRequired: true,
+      recoveryLimits: {
+        workspaceOperationalBackup: 'creating-build-only',
+        coldDataRootBackup: 'cross-release-forward-migration',
+        rollback: 'restore-pre-update-backup-on-previous-build',
+      },
+    },
+  });
+  await assert.rejects(
+    updateApp(target, p, dir, io),
+    /separate manual backup and update procedure/
+  );
+  assert.deepEqual(calls, []);
+});

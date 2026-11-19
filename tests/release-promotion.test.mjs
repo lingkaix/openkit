@@ -303,6 +303,45 @@ test('fresh promotion makes only tag assignments; retry makes none; no build or 
   assert.throws(() => planStablePromotion(x), /superseded stable identity/);
 });
 
+test('stable promotion retains the forward migration facts and rejects divergent ones', async () => {
+  const x = observed();
+  const before = x.source.manifest.assertions;
+  x.source.assessment.migrationFree = false;
+  x.source.assessment.recovery = 'restore-pre-update-backup';
+  x.source.assessment.forwardMigration = {
+    previousTag: 'v0.0.16-p14.1',
+    ledgers: [{ ledger: 'drizzle.workspace', from: 1, to: 2 }],
+    preUpdateBackupRequired: true,
+    recoveryLimits: {
+      workspaceOperationalBackup: 'creating-build-only',
+      coldDataRootBackup: 'cross-release-forward-migration',
+      rollback: 'restore-pre-update-backup-on-previous-build',
+    },
+  };
+  x.source.manifest.assertions = {
+    ...x.source.assessment,
+    sourceCommit: before.sourceCommit,
+    appDigest: before.appDigest,
+  };
+  const plan = planStablePromotion(x);
+  const facts = x.source.assessment.forwardMigration;
+  assert.deepEqual(plan.sourceFacts.assessment.forwardMigration, facts);
+  assert.deepEqual(plan.sourceFacts.assertions.forwardMigration, facts);
+
+  const effects = [];
+  const io = {
+    promote: async () => effects.push('promote'),
+    resolve: async () => x.registry[0].sourceTags[0],
+    publish: async () => effects.push('publish'),
+  };
+  await applyStablePromotion(plan, io);
+  assert.deepEqual(effects, ['promote', 'promote', 'promote', 'publish']);
+  effects.length = 0;
+  plan.sourceFacts.assertions.forwardMigration.ledgers[0].to = 3;
+  await assert.rejects(applyStablePromotion(plan, io), /assessed facts must match/);
+  assert.deepEqual(effects, []);
+});
+
 test('a pre-stable reset prerelease is refused as a stable source before any plan or effect', async () => {
   for (const production of [false, true]) {
     const x = observed();

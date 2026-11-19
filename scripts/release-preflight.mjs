@@ -6,7 +6,16 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { checkWorkflows } from './check-workflows.mjs';
 import { NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
-import { noSecrets } from './release-safety.mjs';
+import { canonical, noSecrets } from './release-safety.mjs';
+
+const drizzleScopes = ['app', 'core', 'user', 'workspace'];
+const drizzleRoot = 'apps/nanocore/drizzle';
+const hasExactKeys = (value, keys) =>
+  value &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  Object.keys(value).length === keys.length &&
+  keys.every((key) => Object.hasOwn(value, key));
 
 /**
  * Validates release identity, portable inputs, image manifest, and optional main-branch ancestry.
@@ -43,9 +52,12 @@ export function validateReleasePreflight(input) {
   }
 
   if (input.requireReleaseManifestAssessment) {
-    const facts = readReleaseAssessment(repoRoot, input.promotionSourceTag ?? input.tag);
+    const sourceTag = input.promotionSourceTag ?? input.tag;
+    const facts = readReleaseAssessment(repoRoot, sourceTag);
     if (input.promotionSourceTag && !compatibleTransitionFacts(facts))
       throw Error('Release Management: a pre-stable reset prerelease is not a stable source');
+    if (facts.forwardMigration)
+      checkMigrationLedgers(repoRoot, sourceTag, input.sha, facts.forwardMigration);
   }
   validatePortableReleaseInputs(repoRoot);
   validateNanoHostReleaseInputs(repoRoot);
@@ -102,33 +114,142 @@ export function parseVersionTag(tag) {
   return match[1];
 }
 
-/** Every compatibility fact is asserted; only such a prerelease may become a stable source. */
-export function compatibleTransitionFacts(facts) {
+/** Verify the closed forward-migration assertion before it can be included in a manifest. */
+function validForwardMigration(migration) {
+  if (
+    !hasExactKeys(migration, [
+      'previousTag',
+      'ledgers',
+      'preUpdateBackupRequired',
+      'recoveryLimits',
+    ]) ||
+    migration.preUpdateBackupRequired !== true ||
+    !hasExactKeys(migration.recoveryLimits, [
+      'workspaceOperationalBackup',
+      'coldDataRootBackup',
+      'rollback',
+    ]) ||
+    migration.recoveryLimits.workspaceOperationalBackup !== 'creating-build-only' ||
+    migration.recoveryLimits.coldDataRootBackup !== 'cross-release-forward-migration' ||
+    migration.recoveryLimits.rollback !== 'restore-pre-update-backup-on-previous-build' ||
+    !Array.isArray(migration.ledgers) ||
+    migration.ledgers.length === 0
+  )
+    return false;
+  try {
+    parseVersionTag(migration.previousTag);
+  } catch {
+    return false;
+  }
   return (
-    facts?.migrationFree === true &&
-    facts.configurationCompatible === true &&
-    facts.retainedDataCompatible === true &&
-    facts.recovery === 'previous-image-compatible'
+    migration.ledgers.every(
+      (entry) =>
+        hasExactKeys(entry, ['ledger', 'from', 'to']) &&
+        drizzleScopes.some((scope) => entry.ledger === `drizzle.${scope}`) &&
+        Number.isSafeInteger(entry.from) &&
+        entry.from > 0 &&
+        Number.isSafeInteger(entry.to) &&
+        entry.to > entry.from
+    ) && new Set(migration.ledgers.map(({ ledger }) => ledger)).size === migration.ledgers.length
   );
 }
 
-/**
- * A compatible transition asserts every fact. Before `v0.1.0`, a prerelease may instead disclose
- * a pre-stable deployment reset: no migration, no retained-data continuity, no previous-image recovery.
- */
+/** Compatible sources preserve configuration and retained data, with their declared recovery limits. */
+export function compatibleTransitionFacts(facts) {
+  if (facts?.configurationCompatible !== true || facts.retainedDataCompatible !== true)
+    return false;
+  if (facts.migrationFree === true)
+    return (
+      facts.recovery === 'previous-image-compatible' && !Object.hasOwn(facts, 'forwardMigration')
+    );
+  return (
+    facts.migrationFree === false &&
+    facts.recovery === 'restore-pre-update-backup' &&
+    validForwardMigration(facts.forwardMigration)
+  );
+}
+
+/** Before v0.1.0, a prerelease may also disclose a reset without retained-data continuity. */
 export function admittedTransitionFacts(facts, tag) {
-  if (compatibleTransitionFacts(facts)) return true;
+  if (compatibleTransitionFacts(facts)) return facts.forwardMigration?.previousTag !== tag;
   const [core, prerelease] = parseVersionTag(tag).split(/-(.*)/su);
   const [major, minor, patch] = core.split('.').map(Number);
   return (
     Boolean(prerelease) &&
     major === 0 &&
     (minor === 0 || (minor === 1 && patch === 0)) &&
-    facts.migrationFree === false &&
+    facts?.migrationFree === false &&
     typeof facts.configurationCompatible === 'boolean' &&
     facts.retainedDataCompatible === false &&
-    facts.recovery === 'pre-stable-reset'
+    facts.recovery === 'pre-stable-reset' &&
+    !Object.hasOwn(facts, 'forwardMigration')
   );
+}
+
+/** Preflight has full tag history. Verify the journal prefixes and the exact appended SQL in Git. */
+function checkMigrationLedgers(repoRoot, tag, sha, migration) {
+  const fail = (reason) => {
+    throw Error(`Release Management: forward migration ledger mismatch: ${reason}`);
+  };
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
+    if (result.status !== 0) fail('required release Git evidence unavailable');
+    return result.stdout.trim();
+  };
+  const previous = git('rev-parse', '--verify', `refs/tags/${migration.previousTag}^{commit}`);
+  const candidate = git('rev-parse', '--verify', 'HEAD^{commit}');
+  if (previous === candidate || (sha && sha !== candidate))
+    fail(`expected distinct previous tag and exact checkout of ${tag}`);
+  const ledgers = [];
+  const expectedSql = [];
+  for (const scope of drizzleScopes) {
+    const journal = (ref) => {
+      const { entries, ...other } = JSON.parse(
+        git('show', `${ref}:${drizzleRoot}/${scope}/meta/_journal.json`)
+      );
+      if (
+        !Array.isArray(entries) ||
+        entries.length === 0 ||
+        entries.some(
+          (entry, idx) =>
+            entry?.idx !== idx ||
+            !/^[0-9]{4}_[a-z0-9_]+$/u.test(entry.tag ?? '') ||
+            Number(entry.tag.slice(0, 4)) !== idx ||
+            !Number.isSafeInteger(entry.when) ||
+            (idx > 0 && entry.when <= entries[idx - 1].when)
+        )
+      )
+        fail(`invalid drizzle.${scope} journal`);
+      return { entries, other };
+    };
+    const before = journal(previous);
+    const after = journal(candidate);
+    const from = before.entries.length;
+    const to = after.entries.length;
+    if (
+      canonical(before.other) !== canonical(after.other) ||
+      canonical(before.entries) !== canonical(after.entries.slice(0, from))
+    )
+      fail(`drizzle.${scope} journal does not preserve its existing prefix`);
+    if (to === from) continue;
+    ledgers.push({ ledger: `drizzle.${scope}`, from, to });
+    for (const entry of after.entries.slice(from))
+      expectedSql.push(`A\t${drizzleRoot}/${scope}/${entry.tag}.sql`);
+  }
+  const sql = git(
+    'diff',
+    '--name-status',
+    '--no-renames',
+    previous,
+    candidate,
+    '--',
+    `:(glob)${drizzleRoot}/*/*.sql`
+  );
+  if (sql !== expectedSql.sort().join('\n'))
+    fail('SQL changes differ from the appended journal entries');
+  const declared = migration.ledgers.toSorted((a, b) => a.ledger.localeCompare(b.ledger));
+  if (canonical(declared) !== canonical(ledgers))
+    fail('declared from/to counts differ from the tagged source range');
 }
 
 /** Admit only reviewed compatibility facts; source and published digest are joined by the producer. */
@@ -141,19 +262,15 @@ export function readReleaseAssessment(repoRoot, tag) {
   const facts = JSON.parse(readFileSync(file, 'utf8'));
   noSecrets(facts);
   if (
-    !facts ||
-    Array.isArray(facts) ||
-    Object.keys(facts).sort().join(',') !==
-      [
-        'previousAppImageId',
-        'migrationFree',
-        'configurationCompatible',
-        'retainedDataCompatible',
-        'recovery',
-        'provenance',
-      ]
-        .sort()
-        .join(',') ||
+    !hasExactKeys(facts, [
+      'previousAppImageId',
+      'migrationFree',
+      'configurationCompatible',
+      'retainedDataCompatible',
+      'recovery',
+      'provenance',
+      ...(facts?.recovery === 'restore-pre-update-backup' ? ['forwardMigration'] : []),
+    ]) ||
     !/^sha256:[a-f0-9]{64}$/u.test(facts.previousAppImageId ?? '') ||
     !admittedTransitionFacts(facts, tag) ||
     !/^[a-z0-9-]+$/u.test(facts.provenance ?? '')

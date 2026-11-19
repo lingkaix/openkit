@@ -164,6 +164,45 @@ test('manifest admits a disclosed pre-stable reset only for a prerelease up to v
     assert.throws(() => createReleaseManifest(input), /compatibility\/recovery/, key);
   }
 });
+test('manifest preserves the forward migration and refuses incomplete or mixed recovery facts', () => {
+  const input = manifestInput();
+  Object.assign(input.assertions, {
+    migrationFree: false,
+    recovery: 'restore-pre-update-backup',
+    forwardMigration: {
+      previousTag: 'v0.1.0-rc.5',
+      ledgers: [{ ledger: 'drizzle.workspace', from: 1, to: 2 }],
+      preUpdateBackupRequired: true,
+      recoveryLimits: {
+        workspaceOperationalBackup: 'creating-build-only',
+        coldDataRootBackup: 'cross-release-forward-migration',
+        rollback: 'restore-pre-update-backup-on-previous-build',
+      },
+    },
+  });
+  assert.deepEqual(createReleaseManifest(input).assertions, input.assertions);
+  for (const change of [
+    (facts) => {
+      facts.forwardMigration.ledgers = [];
+    },
+    (facts) => {
+      delete facts.forwardMigration.recoveryLimits;
+    },
+    (facts) => {
+      facts.forwardMigration.preUpdateBackupRequired = false;
+    },
+    (facts) => {
+      facts.recovery = 'previous-image-compatible';
+    },
+    (facts) => {
+      facts.recovery = 'pre-stable-reset';
+    },
+  ]) {
+    const invalid = structuredClone(input);
+    change(invalid.assertions);
+    assert.throws(() => createReleaseManifest(invalid), /compatibility\/recovery/);
+  }
+});
 test('draft producer preserves the existing reviewed two-section grammar', () => {
   const draft = draftReleaseNotes({
     changes: ['Accepted change #241.'],

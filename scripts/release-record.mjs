@@ -127,6 +127,7 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
           'retainedDataCompatible',
           'recovery',
           'provenance',
+          'forwardMigration',
         ].includes(k)
     )
   )

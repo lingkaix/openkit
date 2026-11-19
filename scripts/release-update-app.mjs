@@ -79,6 +79,10 @@ export function validateUpdate(target, p, deployment) {
     assertions: m.assertions,
   });
   requireFact(
+    !m.assertions.forwardMigration,
+    'forward migration requires the separate manual backup and update procedure'
+  );
+  requireFact(
     p.expectedCurrentImageId === m.assertions.previousAppImageId,
     'assessment/current-image mismatch'
   );

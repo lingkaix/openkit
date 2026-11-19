@@ -205,10 +205,22 @@ export function planStablePromotion({ repository, tag, sha, source, registry, au
   };
 }
 
-/** The four facts that decide stable-source eligibility, as admitted by the planner. */
+/** Preserve the compatibility and recovery facts admitted by the planner. */
 function transitionFacts(facts) {
-  const { migrationFree, configurationCompatible, retainedDataCompatible, recovery } = facts;
-  return { migrationFree, configurationCompatible, retainedDataCompatible, recovery };
+  const {
+    migrationFree,
+    configurationCompatible,
+    retainedDataCompatible,
+    recovery,
+    forwardMigration,
+  } = facts;
+  return {
+    migrationFree,
+    configurationCompatible,
+    retainedDataCompatible,
+    recovery,
+    ...(forwardMigration ? { forwardMigration: structuredClone(forwardMigration) } : {}),
+  };
 }
 
 /** Execute only tag assignment and release creation; a retry verifies every existing identity without rewriting it. */
@@ -216,8 +228,9 @@ export async function applyStablePromotion(plan, io) {
   // Stable promotion is irreversible: refuse any plan whose admitted source facts are absent or negative.
   requireFact(
     compatibleTransitionFacts(plan?.sourceFacts?.assessment) &&
-      compatibleTransitionFacts(plan.sourceFacts.assertions),
-    'stable source is not a pre-stable reset'
+      compatibleTransitionFacts(plan.sourceFacts.assertions) &&
+      canonical(plan.sourceFacts.assessment) === canonical(plan.sourceFacts.assertions),
+    'stable source is not a pre-stable reset and its assessed facts must match'
   );
   if (plan.mode === 'fresh') {
     for (const image of plan.images) {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -380,6 +380,82 @@ test('release preflight rejects worker images without an explicit build target',
       }),
     /Worker image worker-runtimes is missing target/
   );
+});
+
+test('forward-migration preflight checks the declared ledger against both Git trees', (t) => {
+  const repoRoot = makeReleaseFixture();
+  t.after(() => rmSync(repoRoot, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: repoRoot, stdio: 'pipe' });
+  const commit = (message) => {
+    git('add', '.');
+    git(
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.test',
+      'commit',
+      '-qm',
+      message
+    );
+  };
+  git('init', '-q');
+  const previousTag = 'v0.0.1-rc.1';
+  const tag = 'v0.0.1-rc.2';
+  const drizzle = join(repoRoot, 'apps/nanocore/drizzle');
+  const previousEntry = { idx: 0, when: 1000, tag: '0000_setup' };
+  const nextEntry = { idx: 1, when: 2000, tag: '0001_add' };
+  const writeJournal = (scope, entries) =>
+    writeJson(join(drizzle, scope, 'meta/_journal.json'), { dialect: 'sqlite', entries });
+  for (const scope of ['app', 'core', 'user', 'workspace']) {
+    mkdirSync(join(drizzle, scope, 'meta'), { recursive: true });
+    writeJournal(scope, [previousEntry]);
+    writeFileSync(join(drizzle, scope, '0000_setup.sql'), 'SELECT 1;');
+  }
+  commit('previous release');
+  git('tag', previousTag);
+
+  const options = { repoRoot, tag, requireReleaseManifestAssessment: true };
+  const file = join(repoRoot, 'release-notes', `${tag}.manifest.json`);
+  const facts = {
+    ...JSON.parse(
+      readFileSync(join(repoRoot, 'release-notes', `${previousTag}.manifest.json`), 'utf8')
+    ),
+    migrationFree: false,
+    recovery: 'restore-pre-update-backup',
+    forwardMigration: {
+      previousTag,
+      ledgers: [{ ledger: 'drizzle.workspace', from: 1, to: 2 }],
+      preUpdateBackupRequired: true,
+      recoveryLimits: {
+        workspaceOperationalBackup: 'creating-build-only',
+        coldDataRootBackup: 'cross-release-forward-migration',
+        rollback: 'restore-pre-update-backup-on-previous-build',
+      },
+    },
+  };
+  writeJournal('workspace', [previousEntry, nextEntry]);
+  writeFileSync(join(drizzle, 'workspace', '0001_add.sql'), 'SELECT 2;');
+  writeJson(file, facts);
+  commit('candidate with appended Workspace migration');
+  const sha = git('rev-parse', 'HEAD').toString().trim();
+  assert.equal(validateReleasePreflight({ ...options, sha }).version, '0.0.1-rc.2');
+
+  const wrongLedger = structuredClone(facts);
+  wrongLedger.forwardMigration.ledgers[0].to = 3;
+  writeJson(file, wrongLedger);
+  assert.throws(() => validateReleasePreflight(options), /declared from\/to counts differ/);
+
+  writeJson(file, facts);
+  writeJournal('core', [previousEntry, nextEntry]);
+  writeFileSync(join(drizzle, 'core', '0001_add.sql'), 'SELECT 2;');
+  commit('candidate with an undeclared Core migration');
+  assert.throws(() => validateReleasePreflight(options), /declared from\/to counts differ/);
+
+  writeJournal('core', [previousEntry]);
+  rmSync(join(drizzle, 'core', '0001_add.sql'));
+  rmSync(join(drizzle, 'workspace', '0001_add.sql'));
+  commit('candidate missing the declared SQL');
+  assert.throws(() => validateReleasePreflight(options), /SQL changes differ/);
 });
 
 /**

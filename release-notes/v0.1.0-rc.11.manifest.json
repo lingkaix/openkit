@@ -1,0 +1,18 @@
+{
+  "previousAppImageId": "sha256:ae8587347bd112743633c0b77006aa51abf9c7c0b16b709642e9bb04f8f55fed",
+  "migrationFree": false,
+  "configurationCompatible": true,
+  "retainedDataCompatible": true,
+  "recovery": "restore-pre-update-backup",
+  "provenance": "rc11-workspace-migration-assessment",
+  "forwardMigration": {
+    "previousTag": "v0.1.0-rc.10",
+    "ledgers": [{ "ledger": "drizzle.workspace", "from": 1, "to": 2 }],
+    "preUpdateBackupRequired": true,
+    "recoveryLimits": {
+      "workspaceOperationalBackup": "creating-build-only",
+      "coldDataRootBackup": "cross-release-forward-migration",
+      "rollback": "restore-pre-update-backup-on-previous-build"
+    }
+  }
+}
