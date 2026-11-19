@@ -166,6 +166,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-content-read': {
+    remoteMcp: 'native',
     stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,

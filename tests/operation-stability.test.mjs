@@ -43,6 +43,7 @@ test('settled digest freezes schema, meaning, effects and authority, excluding t
   ])
     assert.notEqual(semanticDigest({ ...definition, ...amendment }), digest);
   assert.equal(semanticDigest({ ...definition, binding: 'streaming', successStatus: 201 }), digest);
+  assert.equal(semanticDigest({ ...definition, remoteMcp: 'native' }), digest);
   assert.equal(semanticDigest(Object.fromEntries(Object.entries(definition).reverse())), digest);
 });
 

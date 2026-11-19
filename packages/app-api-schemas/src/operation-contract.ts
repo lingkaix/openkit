@@ -180,6 +180,8 @@ export interface OperationDefinition extends OperationProjectionFacts {
   readonly mutationTarget?: OperationMutationTarget;
   readonly policyOperation: OperationPolicy;
   readonly mutating: boolean;
+  /** Promote this operation to its own public remote MCP tool instead of a fallback router. */
+  readonly remoteMcp?: 'native';
   readonly inputSensitivity?: 'secret stdin';
 }
 

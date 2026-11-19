@@ -1,10 +1,11 @@
 import { ToolSchema } from '@modelcontextprotocol/core';
 import { Server } from '@modelcontextprotocol/server';
 import {
+  assertOperationNames,
   type BootReadinessSnapshot,
   type JsonOperationId,
   OPERATION_DEFINITIONS,
-  type OperationId,
+  type OperationDefinition,
   operationMcpEligible,
   operationToolName,
 } from '@openkit/app-api-schemas';
@@ -20,8 +21,44 @@ import {
 } from './operation-composition.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { recordRemoteMcpAudit } from './remote-mcp-audit.js';
+import { compactInputContract } from './remote-mcp-input-contract.js';
 
 const SEARCH_LIMIT = 20;
+const PROMOTION_LIMIT = 10;
+const definitions: Readonly<Record<string, OperationDefinition>> = OPERATION_DEFINITIONS;
+const FIXED_IDS = [
+  'openkit.search',
+  'openkit.describe',
+  'openkit.guide',
+  'openkit.read',
+  'openkit.call',
+];
+const promoted = Object.entries(definitions).filter(
+  ([, definition]) => definition.remoteMcp === 'native'
+);
+if (promoted.length > PROMOTION_LIMIT) throw new Error('Too many native remote MCP operations.');
+assertOperationNames([...FIXED_IDS, ...promoted.map(([id]) => id)]);
+const nativeByName = new Map(
+  promoted.map(([id, definition]) => {
+    const name = operationToolName(id);
+    if (FIXED_IDS.includes(id) || !operationMcpEligible(definition)) {
+      throw new Error(`Invalid native remote MCP operation: ${id}`);
+    }
+    return [
+      name,
+      {
+        id,
+        tool: {
+          name,
+          description: definition.description,
+          inputSchema: mcpInputSchema(definition.inputSchema),
+          annotations: effectAnnotations(definition.mutating),
+        },
+      },
+    ] as const;
+  })
+);
+
 const querySchema = z.object({ query: z.string().max(500) }).strict();
 const describeSchema = z.object({ operation: z.string() }).strict();
 const guideSchema = z.object({}).strict();
@@ -31,11 +68,19 @@ const callSchema = z
 
 /** Admits the generated object schema through the SDK's actual Tool contract. */
 function mcpInputSchema(schema: z.ZodObject) {
-  return ToolSchema.shape.inputSchema.parse(z.toJSONSchema(schema));
+  return ToolSchema.shape.inputSchema.parse(z.toJSONSchema(schema, { io: 'input' }));
+}
+
+function effectAnnotations(mutating: boolean) {
+  return {
+    readOnlyHint: !mutating,
+    destructiveHint: mutating,
+    ...(mutating ? { idempotentHint: false, openWorldHint: true } : {}),
+  };
 }
 
 /** Product guidance for plain MCP clients; tool presence and client approval never grant authority. */
-const GUIDE = `Use openkit_search to discover an operation, then openkit_describe to learn its complete input and mutation posture. Use openkit_call for one canonical operation id at a time with that input. Use openkit_guide to read this guidance. Discovery is metadata, never a permission decision. Remote MCP reaches the release operation definitions except one-time-secret results, the three streaming Workspace archives, raw Artifact import/download and Knowledge package streams.
+const GUIDE = `Use a listed native tool when it fits. Use openkit_search to find a fallback operation and invoke its exact id through openkit_read for reads or openkit_call for mutations. Use openkit_describe when you need the complete fallback contract. Use openkit_guide to read this guidance. Discovery is metadata, never a permission decision. Remote MCP reaches the release operation definitions except one-time-secret results, the three streaming Workspace archives, raw Artifact import/download and Knowledge package streams.
 
 NanoCore owns authorization, durable state, approval, idempotency, audit, recovery and execution. Ask the user for each server-required human approval and convey only their explicit decision for the exact proposal and Pending Request identity. A client approval prompt is not an OpenKit human decision. Existing authorization for a bounded action remains valid; do not repeatedly request it. Never answer a secret question or infer approval, spending authority, review acceptance or budget extension.
 
@@ -49,10 +94,10 @@ Keep credentials and one-time secrets out of conversation, logs, artifacts and k
 
 For real-use acceptance, reuse the persistent deployment and normal public operations. Keep the user's objective open-ended; do not inspect story answers, seed hidden state, or require a fixed call trajectory. Independently read back meaningful results and distinguish product, environment, tool and insufficient-evidence outcomes. Optional telemetry is diagnostic support. Preserve unknown effects and attempt attribution; a repair or upgrade begins a new attempt. Report actual identifiers, evidence and remaining limitations without closing untested work or user-reserved gates.
 
-For external Codex clients, set default_tools_approval_mode = "approve" for this OpenKit MCP server. NanoCore still enforces its own permission and approval requirements.`;
+Where your client supports tool-name approval rules, allow only selected reads and ask on mutations. NanoCore still enforces its own permission and approval requirements.`;
 
 /** Truthful operation metadata derived from the single definition, never a grant. */
-function descriptor(id: string, definition: (typeof OPERATION_DEFINITIONS)[OperationId]) {
+function descriptor(id: string, definition: OperationDefinition) {
   return {
     id,
     description: definition.description,
@@ -60,7 +105,7 @@ function descriptor(id: string, definition: (typeof OPERATION_DEFINITIONS)[Opera
     mutating: definition.mutating,
     credentials: definition.credentials,
     annotations: { readOnlyHint: !definition.mutating, destructiveHint: definition.mutating },
-    inputSchema: z.toJSONSchema(definition.inputSchema),
+    inputSchema: z.toJSONSchema(definition.inputSchema, { io: 'input' }),
     outputSchema: z.toJSONSchema(definition.outputSchema),
   };
 }
@@ -80,8 +125,10 @@ function terms(value: string): string[] {
 /** Bounded metadata search over every currently composed definition family. */
 function search(query: string) {
   const wanted = terms(query);
-  const matches = Object.entries(OPERATION_DEFINITIONS)
-    .filter(([, definition]) => operationMcpEligible(definition))
+  const matches = Object.entries(definitions)
+    .filter(
+      ([, definition]) => operationMcpEligible(definition) && definition.remoteMcp !== 'native'
+    )
     .map(([id, definition]) => {
       const tokens = terms(`${id} ${definition.description}`);
       return {
@@ -99,7 +146,15 @@ function search(query: string) {
     .filter((entry) => wanted.length === 0 || entry.score > 0)
     .sort((a, b) => b.score - a.score || compareCodeUnits(a.id, b.id));
   return {
-    items: matches.slice(0, SEARCH_LIMIT).map(({ score: _score, ...entry }) => entry),
+    items: matches.slice(0, SEARCH_LIMIT).map(({ score: _score, ...entry }) => ({
+      ...entry,
+      inputContract: compactInputContract(
+        z.toJSONSchema(definitions[entry.id]!.inputSchema, {
+          target: 'draft-7',
+          io: 'input',
+        })
+      ),
+    })),
     total: matches.length,
     hasMore: matches.length > SEARCH_LIMIT,
   };
@@ -170,19 +225,21 @@ export function registerRemoteMcpRoutes({
             inputSchema: mcpInputSchema(guideSchema),
             annotations: { readOnlyHint: true, destructiveHint: false },
           },
-          // A multiplexed call can mutate; openkit_describe carries the exact selected operation's posture.
+          {
+            name: operationToolName('openkit.read'),
+            description:
+              'Invoke one unpromoted nonmutating operation as the authenticated Token user.',
+            inputSchema: mcpInputSchema(callSchema),
+            annotations: effectAnnotations(false),
+          },
           {
             name: operationToolName('openkit.call'),
             description:
-              'Invoke one described operation as the authenticated Token user. May mutate; use openkit_describe for the selected operation. Ask the user for every server-required human decision.',
+              'Invoke one unpromoted mutating operation as the authenticated Token user. Ask the user for every server-required human decision.',
             inputSchema: mcpInputSchema(callSchema),
-            annotations: {
-              readOnlyHint: false,
-              destructiveHint: true,
-              idempotentHint: false,
-              openWorldHint: true,
-            },
+            annotations: effectAnnotations(true),
           },
+          ...Array.from(nativeByName.values(), ({ tool }) => tool),
         ],
       };
     });
@@ -190,6 +247,33 @@ export function registerRemoteMcpRoutes({
       try {
         assertExposureAvailable();
         const args = request.params.arguments ?? {};
+        const resolveInvocation = (operation: string, input: Record<string, unknown>) => {
+          const definition = definitionFor(operation);
+          operationId = operation;
+          // Only the canonical id and UUID correlate audit; never record arbitrary tool input.
+          requestId = z.uuid().safeParse(input.requestId).data;
+          return definition;
+        };
+        const invoke = async (
+          operation: string,
+          definition: OperationDefinition,
+          input: Record<string, unknown>
+        ) => {
+          if (definition.mutating && !getBootReadiness().acceptingProductWork) {
+            throw new OperationError(
+              'product_work_unavailable',
+              'NanoCore is not accepting product work during the current boot readiness state.',
+              503
+            );
+          }
+          return createOperationInvocation(dependencies)(operation as JsonOperationId, input, {
+            kind: 'public',
+            actor,
+            delivery: 'model',
+            signal: c.req.raw.signal,
+            recheckEntry: async () => assertExposureAvailable(),
+          });
+        };
         let result: unknown;
         switch (request.params.name) {
           case 'openkit_search':
@@ -201,36 +285,31 @@ export function registerRemoteMcpRoutes({
           case 'openkit_describe': {
             const { operation } = describeSchema.parse(args);
             const definition = definitionFor(operation);
+            assertFallback(operation, definition);
             result = descriptor(operation, definition);
             break;
           }
+          case 'openkit_read':
           case 'openkit_call': {
             const { operation, input } = callSchema.parse(args);
-            const definition = definitionFor(operation);
-            operationId = operation;
-            // Only the canonical id and UUID correlate audit; never record arbitrary tool input.
-            requestId = z.uuid().safeParse(input.requestId).data;
-            if (definition.mutating && !getBootReadiness().acceptingProductWork)
+            const definition = resolveInvocation(operation, input);
+            assertFallback(operation, definition);
+            if (definition.mutating !== (request.params.name === 'openkit_call')) {
+              const correct = definition.mutating ? 'openkit_call' : 'openkit_read';
               throw new OperationError(
-                'product_work_unavailable',
-                'NanoCore is not accepting product work during the current boot readiness state.',
-                503
+                'unsupported_operation',
+                `Use ${correct} for this operation.`,
+                400
               );
-            result = await createOperationInvocation(dependencies)(
-              operation as JsonOperationId,
-              input,
-              {
-                kind: 'public',
-                actor,
-                delivery: 'model',
-                signal: c.req.raw.signal,
-                recheckEntry: async () => assertExposureAvailable(),
-              }
-            );
+            }
+            result = await invoke(operation, definition, input);
             break;
           }
-          default:
-            throw new OperationError('unsupported_operation', 'Unknown tool.', 400);
+          default: {
+            const native = nativeByName.get(request.params.name);
+            if (!native) throw new OperationError('unsupported_operation', 'Unknown tool.', 400);
+            result = await invoke(native.id, resolveInvocation(native.id, args), args);
+          }
         }
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (error) {
@@ -262,9 +341,9 @@ export function registerRemoteMcpRoutes({
 
 /** Resolves only the composed tables and refuses excluded contracts before dispatch. */
 function definitionFor(id: string) {
-  if (!Object.hasOwn(OPERATION_DEFINITIONS, id))
+  if (!Object.hasOwn(definitions, id))
     throw new OperationError('unsupported_operation', 'Unknown operation.', 400);
-  const definition = OPERATION_DEFINITIONS[id as OperationId];
+  const definition = definitions[id]!;
   if (!operationMcpEligible(definition))
     throw new OperationError(
       definition.returnsOneTimeSecret
@@ -280,4 +359,14 @@ function definitionFor(id: string) {
       400
     );
   return definition;
+}
+
+function assertFallback(id: string, definition: OperationDefinition): void {
+  if (definition.remoteMcp === 'native') {
+    throw new OperationError(
+      'unsupported_operation',
+      `Use the listed ${operationToolName(id)} tool.`,
+      400
+    );
+  }
 }

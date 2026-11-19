@@ -82,6 +82,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.list': {
+    remoteMcp: 'native',
     stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,

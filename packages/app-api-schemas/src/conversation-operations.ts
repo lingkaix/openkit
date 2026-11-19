@@ -102,6 +102,7 @@ export const TASK_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'task.start': {
+    remoteMcp: 'native',
     stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
