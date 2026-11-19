@@ -13,6 +13,14 @@ import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
 import { containTurnLifecycleRecorder, type TurnLifecycleRecorder } from './turn-timeline.js';
 
 const WORKER_CONTROL_OUTAGE_BUDGET_MS = 300_000;
+// Leave two seconds of the Core lease window for the reserved request to reach Core.
+const HEARTBEAT_RESERVE_MS = 28_000;
+const PERIODIC_HEARTBEAT = { message: 'Worker shim running.', status: 'running' } as const;
+
+/** Internal Turn entry point for the bounded post-launch heartbeat schedule. */
+export const workerHeartbeatTick = Symbol('workerHeartbeatTick');
+/** Internal access to the Turn's one-shot heartbeat observations. */
+export const workerHeartbeatFailureDetail = Symbol('workerHeartbeatFailureDetail');
 
 /**
  * Minimal fetch response surface used by the worker control client.
@@ -141,6 +149,19 @@ export class WorkerControlClient {
   private readonly lineage: WorkerLineage;
   private nextHeartbeatSequence = 0;
   private heartbeatQueue: Promise<unknown> = Promise.resolve();
+  private periodicHeartbeats = false;
+  private confirmedHeartbeatSequence = -1;
+  private firstLaunchHeartbeatAt: number | undefined;
+  private heartbeatReserveAt = Number.NEGATIVE_INFINITY;
+  private heartbeatReservationWake: AbortController | undefined;
+  private heartbeatOutage = false;
+  private waitingForHeartbeatSlot = false;
+  private readonly heartbeatAttempts = new Map<
+    number,
+    { request: Promise<unknown>; status: { code?: number }; deadlineAt: number }
+  >();
+  private lastHeartbeatSent: { sequence: number; at: number } | undefined;
+  private lastHeartbeatAck: { sequence: number; at: number } | undefined;
   private outageDeadline: LifecycleDeadline | null = null;
   /** Pending recoveries keep the shared budget anchored despite independent successful traffic. */
   private retryingRequests = 0;
@@ -189,6 +210,138 @@ export class WorkerControlClient {
 
     this.clearOutage();
     return result;
+  }
+
+  /** Sends a fresh observation when launch proof and transport capacity permit it. */
+  public async [workerHeartbeatTick](
+    signal: AbortSignal,
+    stopScheduling: AbortSignal,
+    onSend: () => void
+  ): Promise<boolean> {
+    signal.throwIfAborted();
+    if (stopScheduling.aborted || this.reconnecting || this.waitingForHeartbeatSlot) return false;
+    this.periodicHeartbeats = true;
+
+    const attempts = this.heartbeatAttempts;
+    // Sequence one is the startup proof. Keep its original body until Core confirms it.
+    if (this.nextHeartbeatSequence === 1 && attempts.size > 0) return false;
+    if (
+      attempts.size === 2 ||
+      this.shouldReserveHeartbeatSlot(this.heartbeatReserveAt - performance.now())
+    ) {
+      this.waitingForHeartbeatSlot = true;
+      try {
+        if (!(await this.waitForHeartbeatAdmission(signal, stopScheduling))) return false;
+      } finally {
+        this.waitingForHeartbeatSlot = false;
+      }
+      if (stopScheduling.aborted || this.reconnecting) return false;
+      signal.throwIfAborted();
+    }
+    // Give a definitive refusal its bounded body read so its typed authority error survives.
+    for (const { status } of attempts.values()) {
+      if (status.code !== undefined && status.code >= 400 && !isRetryableHttpStatus(status.code))
+        return false;
+    }
+
+    const sequence = this.nextHeartbeatSequence;
+    if (sequence >= 2) this.nextHeartbeatSequence += 1;
+    const status: { code?: number } = {};
+    onSend();
+    const request = this.postHeartbeat(
+      { ...PERIODIC_HEARTBEAT, sequence },
+      false,
+      signal,
+      (code) => {
+        status.code = code;
+        if (sequence === 1 && code === 200)
+          this.nextHeartbeatSequence = Math.max(this.nextHeartbeatSequence, 2);
+      }
+    ).finally(() => attempts.delete(sequence));
+    attempts.set(sequence, {
+      request,
+      status,
+      deadlineAt: performance.now() + LIFECYCLE_DEFAULTS.workerControlRequestMs,
+    });
+
+    try {
+      await request;
+      this.clearOutage();
+      return true;
+    } catch (error) {
+      signal.throwIfAborted();
+      if (this.isStaleHeartbeat(error, sequence)) return false;
+      if (isRetryableFailure(error) && sequence < (this.lastHeartbeatAck?.sequence ?? -1))
+        return false;
+      this.requireRetryable(error);
+      this.heartbeatOutage = true;
+      if (isReconnectRequired(error)) await this.reconnect(signal);
+      return false;
+    }
+  }
+
+  /** Protects the deadline send without pushing its ordinary cadence past the reserve. */
+  private shouldReserveHeartbeatSlot(untilReserve: number): boolean {
+    if (untilReserve <= 0) return false;
+    if (untilReserve < LIFECYCLE_DEFAULTS.workerHeartbeatIntervalMs) return true;
+    const occupied = this.heartbeatAttempts.values().next().value;
+    return (
+      untilReserve < LIFECYCLE_DEFAULTS.workerControlRequestMs &&
+      occupied !== undefined &&
+      occupied.deadlineAt > this.heartbeatReserveAt
+    );
+  }
+
+  /** Coalesces busy ticks and keeps a slot available for the reserved deadline send. */
+  private async waitForHeartbeatAdmission(
+    signal: AbortSignal,
+    stopScheduling: AbortSignal
+  ): Promise<boolean> {
+    const attempts = this.heartbeatAttempts;
+    while (!stopScheduling.aborted && !signal.aborted && !this.reconnecting) {
+      const untilReserve = this.heartbeatReserveAt - performance.now();
+      if (attempts.size < 2 && !this.shouldReserveHeartbeatSlot(untilReserve)) return true;
+
+      const completions = [...attempts].map(([sequence, { request }]) =>
+        request.then(
+          () => true,
+          (error: unknown) => this.isStaleHeartbeat(error, sequence) || isRetryableFailure(error)
+        )
+      );
+      if (attempts.size === 2) {
+        if (!(await Promise.race(completions))) return false;
+        continue;
+      }
+
+      const wake = new AbortController();
+      this.heartbeatReservationWake = wake;
+      const timer = delay(Math.ceil(untilReserve), true, {
+        signal: AbortSignal.any([wake.signal, signal, stopScheduling]),
+      }).catch(() => true);
+      try {
+        if (!(await Promise.race([timer, ...completions]))) return false;
+      } finally {
+        this.heartbeatReservationWake = undefined;
+        wake.abort();
+      }
+    }
+    return false;
+  }
+
+  /** A later observation can overtake this request before Core sees it. */
+  private isStaleHeartbeat(error: unknown, sequence: number): boolean {
+    return (
+      sequence + 1 < this.nextHeartbeatSequence &&
+      error instanceof WorkerControlError &&
+      error.code === 'worker_control_sequence_stale'
+    );
+  }
+
+  /** Gives one value-free heartbeat summary for the local durable lease-failure detail. */
+  public [workerHeartbeatFailureDetail](): string {
+    const describe = (point: { sequence: number; at: number } | undefined) =>
+      point ? `${point.sequence}@${new Date(point.at).toISOString()}` : 'none';
+    return `Heartbeat lastSent=${describe(this.lastHeartbeatSent)} lastAck=${describe(this.lastHeartbeatAck)}.`;
   }
 
   /**
@@ -273,18 +426,26 @@ export class WorkerControlClient {
   private async sendSequencedHeartbeat(
     input: Omit<WorkerControlHeartbeatInput, 'sequence'>,
     signal?: AbortSignal,
-    reconnectFirst = false
+    reconnectFirst = false,
+    sequence = this.nextHeartbeatSequence
   ): Promise<unknown> {
-    const heartbeat = Object.freeze({ ...input, sequence: this.nextHeartbeatSequence });
+    const heartbeat = Object.freeze({ ...input, sequence });
+    const firstSentAt = performance.now();
     let presentReconnectKey = reconnectFirst;
     let retrying = false;
 
     try {
       for (;;) {
         try {
-          const result = await this.postHeartbeat(heartbeat, presentReconnectKey, signal);
+          const result = await this.postHeartbeat(
+            heartbeat,
+            presentReconnectKey,
+            signal,
+            undefined,
+            firstSentAt
+          );
 
-          this.nextHeartbeatSequence += 1;
+          this.nextHeartbeatSequence = Math.max(this.nextHeartbeatSequence, sequence + 1);
           return result;
         } catch (error) {
           this.requireRetryable(error);
@@ -305,10 +466,17 @@ export class WorkerControlClient {
   private async postHeartbeat(
     heartbeat: WorkerControlHeartbeatInput,
     reconnect: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onFinalStatus?: (code: number) => void,
+    firstSentAt?: number
   ): Promise<unknown> {
+    signal?.throwIfAborted();
     const startedAt = performance.now();
+    const { sequence } = heartbeat;
+    if (sequence === 1) this.firstLaunchHeartbeatAt ??= startedAt;
+    const anchor = (sequence === 1 ? this.firstLaunchHeartbeatAt : firstSentAt) ?? startedAt;
     const label = reconnect ? 'reconnect' : 'heartbeat';
+    this.lastHeartbeatSent = { sequence, at: Date.now() };
     this.recordLifecycleFact?.({ label, reason: 'attempt' });
     try {
       const result = await this.postJson(
@@ -330,8 +498,22 @@ export class WorkerControlClient {
           schemaVersion: 2,
           sequence: heartbeat.sequence,
         },
-        signal
+        signal,
+        (code) => {
+          if (code === 200 && sequence > this.confirmedHeartbeatSequence) {
+            this.confirmedHeartbeatSequence = sequence;
+            if (sequence > 0) {
+              this.heartbeatReserveAt = anchor + HEARTBEAT_RESERVE_MS;
+              this.heartbeatReservationWake?.abort();
+            }
+          }
+          onFinalStatus?.(code);
+        }
       );
+      requireAcceptedControlResponse(result);
+      if (sequence >= (this.lastHeartbeatAck?.sequence ?? -1))
+        this.lastHeartbeatAck = { sequence, at: Date.now() };
+      this.heartbeatOutage = false;
       this.recordLifecycleFact?.({
         label,
         reason: 'accepted',
@@ -388,11 +570,14 @@ export class WorkerControlClient {
   /** Sends one exact-next reconnect heartbeat for all requests blocked by one restart. */
   private async reconnect(signal?: AbortSignal): Promise<unknown> {
     if (!this.reconnecting) {
-      const tracked = this.enqueueHeartbeat(
-        { message: 'Worker shim reconnecting.', status: 'running' },
-        signal,
-        this.nextHeartbeatSequence
-      ).finally(() => {
+      const recovery = this.periodicHeartbeats
+        ? this.reconnectPeriodicHeartbeat(signal)
+        : this.enqueueHeartbeat(
+            { message: 'Worker shim reconnecting.', status: 'running' },
+            signal,
+            this.nextHeartbeatSequence
+          );
+      const tracked = recovery.finally(() => {
         if (this.reconnecting === tracked) {
           this.reconnecting = null;
         }
@@ -401,6 +586,20 @@ export class WorkerControlClient {
       this.reconnecting = tracked;
     }
     return this.reconnecting;
+  }
+
+  /** Drains entered exchanges and proves the exact next sequence before periodic sends resume. */
+  private async reconnectPeriodicHeartbeat(signal?: AbortSignal): Promise<unknown> {
+    await Promise.allSettled([...this.heartbeatAttempts.values()].map(({ request }) => request));
+    // A sent sequence may have committed before its ACK was lost. Core decides this exact proof.
+    const result = await this.sendSequencedHeartbeat(
+      PERIODIC_HEARTBEAT,
+      signal,
+      true,
+      this.confirmedHeartbeatSequence + 1
+    );
+    this.clearOutage();
+    return result;
   }
 
   /** Starts the shared outage budget and rejects definitive or expired failures. */
@@ -429,7 +628,7 @@ export class WorkerControlClient {
 
   /** Clears the shared outage timer after acceptance only when no logical request still needs recovery. */
   private clearOutage(): void {
-    if (this.retryingRequests === 0) this.outageDeadline = null;
+    if (this.retryingRequests === 0 && !this.heartbeatOutage) this.outageDeadline = null;
   }
 
   /**
@@ -437,17 +636,19 @@ export class WorkerControlClient {
    *
    * @param path Route path under the upstream base URL.
    * @param body Request body without lineage.
+   * @param signal Parent cancellation for this control request.
+   * @param onFinalStatus Internal observer of the correlated heartbeat response headers.
    * @returns Parsed JSON response.
    */
   private async postJson<T = unknown>(
     path: string,
     body: object,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onFinalStatus?: (code: number) => void
   ): Promise<T> {
     signal?.throwIfAborted();
-    const remaining =
-      this.outageDeadline?.remainingMs(LIFECYCLE_DEFAULTS.workerControlRequestMs) ??
-      LIFECYCLE_DEFAULTS.workerControlRequestMs;
+    const requestLimit = LIFECYCLE_DEFAULTS.workerControlRequestMs;
+    const remaining = this.outageDeadline?.remainingMs(requestLimit) ?? requestLimit;
     if (remaining <= 0) throw new Error('Worker control outage budget expired.');
     const requestController = new AbortController();
     let abortParent: (() => void) | null = null;
@@ -466,12 +667,15 @@ export class WorkerControlClient {
       }
       signal?.addEventListener('abort', abort, { once: true });
     });
+    let finalStatus: number | undefined;
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const timeoutFailure = new Promise<never>((_resolve, reject) => {
       timeout = setTimeout(() => {
+        const refused =
+          finalStatus !== undefined && finalStatus >= 400 && !isRetryableHttpStatus(finalStatus);
         const error = new WorkerControlError(
-          'worker_control_request_timeout',
-          408,
+          refused ? `worker_control_http_${finalStatus}` : 'worker_control_request_timeout',
+          refused ? finalStatus! : 408,
           'Worker control request timed out.'
         );
         requestController.abort(error);
@@ -491,7 +695,25 @@ export class WorkerControlClient {
           method: 'POST',
           signal: requestController.signal,
         });
-        return { response, text: await response.text() };
+        requestController.signal.throwIfAborted();
+        if (onFinalStatus) {
+          finalStatus = response.status;
+          onFinalStatus(finalStatus);
+        }
+        let text: string;
+        try {
+          text = await response.text();
+        } catch (error) {
+          if (
+            finalStatus !== undefined &&
+            finalStatus >= 400 &&
+            !isRetryableHttpStatus(finalStatus)
+          )
+            throw new WorkerControlError(`worker_control_http_${finalStatus}`, finalStatus, null);
+          throw error;
+        }
+        requestController.signal.throwIfAborted();
+        return { response, text };
       };
       const { response, text } = await Promise.race([request(), abortFailure, timeoutFailure]);
       let parsed: unknown;

@@ -3519,6 +3519,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         await Promise.race([f.execution, delay(2000)]);
         expect(f.settled()).toBe(true);
         expect(f.executor.isTurnExecutionActive(f.turn.id)).toBe(false);
+        expect(f.store.getTurnById(f.turn.id)).toMatchObject({
+          status: 'failed',
+          error: {
+            code: 'worker_governance_turn_failed',
+            message: expect.stringContaining('native-liveness-expired'),
+          },
+        });
         expect(Date.now()).toBeLessThan(Date.parse(live.deadline!) - 60_000);
       } finally {
         await f.dispose();

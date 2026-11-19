@@ -30,6 +30,8 @@ import {
   WorkerControlClient,
   WorkerControlError,
   type WorkerControlFetch,
+  workerHeartbeatFailureDetail,
+  workerHeartbeatTick,
 } from './control-client.js';
 import { credentialHelperDeclarations } from './credential-helper-binding.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
@@ -277,15 +279,16 @@ async function runResidentTurnImplementation(
     sessionDir: options.sessionDir,
   });
   let heartbeat: Promise<void> | null = null;
-  /** Retains the periodic request even when live-event failure wins its race. */
-  const heartbeatDelivery = {
-    request: null as Promise<unknown> | null,
+  const heartbeatDelivery: WorkerHeartbeatDelivery = {
+    requests: new Set(),
+    failures: new Set(),
     signal: controlAbortController.signal,
   };
-  /** Stops scheduling and joins the current request before final status revokes its lease. */
+  /** Stops scheduling and joins entered heartbeat requests before final status revokes the lease. */
   const stopHeartbeats = async (): Promise<void> => {
     heartbeatAbortController.abort();
-    const results = await Promise.allSettled([heartbeat, heartbeatDelivery.request]);
+    const results = await Promise.allSettled([heartbeat, ...heartbeatDelivery.requests]);
+    for (const reason of heartbeatDelivery.failures) results.push({ status: 'rejected', reason });
     let cancellationFailure: PromiseRejectedResult | undefined;
     for (const result of results)
       if (result.status === 'rejected' && result.reason !== cancelledLiveOutput) {
@@ -647,6 +650,10 @@ async function runResidentTurnImplementation(
       // Keep the deciding native failure while the settlement wrapper retains cleanup ownership.
       const failure = error instanceof NativeSettlementUnknownError ? error.cause : error;
       timeline.record({ label: 'terminal', reason: 'failed' });
+      const failureMessage = failure instanceof Error ? failure.message : String(failure);
+      const heartbeatDetail = isClosingControlRefusal(failure)
+        ? controlSession?.[workerHeartbeatFailureDetail]()
+        : null;
       terminalPublication = writeAndReportTerminalOutcome(
         writer,
         workerControlReady && !controlAbortController.signal.aborted ? controlSession : null,
@@ -654,7 +661,7 @@ async function runResidentTurnImplementation(
           diagnostics: sanitizeAdapterDiagnostics(
             {
               ...adapterDiagnostics,
-              native: failure instanceof Error ? failure.message : String(failure),
+              native: heartbeatDetail ? `${failureMessage} ${heartbeatDetail}` : failureMessage,
             },
             credentialValues
           ),
@@ -677,7 +684,7 @@ async function runResidentTurnImplementation(
     // Cancellation is not a join: settle both race losers and every queued live acknowledgement first.
     await Promise.allSettled([
       heartbeat,
-      heartbeatDelivery.request,
+      ...heartbeatDelivery.requests,
       terminalPublication,
       writer.drainLiveEvents(),
     ]);
@@ -1825,21 +1832,28 @@ function redactDiagnosticOutput(output: string, credentialValues: readonly strin
     );
 }
 
+/** Entered heartbeat deliveries remain owned until the Turn joins them. */
+interface WorkerHeartbeatDelivery {
+  readonly requests: Set<Promise<boolean>>;
+  readonly signal: AbortSignal;
+  readonly failures: Set<unknown>;
+}
+
 /**
- * Keeps one serialized lease-heartbeat schedule until terminal handoff; transcript delivery retains its ordered queue without delaying the next control heartbeat.
+ * Runs one send-start heartbeat schedule. The control client owns the post-launch stream bound.
  *
  * @param client Sole lease-heartbeat and reconnect sequence owner.
  * @param transcript Ordered local/live event owner, sealed before final publication.
  * @param signal Stops scheduling before final submission or at supervisor closeout.
- * @param delivery Sole periodic request retained for closeout join, with the existing control signal.
- * @param phase Selects startup or running message text; periodic status stays running after sequence zero.
+ * @param delivery Retains entered requests and their failures for closeout.
+ * @param phase Reports whether the native Turn has started.
  * @returns Promise that resolves on scheduling cancellation and rejects on control or live-event failure.
  */
 async function runWorkerHeartbeatLoop(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
   signal: AbortSignal,
-  delivery: { request: Promise<unknown> | null; readonly signal: AbortSignal },
+  delivery: WorkerHeartbeatDelivery,
   phase: () => 'starting' | 'running'
 ): Promise<void> {
   let failEvent!: (error: unknown) => void;
@@ -1847,29 +1861,47 @@ async function runWorkerHeartbeatLoop(
     failEvent = reject;
   });
   eventFailure.catch(() => undefined);
+  const failDelivery = (reason: unknown) => {
+    delivery.failures.add(reason);
+    failEvent(reason);
+  };
+  let preparation: Promise<boolean> | undefined;
+  let nextSendAt = performance.now() + LIFECYCLE_DEFAULTS.workerHeartbeatIntervalMs;
+  const setNextSend = () => {
+    nextSendAt = performance.now() + LIFECYCLE_DEFAULTS.workerHeartbeatIntervalMs;
+  };
   while (!signal.aborted) {
     try {
-      await Promise.race([
-        delay(LIFECYCLE_DEFAULTS.workerHeartbeatIntervalMs, undefined, { signal }),
-        eventFailure,
-      ]);
-      if (!signal.aborted) {
-        const preparing = phase() === 'starting';
-        delivery.request = client.recordHeartbeat(
-          {
-            message: preparing ? 'Worker shim starting.' : 'Worker shim running.',
-            status: 'running',
-          },
-          delivery.signal
-        );
-        await Promise.race([delivery.request, eventFailure]);
-        if (!transcript.eventTranscriptSealed) {
-          // Allocation and live delivery remain in the writer's sole sequence/append owner.
-          void transcript
-            .writeAndAppendEvent({ data: { status: 'running' }, type: 'worker.heartbeat' })
-            .catch(failEvent);
-        }
-      }
+      const remaining = Math.max(0, nextSendAt - performance.now());
+      await Promise.race([delay(remaining, undefined, { signal }), eventFailure]);
+      if (signal.aborted) return;
+      // A coalesced tick can send while this timer sleeps. Use that send's new cadence.
+      if (performance.now() < nextSendAt) continue;
+      setNextSend();
+      if (preparation) continue;
+      const preparing = phase() === 'starting';
+      const request = preparing
+        ? client
+            .recordHeartbeat(
+              { message: 'Worker shim starting.', status: 'running' },
+              delivery.signal
+            )
+            .then(() => true)
+        : client[workerHeartbeatTick](delivery.signal, signal, setNextSend);
+      if (preparing) preparation = request;
+      delivery.requests.add(request);
+      void request
+        .then((accepted) => {
+          if (accepted && !transcript.eventTranscriptSealed) {
+            void transcript
+              .writeAndAppendEvent({ data: { status: 'running' }, type: 'worker.heartbeat' })
+              .catch(failDelivery);
+          }
+        }, failDelivery)
+        .finally(() => {
+          delivery.requests.delete(request);
+          if (preparation === request) preparation = undefined;
+        });
     } catch (error) {
       if (isSupervisorAbort(error, signal)) return;
       throw error;
