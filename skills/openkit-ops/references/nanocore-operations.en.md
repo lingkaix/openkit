@@ -99,7 +99,7 @@ In Web Administration, cached candidate facts do not grant current access to the
 
 ### Verify Workers After An App Update
 
-For deployments that use Workers, complete these steps after the App-update helper finishes the migration-free rc.11-to-rc.12 update or after a stopped-App forward migration.
+For deployments that use Workers, complete these steps once the new App is running and verified. This applies to helper and manual replacements for the migration-free rc.11-to-rc.12 update and to stopped-App forward migrations.
 
 - Before the first Worker Turn, acquire and activate the running App release's published `worker-runtimes` image. Read back the active resolved image digest and match it to the prepared platform manifest digest. NanoCore refuses an incompatible image before Worker effects with `worker_release_incompatible`. [Prepare And Reuse A Worker Environment](#prepare-and-reuse-a-worker-environment)
 - If the CLI reply times out while `image.acquire` is running, wait for the original preparation to settle, then use result-only recovery of that preparation through `worker-environment.recover`. Recover the settled result without starting another acquisition.
