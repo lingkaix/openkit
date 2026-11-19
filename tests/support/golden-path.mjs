@@ -6,6 +6,13 @@ import { promises as fs } from 'node:fs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  CAPTURE_RETRY_AFTER_HEADER,
+  CAPTURE_RETRY_CONTEXT_HEADER,
+  fetchWithCaptureRetry,
+} from '../../packages/core-client/src/capture-retry.ts';
+import { PROTOCOL_VERSION } from '../../packages/protocol/src/common/version.ts';
 import { execute, save, scan } from '../../scripts/release-safety.mjs';
 
 const root = path.join(process.env.RUNNER_TEMP ?? '/tmp', 'golden-path');
@@ -141,9 +148,67 @@ async function bundle() {
   );
 }
 
-/** Invoke public JSON operations once; never replay a lost mutation. */
+// Match Protocol's entityIdPattern('ws') in the dependency-free harness.
+const workspaceIdPattern =
+  /^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\s\S])/;
+
+/** Recognizes the public capture refusal for this Turn's selected Workspace. */
+async function confirmTurnCaptureRefusal(response, workspaceId) {
+  const body = await response.json();
+  return (
+    typeof workspaceId === 'string' &&
+    workspaceIdPattern.test(workspaceId) &&
+    body?.protocolVersion === PROTOCOL_VERSION &&
+    body.code === 'workspace_frozen' &&
+    typeof body.message === 'string' &&
+    body.message.length > 0 &&
+    (body.requestId === undefined ||
+      (typeof body.requestId === 'string' && body.requestId.length > 0)) &&
+    (body.path === undefined ||
+      (Array.isArray(body.path) && body.path.every((part) => typeof part === 'string' && part))) &&
+    isDeepStrictEqual(body.details, {
+      workspaceId,
+      operation: 'capture',
+      retryable: true,
+      blockers: [
+        { kind: 'publication', reason: 'frozen', reference: { workspaceId }, actions: [] },
+      ],
+    })
+  );
+}
+
+/** Keeps retry observations to marker presence and HTTP outcome. */
+async function submitTurn(url, request, workspaceId, evidenceNumber) {
+  const attempts = [];
+  try {
+    return await fetchWithCaptureRetry(url, request, {
+      fetch: async (url, init) => {
+        const attempt = {
+          retryAfterPresent: false,
+          retryContextPresent: false,
+          outcome: 'no_response',
+        };
+        attempts.push(attempt);
+        const response = await fetch(url, init);
+        attempt.retryAfterPresent = response.headers.has(CAPTURE_RETRY_AFTER_HEADER);
+        attempt.retryContextPresent = response.headers.has(CAPTURE_RETRY_CONTEXT_HEADER);
+        attempt.outcome = response.status;
+        return response;
+      },
+      signal: request.signal,
+      confirmRefusal: (response) => confirmTurnCaptureRefusal(response, workspaceId),
+    });
+  } finally {
+    if (evidenceNumber !== null)
+      await save(path.join(evidence, `${evidenceNumber}-turn.start-retry.json`), attempts, secrets);
+  }
+}
+
+/** Invokes one logical JSON operation and retains its public response. */
 async function operation(id, input = {}, retain = true) {
-  const response = await fetch(`${appOrigin}/api/app/operations/${id}`, {
+  const evidenceNumber = retain ? ++calls : null;
+  const url = `${appOrigin}/api/app/operations/${id}`;
+  const request = {
     method: 'POST',
     signal: AbortSignal.timeout(id === 'worker-environment.prepare' ? 900_000 : 120_000),
     headers: {
@@ -152,11 +217,15 @@ async function operation(id, input = {}, retain = true) {
       ...(input.requestId ? { 'x-openkit-request-id': input.requestId } : {}),
     },
     body: JSON.stringify(input),
-  });
+  };
+  const response =
+    id === 'turn.start'
+      ? await submitTurn(url, request, input.workspaceId, evidenceNumber)
+      : await fetch(url, request);
   const data = await response.json();
   if (retain)
     await save(
-      path.join(evidence, `${++calls}-${id}.json`),
+      path.join(evidence, `${evidenceNumber}-${id}.json`),
       { input, status: response.status, data },
       secrets
     );
@@ -729,6 +798,124 @@ print(json.dumps([dict(row) for row in rows]))
   console.log('Golden path: fresh Worker Turn and same-association restart Turn PASS');
 }
 
+/** Exercise the original Turn submission and its redacted retry evidence. */
+async function checkTurnCaptureRetry() {
+  const realFetch = globalThis.fetch;
+  const oldBearer = bearer;
+  bearer = 'fixture-capture-authorization';
+  const input = {
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000002',
+    requestId: '00000000-0000-7000-8000-000000000003',
+    input: 'Fixture Turn behind a held capture',
+  };
+  const context = 'a'.repeat(64);
+  const headers = { 'Retry-After': '1', 'x-openkit-retry-context': context };
+  const refusal = (options = {}) => {
+    const workspaceId = options.workspaceId ?? input.workspaceId;
+    return Response.json(
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        code: 'workspace_frozen',
+        message: 'Workspace is temporarily frozen.',
+        details: {
+          workspaceId,
+          operation: 'capture',
+          retryable: true,
+          blockers: [
+            { kind: 'publication', reason: 'frozen', reference: { workspaceId }, actions: [] },
+          ],
+        },
+      },
+      { status: 409, headers: options.headers ?? headers }
+    );
+  };
+  const readTrace = async (number) =>
+    JSON.parse(await fs.readFile(path.join(evidence, `${number}-turn.start-retry.json`), 'utf8'));
+  const marked = { retryAfterPresent: true, retryContextPresent: true };
+  const unmarked = { retryAfterPresent: false, retryContextPresent: false };
+  try {
+    const firstResponse = Promise.withResolvers();
+    const firstAttempt = Promise.withResolvers();
+    const requests = [];
+    let admitted = 0;
+    globalThis.fetch = async (_url, request) => {
+      requests.push(request);
+      if (requests.length === 1) {
+        firstAttempt.resolve();
+        return firstResponse.promise;
+      }
+      admitted += 1;
+      return Response.json({ id: 'fixture-admitted-turn' }, { status: 202 });
+    };
+    const traceNumber = calls + 1;
+    const submission = operation('turn.start', input);
+    await Promise.race([firstAttempt.promise, submission]);
+    assert.equal(admitted, 0, 'The held capture admits no Turn');
+    firstResponse.resolve(refusal());
+    assert.deepEqual(await submission, { id: 'fixture-admitted-turn' });
+    assert.equal(admitted, 1, 'One logical Turn is admitted');
+    assert.equal(requests.length, 2, 'One capture refusal permits one resend');
+    const [first, resend] = requests;
+    assert.equal(first.body, JSON.stringify(input));
+    assert.equal(resend.body, first.body, 'The resend preserves the request bytes');
+    const firstHeaders = new Headers(first.headers);
+    const resendHeaders = new Headers(resend.headers);
+    assert.equal(firstHeaders.get('x-openkit-request-id'), input.requestId);
+    assert.equal(resendHeaders.get('x-openkit-request-id'), input.requestId);
+    assert.ok(
+      firstHeaders.get('authorization') === `Bearer ${bearer}` &&
+        resendHeaders.get('authorization') === firstHeaders.get('authorization'),
+      'The resend uses the original authorization'
+    );
+    assert.ok(!firstHeaders.has('x-openkit-retry-context'));
+    assert.ok(
+      resendHeaders.get('x-openkit-retry-context') === context,
+      'The resend binds the context'
+    );
+    assert.deepEqual(await readTrace(traceNumber), [
+      { ...marked, outcome: 409 },
+      { ...unmarked, outcome: 202 },
+    ]);
+
+    for (const [respond, expectedError, expectedTrace, workspaceId = input.workspaceId] of [
+      [() => refusal({ headers: {} }), { status: 409 }, { ...unmarked, outcome: 409 }],
+      [
+        () => refusal({ workspaceId: 'ws_00000000-0000-7000-8000-000000000009' }),
+        { status: 409 },
+        { ...marked, outcome: 409 },
+      ],
+      [
+        () => refusal({ workspaceId: 'fixture-workspace' }),
+        { status: 409 },
+        { ...marked, outcome: 409 },
+        'fixture-workspace',
+      ],
+      [
+        () => Promise.reject(new TypeError('fixture response lost')),
+        { message: 'fixture response lost' },
+        { ...unmarked, outcome: 'no_response' },
+      ],
+    ]) {
+      let sends = 0;
+      globalThis.fetch = async () => {
+        assert.equal(++sends, 1, 'An unproved refusal or delivery failure permits no resend');
+        return respond();
+      };
+      const traceNumber = calls + 1;
+      await assert.rejects(operation('turn.start', { ...input, workspaceId }), expectedError);
+      assert.equal(sends, 1);
+      assert.deepEqual(await readTrace(traceNumber), [expectedTrace]);
+    }
+    console.log(
+      'Golden path capture retry self-check PASS: one admission, original bytes and request ID, headerless and mismatched refusals, malformed Workspace ID, lost response'
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    bearer = oldBearer;
+  }
+}
+
 /** Admit the actual public-record oracle against stable non-product targets. */
 async function selfCheck() {
   const realFetch = globalThis.fetch;
@@ -748,7 +935,7 @@ async function selfCheck() {
       return Response.json({ ready: true, freshEmpty: true, predecessorFenced: true });
     }
     if (id === 'turn.start') {
-      assert.equal(init.headers['x-openkit-request-id'], input.requestId);
+      assert.equal(new Headers(init.headers).get('x-openkit-request-id'), input.requestId);
       data = { id: 'fixture-turn' };
     } else if (id === 'turn.read') {
       data = { id: 'fixture-turn', status, agentId: 'agent_pi' };
@@ -861,8 +1048,10 @@ async function selfCheck() {
 }
 
 const mode = process.argv[2];
-if (mode === 'self-check') await selfCheck();
-else {
+if (mode === 'self-check') {
+  await checkTurnCaptureRetry();
+  await selfCheck();
+} else {
   validate();
   if (mode === 'package') await bundle();
   else if (mode === 'run') await run();
