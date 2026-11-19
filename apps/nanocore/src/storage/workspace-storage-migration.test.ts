@@ -20,7 +20,7 @@ import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { KnowledgeBaseIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { parseJsoncObject } from '../config/jsonc.js';
 import {
   initializeDefaultKnowledgeBaseId,
@@ -32,6 +32,10 @@ import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environ
 import { testEntityId } from '../test-support/entity-ids.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { createTestStore } from '../test-support/store.js';
+import {
+  observeSyncPublication,
+  publicationSyncFailure,
+} from '../test-support/sync-publication.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { inventoryRegularFiles, verifyDataRootBackupManifest } from './data-root-backup.js';
@@ -46,6 +50,11 @@ import {
 
 const timestamp = '2026-07-19T00:00:00.000Z';
 const predecessorDeploymentId = 'dep_00000000-0000-73b2-b75c-097b4af22221';
+
+vi.mock('node:fs', async (load) => {
+  const { publicationFileSystem } = await import('../test-support/sync-publication.js');
+  return publicationFileSystem(await load<typeof import('node:fs')>());
+});
 
 /** Isolated predecessor-layout fixture used by storage migration tests. */
 interface MigrationFixture {
@@ -428,6 +437,143 @@ describe('workspace storage migration preflight', () => {
 });
 
 describe('workspace storage migration', () => {
+  describe('stopped migration durability', () => {
+    async function migrationPublicationFixture() {
+      const fixture = createMigrationFixture();
+      const backupParent = mkdtempSync(join(tmpdir(), 'openkit-migration-publication-'));
+      onTestFinished(() => rmSync(fixture.dataRoot, { recursive: true, force: true }));
+      onTestFinished(() => rmSync(backupParent, { recursive: true, force: true }));
+      const sourceRoot = sourceWorkspaceRoot(fixture);
+      try {
+        await createNativeLayoutSource(sourceRoot, fixture.workspaceId, fixture.ownerUserId);
+      } finally {
+        fixture.coreDb.sqlite.close();
+      }
+      const relativeFile = join('files', 'publication.txt');
+      writeFileSync(join(sourceRoot, relativeFile), 'workspace bytes\n');
+      const stagingRoot = join(fixture.dataRoot, '.workspace-storage-v2-staging');
+      const publishedRoot = join(fixture.dataRoot, 'workspaces');
+      return {
+        input: {
+          backupRoot: join(backupParent, 'backup'),
+          dataRoot: fixture.dataRoot,
+          now: () => timestamp,
+        },
+        sourceRoot,
+        sourceFile: join(sourceRoot, relativeFile),
+        stagingRoot,
+        stagedFile: join(stagingRoot, fixture.workspaceId, relativeFile),
+        publishedRoot,
+        publishedFile: join(publishedRoot, fixture.workspaceId, relativeFile),
+      };
+    }
+
+    describe('round two Workspace migration', () => {
+      it('commits the owner directory after predecessor removal and before publishing the v2 marker', async () => {
+        const { input, sourceRoot } = await migrationPublicationFixture();
+        const predecessor = dirname(sourceRoot);
+        const ownerRoot = dirname(predecessor);
+        const markerPath = join(input.dataRoot, 'server', 'layout.json');
+        const events = observeSyncPublication();
+
+        await expect(migrateWorkspaceStorage(input)).resolves.toMatchObject({
+          outcome: 'succeeded',
+        });
+
+        const removalAt = events.findIndex(
+          (event) => event.kind === 'remove' && event.path === predecessor
+        );
+        const markerAt = events.findIndex(
+          (event) => event.kind === 'rename' && event.path === markerPath
+        );
+        expect(removalAt).toBeGreaterThan(0);
+        expect(markerAt).toBeGreaterThan(removalAt);
+        expect(events.slice(removalAt + 1, markerAt)).toContainEqual({
+          kind: 'sync',
+          path: ownerRoot,
+        });
+      });
+
+      it('withholds the v2 marker when a predecessor removal sync fails', async () => {
+        const { input, sourceRoot, publishedFile } = await migrationPublicationFixture();
+        const predecessor = dirname(sourceRoot);
+        const events = observeSyncPublication(
+          (path) =>
+            path === dirname(predecessor) &&
+            events.some((event) => event.kind === 'remove' && event.path === predecessor)
+        );
+
+        await expect(migrateWorkspaceStorage(input)).rejects.toBe(publicationSyncFailure);
+
+        expect(readFileSync(publishedFile, 'utf8')).toBe('workspace bytes\n');
+        expect(readFileSync(join(input.dataRoot, 'server', 'layout.json'), 'utf8')).toContain(
+          '"layoutVersion": 1'
+        );
+        expect(
+          verifyDataRootBackupManifest({ backupRoot: input.backupRoot }).manifest.sourceDeploymentId
+        ).toBe(predecessorDeploymentId);
+      });
+    });
+
+    it('commits staged Workspaces before rename and the data root before predecessor removal', async () => {
+      const { input, sourceRoot, stagingRoot, stagedFile, publishedRoot, publishedFile } =
+        await migrationPublicationFixture();
+      const events = observeSyncPublication();
+
+      await expect(migrateWorkspaceStorage(input)).resolves.toMatchObject({ outcome: 'succeeded' });
+
+      const renameAt = events.findIndex(
+        (event) => event.kind === 'rename' && event.path === publishedRoot
+      );
+      const removalAt = events.findIndex(
+        (event) => event.kind === 'remove' && event.path === dirname(sourceRoot)
+      );
+      const stageSyncs = events
+        .slice(0, renameAt)
+        .filter((event) => event.kind === 'sync')
+        .map((event) => event.path);
+      expect(stageSyncs).toContain(stagedFile);
+      expect(stageSyncs.at(-1)).toBe(stagingRoot);
+      expect(events[renameAt]).toEqual({ kind: 'rename', from: stagingRoot, path: publishedRoot });
+      expect(events[renameAt + 1]).toEqual({ kind: 'sync', path: input.dataRoot });
+      expect(removalAt).toBeGreaterThan(renameAt + 1);
+      expect(readFileSync(publishedFile, 'utf8')).toBe('workspace bytes\n');
+      expect(existsSync(sourceRoot)).toBe(false);
+    });
+
+    it('keeps the predecessor layout if a staged Workspace sync fails', async () => {
+      const { input, sourceFile, stagedFile, publishedRoot } = await migrationPublicationFixture();
+      observeSyncPublication((path) => path === stagedFile);
+
+      await expect(migrateWorkspaceStorage(input)).rejects.toBe(publicationSyncFailure);
+
+      expect(existsSync(publishedRoot)).toBe(false);
+      expect(readFileSync(sourceFile, 'utf8')).toBe('workspace bytes\n');
+    });
+
+    it('keeps the predecessor, published tree and external backup if the rename sync is uncertain', async () => {
+      const { input, sourceFile, publishedRoot, publishedFile } =
+        await migrationPublicationFixture();
+      const events = observeSyncPublication((path) => {
+        const last = events.at(-1);
+        return path === input.dataRoot && last?.kind === 'rename' && last.path === publishedRoot;
+      });
+
+      await expect(migrateWorkspaceStorage(input)).rejects.toMatchObject({
+        cause: publicationSyncFailure,
+      });
+
+      expect(readFileSync(sourceFile, 'utf8')).toBe('workspace bytes\n');
+      expect(readFileSync(publishedFile, 'utf8')).toBe('workspace bytes\n');
+      expect(readFileSync(join(input.dataRoot, 'server', 'layout.json'), 'utf8')).toContain(
+        '"layoutVersion": 1'
+      );
+      expect(
+        verifyDataRootBackupManifest({ backupRoot: input.backupRoot }).manifest.sourceDeploymentId
+      ).toBe(predecessorDeploymentId);
+    });
+  });
+
   it('refuses entropy failure before backup or staging publication and preserves the predecessor', async () => {
     const fixture = createMigrationFixture();
     fixture.coreDb.sqlite.close();

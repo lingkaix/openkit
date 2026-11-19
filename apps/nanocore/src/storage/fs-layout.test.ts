@@ -1,6 +1,8 @@
 // openkit-test-platform: posix
 import {
+  accessSync,
   chmodSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -15,7 +17,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createBootReadinessSnapshot,
   isScopeAdmitted,
@@ -23,6 +25,12 @@ import {
 } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
+import {
+  observeSyncPublication,
+  publicationSyncFailure,
+  runDataRootPublicationAttempt,
+  setOwnerOnlyDefaultAcl,
+} from '../test-support/sync-publication.js';
 
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import {
@@ -38,6 +46,11 @@ import {
 
 const DEPLOYMENT_ID_PATTERN =
   /^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+vi.mock('node:fs', async (load) => {
+  const { publicationFileSystem } = await import('../test-support/sync-publication.js');
+  return publicationFileSystem(await load<typeof import('node:fs')>());
+});
 
 /**
  * Asserts that a path exists and is a directory.
@@ -79,6 +92,166 @@ function listDirectories(root: string): string[] {
 }
 
 describe('ensureLayout', () => {
+  describe('boot marker durability', () => {
+    async function markerPublicationFixture() {
+      const parent = await mkdtemp(join(tmpdir(), 'openkit-marker-publication-'));
+      onTestFinished(() => rmSync(parent, { recursive: true, force: true }));
+      const root = join(parent, 'data');
+      const server = join(root, 'server');
+      return { parent, root, server, markerPath: join(server, 'layout.json') };
+    }
+
+    it('completes round three warm boot under a search-only ancestor', async () => {
+      const { parent, root } = await markerPublicationFixture();
+      ensureLayout(root);
+      const marker = readDataRootLayoutMarker(root);
+      chmodSync(parent, 0o111);
+      try {
+        const events = observeSyncPublication();
+
+        ensureConfigTemplateSurface(root);
+        ensureLayout(root);
+
+        expect(readDataRootLayoutMarker(root)).toEqual(marker);
+        if (process.getuid?.() !== 0) {
+          expect(events.some((event) => event.kind === 'sync' && event.path === parent)).toBe(
+            false
+          );
+        }
+      } finally {
+        chmodSync(parent, 0o700);
+      }
+    });
+
+    it('refuses a round four fresh boot retry until the existing ancestor sync succeeds', async () => {
+      const { parent } = await markerPublicationFixture();
+      const firstAncestor = join(parent, 'first');
+      const dataRoot = join(firstAncestor, 'second', 'data');
+
+      for (const attempt of [1, 2]) {
+        const result = runDataRootPublicationAttempt({ dataRoot, faultParent: parent });
+        expect(result.status, `Attempt ${attempt}. ${result.stderr}`).toBe(1);
+        expect(result.stderr.trim()).toBe('EIO');
+        expect(existsSync(firstAncestor)).toBe(true);
+        expect(existsSync(join(dataRoot, 'server', 'layout.json'))).toBe(false);
+      }
+
+      const result = runDataRootPublicationAttempt({ dataRoot });
+      expect(result.status, result.stderr).toBe(0);
+      expect(readDataRootLayoutMarker(dataRoot).deploymentId).toMatch(DEPLOYMENT_ID_PATTERN);
+    });
+
+    describe('round two boot marker', () => {
+      it('uses the inherited owner-only default ACL when creating the marker', async (context) => {
+        const { root, server, markerPath } = await markerPublicationFixture();
+        mkdirSync(server, { recursive: true });
+        setOwnerOnlyDefaultAcl(server, context);
+        const priorUmask = process.umask(0o022);
+        try {
+          ensureLayout(root);
+          expect(statSync(markerPath).mode & 0o777).toBe(0o600);
+        } finally {
+          process.umask(priorUmask);
+        }
+      });
+
+      it('honors write access to a 0444 legacy marker and preserves replacement mode bits', async () => {
+        const { root, server, markerPath } = await markerPublicationFixture();
+        const legacyBytes = '{"schemaVersion":1,"layoutVersion":2}\n';
+        mkdirSync(server, { recursive: true });
+        writeFileSync(markerPath, legacyBytes);
+        chmodSync(markerPath, 0o444);
+
+        if (process.getuid?.() === 0) {
+          accessSync(markerPath, constants.W_OK);
+          ensureLayout(root);
+          expect(statSync(markerPath).mode & 0o777).toBe(0o444);
+        } else {
+          expect(() => ensureLayout(root)).toThrow(expect.objectContaining({ code: 'EACCES' }));
+          expect(readFileSync(markerPath, 'utf8')).toBe(legacyBytes);
+        }
+
+        chmodSync(markerPath, 0o640);
+        writeFileSync(markerPath, legacyBytes);
+        ensureLayout(root);
+        expect(readDataRootLayoutMarker(root).deploymentId).toMatch(DEPLOYMENT_ID_PATTERN);
+        expect(statSync(markerPath).mode & 0o777).toBe(0o640);
+      });
+
+      it.each([
+        { phase: 'early config setup', prepare: ensureConfigTemplateSurface },
+        { phase: 'layout setup', prepare: ensureLayout },
+      ])(
+        'stops $phase when the existing ancestor cannot commit its new child',
+        async ({ prepare }) => {
+          const { parent } = await markerPublicationFixture();
+          const root = join(parent, 'first', 'second', 'data');
+          observeSyncPublication((path) => path === parent);
+
+          expect(() => prepare(root)).toThrow(publicationSyncFailure);
+
+          expect(existsSync(join(root, 'config'))).toBe(false);
+          expect(existsSync(join(root, 'server', 'layout.json'))).toBe(false);
+        }
+      );
+    });
+
+    it('commits the fresh marker bytes before rename and its parent before boot succeeds', async () => {
+      const { parent, root, server, markerPath } = await markerPublicationFixture();
+      const events = observeSyncPublication();
+
+      ensureLayout(root);
+
+      const renameAt = events.findIndex(
+        (event) => event.kind === 'rename' && event.path === markerPath
+      );
+      expect(renameAt).toBeGreaterThan(0);
+      const rename = events[renameAt];
+      if (rename?.kind !== 'rename') throw new Error('Missing boot marker rename.');
+      const ancestors = events.slice(0, renameAt).filter((event) => event.kind === 'sync');
+      expect(ancestors.map((event) => event.path)).toEqual(
+        expect.arrayContaining([parent, root, rename.from])
+      );
+      expect(events[renameAt + 1]).toEqual({ kind: 'sync', path: server });
+      const marker = readDataRootLayoutMarker(root);
+      expect(marker.deploymentId).toMatch(DEPLOYMENT_ID_PATTERN);
+      expect(readFileSync(markerPath, 'utf8')).toBe(`${JSON.stringify(marker, null, 2)}\n`);
+    });
+
+    it.each(['fresh', 'legacy'] as const)(
+      'refuses boot when the %s marker file sync fails',
+      async (markerKind) => {
+        const { root, server, markerPath } = await markerPublicationFixture();
+        const legacyBytes = '{"schemaVersion":1,"layoutVersion":2}\n';
+        if (markerKind === 'legacy') {
+          mkdirSync(server, { recursive: true });
+          writeFileSync(markerPath, legacyBytes);
+        }
+        observeSyncPublication((path) => path.startsWith(join(server, '.layout.json.')));
+
+        expect(() => ensureLayout(root)).toThrow(publicationSyncFailure);
+
+        if (markerKind === 'legacy') expect(readFileSync(markerPath, 'utf8')).toBe(legacyBytes);
+        else expect(existsSync(markerPath)).toBe(false);
+        expect(existsSync(join(root, 'workspaces'))).toBe(false);
+      }
+    );
+
+    it('withholds boot success and retains the published identity until parent sync succeeds', async () => {
+      const { root, server, markerPath } = await markerPublicationFixture();
+      let fail = true;
+      observeSyncPublication((path) => fail && path === server && existsSync(markerPath));
+
+      expect(() => ensureLayout(root)).toThrow(/directory sync after rename failed/i);
+      const unacknowledgedMarker = readFileSync(markerPath, 'utf8');
+      expect(() => ensureLayout(root)).toThrow(publicationSyncFailure);
+
+      fail = false;
+      ensureLayout(root);
+      expect(readFileSync(markerPath, 'utf8')).toBe(unacknowledgedMarker);
+    });
+  });
+
   it.each(['user', 'workspace', 'server'] as const)(
     'accepts retained %s Source registry envelopes on the next boot',
     async (ownerScope) => {

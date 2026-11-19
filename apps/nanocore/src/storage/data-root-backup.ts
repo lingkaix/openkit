@@ -3,14 +3,12 @@ import { createHash } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
-  mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -22,11 +20,16 @@ import {
 import { compareCodeUnits, DataRootBackupIdSchema, DeploymentIdSchema } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import {
+  assertCanonicalRegularFile,
   copyBackupTree,
   copyMissingBackupDefinitions,
   copyVerifiedFile,
   createPrivateTree,
+  ensureCanonicalDirectory,
+  readLayoutDirectory,
   removePrivateTree,
+  syncCanonicalDirectory,
+  syncCanonicalTree,
 } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { writeFileAtomic } from './canonical-write-capacity.js';
@@ -164,19 +167,35 @@ export function assertExternalColdBackupDestination(dataRoot: string, backupRoot
  * Copies one stopped data root to a new external cold-backup destination.
  *
  * @param input Source, destination, and fixed maintenance-lock handling.
+ * @returns Mode of an omitted previous backup manifest, when present.
  * @throws Error when the copy fails.
  */
-export function copyColdDataRoot(input: CopyColdDataRootInput): void {
+export function copyColdDataRoot(input: CopyColdDataRootInput): number | undefined {
+  return copyDataRootForBackup(input, true);
+}
+
+/** Copies retained source bytes while reserving the destination manifest for final publication. */
+function copyDataRootForBackup(input: CopyColdDataRootInput, stopped: boolean): number | undefined {
   const omittedLock = input.omitActiveDataRootLock
     ? resolve(input.dataRoot, 'server', 'runtime', 'nanocore.lock')
     : null;
+  const sourceManifest = resolve(input.dataRoot, DATA_ROOT_BACKUP_MANIFEST_FILE);
+  let copiedManifestMode: number | undefined;
 
-  mkdirSync(dirname(input.backupRoot), { recursive: true });
+  ensureCanonicalDirectory(dirname(resolve(input.backupRoot)), 0o777, 'created-entries');
   copyBackupTree(input.dataRoot, input.backupRoot, {
-    errorOnExist: true,
-    filter: (source) => resolve(source) !== omittedLock,
-    preserveTimestamps: true,
+    errorOnExist: stopped,
+    preserveTimestamps: stopped,
+    filter: (source) => {
+      const path = resolve(source);
+      if (path === sourceManifest) {
+        copiedManifestMode = assertCanonicalRegularFile(path).mode & 0o7777;
+        return false;
+      }
+      return path !== omittedLock;
+    },
   });
+  return copiedManifestMode;
 }
 
 /**
@@ -196,7 +215,10 @@ export function assertBackupMatchesPredecessor(
     path: entry.path,
   }));
 
-  if (JSON.stringify(predecessorInventory) !== JSON.stringify(backupInventory)) {
+  const retainedInventory = predecessorInventory.filter(
+    (entry) => entry.path !== DATA_ROOT_BACKUP_MANIFEST_FILE
+  );
+  if (JSON.stringify(retainedInventory) !== JSON.stringify(backupInventory)) {
     throw new Error('Verified backup does not match the complete predecessor inventory.');
   }
 }
@@ -210,23 +232,28 @@ export function writeStorageJsonAtomically(path: string, value: unknown): void {
  * Writes a cold backup manifest for an already copied data root and verifies the result.
  *
  * @param input Backup metadata and root to inventory.
+ * @param copiedMode Mode of any prior manifest omitted by the cold tree copy.
  * @returns Parsed manifest plus checked inventory paths.
  * @throws Error when an identifier is invalid or the written manifest does not verify.
  */
 export function writeColdDataRootBackupManifest(
-  input: WriteColdDataRootBackupManifestInput
+  input: WriteColdDataRootBackupManifestInput,
+  copiedMode?: number
 ): VerifiedDataRootBackupManifest {
   DataRootBackupIdSchema.parse(input.backupId);
   DeploymentIdSchema.parse(input.sourceDeploymentId);
-  return writeDataRootBackupManifest({
-    backupRoot: input.backupRoot,
-    backupId: input.backupId,
-    sourceDeploymentId: input.sourceDeploymentId,
-    startedAt: input.startedAt,
-    completedAt: input.completedAt,
-    backupMode: 'cold',
-    consistency: 'clean',
-  });
+  return writeDataRootBackupManifest(
+    {
+      backupRoot: input.backupRoot,
+      backupId: input.backupId,
+      sourceDeploymentId: input.sourceDeploymentId,
+      startedAt: input.startedAt,
+      completedAt: input.completedAt,
+      backupMode: 'cold',
+      consistency: 'clean',
+    },
+    copiedMode
+  );
 }
 
 /**
@@ -245,8 +272,7 @@ export async function writeHotDataRootBackup(
   assertBackupRootOutsideDataRoot(input.dataRoot, input.backupRoot);
   const appsBefore = listLightAppDirectoryPaths(input.dataRoot);
   rmSync(input.backupRoot, { recursive: true, force: true });
-  mkdirSync(dirname(input.backupRoot), { recursive: true });
-  copyBackupTree(input.dataRoot, input.backupRoot);
+  const copiedMode = copyDataRootForBackup(input, false);
 
   snapshotSqliteDatabases(input.dataRoot, input.backupRoot);
   const appsAfter = listLightAppDirectoryPaths(input.dataRoot);
@@ -256,15 +282,18 @@ export async function writeHotDataRootBackup(
   copyMissingLightAppDefinitions(input.dataRoot, input.backupRoot);
   assertLightAppDefinitionCoverage(input.backupRoot);
 
-  return writeDataRootBackupManifest({
-    backupRoot: input.backupRoot,
-    backupId: input.backupId,
-    sourceDeploymentId: input.sourceDeploymentId,
-    startedAt: input.startedAt,
-    completedAt: input.completedAt,
-    backupMode: 'hot',
-    consistency: 'crash-consistent',
-  });
+  return writeDataRootBackupManifest(
+    {
+      backupRoot: input.backupRoot,
+      backupId: input.backupId,
+      sourceDeploymentId: input.sourceDeploymentId,
+      startedAt: input.startedAt,
+      completedAt: input.completedAt,
+      backupMode: 'hot',
+      consistency: 'crash-consistent',
+    },
+    copiedMode
+  );
 }
 
 /**
@@ -339,11 +368,13 @@ interface WriteDataRootBackupManifestInput extends WriteColdDataRootBackupManife
  * Writes a backup manifest for a captured data root and verifies the result.
  *
  * @param input Backup metadata and root to inventory.
+ * @param copiedMode Mode of any prior manifest omitted by the capture.
  * @returns Parsed manifest plus checked inventory paths.
  * @throws Error when an identifier is invalid or the written manifest does not verify.
  */
 function writeDataRootBackupManifest(
-  input: WriteDataRootBackupManifestInput
+  input: WriteDataRootBackupManifestInput,
+  copiedMode: number | undefined
 ): VerifiedDataRootBackupManifest {
   // Complete SQLite-backed definition inspection before sealing its derived sidecars in the inventory.
   assertLightAppDefinitionCoverage(input.backupRoot);
@@ -372,7 +403,10 @@ function writeDataRootBackupManifest(
     contentInventory,
   };
 
-  writeJson(join(input.backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE), manifest);
+  const manifestPath = join(input.backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE);
+  syncCanonicalTree(input.backupRoot);
+  writeFileAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { copiedMode });
+  syncCanonicalDirectory(dirname(resolve(input.backupRoot)));
   return verifyDataRootBackupInventory({ backupRoot: input.backupRoot });
 }
 
@@ -440,6 +474,8 @@ export async function restoreDataRootBackup(
   const verified = verifyDataRootBackupInventory({ backupRoot: input.backupRoot });
   const stagingRoot = input.stagingRoot ?? `${input.dataRoot}.restore-staging`;
   const previousRoot = `${input.dataRoot}.restore-previous`;
+  const targetParent = dirname(resolve(input.dataRoot));
+  const stagingParent = dirname(resolve(stagingRoot));
 
   assertPathOutsideRoot(
     input.backupRoot,
@@ -461,28 +497,52 @@ export async function restoreDataRootBackup(
     input.dataRoot,
     'Restore staging root must be outside the target data root.'
   );
+  const stagingOverlap = 'Restore staging root must be separate from the predecessor root.';
+  assertPathOutsideRoot(stagingRoot, previousRoot, stagingOverlap);
+  assertPathOutsideRoot(previousRoot, stagingRoot, stagingOverlap);
+  if (readLayoutDirectory(targetParent).some((entry) => entry.name === basename(previousRoot))) {
+    throw new Error(
+      `Restore predecessor already exists at ${previousRoot}. Recovery is required. See Recover A Stopped Restore Hold in the NanoCore operations guide.`
+    );
+  }
 
+  ensureCanonicalDirectory(targetParent, 0o777, 'retry-creation');
+  if (stagingParent !== targetParent)
+    ensureCanonicalDirectory(stagingParent, 0o777, 'retry-creation');
   rmSync(stagingRoot, { recursive: true, force: true });
-  rmSync(previousRoot, { recursive: true, force: true });
-  mkdirSync(dirname(stagingRoot), { recursive: true });
   copyBackupTree(input.backupRoot, stagingRoot);
 
+  let predecessor: 'original' | 'unacknowledged' | 'moved' = 'original';
   try {
     await assertSupportedRestoreDatabases(stagingRoot, verified.manifest.contentInventory);
     closeWorkspaceProductReadHandles(input.dataRoot);
+    syncCanonicalTree(stagingRoot);
+    syncCanonicalDirectory(stagingParent);
     if (existsSync(input.dataRoot)) {
       renameSync(input.dataRoot, previousRoot);
+      predecessor = 'unacknowledged';
+      syncCanonicalDirectory(targetParent);
+      predecessor = 'moved';
     }
     renameSync(stagingRoot, input.dataRoot);
-    rmSync(previousRoot, { recursive: true, force: true });
   } catch (error) {
-    if (!existsSync(input.dataRoot) && existsSync(previousRoot)) {
+    // A failed rename sync leaves both trees for stopped recovery.
+    if (predecessor === 'unacknowledged') throw error;
+    if (predecessor === 'moved') {
       renameSync(previousRoot, input.dataRoot);
+      syncCanonicalDirectory(targetParent);
     }
     rmSync(stagingRoot, { recursive: true, force: true });
     throw error;
   }
 
+  // Either parent sync can fail after publication. Keep the predecessor until both succeed.
+  syncCanonicalDirectory(targetParent);
+  if (stagingParent !== targetParent) syncCanonicalDirectory(stagingParent);
+  if (predecessor === 'moved') {
+    rmSync(previousRoot, { recursive: true, force: true });
+    syncCanonicalDirectory(targetParent);
+  }
   return verified;
 }
 
@@ -560,11 +620,6 @@ function resolvePotentialPath(path: string): string {
   }
 
   return resolve(realpathSync(existingAncestor), ...missingSegments);
-}
-
-/** Writes one JSON file with a trailing newline. */
-function writeJson(path: string, value: unknown): void {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 /** Computes a SHA-256 content digest for one file. */

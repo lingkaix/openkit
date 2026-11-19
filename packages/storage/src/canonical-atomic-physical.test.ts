@@ -1,5 +1,7 @@
 // openkit-test-platform: posix
 import {
+  chmodSync,
+  chownSync,
   closeSync,
   existsSync,
   fstatSync,
@@ -27,6 +29,8 @@ const effect = vi.hoisted(() => ({
   expectedMode: undefined as number | undefined,
   opened: new Map<number, string>(),
   events: [] as string[],
+  permissionEvents: [] as string[],
+  ownershipFailure: undefined as Error | undefined,
   writeFailure: undefined as Error | undefined,
   cleanupFailure: undefined as Error | undefined,
   closeFailure: undefined as Error | undefined,
@@ -65,6 +69,16 @@ vi.mock('node:fs', async (load) => {
         throw effect.writeFailure;
       }
       return actual.writeFileSync(...args);
+    },
+    fchownSync(descriptor: number, uid: number, gid: number) {
+      expect(actual.fstatSync(descriptor).mode & 0o077).toBe(0);
+      effect.permissionEvents.push('ownership');
+      if (effect.ownershipFailure) throw effect.ownershipFailure;
+      actual.fchownSync(descriptor, uid, gid);
+    },
+    fchmodSync(descriptor: number, mode: number) {
+      actual.fchmodSync(descriptor, mode);
+      effect.permissionEvents.push('mode');
     },
     fsyncSync(descriptor: number) {
       if (actual.fstatSync(descriptor).isFile()) {
@@ -124,6 +138,7 @@ vi.mock('node:fs', async (load) => {
 const roots: string[] = [];
 afterEach(() => {
   effect.writeFailure = undefined;
+  effect.ownershipFailure = undefined;
   effect.cleanupFailure = undefined;
   effect.closeFailure = undefined;
   effect.parentSyncFailure = undefined;
@@ -145,6 +160,7 @@ afterEach(() => {
   effect.expectedMode = undefined;
   effect.opened.clear();
   effect.events.length = 0;
+  effect.permissionEvents.length = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -216,6 +232,52 @@ function expectClosed() {
 // Core Storage's immutable-content and acknowledgement boundaries require ordered durable publication.
 // Capacity admission and byte measurement remain NanoCore; these tests preserve the original native lifetime.
 describe('canonical atomic physical write', () => {
+  describe('round three ownership', () => {
+    it.skipIf(process.env.OPENKIT_TEST_STORAGE_SECONDARY_GID === 'unavailable')(
+      'keeps the existing UID, secondary GID and 0640 permissions on replacement',
+      () => {
+        const f = fixture();
+        const original = statSync(f.path);
+        const secondaryGroup = Number(process.env.OPENKIT_TEST_STORAGE_SECONDARY_GID);
+        chownSync(f.path, original.uid, secondaryGroup);
+        chmodSync(f.path, 0o640);
+
+        writeCanonicalFileAtomic(f.path, newBytes, newBytes.length, undefined, {}, 'replace');
+
+        const published = statSync(f.path);
+        expect(published.uid).toBe(original.uid);
+        expect(published.gid).toBe(secondaryGroup);
+        expect(published.mode & 0o777).toBe(0o640);
+        expect(effect.permissionEvents).toEqual(['ownership', 'mode']);
+        expect(readFileSync(f.path)).toEqual(newBytes);
+      }
+    );
+
+    it('propagates an ownership refusal and keeps the original inode and bytes', () => {
+      const f = fixture();
+      const original = statSync(f.path);
+      const failure = Object.assign(new Error('Injected ownership refusal.'), { code: 'EPERM' });
+      effect.ownershipFailure = failure;
+
+      expect(
+        caught(() =>
+          writeCanonicalFileAtomic(f.path, newBytes, newBytes.length, undefined, {}, 'replace')
+        )
+      ).toBe(failure);
+
+      expect(statSync(f.path)).toMatchObject({
+        ino: original.ino,
+        uid: original.uid,
+        gid: original.gid,
+        mode: original.mode,
+      });
+      expect(readFileSync(f.path)).toEqual(oldBytes);
+      expect(readdirSync(f.parent)).toEqual(['record']);
+      expect(effect.permissionEvents).toEqual(['ownership']);
+      expect(effect.published).toBe(false);
+    });
+  });
+
   it('replaces exact UTF-8 bytes with the private default and releases after durable publication', () => {
     const f = fixture();
     const capacity = reservation();

@@ -9,7 +9,6 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
 } from 'node:fs';
@@ -22,7 +21,12 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { ensureLayoutDirectory } from '@openkit/storage';
+import {
+  ensureLayoutDirectory,
+  publishCanonicalPath,
+  readLayoutDirectory,
+  removeCanonicalTreeSync,
+} from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
@@ -364,19 +368,22 @@ export async function migrateWorkspaceStorage(
     stage = 'backup';
     const backupStartedAt = now();
     const backupId = allocateEntityId('drb');
-    copyColdDataRoot({
+    const copiedManifestMode = copyColdDataRoot({
       backupRoot: input.backupRoot,
       dataRoot: input.dataRoot,
       omitActiveDataRootLock: true,
     });
     const backupCompletedAt = now();
-    backup = writeColdDataRootBackupManifest({
-      backupRoot: input.backupRoot,
-      backupId,
-      sourceDeploymentId: marker.deploymentId,
-      startedAt: backupStartedAt,
-      completedAt: backupCompletedAt,
-    });
+    backup = writeColdDataRootBackupManifest(
+      {
+        backupRoot: input.backupRoot,
+        backupId,
+        sourceDeploymentId: marker.deploymentId,
+        startedAt: backupStartedAt,
+        completedAt: backupCompletedAt,
+      },
+      copiedManifestMode
+    );
     assertBackupMatchesPredecessor(backup, predecessorInventory);
 
     stage = 'staging';
@@ -436,7 +443,7 @@ export async function migrateWorkspaceStorage(
     if (existsSync(targetWorkspacesRoot)) {
       throw new Error('Published top-level Workspace root already exists.');
     }
-    renameSync(stagingRoot, targetWorkspacesRoot);
+    publishCanonicalPath(stagingRoot, targetWorkspacesRoot);
 
     stage = 'core-schema';
     coreDb = openPredecessorCoreDb(input.dataRoot, undefined, closeUncertainty);
@@ -1092,7 +1099,10 @@ function removePredecessorWorkspaceTrees(dataRoot: string): void {
     if (!userEntry.isDirectory() || userEntry.isSymbolicLink()) {
       continue;
     }
-    rmSync(join(usersRoot, userEntry.name, 'workspaces'), { force: true, recursive: true });
+    const ownerRoot = join(usersRoot, userEntry.name);
+    if (readLayoutDirectory(ownerRoot).some((entry) => entry.name === 'workspaces')) {
+      removeCanonicalTreeSync(join(ownerRoot, 'workspaces'), 'created-entries');
+    }
   }
 }
 

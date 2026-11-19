@@ -231,19 +231,22 @@ export function migratePhysicalEpochs(
     const backupStartedAt = now();
     const backupId = allocateEntityId('drb');
 
-    copyColdDataRoot({
+    const copiedManifestMode = copyColdDataRoot({
       backupRoot: input.backupRoot,
       dataRoot: input.dataRoot,
       omitActiveDataRootLock: true,
     });
     const backupCompletedAt = now();
-    const backup = writeColdDataRootBackupManifest({
-      backupRoot: input.backupRoot,
-      backupId,
-      sourceDeploymentId: marker.deploymentId,
-      startedAt: backupStartedAt,
-      completedAt: backupCompletedAt,
-    });
+    const backup = writeColdDataRootBackupManifest(
+      {
+        backupRoot: input.backupRoot,
+        backupId,
+        sourceDeploymentId: marker.deploymentId,
+        startedAt: backupStartedAt,
+        completedAt: backupCompletedAt,
+      },
+      copiedManifestMode
+    );
     assertBackupMatchesPredecessor(backup, predecessorInventory);
     assertInventoriesEqual(
       predecessorInventory,

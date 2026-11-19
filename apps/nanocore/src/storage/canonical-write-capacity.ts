@@ -1,4 +1,4 @@
-import { writeCanonicalFileAtomic } from '@openkit/storage';
+import { type NativeFilePermissions, writeCanonicalFileAtomic } from '@openkit/storage';
 import { FileStorageAdmission, type FileStorageReservation } from './artifacts/file-admission.js';
 import { DEFAULT_FILE_RESERVE_BYTES } from './file-reserve.js';
 
@@ -58,13 +58,13 @@ export function reserveCanonicalFileWrite(
  *
  * @param path Target file path.
  * @param content Complete file content.
- * @param mode Exact replacement mode when supplied; otherwise the private writer default.
+ * @param mode Exact numeric mode, native creation and replacement permissions, or the private default.
  * @param publication Replace by rename, or create by link without clobbering an existing file.
  */
 export function writeFileAtomic(
   path: string,
   content: string | Uint8Array,
-  mode?: number,
+  mode?: number | NativeFilePermissions,
   publication: 'replace' | 'create' = 'replace'
 ): void {
   const byteLength = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
