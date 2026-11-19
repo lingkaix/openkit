@@ -728,6 +728,16 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   ).toHaveText(revisionOne.revisionId);
 
   await startTaskTurn(page, threadId, 'Create a summary from the exact first release revision.');
+  const materialListResponse = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'POST' ||
+      new URL(response.url()).pathname !== '/api/app/operations/material.list'
+    )
+      return false;
+    return (
+      response.request().postDataJSON().workspaceId === 'ws_00000000-0000-7000-8000-000000000001'
+    );
+  });
   const materialProjectionResponse = page.waitForResponse((response) => {
     if (
       response.request().method() !== 'POST' ||
@@ -761,8 +771,16 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       .locator('dd')
   ).toHaveText('Unknown / none / not available');
 
-  const materialEditor = page.getByLabel('Release Material');
+  // The list can replace the direct-route editor and discard its draft (#932).
+  const listResponse = await materialListResponse;
+  expect(listResponse.ok(), `Material list response ${listResponse.status()}`).toBe(true);
+  await expect(page.getByRole('button', { name: 'Release Material', exact: true })).toBeVisible();
+  const editorRegion = page.getByRole('region', { name: 'Material editor' });
+  const materialEditor = editorRegion.getByRole('textbox', { name: 'Release Material' });
+  const save = editorRegion.getByRole('button', { name: /^Save$/ });
+  await expect(materialEditor).toHaveValue(revisionOneContent);
   await materialEditor.fill(revisionTwoContent);
+  await expect(save).toBeEnabled();
   const saveResponse = page.waitForResponse((response) => {
     if (
       response.request().method() !== 'POST' ||
@@ -775,7 +793,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       input.materialId === primary.materialId
     );
   });
-  await page.getByRole('button', { name: /^Save$/ }).click();
+  await save.click();
   const revisionTwoSave = await saveResponse;
   expect(
     revisionTwoSave.ok(),
