@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
-import { secondaryFixtureGroup } from './test-support/secondary-group.js';
+import { secondaryFixtureGroup } from './test-support/secondary-group.ts';
 
 export default defineConfig({
   test: {
