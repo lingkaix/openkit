@@ -568,7 +568,7 @@ class AppUpdateHelper:
             "targetRelease": dict(command["source"]),
             "expectedCurrentImageId": command["expectedCurrentImageId"],
             "observedCurrentImageId": current_identity["id"],
-            "interruptionScope": "NanoCore, Web and active client connections on this deployment are interrupted. NanoHost is not restarted.",
+            "interruptionScope": "NanoCore, Web and active client connections on this deployment are interrupted. NanoHost may keep its process or be restarted by its service supervisor during replacement (#934).",
             "safetyEvidence": {"deploymentBindings": True, "preflight": preflight},
             "recoveryLimitations": [
                 "Restoration requires the configured migration-free assessment; apply rechecks it before stopping.",
