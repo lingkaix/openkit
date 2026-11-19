@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { parseOpenShellRelease, validateReleasePreflight } from '../scripts/release-preflight.mjs';
+import {
+  observePublishedPredecessor,
+  parseOpenShellRelease,
+  validateReleasePreflight,
+} from '../scripts/release-preflight.mjs';
 
 const preflightScript = join(process.cwd(), 'scripts', 'release-preflight.mjs');
 
@@ -136,11 +141,11 @@ test('release preflight can block stable tags while the first stable release is 
 });
 
 test('release preflight CLI defaults to prerelease-only and digest-pinned release inputs', () => {
-  const repoRoot = makeReleaseFixture();
+  const repoRoot = makeReleaseFixture({ resetAssessment: true });
   const prerelease = runPreflightCli(repoRoot, 'v0.0.1-rc.1');
   const stable = runPreflightCli(repoRoot, 'v0.0.1');
   const unpinned = runPreflightCli(
-    makeReleaseFixture({ workerBaseImage: 'node:24-bookworm-slim' }),
+    makeReleaseFixture({ workerBaseImage: 'node:24-bookworm-slim', resetAssessment: true }),
     'v0.0.1-rc.1'
   );
 
@@ -382,7 +387,7 @@ test('release preflight rejects worker images without an explicit build target',
   );
 });
 
-test('forward-migration preflight checks the declared ledger against both Git trees', (t) => {
+test('forward-migration preflight checks the declared ledger against the published predecessor', async (t) => {
   const repoRoot = makeReleaseFixture();
   t.after(() => rmSync(repoRoot, { recursive: true, force: true }));
   const git = (...args) => execFileSync('git', args, { cwd: repoRoot, stdio: 'pipe' });
@@ -399,8 +404,10 @@ test('forward-migration preflight checks the declared ledger against both Git tr
     );
   };
   git('init', '-q');
+  const olderTag = 'v0.0.1-rc.0';
   const previousTag = 'v0.0.1-rc.1';
   const tag = 'v0.0.1-rc.2';
+  const repository = 'lingkaix/openkit';
   const drizzle = join(repoRoot, 'apps/nanocore/drizzle');
   const previousEntry = { idx: 0, when: 1000, tag: '0000_setup' };
   const nextEntry = { idx: 1, when: 2000, tag: '0001_add' };
@@ -411,10 +418,78 @@ test('forward-migration preflight checks the declared ledger against both Git tr
     writeJournal(scope, [previousEntry]);
     writeFileSync(join(drizzle, scope, '0000_setup.sql'), 'SELECT 1;');
   }
+  commit('older release with the same journals');
+  git('tag', olderTag);
+  writeFileSync(join(repoRoot, 'release-note.txt'), 'Previous release has the same journals.');
   commit('previous release');
   git('tag', previousTag);
+  const sourceCommit = git('rev-parse', 'HEAD').toString().trim();
+  const appImageId = `sha256:${'a'.repeat(64)}`;
+  const digest = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const appPlatform = JSON.stringify({ config: { digest: appImageId } });
+  const platformDigest = digest(appPlatform);
+  const manifest = JSON.stringify({
+    schemaVersion: 1,
+    repository,
+    tag: previousTag,
+    sourceCommit,
+    images: [
+      {
+        id: 'app',
+        image: 'ghcr.io/lingkaix/openkit-app',
+        platforms: [{ platform: 'linux/amd64', digest: platformDigest }],
+      },
+    ],
+  });
+  const released = [
+    { tag_name: olderTag, published_at: '2026-01-01T00:00:00Z', draft: false },
+    {
+      tag_name: previousTag,
+      published_at: '2026-01-02T00:00:00Z',
+      draft: false,
+      assets: [{ id: 42, name: `openkit-release-${previousTag}.json`, digest: digest(manifest) }],
+    },
+    { tag_name: tag, published_at: '2026-01-03T00:00:00Z', draft: false },
+    { tag_name: 'v0.0.2', published_at: '2026-01-04T00:00:00Z', draft: false },
+  ];
+  const api = `https://api.github.com/repos/${repository}`;
+  const fetchRelease = (releases) => async (url) => {
+    const responses = {
+      [`${api}/releases?per_page=100&page=1`]: JSON.stringify(releases),
+      [`${api}/releases/assets/42`]: manifest,
+      [`${api}/git/ref/tags/${previousTag}`]: JSON.stringify({
+        object: { type: 'commit', sha: sourceCommit },
+      }),
+      'https://ghcr.io/token?service=ghcr.io&scope=repository%3Alingkaix%2Fopenkit-app%3Apull':
+        JSON.stringify({ token: 'synthetic-registry-read-token' }),
+      [`https://ghcr.io/v2/lingkaix/openkit-app/manifests/${platformDigest}`]: appPlatform,
+    };
+    assert.ok(Object.hasOwn(responses, url), 'unexpected release evidence request');
+    return new Response(responses[url]);
+  };
+  const beforePublication = await observePublishedPredecessor(
+    repository,
+    tag,
+    fetchRelease(released.slice(0, 2))
+  );
+  const afterPublication = await observePublishedPredecessor(
+    repository,
+    tag,
+    fetchRelease(released)
+  );
+  assert.deepEqual(beforePublication, { tag: previousTag, sourceCommit, appImageId });
+  assert.deepEqual(afterPublication, beforePublication);
+  const deps = {
+    predecessor: (observedRepo, observedTag) => {
+      assert.equal(observedRepo, repository);
+      assert.equal(observedTag, tag);
+      return beforePublication;
+    },
+  };
 
-  const options = { repoRoot, tag, requireReleaseManifestAssessment: true };
+  const options = { repoRoot, tag, repository, requireReleaseManifestAssessment: true };
+  const notes = readFileSync(join(process.cwd(), 'release-notes/v0.1.0-rc.11.md'));
+  writeFileSync(join(repoRoot, 'release-notes', `${tag}.md`), notes);
   const file = join(repoRoot, 'release-notes', `${tag}.manifest.json`);
   const facts = {
     ...JSON.parse(
@@ -438,24 +513,57 @@ test('forward-migration preflight checks the declared ledger against both Git tr
   writeJson(file, facts);
   commit('candidate with appended Workspace migration');
   const sha = git('rev-parse', 'HEAD').toString().trim();
-  assert.equal(validateReleasePreflight({ ...options, sha }).version, '0.0.1-rc.2');
+  assert.equal(validateReleasePreflight({ ...options, sha }, deps).version, '0.0.1-rc.2');
+  assert.equal(
+    validateReleasePreflight(
+      {
+        ...options,
+        tag: 'v0.0.1',
+        sha,
+        promotionSourceTag: tag,
+        authorization: `v0.0.1@${sha}`,
+      },
+      deps
+    ).promotionSourceTag,
+    tag
+  );
+
+  const older = structuredClone(facts);
+  older.forwardMigration.previousTag = olderTag;
+  writeJson(file, older);
+  assert.throws(
+    () => validateReleasePreflight(options, deps),
+    /differs from the published predecessor/
+  );
+  writeJson(file, { ...facts, previousAppImageId: `sha256:${'b'.repeat(64)}` });
+  assert.throws(
+    () => validateReleasePreflight(options, deps),
+    /differs from the published predecessor/
+  );
+
+  const { forwardMigration: _migration, ...other } = facts;
+  writeJson(file, { ...other, migrationFree: true, recovery: 'previous-image-compatible' });
+  assert.throws(
+    () => validateReleasePreflight(options, deps),
+    /migration-free assessment has a nonempty migration diff/
+  );
 
   const wrongLedger = structuredClone(facts);
   wrongLedger.forwardMigration.ledgers[0].to = 3;
   writeJson(file, wrongLedger);
-  assert.throws(() => validateReleasePreflight(options), /declared from\/to counts differ/);
+  assert.throws(() => validateReleasePreflight(options, deps), /declared from\/to counts differ/);
 
   writeJson(file, facts);
   writeJournal('core', [previousEntry, nextEntry]);
   writeFileSync(join(drizzle, 'core', '0001_add.sql'), 'SELECT 2;');
   commit('candidate with an undeclared Core migration');
-  assert.throws(() => validateReleasePreflight(options), /declared from\/to counts differ/);
+  assert.throws(() => validateReleasePreflight(options, deps), /declared from\/to counts differ/);
 
   writeJournal('core', [previousEntry]);
   rmSync(join(drizzle, 'core', '0001_add.sql'));
   rmSync(join(drizzle, 'workspace', '0001_add.sql'));
   commit('candidate missing the declared SQL');
-  assert.throws(() => validateReleasePreflight(options), /SQL changes differ/);
+  assert.throws(() => validateReleasePreflight(options, deps), /SQL changes differ/);
 });
 
 /**
@@ -499,6 +607,12 @@ function makeReleaseFixture(options = {}) {
     retainedDataCompatible: true,
     recovery: 'previous-image-compatible',
     provenance: 'synthetic-reviewed-assessment',
+    ...(options.resetAssessment && {
+      migrationFree: false,
+      configurationCompatible: false,
+      retainedDataCompatible: false,
+      recovery: 'pre-stable-reset',
+    }),
   });
   const version = '0.0.1';
   const packageVersion = options.packageVersion ?? version;

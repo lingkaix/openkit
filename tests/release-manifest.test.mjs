@@ -14,12 +14,41 @@ import {
   draftReleaseNotes,
 } from '../scripts/release-record.mjs';
 
-test('the invoked release-notes file is byte-identical to the proved baseline', () => {
-  // Pin the raw blob bytes at proved baseline 23f3e2dc73676c61173005c0772fee6db6bdf09c; shallow CI has no baseline object.
+test('the invoked release-notes file matches the reviewed forward-migration admission bytes', () => {
+  // Retain an exact-byte assertion for shallow CI. Publication proofs still compare Git objects.
   assert.equal(
     createHash('sha256').update(readFileSync('scripts/release-notes.mjs')).digest('hex'),
-    '0e044491d24cf00e888866a744d944069bef3bcb895ceaf5dd02b90d0b93aa9f'
+    '22c53a6ee1a187a388185dc95de7c08f70f72f37e8a1706640dc12f7e49d6f90'
   );
+});
+
+test('release notes CLI refuses a forward migration without the cold backup instruction', (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-forward-notes-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(path.join(dir, 'release-notes'));
+  const tag = 'v0.1.0-rc.11';
+  const notesPath = path.join('release-notes', `${tag}.md`);
+  const assessmentPath = path.join('release-notes', `${tag}.manifest.json`);
+  const notes = readFileSync(notesPath, 'utf8');
+  writeFileSync(path.join(dir, assessmentPath), readFileSync(assessmentPath));
+  const file = path.join(dir, notesPath);
+  const check = (text) => {
+    writeFileSync(file, text);
+    return spawnSync(
+      process.execPath,
+      ['scripts/release-notes.mjs', '--check', '--repo-root', dir, '--tag', tag],
+      { encoding: 'utf8' }
+    );
+  };
+  assert.equal(check(notes).status, 0);
+  const withoutBackup = check(notes.replace('Make a cold Data Root backup before updating. ', ''));
+  assert.equal(withoutBackup.status, 1);
+  assert.match(withoutBackup.stderr, /pre-update cold Data Root backup and recovery limits/);
+  const withoutRollback = check(
+    notes.replace('To roll back, restore the pre-update backup on the previous build.', '')
+  );
+  assert.equal(withoutRollback.status, 1);
+  assert.match(withoutRollback.stderr, /pre-update cold Data Root backup and recovery limits/);
 });
 
 /** Exact synthetic image/checksum/assessment inputs from the existing producers. */

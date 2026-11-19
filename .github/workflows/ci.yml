@@ -256,6 +256,8 @@ jobs:
         run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Validate release identity and assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           node scripts/release-preflight.mjs \
             --tag "${GITHUB_REF_NAME}" \

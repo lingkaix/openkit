@@ -21,6 +21,10 @@ The rc.10 to rc.11 update preserves the Data Root in place. The accepted Workspa
 
 The release owner approved the in-place forward-migration assessment after preflight confirmed that the previous two cases could not represent #912. Record every advancing ledger and verify it across the actual previous tag and candidate. Require a pre-update backup and keep the documented recovery limits when selecting a stable source. The bounded deployment grant remains migration-free. Land the tooling, tests, specification and assessment in one guarded commit, then use that head as P after the batch CI and golden path on the scope head pass.
 
+### Intent Revision 3 (2026-11-19 UTC)
+
+The release owner accepted the R4a findings. Preflight must select the actual published predecessor independently of the assessment and bind its App image config. It compares the same four migration ledgers for both compatible update cases. Release notes admission verifies the forward-migration backup and recovery instructions. Land this tooling correction through the guard. Then land one empty publication subject with the same tree and a clean commit message, and use its exact SHA for candidate qualification.
+
 ## Preparation Checkpoint (Rewritable)
 
 | Field | Fact or pending evidence |
@@ -35,12 +39,12 @@ The release owner approved the in-place forward-migration assessment after prefl
 | Frozen checklist | Verify 13 attachments, 11 manifest assets, checksums and platform provenance, both NanoHost contained-stage checks, anonymous Worker Common access and the published-mode golden path. |
 | Issue and security evidence | The generated preparation snapshot observed 838 issues and 553 open. The release-blocker check and current dispositions use a fresh snapshot. #850 admission applies through 2026-12-17 only to approved exact Debian bindings on the six platform manifests. |
 | Known limitations | #120/R001 remains open for supported NanoHost Worker execution. DeepSeek remains disabled (#868). #249 stays open until both published App images pass packaged-notice verification. |
-| Machine-readable transition assessment | The reviewed rc.11 assessment declares `drizzle.workspace` 1 to 2 against the rc.10 tag. Preflight checks the ledger from Git and the manifest preserves the update, backup and rollback limits. |
+| Machine-readable transition assessment | The reviewed rc.11 assessment declares `drizzle.workspace` 1 to 2. Preflight binds the last published release and its App config from the release attachment and Platform manifest. It checks the ledger against that tag and validates the required operator instructions in the notes. |
 
 ## Evidence And Next Action
 
 Release preparation used the published rc.10 tag, its retained issue snapshot and its exact publication commit as the comparison baseline. The generated draft, issue facts and fingerprints stay outside the repository. The known issues in the notes remain open in the current snapshot. The published rc.10 golden path closed its fresh persistent Worker proof. The Retrieval Kernel source notice list is empty and the published-image check remains open.
 
-Run preflight and release security scanning on the guarded head. Select P only after both hosted prerequisites and the allowed-path comparison pass. The coordinator starts the independent publication-path review when P is recorded. Exact-source gates, image register review and authorized publication precede R6. Deployment and Worker qualification use the published release under separate authority.
+Run preflight and release security scanning on the guarded head. Run all candidate gates on the empty publication subject with the tooling correction as its direct parent. The coordinator starts the independent publication-path delta review when that subject is recorded as P. Exact-source gates, image register review and authorized publication precede R6. Deployment and Worker qualification use the published release under separate authority.
 
 This preparation changes one owning document and adds one case to the existing closed manifest assertion. It adds no registry.

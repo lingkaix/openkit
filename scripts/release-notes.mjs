@@ -124,6 +124,43 @@ export function parseReleaseNotesInput(text) {
   return normalized.slice(start).trimEnd();
 }
 
+/** Require the reviewed operator instructions in a visible, canonical subsection. */
+function checkForwardMigrationNotes(notes) {
+  const heading = '### In-place forward migration';
+  const changes = notes.split(`\n## ${KNOWN_ISSUES_HEADING}\n`)[0];
+  const parts = changes.split(/^### In-place forward migration$/mu);
+  const body = parts[1]?.split(/^ {0,3}#{3,}(?:[ \t]|$)/mu)[0].trim();
+  const paragraphs = body?.split('\n\n');
+  const required = [
+    'A Workspace operational backup restores only on the exact build that made it.',
+    'Cold Data Root backups can be restored across releases.',
+    'After a stopped-server restore, startup runs the required migrations.',
+    'After migration, the previous image cannot run on the migrated Data Root.',
+    'To roll back, restore the pre-update backup on the previous build.',
+  ];
+  if (
+    parts.length !== 2 ||
+    parts[0].includes('<') ||
+    paragraphs?.length !== 2 ||
+    paragraphs.some((paragraph) => /[<\r\n]/u.test(paragraph)) ||
+    !paragraphs[0].startsWith('Make a cold Data Root backup before updating.') ||
+    !paragraphs[1].startsWith(required[0]) ||
+    !paragraphs[1].endsWith(required.at(-1))
+  )
+    throw Error(
+      `Release notes ${heading} must state the pre-update cold Data Root backup and recovery limits.`
+    );
+  let offset = 0;
+  for (const sentence of required) {
+    const start = paragraphs[1].indexOf(sentence, offset);
+    if (start < 0 || (start > 0 && paragraphs[1].slice(start - 2, start) !== '. '))
+      throw Error(
+        `Release notes ${heading} must state the pre-update cold Data Root backup and recovery limits.`
+      );
+    offset = start + sentence.length;
+  }
+}
+
 /**
  * Reads and validates the committed notes input for one tag.
  *
@@ -136,7 +173,14 @@ export function readReleaseNotesInput(repoRoot, tag) {
   if (!existsSync(path)) {
     throw new Error(`Release notes input is missing: release-notes/${tag}.md`);
   }
-  return parseReleaseNotesInput(readFileSync(path, 'utf8'));
+  const notes = parseReleaseNotesInput(readFileSync(path, 'utf8'));
+  const assessment = join(repoRoot, 'release-notes', `${tag}.manifest.json`);
+  if (existsSync(assessment)) {
+    const facts = JSON.parse(readFileSync(assessment, 'utf8'));
+    if (facts?.forwardMigration || facts?.recovery === 'restore-pre-update-backup')
+      checkForwardMigrationNotes(notes);
+  }
+  return notes;
 }
 
 /**

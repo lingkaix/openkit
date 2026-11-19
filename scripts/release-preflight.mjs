@@ -6,7 +6,8 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { checkWorkflows } from './check-workflows.mjs';
 import { NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
-import { canonical, noSecrets } from './release-safety.mjs';
+import { readReleaseNotesInput } from './release-notes.mjs';
+import { canonical, sha as digestHex, noSecrets } from './release-safety.mjs';
 
 const drizzleScopes = ['app', 'core', 'user', 'workspace'];
 const drizzleRoot = 'apps/nanocore/drizzle';
@@ -32,9 +33,11 @@ const hasExactKeys = (value, keys) =>
  * @param {string} [input.promotionSourceTag] Published prerelease whose bytes a stable tag promotes.
  * @param {string} [input.repository] Exact publication repository.
  * @param {string} [input.authorization] Engineer-authorized stable tag and commit, joined with @.
+ * @param {object} [observations] Transport adapter for deterministic verification.
+ * @param {Function} [observations.predecessor] Reader for the published predecessor.
  * @returns {{ version: string, releaseImages: string[], promotionSourceTag?: string }} Release summary.
  */
-export function validateReleasePreflight(input) {
+export function validateReleasePreflight(input, { predecessor = readPublishedPredecessor } = {}) {
   const repoRoot = resolve(input.repoRoot);
   const version = parseVersionTag(input.tag);
 
@@ -56,8 +59,18 @@ export function validateReleasePreflight(input) {
     const facts = readReleaseAssessment(repoRoot, sourceTag);
     if (input.promotionSourceTag && !compatibleTransitionFacts(facts))
       throw Error('Release Management: a pre-stable reset prerelease is not a stable source');
-    if (facts.forwardMigration)
-      checkMigrationLedgers(repoRoot, sourceTag, input.sha, facts.forwardMigration);
+    if (compatibleTransitionFacts(facts)) {
+      const previous = predecessor(releaseRepository(repoRoot, input.repository), sourceTag);
+      if (
+        facts.previousAppImageId !== previous.appImageId ||
+        (facts.forwardMigration && facts.forwardMigration.previousTag !== previous.tag)
+      )
+        throw Error(
+          'Release Management: assessment differs from the published predecessor tag or App image ID'
+        );
+      checkMigrationLedgers(repoRoot, sourceTag, input.sha, previous, facts.forwardMigration);
+      if (facts.forwardMigration) readReleaseNotesInput(repoRoot, sourceTag);
+    }
   }
   validatePortableReleaseInputs(repoRoot);
   validateNanoHostReleaseInputs(repoRoot);
@@ -186,17 +199,175 @@ export function admittedTransitionFacts(facts, tag) {
   );
 }
 
+const sha256 = /^sha256:[a-f0-9]{64}$/u;
+const commitSha = /^[a-f0-9]{40}$/u;
+const githubRepository = /^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/u;
+
+function releaseRepository(repoRoot, repository) {
+  if (!repository) {
+    const remote = spawnSync('git', ['remote', 'get-url', 'origin'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    repository = remote.stdout
+      ?.trim()
+      .match(/^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/u)?.[1];
+  }
+  if (!githubRepository.test(repository ?? ''))
+    throw Error('Release Management: exact GitHub release repository required');
+  return repository;
+}
+
+/** Read the independently published predecessor and its exact amd64 App config identity. */
+export async function observePublishedPredecessor(repository, sourceTag, request = fetch) {
+  if (!githubRepository.test(repository)) throw Error('GitHub release repository required');
+  parseVersionTag(sourceTag);
+  const [owner] = repository.toLowerCase().split('/');
+  // A hosted read-only job may read its own private packages. Local public observation is anonymous.
+  const token =
+    process.env.GITHUB_ACTIONS === 'true' && process.env.GITHUB_REPOSITORY === repository
+      ? process.env.GH_TOKEN
+      : undefined;
+  const githubHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+  const read = async (url, headers = {}, redirect = 'error') => {
+    const response = await request(url, { headers, redirect, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw Error('Published release evidence unavailable');
+    return Buffer.from(await response.arrayBuffer());
+  };
+  const api = `https://api.github.com/repos/${repository}`;
+  const releases = [];
+  for (let page = 1; ; page++) {
+    if (page > 20) throw Error('Published release listing exceeds the observation limit');
+    const batch = JSON.parse(
+      await read(`${api}/releases?per_page=100&page=${page}`, githubHeaders)
+    );
+    if (!Array.isArray(batch)) throw Error('Published release listing invalid');
+    releases.push(...batch.filter((release) => release.draft === false));
+    if (batch.length < 100) break;
+  }
+  const releaseTime = (release) => Date.parse(release.published_at);
+  if (
+    new Set(releases.map((release) => release.tag_name)).size !== releases.length ||
+    releases.some((release) => !Number.isFinite(releaseTime(release)))
+  )
+    throw Error('Published release order is ambiguous');
+  const source = releases.find((release) => release.tag_name === sourceTag);
+  const predecessors = releases
+    .filter((release) => !source || releaseTime(release) < releaseTime(source))
+    .sort((a, b) => releaseTime(b) - releaseTime(a));
+  const previous = predecessors[0];
+  if (
+    !previous ||
+    (source &&
+      releases.some(
+        (release) => release !== source && releaseTime(release) === releaseTime(source)
+      )) ||
+    (predecessors[1] && releaseTime(previous) === releaseTime(predecessors[1]))
+  )
+    throw Error('One previous published release required');
+
+  const tag = previous.tag_name;
+  const prerelease = parseVersionTag(tag).includes('-');
+  // Stable promotion preserves its source prerelease attachment names and bytes.
+  const manifestTag = (name) => /^openkit-release-(v[0-9a-z.-]+)\.json$/u.exec(name)?.[1];
+  const attachments = previous.assets?.filter(({ name }) => {
+    const attachedTag = manifestTag(name);
+    return attachedTag === tag || (!prerelease && attachedTag?.startsWith(`${tag}-`));
+  });
+  const asset = attachments?.[0];
+  if (attachments?.length !== 1 || !Number.isSafeInteger(asset.id) || !sha256.test(asset.digest))
+    throw Error('Published predecessor manifest attachment required');
+  const attachedTag = manifestTag(asset.name);
+  parseVersionTag(attachedTag);
+  const bytes = await read(
+    `${api}/releases/assets/${asset.id}`,
+    { ...githubHeaders, Accept: 'application/octet-stream' },
+    'follow'
+  );
+  if (`sha256:${digestHex(bytes)}` !== asset.digest)
+    throw Error('Published predecessor manifest attachment digest differs');
+  const manifest = JSON.parse(bytes);
+  const apps = manifest.images?.filter((image) => image.id === 'app');
+  const app = apps?.[0];
+  const image = `${owner}/openkit-app`;
+  const platforms = app?.platforms?.filter((entry) => entry.platform === 'linux/amd64');
+  const platformDigest = platforms?.[0]?.digest;
+  if (
+    manifest.schemaVersion !== 1 ||
+    manifest.repository !== repository ||
+    manifest.tag !== attachedTag ||
+    !commitSha.test(manifest.sourceCommit ?? '') ||
+    apps?.length !== 1 ||
+    app.image !== `ghcr.io/${image}` ||
+    platforms?.length !== 1 ||
+    !sha256.test(platformDigest ?? '')
+  )
+    throw Error('Published predecessor App manifest binding differs');
+
+  let ref = JSON.parse(await read(`${api}/git/ref/tags/${tag}`, githubHeaders)).object;
+  for (let depth = 0; depth < 8 && ref?.type === 'tag' && commitSha.test(ref.sha); depth++)
+    ref = JSON.parse(await read(`${api}/git/tags/${ref.sha}`, githubHeaders)).object;
+  if (ref?.type !== 'commit' || ref.sha !== manifest.sourceCommit)
+    throw Error('Published predecessor tag differs from the attached manifest');
+
+  const actor = process.env.GITHUB_ACTOR;
+  const registryAuth =
+    token && owner !== 'lingkaix'
+      ? { Authorization: `Basic ${Buffer.from(`${actor}:${token}`).toString('base64')}` }
+      : {};
+  const scope = encodeURIComponent(`repository:${image}:pull`);
+  const ghcr = 'https://ghcr.io';
+  const registryToken = JSON.parse(
+    await read(`${ghcr}/token?service=ghcr.io&scope=${scope}`, registryAuth)
+  ).token;
+  if (typeof registryToken !== 'string' || !registryToken)
+    throw Error('Published App registry token unavailable');
+  const platformBytes = await read(`${ghcr}/v2/${image}/manifests/${platformDigest}`, {
+    Authorization: `Bearer ${registryToken}`,
+    Accept:
+      'application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
+  });
+  if (`sha256:${digestHex(platformBytes)}` !== platformDigest)
+    throw Error('Published predecessor platform digest differs');
+  const appImageId = JSON.parse(platformBytes).config?.digest;
+  if (!sha256.test(appImageId ?? ''))
+    throw Error('Published predecessor App config digest required');
+  return { tag, sourceCommit: manifest.sourceCommit, appImageId };
+}
+
+/** Keep existing synchronous preflight callers while the isolated observation uses Node HTTPS. */
+function readPublishedPredecessor(repository, sourceTag) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import {observePublishedPredecessor} from ${JSON.stringify(import.meta.url)};
+try { console.log(JSON.stringify(await observePublishedPredecessor(...process.argv.slice(1)))); }
+catch { process.exitCode = 1; }`,
+      repository,
+      sourceTag,
+    ],
+    { encoding: 'utf8', timeout: 120000 }
+  );
+  if (result.status !== 0)
+    throw Error('Release Management: published predecessor observation unavailable');
+  return JSON.parse(result.stdout);
+}
+
 /** Preflight has full tag history. Verify the journal prefixes and the exact appended SQL in Git. */
-function checkMigrationLedgers(repoRoot, tag, sha, migration) {
+function checkMigrationLedgers(repoRoot, tag, sha, predecessor, migration) {
   const fail = (reason) => {
-    throw Error(`Release Management: forward migration ledger mismatch: ${reason}`);
+    throw Error(`Release Management: migration ledger mismatch: ${reason}`);
   };
   const git = (...args) => {
     const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
     if (result.status !== 0) fail('required release Git evidence unavailable');
     return result.stdout.trim();
   };
-  const previous = git('rev-parse', '--verify', `refs/tags/${migration.previousTag}^{commit}`);
+  const previous = git('rev-parse', '--verify', `refs/tags/${predecessor.tag}^{commit}`);
+  if (previous !== predecessor.sourceCommit)
+    fail('local predecessor tag differs from the published source');
   const candidate = git('rev-parse', '--verify', 'HEAD^{commit}');
   if (previous === candidate || (sha && sha !== candidate))
     fail(`expected distinct previous tag and exact checkout of ${tag}`);
@@ -247,7 +418,8 @@ function checkMigrationLedgers(repoRoot, tag, sha, migration) {
   );
   if (sql !== expectedSql.sort().join('\n'))
     fail('SQL changes differ from the appended journal entries');
-  const declared = migration.ledgers.toSorted((a, b) => a.ledger.localeCompare(b.ledger));
+  if (!migration && ledgers.length) fail('migration-free assessment has a nonempty migration diff');
+  const declared = (migration?.ledgers ?? []).toSorted((a, b) => a.ledger.localeCompare(b.ledger));
   if (canonical(declared) !== canonical(ledgers))
     fail('declared from/to counts differ from the tagged source range');
 }
@@ -847,7 +1019,7 @@ function main() {
     sha: args.sha ? String(args.sha) : undefined,
     tag: String(args.tag ?? process.env.GITHUB_REF_NAME ?? ''),
     promotionSourceTag: args['promotion-source'] ? String(args['promotion-source']) : undefined,
-    repository: args.repository ? String(args.repository) : undefined,
+    repository: args.repository ? String(args.repository) : process.env.GITHUB_REPOSITORY,
     authorization: process.env.OPENKIT_STABLE_PROMOTION,
   });
 
