@@ -7,6 +7,9 @@
   "displayName": "xAI Grok",
   "kind": "direct",
   "baseUrl": "https://api.x.ai/v1",
-  "models": ["grok-4.3"],
+  "models": ["grok-4.7"],
+  "modelMetadata": {
+    "grok-4.7": { "limit": { "output": 30000 } }
+  },
   "secretRef": "vault://provider_xai"
 }
