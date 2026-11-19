@@ -1178,9 +1178,13 @@ async fn run_sessions(
                 Err(reason)
                     if reconnect_after.is_some()
                         || (initial_startup_deadline.is_some()
-                            && reason == "nanohost NanoCore rendezvous failed") =>
+                            && matches!(
+                                reason,
+                                "nanohost NanoCore rendezvous failed"
+                                    | "nanohost NanoCore TLS transport failed"
+                            )) =>
                 {
-                    // Initial refusal cannot outlive startup; a healthy successor
+                    // Initial transport failures cannot outlive startup; a healthy successor
                     // retains its existing delay even after a timed-out connect.
                     let retry_deadline =
                         tokio::time::Instant::now() + OUTER_SESSION_RECONNECT_DELAY;
@@ -1662,6 +1666,8 @@ fn note_readiness_commit_boundary() {
     tests::run_readiness_commit_hook();
 }
 
+#[cfg(test)]
+mod app_replacement_tests;
 #[cfg(test)]
 mod credential_carrier_acceptance_tests;
 #[cfg(test)]
@@ -3614,7 +3620,8 @@ mod tests {
         assert!(
             connect.contains("if reconnect_after.is_some()")
                 && connect.contains("|| (initial_startup_deadline.is_some()")
-                && connect.contains("&& reason == \"nanohost NanoCore rendezvous failed\"")
+                && connect.contains("\"nanohost NanoCore rendezvous failed\"")
+                && connect.contains("| \"nanohost NanoCore TLS transport failed\"")
         );
         let retry_timer = connect.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(

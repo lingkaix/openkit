@@ -2460,6 +2460,15 @@ impl EpochCoordinator {
         reports
     }
 
+    /// Installs the real Harness liveness check for a fixture-owned response and route.
+    #[cfg(test)]
+    pub(crate) fn fixture_watch_harness(
+        &self,
+        bootstrap: &WorkerBootstrapMonitor,
+    ) -> Result<(), EpochFault> {
+        self.monitor.watch_harness(bootstrap)
+    }
+
     /// Injects a fault through the real monitor's report-before-fence path.
     #[cfg(test)]
     pub(crate) fn fixture_invalidation_requester(&self) -> mpsc::SyncSender<Option<EpochFault>> {

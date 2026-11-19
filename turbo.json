@@ -55,6 +55,7 @@
         "$TURBO_ROOT$/apps/nanocore/src/**",
         "$TURBO_ROOT$/apps/nanocore/package.json",
         "$TURBO_ROOT$/apps/nanocore/tsconfig.json",
+        "$TURBO_ROOT$/packages/worker-shim/src/**",
         "$TURBO_ROOT$/pnpm-lock.yaml",
         "$TURBO_ROOT$/tsconfig.base.json"
       ],

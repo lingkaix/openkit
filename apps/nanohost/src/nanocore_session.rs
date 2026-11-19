@@ -908,15 +908,25 @@ pub async fn connect_verified_session_transport(
     .map_err(|_| "nanohost NanoCore rendezvous timed out")?
     .map_err(|error| {
         // Keep certificate and endpoint details inside rustls. The outer H2 driver otherwise reduces this definite trust failure to a retryable close.
-        if matches!(
-            error
-                .get_ref()
-                .and_then(|cause| cause.downcast_ref::<rustls::Error>()),
-            Some(rustls::Error::InvalidCertificate(_))
-        ) {
-            "nanohost NanoCore TLS certificate verification failed"
-        } else {
-            "nanohost NanoCore TLS handshake failed"
+        use std::io::ErrorKind;
+        let tls_error = error
+            .get_ref()
+            .and_then(|cause| cause.downcast_ref::<rustls::Error>());
+        match (tls_error, error.kind()) {
+            (Some(rustls::Error::InvalidCertificate(_)), _) => {
+                "nanohost NanoCore TLS certificate verification failed"
+            }
+            (
+                None,
+                ErrorKind::UnexpectedEof
+                | ErrorKind::WriteZero
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::BrokenPipe
+                | ErrorKind::NotConnected
+                | ErrorKind::TimedOut,
+            ) => "nanohost NanoCore TLS transport failed",
+            _ => "nanohost NanoCore TLS handshake failed",
         }
     })?;
     Ok(VerifiedSessionIo::Tls(Box::new(stream)))

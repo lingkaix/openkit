@@ -1,5 +1,4 @@
 import { Server } from 'node:net';
-import { vi } from 'vitest';
 import {
   openSandboxIntegration,
   SANDBOX_INTEGRATION_TARGET,
@@ -9,37 +8,64 @@ import {
 // Retain the real factory when a Harness test spies on its exported entry point.
 const openIntegration = openSandboxIntegration;
 
-/** Opens the real Integration on test-owned ports without changing its fixed production targets. */
+type BoundTargets = { integrationTarget: URL; nativeTarget: URL };
+
+/** Redirects the two fixed loopback binds to kernel-allocated ports during fixture startup. */
+export function redirectSandboxIntegrationListeners(onBound?: (targets: BoundTargets) => void) {
+  const integrationTarget = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
+  const nativeTarget = new URL(`http://${SANDBOX_NATIVE_INFERENCE_TARGET}`);
+  const targets = new Map([
+    [Number(integrationTarget.port), integrationTarget],
+    [Number(nativeTarget.port), nativeTarget],
+  ]);
+  const bound = new Set<number>();
+  const originalListen = Server.prototype.listen;
+  const boundTargets = (): BoundTargets => {
+    if (bound.size !== targets.size) {
+      throw new Error('Integration fixture did not bind both loopback listeners.');
+    }
+    return { integrationTarget, nativeTarget };
+  };
+  const restore = () => {
+    Server.prototype.listen = originalListen;
+  };
+  Server.prototype.listen = function (this: Server, ...args: unknown[]) {
+    const port = args[0];
+    const target = typeof port === 'number' ? targets.get(port) : undefined;
+    if (typeof port === 'number' && target && args[1] === target.hostname) {
+      args[0] = 0;
+      this.once('listening', () => {
+        const address = this.address();
+        if (!address || typeof address === 'string') {
+          throw new Error('Integration fixture did not bind a TCP listener.');
+        }
+        target.port = String(address.port);
+        bound.add(port);
+        if (bound.size === targets.size) {
+          restore();
+          onBound?.(boundTargets());
+        }
+      });
+    }
+    return Reflect.apply(originalListen, this, args);
+  };
+  return { boundTargets, restore };
+}
+
+/** Opens the real Integration on test-owned ports. */
 export async function openEphemeralSandboxIntegration(
   options: Parameters<typeof openSandboxIntegration>[0] = {}
 ) {
-  const target = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
-  const nativeTarget = new URL(`http://${SANDBOX_NATIVE_INFERENCE_TARGET}`);
-  const listeners = new Map<number, Server>();
-  const originalListen = Server.prototype.listen;
-  const listen = vi.spyOn(Server.prototype, 'listen').mockImplementation(function (
-    this: Server,
-    ...args: unknown[]
-  ) {
-    const port = args[0];
-    if (port === Number(target.port) || port === Number(nativeTarget.port)) {
-      listeners.set(port, this);
-      args[0] = 0;
-    }
-    return Reflect.apply(originalListen, this, args);
-  });
+  const redirected = redirectSandboxIntegrationListeners();
   try {
     const integration = await openIntegration(options);
-    for (const url of [target, nativeTarget]) {
-      const address = listeners.get(Number(url.port))?.address();
-      if (!address || typeof address === 'string') {
-        await integration.close();
-        throw new Error('Integration fixture did not bind its loopback listener.');
-      }
-      url.port = String(address.port);
+    try {
+      return { integration, ...redirected.boundTargets() };
+    } catch (error) {
+      await integration.close();
+      throw error;
     }
-    return { integration, integrationTarget: target, nativeTarget };
   } finally {
-    listen.mockRestore();
+    redirected.restore();
   }
 }
