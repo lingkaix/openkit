@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { premerge, validateMergeSnapshot } from '../scripts/ci-premerge.mjs';
 import {
   admissionIdentities,
+  collectAdmission,
   publishTag,
   reconcileTriage,
 } from '../scripts/release-coordinate.mjs';
@@ -414,6 +415,28 @@ test('admission accepts whole-image absence on permitted retry and refuses unobs
     [authored, tag, []],
   ])
     assert.throws(() => admissionIdentities(permission, observedTag, states, source));
+});
+
+test('the coordinator collects only prereleases covered by the selected grant', () => {
+  const repository = 'lingkaix/openkit';
+  const input = {
+    repository,
+    tag: 'v0.1.1-rc.1',
+    grant: { firstTag: 'v0.1.1-rc.1' },
+  };
+  const run = (_exe, args) =>
+    args[0] === 'remote' ? `https://github.com/${repository}.git` : 'uncommitted fixture';
+  assert.throws(() => collectAdmission(input, { run }), /Admission requires committed inputs/);
+  assert.throws(
+    () =>
+      collectAdmission(
+        { ...input, tag: 'v0.1.0-rc.6', grant: { firstTag: 'v0.1.0-rc.6' } },
+        { run }
+      ),
+    /Admission requires committed inputs/
+  );
+  for (const tag of ['v0.1.0-rc.5', 'v0.1.1', 'v0.2.0-rc.1'])
+    assert.throws(() => collectAdmission({ ...input, tag }, { run }), /prerelease grant/);
 });
 
 test('tag coordination refuses changed or failed admission before any tag effect', () => {

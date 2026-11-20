@@ -81,6 +81,12 @@ If a known validation defect prevents the current image from reopening retained 
 
 When the deployment has the restricted App-update helper installed, use Web Settings → App update or the bundled administrator CLI. Search for `app-update` and describe `app-update.preflight`, `app-update.prepare`, `app-update.start` and `app-update.status` before invoking them. The helper supports published releases only. The caller sends the published `{tag, sourceCommit, appDigest}` of the target release and `expectedCurrentImageId`. Prepare pins them in a receipt and returns it for review. It does not build or interrupt the App. Save its request ID before starting. Start requires consent to that exact prepared update and its maintenance interruption. Read status with the same ID after a disconnect or App restart; never create a second start to resolve an unknown handoff.
 
+Review the prepared receipt and authorize the interruption before you run the same start command for either Docker layout.
+
+```bash
+printf '%s' '{"requestId":"<saved UUID>","maintenanceConsent":true}' | openkit ops call app-update.start --input -
+```
+
 An administrator who reaches the deployment only through its web address reads the running release from authenticated App Diagnostics. Matching uses the running image ID or a repository digest actually associated with the running image. For a deployment created from that release's tag or image index, use the published App image index digest as `expectedCurrentImageId`. That digest is the release's `appDigest` and the App `Digest` line in its release notes. The built-in update installs that digest. A local installation runs a local image tag, and a restore runs a version tag. A deployment created from a platform manifest needs that platform digest instead. When the installation reference is not known, an authorized operator inspects the running image rather than guessing from the release tag. A deployment on a release that does not report its identity needs the operator to know the running release. [App Image Release Identity](https://github.com/lingkaix/openkit/blob/main/docs/decisions/20261013-app_image_release_identity.md) records why Diagnostics reports that identity.
 
 Before prepare, call `app-update.preflight` with `{}`. It returns only an observation time, a Workspace count and counts of running Turns, pending Turns, queued admissions, open attempts, closing attempts and in-flight commands. It includes private work without exposing identifiers, titles, prompts or transcripts. Counts overlap; do not add them into a distinct-work total. Proceed only when its state is `idle` and every count is zero. Idle retained bindings and denied admissions do not count. Future scheduled work is outside this instantaneous observation.
@@ -151,6 +157,8 @@ The optional helper is a host-installed Python program, outside the App containe
 
 The existing App container must satisfy the deployment-binding checks, including a `json-file` log driver with `max-size` and `max-file`. Before the first helper update, the operator recreates a refused container with the same image. The operator keeps every other deployment setting that the binding checks already accept. The operator corrects the binding that the refusal names. For log retention, the operator selects the `json-file` driver with `max-size` and `max-file`. The operator uses the existing operator authorization for that recreation. Prepare applies the binding checks before it writes a receipt. Apply repeats those checks before it stops the App. When the log driver is not `json-file`, the refusal names that driver. When `max-size` or `max-file` is absent, the refusal names the missing option. When prepare refuses, it writes no receipt and leaves the App unchanged.
 
+The host-network layout uses `--network host` with no Docker port publications. For a host-local App origin, set `OPENKIT_BIND_HOST=127.0.0.1` and set `bind 127.0.0.1` in the mounted Caddyfile. Set the Caddy port to the existing App port. For a native NanoHost TLS listener, set `OPENKIT_TLS_CERT_FILE` and `OPENKIT_TLS_KEY_FILE` to protected files within an existing permitted bind, such as a restricted subdirectory of `/data/openkit.backups`.
+
 If the existing App mounts a repository directory read/write at `/srv/repos`, that mount and the optional protected helper field `repositoryDirectory` are legacy host-repository configuration retiring with the Workspace host repository resource. Do not add that mount or field for new work. Declaring `repositoryDirectory` for an already mounted directory only preserves that existing mount; it does not create a repository or authorize a new bind. Missing, undeclared or mismatched mounts fail before stopping the App. After rebuilding a server, verify the configured `adminTokenFile` still authenticates against that server; an old credential is not made valid by restoring its file. Refresh it only through the authorized credential procedure, without printing it or changing its scope.
 
 Use a dedicated locked-password SSH account with a working shell for the forced command. Pin its host key and mount its private client key and known-hosts file read-only into the App at `/run/openkit/app-update/id_ed25519` and `/run/openkit/app-update/known_hosts`. Configure `server.jsonc.appUpdate` with these paths and the dedicated user. Restrict its authorized key with `restrict,command="sudo -n /usr/local/sbin/openkit-app-update-entry"`; the root-owned entry accepts no arguments and executes the fixed Python helper. Validate a sudoers rule granting only that entry with an empty argument list. Do not grant the account general Docker, shell, Python or systemd privileges. The helper itself launches the bounded systemd job after validating the closed request.
@@ -170,6 +178,28 @@ Container replacement replays only environment entries that differ from the old 
 The helper's retained-auth observation compares nonempty persistent token metadata through the existing administrator endpoint, ignoring last-use fields. It does not establish private Workspace continuity. Use a separately authorized Workspace credential to verify the relevant retained product records after replacement.
 
 The readiness check compares the candidate with the previous running App. An existing Gateway block can remain during the update and stays visible in authenticated diagnostics. A new readiness block, a newly failed subsystem, a critical failure, or missing or malformed readiness evidence fails verification.
+
+#### Getting Started Bridge Settings
+
+For the co-located [published installation](getting-started.en.md#configure-and-start-the-published-app), keep the original Docker bridge, persistent Data Root, enrollment sink, and read-only App-secret directory. Bind the protected host directory `<dataRoot>.backups` to `/data/openkit.backups` so backups survive App replacement. Keep both publications on `127.0.0.1`. Publish Caddy's container port `8080` to the existing App port. Keep the native NanoHost TCP port the same on the host and container. The Vault key and native TLS files remain in `/run/openkit-secrets`, and the credential slots remain in `/run/openkit-enrollment`.
+
+In schema version 1 of `helper.json`, set `appSecretsDirectory` to the absolute host source of `/run/openkit-secrets` and `nanohostCredentialsDir` to the absolute host source of `/run/openkit-enrollment`. Set `appBaseUrl` to the direct origin of the published Caddy port, such as `http://127.0.0.1:18080`. Supply the existing absolute `vaultKeyFile` on the host and the image paths `/srv/web` and `/etc/caddy/Caddyfile` for `webAssetsDir` and `caddyfile`. The verified App image supplies Web and Caddy for this layout. Leave `repositoryDirectory` unset.
+
+On a fresh installation, add the two restricted SSH binds before the image reference in the Getting Started `docker run` command. Set `OPENKIT_UPDATE_IDENTITY_FILE` and `OPENKIT_UPDATE_KNOWN_HOSTS_FILE` to the absolute host paths from the restricted SSH setup.
+
+```bash
+--mount "type=bind,src=$OPENKIT_UPDATE_IDENTITY_FILE,dst=/run/openkit/app-update/id_ed25519,readonly" \
+--mount "type=bind,src=$OPENKIT_UPDATE_KNOWN_HOSTS_FILE,dst=/run/openkit/app-update/known_hosts,readonly" \
+```
+
+For a running v0.1.0 installation with the original three binds, install the reviewed helper and complete the restricted SSH configuration. Keep the existing container and its writable layer. Use the same two absolute host paths and an authorized idle maintenance window. Leave `<dataRoot>.backups` absent so the conversion can create it exclusively. Run the conversion from the host under separate operator authorization.
+
+```bash
+sudo /usr/local/lib/openkit/app-update-helper.py --convert-getting-started \
+  "$OPENKIT_UPDATE_IDENTITY_FILE" "$OPENKIT_UPDATE_KNOWN_HOSTS_FILE"
+```
+
+The command recreates the App from its current image with the new backup and SSH mounts and bounded logs. It copies the existing backups out of the stopped original container with ownership and permissions preserved. It verifies the sealed backups against their manifests and checks that the replacement becomes healthy. It retains the stopped original container for recovery. After a successful conversion, use the ordinary App-update prepare and start operations. If conversion fails, it checks the recorded original container and confirms its health before reporting recovery. If it reports that restoration is unconfirmed, inspect the retained containers and backup directory before taking further action.
 
 ## Replace An Installed NanoHost Release
 

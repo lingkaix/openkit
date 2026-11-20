@@ -7,7 +7,7 @@ use openshell_sdk::raw::proto::{
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
-const FIXED_READ_ONLY_ROOTS: [&str; 8] = [
+const FIXED_READ_ONLY_ROOTS: [&str; 10] = [
     "/usr",
     "/lib",
     "/proc",
@@ -16,6 +16,9 @@ const FIXED_READ_ONLY_ROOTS: [&str; 8] = [
     "/etc",
     "/opt",
     "/var/log",
+    // DuckDB reads both cgroup v2 limits during initialization.
+    "/sys/fs/cgroup/memory.max",
+    "/sys/fs/cgroup/cpu.max",
 ];
 
 /// Renders exact Core intent locally and parses it into the selected SDK policy.
@@ -860,11 +863,18 @@ mod tests {
     }
 
     #[test]
-    fn host_render_matches_captured_typescript_native_policy() {
-        let expected: serde_json::Value = serde_json::from_str(include_str!(
+    fn host_render_preserves_captured_policy_with_container_limit_reads() {
+        let mut expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../../tests/support/openshell-worker-policy.json"
         ))
         .unwrap();
+        let read_only = expected["filesystem"]["readOnly"].as_array_mut().unwrap();
+        let additional_grant = read_only.pop().unwrap();
+        read_only.extend([
+            json!("/sys/fs/cgroup/memory.max"),
+            json!("/sys/fs/cgroup/cpu.max"),
+            additional_grant,
+        ]);
         assert_eq!(
             render_worker_policy(&representative_intent()).unwrap(),
             expected
@@ -928,7 +938,21 @@ mod tests {
         .unwrap();
         let filesystem = policy.filesystem.unwrap();
         assert!(!filesystem.include_workdir);
-        assert!(filesystem.read_only.contains(&"/opt".to_string()));
+        assert_eq!(
+            filesystem.read_only,
+            [
+                "/usr",
+                "/lib",
+                "/proc",
+                "/dev/urandom",
+                "/app",
+                "/etc",
+                "/opt",
+                "/var/log",
+                "/sys/fs/cgroup/memory.max",
+                "/sys/fs/cgroup/cpu.max",
+            ]
+        );
         assert_eq!(
             filesystem.read_write,
             [
@@ -967,6 +991,9 @@ mod tests {
                 );
             }
         }
+        let mut intent = representative_intent();
+        intent["additionalFilesystemGrants"][1]["path"] = "/sys/fs/cgroup".into();
+        assert!(render_sandbox_policy(&intent).is_err());
     }
 
     #[test]

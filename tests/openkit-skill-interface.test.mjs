@@ -3044,6 +3044,8 @@ test('bundled named credential selection authenticates exact calls without chang
   assert.equal(doctor.code, 0, doctor.stdout);
   assert.equal(JSON.parse(doctor.stdout).data.authentication, 'named-store');
   assert.equal(JSON.parse(doctor.stdout).data.nanocore.productWorkReadiness, 'unknown');
+  assert.equal(JSON.parse(doctor.stdout).data.skillCompatibility.state, 'compatible-with-limits');
+  assert.equal(JSON.parse(doctor.stdout).data.nanocore.appUpdateAvailability.state, 'denied');
   assert.doesNotMatch(doctor.stdout + doctor.stderr, new RegExp(['okt', 'fixture', ''].join('_')));
   const noNetwork = dataModule(
     `globalThis.fetch = () => { throw new Error('unexpected network request'); };`
@@ -3472,6 +3474,119 @@ test('credential keychains keep token material out of command arguments', async 
   }
 });
 
+test('doctor reports protocol compatibility, authorized update configuration and a newer stable release', async () => {
+  const observedAt = '2026-10-14T00:00:00.000Z';
+  const releaseUrl = 'https://api.github.com/repos/lingkaix/openkit/releases/latest';
+  const endpoint = 'http://nanocore.example';
+  const preflight = {
+    observedAt,
+    workspaceCount: 1,
+    state: 'idle',
+    counts: {
+      runningTurns: 0,
+      pendingTurns: 0,
+      queuedAdmissions: 0,
+      openAttempts: 0,
+      closingAttempts: 0,
+      inFlightCommands: 0,
+    },
+  };
+  const diagnostics = {
+    service: 'nanocore',
+    boot: {
+      bootId: 'boot_11111111-1111-4111-8111-111111111111',
+      acceptingProductWork: true,
+      overall: 'ready',
+      subsystems: Object.fromEntries(
+        ['config', 'storage', 'policy', 'vault', 'scheduler', 'llmGateway', 'knowledgeIndex'].map(
+          (name) => [name, { state: 'ready', reasons: [] }]
+        )
+      ),
+    },
+    process: {
+      observedAt,
+      uptimeSeconds: 1,
+      nodeVersion: 'v26.13.1',
+      memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 1 },
+      telemetry: { enabled: false, exportConfigured: false },
+    },
+    build: { releaseTag: 'v0.1.9', sourceCommit: 'a'.repeat(40) },
+    gateway: { status: 'ok', endpoints: [], defaultModelId: null, titleModelId: null, models: [] },
+    providers: { diagnostics: [], registry: [] },
+    capabilities: [],
+    runtimeConfig: {
+      currentVersion: 1,
+      loadedAt: observedAt,
+      lastReload: null,
+      lastFailedReload: null,
+      pendingRestart: [],
+    },
+    readiness: {
+      serviceAvailability: 'available',
+      productWork: 'ready',
+      update: { state: 'configured', qualification: 'prepare-required' },
+      maintenanceSafety: { state: 'idle', observation: preflight },
+      executionHost: {
+        state: 'unconfigured',
+        observedAt: null,
+        observationAgeMs: null,
+        liveProbe: false,
+        freshEmpty: null,
+      },
+    },
+  };
+  const routes = {
+    [`${endpoint}/api/meta`]: {
+      protocolVersion: protocol.PROTOCOL_VERSION,
+      capabilities: [],
+      eventFamilies: [],
+    },
+    [`${endpoint}/api/app/operations/diagnostics.app`]: diagnostics,
+    [`${endpoint}/api/app/operations/app-update.preflight`]: preflight,
+    [releaseUrl]: {
+      tag_name: 'v0.1.10',
+      draft: false,
+      prerelease: false,
+      body: 'Fixture release notes must not appear in doctor output.',
+    },
+  };
+  const result = await runCli(
+    ['doctor'],
+    { OPENKIT_NANOCORE_URL: endpoint, OPENKIT_NANOCORE_TOKEN: 'okt_FAKE_doctor' },
+    '{}',
+    [
+      dataModule(`
+        const routes = ${JSON.stringify(routes)};
+        globalThis.fetch = async (url, options) => {
+          const authorization = new Headers(options.headers).get('authorization');
+          if (url === '${releaseUrl}' ? authorization !== null : authorization !== 'Bearer okt_FAKE_doctor') {
+            throw new Error('Unexpected credential routing');
+          }
+          if (!Object.hasOwn(routes, url)) throw new Error('Unexpected operation');
+          return Response.json(routes[url]);
+        };
+      `),
+    ]
+  );
+  assert.equal(result.code, 0, result.stdout);
+  const { data } = JSON.parse(result.stdout);
+  assert.deepEqual(data.skillCompatibility, {
+    interfaceVersion: data.interfaceVersion,
+    expectedProtocolVersion: protocol.PROTOCOL_VERSION,
+    serverProtocolVersion: protocol.PROTOCOL_VERSION,
+    state: 'compatible',
+    limits: [],
+  });
+  assert.deepEqual(data.nanocore.appUpdateAvailability, {
+    state: 'configured',
+    qualification: 'prepare-required',
+    runningRelease: 'v0.1.9',
+    latestRelease: 'v0.1.10',
+    newerReleaseAvailable: true,
+  });
+  assert.doesNotMatch(result.stdout, /Fixture release notes|okt_FAKE_doctor/u);
+});
+
 test('the bundled CLI rejects obsolete os-keychain Vault responses', async () => {
   const result = await runCli(
     ['ops', 'call', 'vault.status', '--input', '-'],
@@ -3491,6 +3606,33 @@ test('the bundled CLI rejects obsolete os-keychain Vault responses', async () =>
 
   assert.equal(result.code, 3);
   assert.equal(JSON.parse(result.stdout).error.code, 'incompatible_contract');
+});
+
+test('doctor identifies the contract mismatch in its typed failure', async () => {
+  const result = await runCli(
+    ['doctor'],
+    { OPENKIT_NANOCORE_URL: 'http://nanocore.example', OPENKIT_NANOCORE_TOKEN: '' },
+    '{}',
+    [
+      dataModule(`
+        globalThis.fetch = async (url) => {
+          if (!url.endsWith('/api/meta')) throw new Error('Unexpected operation for a protocol mismatch');
+          return Response.json({ protocolVersion: '99.0.0', capabilities: [], eventFamilies: [] });
+        };
+      `),
+    ]
+  );
+
+  assert.equal(result.code, 3);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.error.code, 'incompatible_contract');
+  assert.deepEqual(envelope.error.details.skillCompatibility, {
+    interfaceVersion: JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version,
+    expectedProtocolVersion: protocol.PROTOCOL_VERSION,
+    serverProtocolVersion: '99.0.0',
+    state: 'incompatible',
+    reason: 'protocol-version-mismatch',
+  });
 });
 
 for (const [operation, required] of [

@@ -17,6 +17,7 @@ import {
 import {
   candidateJobs,
   checkPublication,
+  grantCoversPrerelease,
   publicationInputsAt,
 } from './release-publication-check.mjs';
 import { readRegistryEvidence } from './release-registry-evidence.mjs';
@@ -84,7 +85,7 @@ export function collectAdmission(
 ) {
   noSecrets(authored);
   const e = structuredClone(authored);
-  if (e.repository !== 'lingkaix/openkit' || !/^v0\.1\.0-rc\.[1-9][0-9]*$/.test(e.tag ?? ''))
+  if (e.repository !== 'lingkaix/openkit' || !grantCoversPrerelease(e.tag, e.grant?.firstTag))
     throw Error('Coordinator is limited to the existing real prerelease grant');
   requireOrigin(e.repository, { run });
   if (run('git', ['status', '--porcelain', '--untracked-files=normal']))

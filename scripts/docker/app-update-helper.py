@@ -57,6 +57,8 @@ ERROR_CODES = frozenset(
 )
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
+CONTAINER_ID_RE = re.compile(r"^[a-f0-9]{64}$")
+TCP_PORT_RE = re.compile(r"^[1-9][0-9]{0,4}$")
 TAG_RE = re.compile(
     r"^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$"
 )
@@ -83,20 +85,38 @@ BOOT_SUBSYSTEM_NAMES = (
 )
 CRITICAL_SUBSYSTEM_NAMES = frozenset({"config", "policy", "storage"})
 BOOT_STATES = frozenset({"degraded", "failed", "ready"})
-REQUIRED_MOUNT_DESTS = (
-    "/data/openkit",
-    "/data/openkit.backups",
-    "/run/nanohost-credentials",
-    "/srv/web",
-    "/etc/caddy/Caddyfile",
-    "/run/secrets/openkit-vault.key",
-    "/run/openkit/app-update/id_ed25519",
-    "/run/openkit/app-update/known_hosts",
-)
 APP_UPDATE_SSH_DESTS = (
     "/run/openkit/app-update/id_ed25519",
     "/run/openkit/app-update/known_hosts",
 )
+GETTING_STARTED_BACKUP_DIR = "/data/openkit.backups"
+# Verify the sealed backups with the exact installed App image's storage owner.
+GETTING_STARTED_BACKUP_INVENTORY = r"""
+import { createHash } from 'node:crypto';
+import { lstatSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DataRootBackupIdSchema } from '@openkit/protocol';
+import {
+  DATA_ROOT_BACKUP_MANIFEST_FILE,
+  verifyDataRootBackupManifest,
+} from './dist/storage/data-root-backup.js';
+
+const root = process.argv[1];
+if (process.argv[2] === 'initialize') mkdirSync(root, { mode: 0o700, recursive: true });
+if (!lstatSync(root).isDirectory()) process.exit(1);
+const inventory = createHash('sha256');
+for (const id of readdirSync(root).sort()) {
+  if (!DataRootBackupIdSchema.safeParse(id).success) continue;
+  const backupRoot = join(root, id);
+  if (!lstatSync(backupRoot).isDirectory()) process.exit(1);
+  const { manifest } = verifyDataRootBackupManifest({ backupRoot });
+  if (manifest.id !== id) process.exit(1);
+  inventory.update(id).update('\u0000');
+  inventory.update(readFileSync(join(backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE)));
+  inventory.update('\u0000');
+}
+console.log(inventory.digest('hex'));
+"""
 TOKEN_IDENTITY_KEYS = frozenset(
     {
         "expiresAt",
@@ -135,6 +155,7 @@ CONFIG_KEYS = {
     "caddyfile",
     "compatibility",
     "adminTokenFile",
+    "appSecretsDirectory",
     "repositoryDirectory",
     "jobTimeoutSeconds",
     "prepareTtlSeconds",
@@ -258,6 +279,8 @@ def main(
     effects = CommandEffects() if effects is None else effects
     now = time_now if now is None else now
     environ = os.environ if environ is None else environ
+    if argv[1:2] == ["--convert-getting-started"]:
+        return convert_getting_started(argv[2:], stdout, effects, now)
     try:
         apply_id, config_path = _parse_argv(argv)
         command = read_command(stdin, now) if apply_id is None else None
@@ -277,6 +300,26 @@ def main(
     stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True) + "\n")
     stdout.flush()
     return 0
+
+
+def convert_getting_started(paths: Sequence[str], stdout: Any, effects: Any, now: Callable[[], float]) -> int:
+    """Run the separately authorized local conversion outside the restricted stdin command set."""
+    try:
+        if len(paths) != len(APP_UPDATE_SSH_DESTS):
+            raise HelperError("app_update_invalid_request", "Conversion requires the two protected SSH bind sources.")
+        helper = AppUpdateHelper(load_config(PRODUCTION_CONFIG_PATH, require_compatibility=False), effects, now)
+        retained = helper.convert_getting_started(paths)
+        result = {"converted": True, "retainedContainer": retained}
+        exit_code = 0
+    except HelperError as error:
+        result = host_error(error.code, error.message)
+        exit_code = 1
+    except Exception:
+        result = host_error("app_update_unavailable", "Conversion could not complete. Inspect the original App before retrying.")
+        exit_code = 1
+    stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True) + "\n")
+    stdout.flush()
+    return exit_code
 
 
 def _decode_bounded_json(raw: bytes) -> Any:
@@ -360,9 +403,18 @@ def load_config(path: str, *, require_compatibility: bool = True) -> Dict[str, A
         "nanohostCredentialsDir",
         "caddyfile",
     )
+    bridge = "appSecretsDirectory" in parsed
+    if bridge:
+        path_keys += ("appSecretsDirectory",)
     for key in path_keys:
         if not isinstance(parsed[key], str) or not os.path.isabs(parsed[key]):
             raise HelperError("app_update_unconfigured", "Helper paths must be absolute.")
+    if bridge and any(
+        mark in parsed[key]
+        for key in ("dataRoot", "nanohostCredentialsDir", "appSecretsDirectory")
+        for mark in (",", "\n", "\r", "\0")
+    ):
+        raise HelperError("app_update_unconfigured", "Getting Started bind paths contain a mount delimiter.")
     token = parsed.get("adminTokenFile")
     if token is not None and (not isinstance(token, str) or not os.path.isabs(token)):
         raise HelperError("app_update_unconfigured", "Helper paths must be absolute.")
@@ -549,6 +601,165 @@ class AppUpdateHelper:
             return self.start(command["requestId"])
         return self.status(command["requestId"])
 
+    def convert_getting_started(self, ssh_paths: Sequence[str]) -> str:
+        """Recreate the published three-bind App with the same image and persistent backups."""
+        if self._busy_with_other(""):
+            raise HelperError("app_update_busy", "An App update is already running for this target.")
+        with self._acquire_lock():
+            name = self.config["containerName"]
+            retained = name + "-before-update-helper"
+            previous = self._inspect_container(name)
+            original_id = str(previous.get("Id") or "")
+            if not CONTAINER_ID_RE.fullmatch(original_id) or (previous.get("State") or {}).get("Running") is not True:
+                raise HelperError("app_update_invalid_request", "Conversion requires the exact running original App.")
+            image = self._image_identity(str(previous.get("Image") or ""))
+            publications = self._assert_configured_deployment_bindings(previous, image, legacy_bridge=True)
+            ssh_binds = []
+            for dest, source in zip(APP_UPDATE_SSH_DESTS, ssh_paths):
+                if any(mark in source for mark in (",", "\n", "\r", "\0")):
+                    raise HelperError("app_update_invalid_request", "An App-update SSH source contains a mount delimiter.")
+                mount = {"Destination": dest, "Source": source, "Type": "bind", "RW": False}
+                self._assert_app_update_ssh_bind(mount, dest)
+                ssh_binds.append(mount)
+            names = self._conversion_docker(["ps", "-a", "--format", "{{.Names}}"], "App container names are unavailable.")
+            backup = self._bridge_mounts()[GETTING_STARTED_BACKUP_DIR][0]
+            if retained in names.splitlines() or os.path.lexists(backup):
+                raise HelperError("app_update_invalid_request", "The retained container name or host backup directory already exists.")
+
+            host = previous["HostConfig"]
+            logging = (host.get("LogConfig") or {}).get("Config") or {}
+            converted = {
+                **previous,
+                "HostConfig": {**host, "LogConfig": {"Config": {
+                    "max-size": logging.get("max-size") or "10m",
+                    "max-file": logging.get("max-file") or "5",
+                }}},
+                "Mounts": [*previous["Mounts"], *ssh_binds],
+            }
+            # Create first so recovery can act on the exact candidate container ID after start fails.
+            create = self._replacement_argv(converted, image["id"], None, publications, create_only=True)
+            before = self._observe_boot(image["id"], None)
+            if before is None or before[0]["acceptingProductWork"] is not True:
+                raise HelperError("app_update_unavailable", "The original App boot is unavailable for conversion.")
+            backup_before = self._conversion_backup_inventory(original_id, initialize=True)
+            self._assert_exclusive_dataroot_users({name})
+            self._idle_preflight()
+
+            candidate_id = None
+            backup_created = False
+            start_attempted = False
+            try:
+                self._conversion_docker(["stop", "--time", "60", original_id], "Could not confirm that the original App stopped.")
+                self._assert_exclusive_dataroot_users(set())
+                os.mkdir(backup, mode=0o700)
+                backup_created = True
+                self._conversion_docker(
+                    ["cp", "--archive", "%s:%s/." % (original_id, GETTING_STARTED_BACKUP_DIR), backup],
+                    "Could not copy the original App backups.", self.config["jobTimeoutSeconds"],
+                )
+                self._conversion_docker(["rename", original_id, retained], "Could not retain the original App.")
+                created = self._conversion_docker(create[1:], "Could not create the converted App.").strip()
+                if not CONTAINER_ID_RE.fullmatch(created) or created == original_id:
+                    raise HelperError("app_update_recovery_required", "The converted App container identity is unknown.")
+                candidate_id = created
+                start_attempted = True
+                self._conversion_docker(["start", candidate_id], "Could not start the converted App.")
+                self._verify_conversion_boot(name, candidate_id, image, before[0]["bootId"])
+                if self._conversion_backup_inventory(candidate_id) != backup_before:
+                    raise HelperError("app_update_unavailable", "The converted App backup inventory differs from the original.")
+            except Exception as error:
+                try:
+                    restarted = self._restore_conversion(name, original_id, image["id"], retained, candidate_id)
+                    if backup_created and not start_attempted:
+                        _rmtree(backup)
+                except Exception as restore_error:
+                    raise HelperError(
+                        "app_update_recovery_required", "Conversion could not confirm restoration. Inspect both App containers and the backup directory."
+                    ) from restore_error
+                message = error.message if isinstance(error, HelperError) else "Conversion failed."
+                recovery = "Original App restarted and is healthy." if restarted else "Original App is healthy."
+                raise HelperError("app_update_unavailable", message + " " + recovery) from error
+            return retained
+
+    def _conversion_docker(self, args: Sequence[str], message: str, timeout: float = 120) -> str:
+        """Observe Docker without publishing output that can contain protected bind paths."""
+        code, stdout, _ = self.effects.run(["docker", *args], timeout=timeout)
+        if code != 0:
+            raise HelperError("app_update_unavailable", message)
+        return stdout
+
+    def _conversion_backup_inventory(self, container_id: str, *, initialize: bool = False) -> str:
+        """Verify every sealed backup against its manifest and return a bounded inventory identity."""
+        output = self._conversion_docker(
+            [
+                "exec", "--workdir", "/app/nanocore", container_id,
+                "node", "--input-type=module", "--eval", GETTING_STARTED_BACKUP_INVENTORY,
+                "--", GETTING_STARTED_BACKUP_DIR, "initialize" if initialize else "verify",
+            ],
+            "Could not verify the App backup inventory.", self.config["jobTimeoutSeconds"],
+        ).strip()
+        if not re.fullmatch(r"[a-f0-9]{64}", output):
+            raise HelperError("app_update_unavailable", "The App backup inventory identity is malformed.")
+        return output
+
+    def _verify_conversion_boot(self, name: str, candidate_id: str, image: Mapping[str, Any], previous_boot: str) -> None:
+        """Confirm the exact same-image App is healthy and now passes strict update binding admission."""
+        timeout = int(self.config["readyTimeoutSeconds"])
+        for attempt in range(timeout + 1):
+            current = self._inspect_container(name)
+            if current.get("Id") != candidate_id or current.get("Image") != image["id"]:
+                raise HelperError("app_update_recovery_required", "The converted App identity does not match the original image.")
+            state = current.get("State") or {}
+            if state.get("Running") is True and (state.get("Health") or {}).get("Status") == "healthy":
+                observed = self._observe_boot(image["id"], None)
+                if observed and observed[0]["bootId"] != previous_boot and observed[0]["acceptingProductWork"] is True:
+                    self._assert_configured_deployment_bindings(current, image)
+                    return
+            if attempt < timeout:
+                self._sleep(1)
+        raise HelperError("app_update_unavailable", "The converted App did not become healthy.")
+
+    def _restore_conversion(
+        self, name: str, original_id: str, image_id: str, retained: str, candidate_id: Optional[str]
+    ) -> bool:
+        """Prove the original App's state before restart and confirm it becomes healthy."""
+        original = self._inspect_container(original_id)
+        original_name = original.get("Name")
+        running = (original.get("State") or {}).get("Running")
+        if (
+            original.get("Id") != original_id or original.get("Image") != image_id
+            or original_name not in ("/" + name, "/" + retained) or not isinstance(running, bool)
+        ):
+            raise HelperError("app_update_recovery_required", "The original App state could not be confirmed.")
+        if running:
+            if candidate_id is not None or original_name != "/" + name:
+                raise HelperError("app_update_recovery_required", "The original App is running in an unexpected state.")
+            self._assert_exclusive_dataroot_users({name})
+        else:
+            if candidate_id is not None:
+                if (self._inspect_container(candidate_id).get("State") or {}).get("Running") is True:
+                    self._conversion_docker(["stop", "--time", "30", candidate_id], "Could not stop the converted App.")
+                self._conversion_docker(["rm", candidate_id], "Could not release the original App name.")
+            self._assert_exclusive_dataroot_users(set())
+            if original_name == "/" + retained:
+                self._conversion_docker(["rename", original_id, name], "Could not restore the original App name.")
+            self._conversion_docker(["start", original_id], "Could not restart the original App.")
+
+        timeout = int(self.config["readyTimeoutSeconds"])
+        for attempt in range(timeout + 1):
+            current = self._inspect_container(original_id)
+            state = current.get("State") or {}
+            if (
+                current.get("Id") != original_id or current.get("Image") != image_id
+                or current.get("Name") != "/" + name or state.get("Running") is not True
+            ):
+                break
+            if (state.get("Health") or {}).get("Status") == "healthy":
+                return not running
+            if attempt < timeout:
+                self._sleep(1)
+        raise HelperError("app_update_recovery_required", "The original App did not return to a healthy state.")
+
     def prepare(self, command: Mapping[str, Any]) -> Dict[str, Any]:
         self._assert_capacity()
         inspect = self._inspect_container(self.config["containerName"])
@@ -646,7 +857,7 @@ class AppUpdateHelper:
                         "app_update_invalid_request",
                         "Running App image does not match the prepared current image.",
                     )
-                self._assert_configured_deployment_bindings(inspect, current_identity)
+                bridge_publications = self._assert_configured_deployment_bindings(inspect, current_identity)
                 if not identity_matches(self.config["compatibility"]["currentImageId"], current_identity):
                     raise HelperError(
                         "app_update_invalid_request",
@@ -686,20 +897,21 @@ class AppUpdateHelper:
                 }
                 self._write_receipt(receipt)
                 self._smoke(candidate["ref"])
-                web_plan = self._stage_web_assets(candidate)
+                web_plan = None if bridge_publications else self._stage_web_assets(candidate)
                 retained = "%s-previous" % self.config["containerName"]
                 receipt["retainedContainerName"] = retained
-                receipt["previousWebAssets"] = web_plan["previous"]
-                receipt["candidateWebAssets"] = web_plan["candidate"]
-                receipt["webPreviousDigest"] = web_plan["previous_digest"]
-                receipt["webStagedDigest"] = web_plan["staged_digest"]
+                if web_plan is not None:
+                    receipt["previousWebAssets"] = web_plan["previous"]
+                    receipt["candidateWebAssets"] = web_plan["candidate"]
+                    receipt["webPreviousDigest"] = web_plan["previous_digest"]
+                    receipt["webStagedDigest"] = web_plan["staged_digest"]
                 self._write_receipt(receipt)
                 self._assert_exclusive_dataroot_users({self.config["containerName"]})
                 try:
                     self._idle_preflight()
                 except Exception:
                     # A refused pre-stop recheck must not leave a staged Web tree behind.
-                    if os.path.lexists(web_plan["partial"]):
+                    if web_plan is not None and os.path.lexists(web_plan["partial"]):
                         _rmtree(web_plan["partial"])
                     raise
                 # Retained names change only after the work recheck has admitted interruption.
@@ -714,9 +926,9 @@ class AppUpdateHelper:
                     ["docker", "rename", self.config["containerName"], retained],
                     "Failed to retain the previous App.",
                 )
-                live_digest = self._publish_web_assets(web_plan)
-                receipt["webLiveDigest"] = live_digest
-                run_argv = self._replacement_argv(inspect, candidate["ref"], candidate["source_commit"])
+                if web_plan is not None:
+                    receipt["webLiveDigest"] = self._publish_web_assets(web_plan)
+                run_argv = self._replacement_argv(inspect, candidate["ref"], candidate["source_commit"], bridge_publications)
                 code, _, stderr = self.effects.run(run_argv, timeout=60)
                 if code != 0:
                     raise HelperError("app_update_unavailable", stderr or "Candidate App failed to start.")
@@ -966,8 +1178,10 @@ class AppUpdateHelper:
                 "App log option %s is missing." % ", ".join(missing),
             )
 
-    def _assert_configured_deployment_bindings(self, inspect: Mapping[str, Any], image: Mapping[str, Any]) -> None:
-        """Require the configured deployment bindings before a receipt and again before interruption."""
+    def _assert_configured_deployment_bindings(
+        self, inspect: Mapping[str, Any], image: Mapping[str, Any], *, legacy_bridge: bool = False
+    ) -> List[str]:
+        """Require the configured bindings and return the validated Getting Started publications."""
         name = self.config["containerName"]
         if "nanohost" in name.lower():
             raise HelperError("app_update_invalid_request", "App update must not target NanoHost.")
@@ -982,20 +1196,28 @@ class AppUpdateHelper:
             raise HelperError("app_update_invalid_request", "App pid namespace is unsupported.")
         if host.get("Runtime") != "runc":
             raise HelperError("app_update_invalid_request", "App runtime is unsupported.")
-        if host.get("NetworkMode") != "host":
-            raise HelperError("app_update_invalid_request", "App network mode must be host.")
-        if host.get("PortBindings"):
-            raise HelperError("app_update_invalid_request", "App port bindings are unsupported on host network.")
+        bridge = "appSecretsDirectory" in self.config
+        if legacy_bridge and not bridge:
+            raise HelperError("app_update_unconfigured", "Conversion requires the configured Getting Started bridge layout.")
+        publications: List[str] = []
+        if bridge:
+            publications = self._bridge_publications(inspect)
+        else:
+            if host.get("NetworkMode") != "host":
+                raise HelperError("app_update_invalid_request", "App network mode must be host when appSecretsDirectory is absent.")
+            if host.get("PortBindings"):
+                raise HelperError("app_update_invalid_request", "App port bindings are unsupported on host network.")
         restart = (host.get("RestartPolicy") or {}).get("Name")
         if restart != "unless-stopped":
             raise HelperError("app_update_invalid_request", "App restart policy must be unless-stopped.")
-        self._assert_json_file_log_retention(inspect)
+        if not legacy_bridge:
+            self._assert_json_file_log_retention(inspect)
         entrypoint = list(config.get("Entrypoint") or [])
         cmd = list(config.get("Cmd") or [])
         if entrypoint != image["entrypoint"] or cmd != image["cmd"]:
             raise HelperError("app_update_invalid_request", "App entrypoint/cmd is not the image default.")
         mounts = {item.get("Destination"): item for item in inspect.get("Mounts") or [] if isinstance(item, dict)}
-        expected = {
+        expected = self._bridge_mounts() if bridge else {
             "/data/openkit": (self.config["dataRoot"], True),
             "/data/openkit.backups": ("%s.backups" % self.config["dataRoot"], True),
             "/run/nanohost-credentials": (self.config["nanohostCredentialsDir"], True),
@@ -1003,9 +1225,15 @@ class AppUpdateHelper:
             "/etc/caddy/Caddyfile": (self.config["caddyfile"], False),
             "/run/secrets/openkit-vault.key": (self.config["vaultKeyFile"], False),
         }
-        required = set(REQUIRED_MOUNT_DESTS)
+        if legacy_bridge:
+            del expected[GETTING_STARTED_BACKUP_DIR]
+        required = set(expected)
+        if not legacy_bridge:
+            required.update(APP_UPDATE_SSH_DESTS)
         directory = self.config.get("repositoryDirectory")
         if directory:
+            if bridge:
+                raise HelperError("app_update_invalid_request", "Getting Started does not mount a host repository directory.")
             required.add("/srv/repos")
             expected["/srv/repos"] = (directory, True)
             try:
@@ -1020,21 +1248,24 @@ class AppUpdateHelper:
                     "app_update_invalid_request",
                     "Configured repositoryDirectory must be a non-linked directory.",
                 )
-        extra = set(mounts) - required
-        missing = required - set(mounts)
-        if extra or missing:
+        if set(mounts) != required:
             raise HelperError(
                 "app_update_invalid_request",
+                "App mounts do not match the configured Getting Started deployment set."
+                if bridge else
                 "App mounts do not match the configured deployment set: Data Root, backup, sink, Web, Caddyfile, Vault key, and App-update SSH.",
             )
         if directory and str((mounts["/srv/repos"] or {}).get("Type") or "") != "bind":
             raise HelperError("app_update_invalid_request", "App mount /srv/repos must be a bind.")
         for dest, (source, writable) in expected.items():
             item = mounts[dest]
+            if bridge and item.get("Type") != "bind":
+                raise HelperError("app_update_invalid_request", "App mount %s must be a bind." % dest)
             if str(item.get("Source") or "") != source or bool(item.get("RW")) != writable:
                 raise HelperError("app_update_invalid_request", "App mount %s does not match helper config." % dest)
-        for dest in APP_UPDATE_SSH_DESTS:
-            self._assert_app_update_ssh_bind(mounts[dest], dest)
+        if not legacy_bridge:
+            for dest in APP_UPDATE_SSH_DESTS:
+                self._assert_app_update_ssh_bind(mounts[dest], dest)
         data_rw = [
             item
             for item in mounts.values()
@@ -1042,6 +1273,49 @@ class AppUpdateHelper:
         ]
         if len(data_rw) != 1:
             raise HelperError("app_update_invalid_request", "App must have exactly one RW Data Root mount.")
+        return publications
+
+    def _bridge_mounts(self) -> Dict[str, Tuple[str, bool]]:
+        """Return the persistent Getting Started binds before SSH setup."""
+        return {
+            "/data/openkit": (self.config["dataRoot"], True),
+            GETTING_STARTED_BACKUP_DIR: ("%s.backups" % self.config["dataRoot"], True),
+            "/run/openkit-secrets": (self.config["appSecretsDirectory"], False),
+            "/run/openkit-enrollment": (self.config["nanohostCredentialsDir"], True),
+        }
+
+    def _bridge_publications(self, inspect: Mapping[str, Any]) -> List[str]:
+        """Admit only the two explicit TCP loopback publications on Docker's default bridge."""
+        host = inspect.get("HostConfig") or {}
+        networks = (inspect.get("NetworkSettings") or {}).get("Networks") or {}
+        if host.get("NetworkMode") not in ("bridge", "default") or set(networks) != {"bridge"}:
+            raise HelperError("app_update_invalid_request", "Getting Started requires Docker's default bridge network.")
+        bindings = host.get("PortBindings") or {}
+        if host.get("PublishAllPorts") or len(bindings) != 2 or "8080/tcp" not in bindings:
+            raise HelperError("app_update_invalid_request", "Getting Started requires separate App and NanoHost TCP publications.")
+        publications = []
+        for target, entries in sorted(bindings.items()):
+            port = target.removesuffix("/tcp")
+            if target != port + "/tcp" or not TCP_PORT_RE.fullmatch(port) or int(port) > 65535:
+                raise HelperError("app_update_invalid_request", "Getting Started requires valid TCP container ports.")
+            if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+                raise HelperError("app_update_invalid_request", "Getting Started requires one loopback bind per published TCP port.")
+            entry = entries[0]
+            published = entry.get("HostPort")
+            if (
+                entry.get("HostIp") != "127.0.0.1"
+                or not isinstance(published, str)
+                or not TCP_PORT_RE.fullmatch(published)
+                or int(published) > 65535
+            ):
+                raise HelperError("app_update_invalid_request", "Getting Started requires explicit IPv4 loopback port publications.")
+            if port == "8080":
+                if self.config["appBaseUrl"].rstrip("/") != "http://127.0.0.1:" + published:
+                    raise HelperError("app_update_invalid_request", "Helper App URL must match the published loopback App port.")
+            elif published != port:
+                raise HelperError("app_update_invalid_request", "Getting Started requires equal host and container NanoHost ports.")
+            publications.append("127.0.0.1:%s:%s" % (published, port))
+        return publications
 
     def _assert_app_update_ssh_bind(self, item: Mapping[str, Any], dest: str) -> None:
         if str(item.get("Type") or "") != "bind":
@@ -1075,15 +1349,16 @@ class AppUpdateHelper:
                 "App-update SSH source for %s must stay outside Data Root and the NanoHost sink." % dest,
             )
 
-    def _replacement_argv(self, inspect: Mapping[str, Any], image_ref: str, source_commit: str) -> List[str]:
+    def _replacement_argv(
+        self, inspect: Mapping[str, Any], image_ref: str, source_commit: Optional[str],
+        bridge_publications: Sequence[str] = (), *, create_only: bool = False,
+    ) -> List[str]:
         """Preserve validated bindings when starting the exact replacement image."""
         host = inspect.get("HostConfig") or {}
         config = inspect.get("Config") or {}
         log_cfg = (host.get("LogConfig") or {}).get("Config") or {}
-        argv = [
-            "docker",
-            "run",
-            "--detach",
+        argv = ["docker", "create"] if create_only else ["docker", "run", "--detach"]
+        argv.extend([
             "--name",
             self.config["containerName"],
             "--restart",
@@ -1091,20 +1366,31 @@ class AppUpdateHelper:
             "--runtime",
             "runc",
             "--network",
-            "host",
-            "--volume",
-            "%s:/data/openkit" % self.config["dataRoot"],
-            "--volume",
-            "%s.backups:/data/openkit.backups" % self.config["dataRoot"],
-            "--volume",
-            "%s:/run/nanohost-credentials" % self.config["nanohostCredentialsDir"],
-            "--mount",
-            "type=bind,src=%s,dst=/srv/web,readonly" % self.config["webAssetsDir"],
-            "--mount",
-            "type=bind,src=%s,dst=/etc/caddy/Caddyfile,readonly" % self.config["caddyfile"],
-            "--mount",
-            "type=bind,src=%s,dst=/run/secrets/openkit-vault.key,readonly" % self.config["vaultKeyFile"],
-        ]
+            "bridge" if bridge_publications else "host",
+        ])
+        if bridge_publications:
+            for publication in bridge_publications:
+                argv.extend(["--publish", publication])
+            for destination, (source, writable) in self._bridge_mounts().items():
+                bind = "type=bind,src=%s,dst=%s" % (source, destination)
+                argv.extend(["--mount", bind if writable else bind + ",readonly"])
+        else:
+            argv.extend(
+                [
+                    "--volume",
+                    "%s:/data/openkit" % self.config["dataRoot"],
+                    "--volume",
+                    "%s.backups:/data/openkit.backups" % self.config["dataRoot"],
+                    "--volume",
+                    "%s:/run/nanohost-credentials" % self.config["nanohostCredentialsDir"],
+                    "--mount",
+                    "type=bind,src=%s,dst=/srv/web,readonly" % self.config["webAssetsDir"],
+                    "--mount",
+                    "type=bind,src=%s,dst=/etc/caddy/Caddyfile,readonly" % self.config["caddyfile"],
+                    "--mount",
+                    "type=bind,src=%s,dst=/run/secrets/openkit-vault.key,readonly" % self.config["vaultKeyFile"],
+                ]
+            )
         directory = self.config.get("repositoryDirectory")
         if directory:
             argv.extend(["--mount", "type=bind,src=%s,dst=/srv/repos" % directory])
@@ -1118,14 +1404,16 @@ class AppUpdateHelper:
             )
         argv.extend(
             [
+                "--log-driver",
+                "json-file",
                 "--log-opt",
                 "max-size=%s" % log_cfg["max-size"],
                 "--log-opt",
                 "max-file=%s" % log_cfg["max-file"],
-                "--label",
-                "org.openkit.staging.commit=%s" % source_commit,
             ]
         )
+        if source_commit is not None:
+            argv.extend(["--label", "org.openkit.staging.commit=%s" % source_commit])
         health = config.get("Healthcheck") or {}
         test = health.get("Test") or []
         if test and test[0] == "CMD-SHELL" and len(test) >= 2:
