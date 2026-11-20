@@ -360,6 +360,19 @@ export function readTurnInterruptAudit(
   return row ? auditEventFromRow(row) : null;
 }
 
+/** Checks whether the helper previously returned a receipt for this exact App-update start. */
+export function hasAppUpdateStartHandoff(coreDb: CoreDb, requestId: string): boolean {
+  return (
+    coreDb.sqlite
+      .prepare(
+        `SELECT 1 FROM audit_events WHERE turn_id IS NULL AND action='app.update.start.handoff'
+        AND workspace_id IS NULL AND outcome='succeeded'
+        AND request_id=? COLLATE NOCASE AND resource=? COLLATE NOCASE LIMIT 1`
+      )
+      .get(requestId, `app-update:${requestId}`) !== undefined
+  );
+}
+
 /**
  * Lists server audit events as protocol records.
  *

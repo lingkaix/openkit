@@ -148,7 +148,7 @@ sudo sha256sum /usr/local/lib/openkit/app-update-helper.py
 ```
 
 5. Preserve `helper.json`, secrets, receipt files and the lock configuration. Helper replacement does not change the deployment or its compatibility assessment.
-6. Read a saved receipt through the restricted entry with `{"op":"status","requestId":"<saved UUID>"}` on stdin. Match `helperSha256` to the installed checksum. If no receipt exists, use a fresh UUID for this read; `app_update_unavailable` reports the missing receipt and still returns the helper checksum. This error is not an update result.
+6. Read a saved receipt through the restricted entry with `{"op":"status","requestId":"<saved UUID>"}` on stdin. Match `helperSha256` to the installed checksum. If no receipt exists, use a fresh UUID for this read; `app_update_not_found` reports an absent receipt in a readable store and still returns the helper checksum.
 7. Run the content-free preflight and prepare only after the helper identity and update prerequisites are established.
 
 ### Restricted Host Helper
@@ -167,7 +167,7 @@ The product helper has no source staging or build mode. Before a release pull, i
 
 If the App is unavailable, an authorized host operator can read the same receipt without starting another update: pass `{"op":"status","requestId":"<saved UUID>"}` on standard input to the installed helper. Inspect the corresponding `openkit-app-update-<UUID>` systemd unit and protected receipt/log files for missing evidence. Preserve unknown, interrupted and recovery-required outcomes. Before any manual restoration, prove the candidate stopped and the Data Root has no other writer; an old image cannot undo database changes.
 
-Receipt inspection still validates protected deployment configuration and the receipt location, but it does not require a current compatibility assessment. A retained commit-only receipt returns `app_update_recovery_required` for its saved ID. A valid retained release receipt remains readable when the assessment is stale, missing, or malformed. Inspect the known ID; neither a readable receipt nor a recovery-required result authorizes another start.
+Receipt inspection still validates protected deployment configuration and the receipt location, but it does not require a current compatibility assessment. A retained commit-only receipt returns `app_update_recovery_required` for its saved ID. If status reports `app_update_not_found` for an ID you saved, inspect the host's receipt and job evidence for that request. NanoCore reports recovery required for a missing receipt when an existing successful start handoff identifies the ID. A valid retained release receipt remains readable when the assessment is stale, missing, or malformed. Inspect the known ID; neither a readable receipt nor a recovery-required result authorizes another start.
 
 Prepare, start, and the supervised apply job still require the exact compatibility assessment. Before any of these operations, re-author a pre-removal assessment for the release candidate under the existing operator procedure. Establish the current image, published release source, and applied migrations. A status read supplies no migration, replacement, or restoration approval.
 

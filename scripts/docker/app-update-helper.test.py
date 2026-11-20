@@ -1141,7 +1141,7 @@ class RC6RegressionTests(unittest.TestCase):
             root = Path(tmp)
             path = write_config(root)
             _code, body = invoke(module, {"op": "status", "requestId": str(uuid.uuid4())}, path)
-            self.assertEqual(body["error"]["code"], "app_update_recovery_required")
+            self.assertEqual(body["error"]["code"], "app_update_not_found")
             self.assertEqual(body["helperSha256"], hashlib.sha256(HELPER_PATH.read_bytes()).hexdigest())
 
     def test_operations_archive_contains_reviewed_helper_covered_by_outer_checksum(self) -> None:
@@ -1418,7 +1418,7 @@ class ClosedStdinTests(unittest.TestCase):
 
 
 class ReceiptLifecycleTests(unittest.TestCase):
-    def test_start_and_status_missing_are_recovery_required_without_new_effects(self) -> None:
+    def test_missing_status_is_not_found_and_start_refuses_without_new_effects(self) -> None:
         module = load_helper()
         missing = "11111111-1111-4111-8111-111111111111"
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
@@ -1442,8 +1442,19 @@ class ReceiptLifecycleTests(unittest.TestCase):
             self.assertEqual(effects.http_calls, [])
             self.assertEqual(list((root / "receipts").iterdir()), [])
             self.assertEqual(start_body["error"]["code"], "app_update_recovery_required")
-            # Removed IDs retain the same recovery refusal; a status read cannot create a job.
-            self.assertEqual(status_body["error"]["code"], "app_update_recovery_required")
+            self.assertEqual(status_body["error"]["code"], "app_update_not_found")
+
+    def test_status_without_the_configured_receipt_directory_requires_recovery(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = write_config(root, receiptDir=str(root / "unavailable-receipts"))
+            effects = RecordingEffects()
+            _, body = invoke(module, {"op": "status", "requestId": str(uuid.uuid4())}, config, effects)
+            self.assertEqual(body["error"]["code"], "app_update_recovery_required")
+            self.assertFalse((root / "unavailable-receipts").exists())
+            self.assertEqual(effects.calls, [])
+            self.assertEqual(effects.http_calls, [])
 
     def test_expired_prepare_cannot_start_and_does_not_recreate_a_receipt(self) -> None:
         module = load_helper()

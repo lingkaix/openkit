@@ -32,4 +32,4 @@ The App launcher leaves User directory allocation to NanoCore's recorded local U
 
 `run-app.sh` uses server mode and the existing bootstrap flow. It requires the existing deployment signing secret before any Docker command and forwards `BETTER_AUTH_SECRET` by environment name, never by value; seed-only mode needs no secret. It derives the existing `BETTER_AUTH_URL` from its published loopback port so browser admission uses the public origin. The explicit local persistence smoke sends requests through container-loopback Caddy with `docker exec`; it does not publish implicit local administration.
 
-Status and start for a missing or removed App-update receipt return `app_update_recovery_required`; absence never creates another execution.
+Status for an absent App-update receipt in a readable store returns `app_update_not_found`. An unavailable store, an invalid retained receipt, and a start for an absent ID return `app_update_recovery_required`. Use the caller's saved ID to inspect a known missing receipt. These observations grant no new execution authority.
