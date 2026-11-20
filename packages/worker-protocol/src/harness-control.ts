@@ -315,6 +315,7 @@ export const HarnessRefusedBodySchema = z
     reasonCode: HarnessRefusalReasonSchema,
     exhaustedBound: HarnessExhaustedBoundSchema.optional(),
     startupFailure: WorkerStartupFailureSchema.optional(),
+    retainedSessionWork: z.enum(['suspended', 'queued']).optional(),
   })
   .strict();
 
@@ -435,6 +436,8 @@ export function isHarnessResultBodyValid(
     const refused = HarnessRefusedBodySchema.safeParse(result.body);
     return (
       refused.success &&
+      (refused.data.retainedSessionWork === undefined ||
+        (operation === 'session.open' && refused.data.reasonCode === 'dependency_failed')) &&
       (refused.data.startupFailure === undefined ||
         (refused.data.reasonCode === 'dependency_failed' &&
           (operation === 'turn.start' ||
@@ -488,6 +491,11 @@ export function parseHarnessResultBody(
   if (result.disposition === 'unknown') return HarnessUnknownBodyReaderSchema.parse(result.body);
   if (result.disposition === 'refused') {
     const body = HarnessRefusedBodyReaderSchema.parse(result.body);
+    if (
+      body.retainedSessionWork !== undefined &&
+      (operation !== 'session.open' || body.reasonCode !== 'dependency_failed')
+    )
+      throw new Error('Retained session work requires a session.open dependency refusal.');
     if (
       body.startupFailure !== undefined &&
       (body.reasonCode !== 'dependency_failed' ||

@@ -67,6 +67,10 @@ import {
 import { OPENCODE_PLUGIN_SOURCE } from './opencode-plugin.js';
 
 const RESULT_LIMIT = 16 * 1024 * 1024;
+const nativeDatabaseNames = [
+  { kind: 'default', filename: undefined },
+  { kind: 'configured', filename: 'retained-fixture.db' },
+];
 const sessions: WorkerResidentSession[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
 const roots: string[] = [];
@@ -2773,15 +2777,20 @@ describe('OpenCode resident adapter', () => {
   it('bounds a hung resume inspection and proves server exit before refusal', async () => {
     const layout = makeRoots();
     const launched = launchWrapper(layout);
+    const creds = loopback('hung-resume', 'http://127.0.0.1:9');
+    const seed = await opencodeAdapter.openSession(openInput(layout, creds));
+    sessions.push(seed);
+    const handle = await seed.nativeHandle();
+    expect(handle.state).toBe('ready');
+    if (handle.state !== 'ready') throw new Error('Fixture session has no retained handle.');
+    await seed.close();
     const adapter = createOpenCodeAdapter({
       loadClient: () => realModuleRejecting('get-hang'),
       resolveBinary: () => launched.binary,
       rpcTimeoutMs: 30,
     });
     await expect(
-      adapter.openSession(
-        openInput(layout, loopback('hung-resume', 'http://127.0.0.1:9'), Buffer.from('v1:some-id'))
-      )
+      adapter.openSession(openInput(makeRootsFor(layout.stateRoot), creds, handle.reference))
     ).rejects.toThrow(/timed out|did not prove/);
     expect(processAlive(Number(readFileSync(launched.pidFile, 'utf8')))).toBe(false);
   }, 120_000);
@@ -3557,67 +3566,212 @@ describe('OpenCode resident adapter', () => {
     expect(sessionRowState(layout.stateRoot, 'sess-not-written')).toBe('absent');
   }, 120_000);
 
-  it('resumes a SIGKILL-surviving session_v2 row from a new process', async () => {
-    const inference = await startSyntheticInference((request) => scripted(request));
-    servers.push(inference);
+  it.each(['stdin', 'SIGTERM'] as const)(
+    'refuses exact reopen with a suspended execution after native %s',
+    async (exit) => {
+      const inference = await startSyntheticInference((request) =>
+        requestTexts(request).some((text) => text.includes('hold-original-model'))
+          ? { hang: true as const }
+          : { text: 'Fixture title.' }
+      );
+      servers.push(inference);
+      const layout = makeRoots();
+      const creds = loopback('suspended-session', inference.url);
+      const children: ChildProcess[] = [];
+      const adapter = createOpenCodeAdapter({
+        spawnServer: (binary, args, options) => {
+          const child = spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+          children.push(child);
+          return child;
+        },
+      });
+      const session = await adapter.openSession(openInput(layout, creds));
+      sessions.push(session);
+      const handle = await session.nativeHandle();
+      expect(handle.state).toBe('ready');
+      if (handle.state !== 'ready') throw new Error('Fixture session has no retained handle.');
+      const sessionId = Buffer.from(handle.reference).toString('utf8').slice('v1:'.length);
+      const active = await session.startTurn(
+        turnInput(layout, creds, 'hold-original-model', 'model')
+      );
+      const settled = active.settled.catch(() => undefined);
+      const observedOriginal = () =>
+        inference.requests.some((request) =>
+          requestTexts(request).some((text) => text.includes('hold-original-model'))
+        );
+      await vi.waitFor(() => expect(observedOriginal()).toBe(true), { timeout: 15_000 });
+      const child = children[0]!;
+      const exited = once(child, 'exit');
+      if (exit === 'stdin') child.stdin!.end();
+      else child.kill(exit);
+      await nativeTestBound(exited, 20_000, 'First OpenCode process did not exit.');
+      await nativeTestBound(settled, 20_000, 'Original adapter Turn did not settle.');
+
+      const db = new DatabaseSync(join(layout.stateRoot, 'xdg', 'opencode', 'opencode.db'), {
+        readOnly: true,
+      });
+      try {
+        const claim = () =>
+          db
+            .prepare('SELECT time_suspended, resume_attempts FROM session_v2 WHERE id = ?')
+            .get(sessionId);
+        const original = claim();
+        expect(original).toMatchObject({ time_suspended: expect.any(Number), resume_attempts: 0 });
+        const beforeReopen = inference.requests.length;
+        const reopening = adapter
+          .openSession(openInput(makeRootsFor(layout.stateRoot), creds, handle.reference))
+          .then((successor) => {
+            sessions.push(successor);
+            return successor;
+          });
+        await expect(reopening).rejects.toMatchObject({
+          retainedSessionWork: 'suspended',
+        });
+        expect(children).toHaveLength(1);
+        expect(claim()).toEqual(original);
+        expect(inference.requests).toHaveLength(beforeReopen);
+      } finally {
+        db.close();
+      }
+    },
+    120_000
+  );
+
+  it.each(nativeDatabaseNames)(
+    'refuses exact reopen with only a retained native inbox entry in the $kind database',
+    async ({ filename }) => {
+      const layout = makeRoots();
+      const launched = launchWrapper(layout);
+      const inference = await startSyntheticInference(() => ({ text: 'Unexpected work.' }));
+      servers.push(inference);
+      const creds = loopback('queued-session', inference.url);
+      const { OpenCode } = await import('@opencode/client');
+      const makeClient = vi.fn((options: Parameters<typeof OpenCode.make>[0]) =>
+        OpenCode.make(options)
+      );
+      const adapter = createOpenCodeAdapter({
+        loadClient: async () => ({ OpenCode: { make: makeClient } }),
+        resolveBinary: () => launched.binary,
+      });
+      const session = await adapter.openSession(openInput(layout, creds, null, filename));
+      sessions.push(session);
+      const handle = await session.nativeHandle();
+      expect(handle.state).toBe('ready');
+      if (handle.state !== 'ready') throw new Error('Fixture session has no retained handle.');
+      const sessionId = Buffer.from(handle.reference).toString('utf8').slice('v1:'.length);
+      const client = makeClient.mock.results[0]!.value;
+      const queued = await client.session.prompt({
+        sessionID: sessionId,
+        text: 'Park this input.',
+        delivery: 'queue',
+        resume: false,
+      });
+      await session.close();
+      const db = new DatabaseSync(
+        join(layout.stateRoot, 'xdg', 'opencode', filename ?? 'opencode.db'),
+        { readOnly: true }
+      );
+      try {
+        const inbox = () =>
+          db
+            .prepare(
+              'SELECT v.time_suspended, i.id, i.delivery FROM session_v2 v JOIN session_inbox i ON i.session_id = v.id WHERE v.id = ?'
+            )
+            .all(sessionId);
+        const original = inbox();
+        expect(original).toEqual([{ time_suspended: null, id: queued.id, delivery: 'queue' }]);
+        rmSync(launched.pidFile);
+        await expect(
+          adapter.openSession(
+            openInput(makeRootsFor(layout.stateRoot), creds, handle.reference, filename)
+          )
+        ).rejects.toMatchObject({ retainedSessionWork: 'queued' });
+        expect(existsSync(launched.pidFile)).toBe(false);
+        expect(inbox()).toEqual(original);
+        expect(inference.requests).toHaveLength(0);
+      } finally {
+        db.close();
+      }
+    },
+    120_000
+  );
+
+  it.each(nativeDatabaseNames)(
+    'resumes a SIGKILL-surviving session_v2 row from a new process with the $kind database',
+    async ({ filename }) => {
+      const inference = await startSyntheticInference((request) => scripted(request));
+      servers.push(inference);
+      const layout = makeRoots();
+      const launched = launchWrapper(layout);
+      const creds = loopback('persist', inference.url);
+      const adapter = createOpenCodeAdapter({ resolveBinary: () => launched.binary });
+      const session = await adapter.openSession(openInput(layout, creds, null, filename));
+      sessions.push(session);
+      const opened = await session.nativeHandle();
+      expect(opened.state).toBe('ready');
+      if (opened.state !== 'ready') return;
+      const reference = Buffer.from(opened.reference);
+      const sessionId = reference.toString('utf8').slice('v1:'.length);
+      expect(sessionRowState(layout.stateRoot, sessionId, filename)).toBe('present');
+
+      await expect(
+        session.startTurn(turnInput(layout, creds, 'direct-user', 'direct-model', directRoute()))
+      ).rejects.toThrow(/rejected the selected route/);
+      expect(session.childState()).toBe('running');
+      const afterRefusal = await session.nativeHandle();
+      expect(afterRefusal.state).toBe('ready');
+      if (afterRefusal.state === 'ready') {
+        expect(Buffer.from(afterRefusal.reference).equals(reference)).toBe(true);
+      }
+
+      const alpha = await complete(
+        session,
+        turnInput(layout, creds, 'alpha-user', 'org/exact-model-a')
+      );
+      expect(alpha.assistantText).toBe('alpha-answer');
+      const ready = await session.nativeHandle();
+      expect(ready.state).toBe('ready');
+      if (ready.state === 'ready') {
+        expect(Buffer.from(ready.reference).equals(reference)).toBe(true);
+      }
+
+      const pid = Number(readFileSync(launched.pidFile, 'utf8'));
+      process.kill(pid, 'SIGKILL');
+      await session.exited;
+      expect(processAlive(pid)).toBe(false);
+
+      const successorLayout = makeRootsFor(layout.stateRoot);
+      const successor = await opencodeAdapter.openSession(
+        openInput(successorLayout, creds, new Uint8Array(reference), filename)
+      );
+      sessions.push(successor);
+      const resumed = await successor.nativeHandle();
+      expect(resumed.state).toBe('ready');
+      if (resumed.state === 'ready') {
+        expect(Buffer.from(resumed.reference).equals(reference)).toBe(true);
+      }
+      const beta = await complete(
+        successor,
+        turnInput(successorLayout, creds, 'beta-user', 'org/exact-model-b')
+      );
+      expect(beta.assistantText).toBe('beta-answer');
+      expect(
+        requestTexts(primary(inference, 'beta-user')).some((text) => text.includes('alpha-user'))
+      ).toBe(true);
+    },
+    180_000
+  );
+
+  it('refuses exact reopen before launch when the configured database cannot be verified', async () => {
     const layout = makeRoots();
     const launched = launchWrapper(layout);
-    const creds = loopback('persist', inference.url);
     const adapter = createOpenCodeAdapter({ resolveBinary: () => launched.binary });
-    const session = await adapter.openSession(openInput(layout, creds));
-    sessions.push(session);
-    const opened = await session.nativeHandle();
-    expect(opened.state).toBe('ready');
-    if (opened.state !== 'ready') return;
-    const reference = Buffer.from(opened.reference);
-    const sessionId = reference.toString('utf8').slice('v1:'.length);
-    expect(sessionRowState(layout.stateRoot, sessionId)).toBe('present');
-
+    const creds = loopback('unverifiable-native-db', 'http://127.0.0.1:9');
     await expect(
-      session.startTurn(turnInput(layout, creds, 'direct-user', 'direct-model', directRoute()))
-    ).rejects.toThrow(/rejected the selected route/);
-    expect(session.childState()).toBe('running');
-    const afterRefusal = await session.nativeHandle();
-    expect(afterRefusal.state).toBe('ready');
-    if (afterRefusal.state === 'ready') {
-      expect(Buffer.from(afterRefusal.reference).equals(reference)).toBe(true);
-    }
-
-    const alpha = await complete(
-      session,
-      turnInput(layout, creds, 'alpha-user', 'org/exact-model-a')
-    );
-    expect(alpha.assistantText).toBe('alpha-answer');
-    const ready = await session.nativeHandle();
-    expect(ready.state).toBe('ready');
-    if (ready.state === 'ready') {
-      expect(Buffer.from(ready.reference).equals(reference)).toBe(true);
-    }
-
-    const pid = Number(readFileSync(launched.pidFile, 'utf8'));
-    process.kill(pid, 'SIGKILL');
-    await session.exited;
-    expect(processAlive(pid)).toBe(false);
-
-    const successorLayout = makeRootsFor(layout.stateRoot);
-    const successor = await opencodeAdapter.openSession(
-      openInput(successorLayout, creds, new Uint8Array(reference))
-    );
-    sessions.push(successor);
-    const resumed = await successor.nativeHandle();
-    expect(resumed.state).toBe('ready');
-    if (resumed.state === 'ready') {
-      expect(Buffer.from(resumed.reference).equals(reference)).toBe(true);
-    }
-    const beta = await complete(
-      successor,
-      turnInput(successorLayout, creds, 'beta-user', 'org/exact-model-b')
-    );
-    expect(beta.assistantText).toBe('beta-answer');
-    expect(
-      requestTexts(primary(inference, 'beta-user')).some((text) => text.includes('alpha-user'))
-    ).toBe(true);
-  }, 180_000);
+      adapter.openSession(openInput(layout, creds, Buffer.from('v1:unverified'), 'missing.db'))
+    ).rejects.toThrow('OpenCode exact reopen could not inspect retained execution.');
+    expect(existsSync(launched.pidFile)).toBe(false);
+  }, 120_000);
 
   it('inspects the surviving host and lets harness.drain refuse new work', async () => {
     const layout = makeRoots();
@@ -4865,12 +5019,16 @@ function filesContaining(
 function openInput(
   layout: ReturnType<typeof makeRoots>,
   endpoints: ReturnType<typeof loopback>,
-  resumeReference: Uint8Array | null = null
+  resumeReference: Uint8Array | null = null,
+  databaseFilename?: string
 ): WorkerResidentOpenInput {
   return {
     agentSessionId: 'as_00000000-0000-76f1-a900-7cc7b6acc18c',
     controlRoot: layout.controlRoot,
-    environment: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+    environment: {
+      PATH: process.env.PATH ?? '/usr/bin:/bin',
+      ...(databaseFilename === undefined ? {} : { OPENCODE_DB: databaseFilename }),
+    },
     loopback: endpoints,
     resumeReference,
     stateRoot: layout.stateRoot,
@@ -5025,9 +5183,10 @@ function stubbornChild(signals: string[]): ChildProcess {
 
 function sessionRowState(
   stateRoot: string,
-  sessionId: string
+  sessionId: string,
+  databaseFilename = 'opencode.db'
 ): 'absent' | 'present' | 'unreadable' {
-  const dbPath = join(stateRoot, 'xdg', 'opencode', 'opencode.db');
+  const dbPath = join(stateRoot, 'xdg', 'opencode', databaseFilename);
   if (!existsSync(dbPath)) return 'unreadable';
   try {
     const db = new DatabaseSync(dbPath, { readOnly: true, timeout: 1_000 });

@@ -1710,6 +1710,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const reason = result.body.reasonCode;
     const startup = WorkerStartupFailureSchema.safeParse(result.body.startupFailure);
     const detail = startup.success ? ` (${startup.data.stage}: ${startup.data.reason})` : '';
+    const retainedWork =
+      pending.operation === 'session.open' && result.disposition === 'refused'
+        ? result.body.retainedSessionWork
+        : undefined;
+    const resumeDetail =
+      retainedWork === 'suspended'
+        ? ' Exact reopen requires inspection of the retained suspended execution claim.'
+        : retainedWork === 'queued'
+          ? ' Exact reopen requires inspection of the retained native inbox.'
+          : '';
     const explanation =
       pending.operation === 'session.open' &&
       result.disposition === 'refused' &&
@@ -1732,7 +1742,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     pending.reject(
       Object.assign(
         new Error(
-          `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}${detail}.${explanation}`
+          `NanoHost Harness ${pending.operation} ${result.disposition}: ${typeof reason === 'string' ? reason : 'invalid'}${detail}.${explanation}${resumeDetail}`
         ),
         {
           ...(typeof reason === 'string' ? { reasonCode: reason } : {}),

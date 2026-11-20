@@ -280,6 +280,11 @@ export class WorkerHarness {
           : undefined;
       return result(command, 'refused', {
         reasonCode: reasonCode(error),
+        ...(command.operation === 'session.open' &&
+        isRecord(error) &&
+        (error.retainedSessionWork === 'suspended' || error.retainedSessionWork === 'queued')
+          ? { retainedSessionWork: error.retainedSessionWork }
+          : {}),
         ...(error &&
         typeof error === 'object' &&
         'exhaustedBound' in error &&
@@ -463,8 +468,15 @@ export class WorkerHarness {
           resumeReference,
           stateRoot,
         })
-        .catch(() => {
-          throw harnessError('dependency_failed');
+        .catch((error: unknown) => {
+          const refusal = harnessError('dependency_failed');
+          if (
+            resumeReference &&
+            isRecord(error) &&
+            (error.retainedSessionWork === 'suspended' || error.retainedSessionWork === 'queued')
+          )
+            Object.assign(refusal, { retainedSessionWork: error.retainedSessionWork });
+          throw refusal;
         });
       const session: HarnessSession = {
         activeTurn: null,

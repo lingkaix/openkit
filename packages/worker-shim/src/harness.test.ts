@@ -2406,6 +2406,41 @@ describe('Worker Harness resident AgentSessions', () => {
     );
   });
 
+  it('surfaces retained session work on an exact reopen refusal', async () => {
+    const adapter = fakeAdapter({ readyAtOpen: true });
+    const f = harnessFixture({ adapter });
+    const original = fixtureId('as', 'retained-native-work-original');
+    const successor = fixtureId('as', 'retained-native-work-successor');
+    expect(await f.open(original)).toMatchObject({ disposition: 'succeeded' });
+    expect(await f.send('session.close', f.selector(original))).toMatchObject({
+      disposition: 'succeeded',
+    });
+    const reference = readFileSync(f.referencePath(original));
+    const open = vi
+      .spyOn(adapter.adapter, 'openSession')
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Private native detail.'), { retainedSessionWork: 'queued' })
+      );
+    try {
+      expect(
+        await f.open(successor, {
+          resume: { digest: sha256(reference), locator: original },
+        })
+      ).toMatchObject({
+        disposition: 'refused',
+        body: { reasonCode: 'dependency_failed', retainedSessionWork: 'queued' },
+      });
+      expect(open).toHaveBeenCalledWith(
+        expect.objectContaining({ resumeReference: new Uint8Array(reference) })
+      );
+      expect(f.integration.loopbacks.size).toBe(0);
+      expect(existsSync(f.referencePath(successor))).toBe(false);
+      expect(readFileSync(f.referencePath(original))).toEqual(reference);
+    } finally {
+      open.mockRestore();
+    }
+  });
+
   it('resumes a successor from the stored reference and refuses a missing or changed one', async () => {
     const f = harnessFixture();
     await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');

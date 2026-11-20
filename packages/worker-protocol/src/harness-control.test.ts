@@ -277,6 +277,21 @@ describe('private Harness results', () => {
     expect(HarnessResultEnvelopeSchema.safeParse({ ...envelope, extra: true }).success).toBe(false);
   });
 
+  it('admits retained session work only on exact reopen refusal', () => {
+    const body = { reasonCode: 'dependency_failed', retainedSessionWork: 'suspended' };
+    const refusal = { disposition: 'refused' as const, body };
+    expect(isHarnessResultBodyValid('session.open', refusal)).toBe(true);
+    expect(parseHarnessResultBody('session.open', refusal)).toEqual(body);
+    expect(isHarnessResultBodyValid('turn.start', refusal)).toBe(false);
+    expect(() => parseHarnessResultBody('turn.start', refusal)).toThrow();
+    expect(
+      isHarnessResultBodyValid('session.open', {
+        ...refusal,
+        body: { ...body, reasonCode: 'conflict' },
+      })
+    ).toBe(false);
+  });
+
   it('admits measured Sandbox HEAD and tree only on session.open', () => {
     const body = {
       maxActiveTurns: 1,

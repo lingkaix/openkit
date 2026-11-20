@@ -239,6 +239,11 @@ async function supervise(
   // Filesystem preparation must finish before refusal; its pending writes cannot be cancelled safely.
   if (openDeadline.workRemainingMs() <= 0)
     throw new NativeDeadlineError('OpenCode open preparation timed out.');
+  const environment = serverEnvironment(input, directories, password, secretValues);
+  const databasePath = openCodeDatabasePath(directories.xdgDir, environment.OPENCODE_DB);
+  environment.OPENCODE_DB = databasePath;
+  const resumeSessionId = input.resumeReference && decodeHandle(input.resumeReference);
+  if (resumeSessionId) assertRetainedSessionIdle(databasePath, resumeSessionId);
   writeFileSync(join(directories.pluginDir, 'package.json'), '{"type":"module"}\n', {
     mode: 0o600,
   });
@@ -311,7 +316,7 @@ async function supervise(
     ['serve', '--stdio', '--hostname', '127.0.0.1', '--port', '0'],
     {
       cwd: directories.workDir,
-      env: serverEnvironment(input, directories, password, secretValues),
+      env: environment,
     }
   );
   child.stdin?.on('error', (error) => {
@@ -567,7 +572,7 @@ async function supervise(
         ) {
           return { state: 'unknown' };
         }
-        if (!durable) durable = sessionRowVisible(input.stateRoot, sessionId);
+        if (!durable) durable = sessionRowVisible(databasePath, sessionId);
         if (!durable) return { state: 'pending' };
         try {
           const info = await rpc('session.get', client.session.get({ sessionID: sessionId }));
@@ -1529,20 +1534,55 @@ async function proveConversation(
 /**
  * Reports whether a new process can read this conversation.
  *
- * `@opencode/cli@2.2.5` commits the id into `session_v2` of `$XDG_DATA_HOME/opencode/opencode.db`
+ * `@opencode/cli@2.2.5` commits the id into `session_v2` of the effective native database
  * before `session.create` returns. A read-only select saw that row while the server was alive,
  * and after SIGKILL a second `opencode serve` on the same directory resumed it. The handle stays
  * pending until this select matches, and a later inspect keeps the first successful proof.
  */
-function sessionRowVisible(stateRoot: string, sessionId: string): boolean {
-  const dbPath = join(stateRoot, 'xdg', 'opencode', 'opencode.db');
+function sessionRowVisible(databasePath: string, sessionId: string): boolean {
+  return (
+    readSessionRow(databasePath, sessionId, 'SELECT id FROM session_v2 WHERE id = ?')?.id ===
+    sessionId
+  );
+}
+
+/** Mirrors the pinned CLI's data-relative filename rule and prevents volatile native handles. */
+function openCodeDatabasePath(xdgDir: string, filename = 'opencode.db'): string {
+  if (!filename || filename === ':memory:' || filename.includes(String.fromCharCode(0)))
+    throw new Error('OpenCode requires a verifiable native database path.');
+  return resolve(xdgDir, 'opencode', filename);
+}
+
+/** Fences the exact retained session before stdio has a chance to wake work from a predecessor. */
+function assertRetainedSessionIdle(databasePath: string, sessionId: string): void {
+  const row = readSessionRow(
+    databasePath,
+    sessionId,
+    `SELECT id, time_suspended AS suspended,
+      EXISTS (SELECT 1 FROM session_inbox WHERE session_id = session_v2.id) AS queued
+      FROM session_v2 WHERE id = ?`
+  );
+  if (row === null) throw new Error('OpenCode exact reopen could not inspect retained execution.');
+  // The normal session.get proof still owns a handle whose exact row is absent.
+  if (!row) return;
+  if (row.suspended !== null)
+    throw Object.assign(new Error('OpenCode exact reopen found a suspended execution claim.'), {
+      retainedSessionWork: 'suspended',
+    });
+  if (row.queued === 1)
+    throw Object.assign(new Error('OpenCode exact reopen found queued native input.'), {
+      retainedSessionWork: 'queued',
+    });
+}
+
+/** Queries the pinned native database read-only. A failed read returns null; no row is undefined. */
+function readSessionRow(dbPath: string, sessionId: string, query: string) {
   let db: DatabaseSync | undefined;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true, timeout: 1_000 });
-    const row = db.prepare('SELECT id FROM session_v2 WHERE id = ?').get(sessionId);
-    return row?.id === sessionId;
+    return db.prepare(query).get(sessionId);
   } catch {
-    return false;
+    return null;
   } finally {
     try {
       db?.close();

@@ -17610,6 +17610,7 @@ describe('createConfiguredTurnExecutor', () => {
   // The runner covers real fixture setup and publication; product deadlines stay unchanged.
   it.each([
     'deepseek_unqualified',
+    'opencode_suspended',
     'retained_baseline_unavailable',
     'retained_baseline_conflict',
     'git_fetch_commit_unavailable',
@@ -17698,6 +17699,9 @@ describe('createConfiguredTurnExecutor', () => {
           ...(startupRefused === 'deepseek_unqualified'
             ? { agentSetup: createTestAgentSetup({ adapter: 'deepseek' }) }
             : {}),
+          ...(startupRefused === 'opencode_suspended'
+            ? { agentSetup: createTestAgentSetup({ adapter: 'opencode' }) }
+            : {}),
           runtime: {
             image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
           },
@@ -17780,6 +17784,22 @@ describe('createConfiguredTurnExecutor', () => {
             ),
           });
           await settleNext('session.open', { reasonCode: 'unsupported' }, 'refused');
+          await rejected;
+          return;
+        }
+
+        if (startupRefused === 'opencode_suspended') {
+          const rejected = expect(launch).rejects.toMatchObject({
+            reasonCode: 'dependency_failed',
+            message: expect.stringContaining(
+              'Exact reopen requires inspection of the retained suspended execution claim.'
+            ),
+          });
+          await settleNext(
+            'session.open',
+            { reasonCode: 'dependency_failed', retainedSessionWork: 'suspended' },
+            'refused'
+          );
           await rejected;
           return;
         }
