@@ -1,5 +1,17 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { closeWithDeadline } from './shutdown.js';
+
+it('only explicitly releases the process data-root lock after the native writer drains', () => {
+  // The entry point cannot be imported without starting the server. Guard the production
+  // release site, including the separate deadline and process 'exit' callbacks.
+  const entry = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+  expect(entry.match(/dataRootLock\?\.release\(\)/g)).toHaveLength(1);
+  expect(entry).toMatch(
+    /await shutdownControlStoreWorkerClient\(\);\s*\}\)\s*\.then\(\(\) => \{\s*if \(listenerCloseFailed\) \{\s*finishShutdown\(\);\s*\} else \{\s*dataRootLock\?\.release\(\);/
+  );
+  expect(entry).toContain('onDeadline: () => forceShutdownAtDeadline(');
+});
 
 describe('shutdown deadline helper', () => {
   it('runs the closed callback when the server closes before the deadline', () => {

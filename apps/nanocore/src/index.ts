@@ -41,7 +41,7 @@ import {
   refuseScope,
   withScopeAdmissionReadiness,
 } from './bootstrap/readiness.js';
-import { closeWithDeadline } from './bootstrap/shutdown.js';
+import { closeWithDeadline, forceShutdownAtDeadline } from './bootstrap/shutdown.js';
 import { checkBootVaultBackend } from './bootstrap/vault.js';
 import {
   restoreWorkspaceRecoveryAdmission,
@@ -602,7 +602,6 @@ if (criticalBootFailure || !bootReadiness.acceptingProductWork) {
   const message = formatBootFailureMessage(bootResult);
   console.error(message);
   vaultUnlockState?.lock();
-  releaseDataRootLock();
   throw new Error(message);
 }
 
@@ -1041,18 +1040,21 @@ function shutdown(signal: NodeJS.Signals): void {
           await shutdownControlStoreWorkerClient();
         })
         .then(() => {
-          if (listenerCloseFailed)
-            finishShutdown(signal, [...stepsCompleted, 'shutdown.failed'], false, 1);
-          else onClosed();
+          if (listenerCloseFailed) {
+            finishShutdown();
+          } else {
+            dataRootLock?.release();
+            onClosed();
+          }
         })
         .catch((error) => {
           console.error('Owned storage/listener shutdown failed.', error);
-          finishShutdown(signal, [...stepsCompleted, 'shutdown.failed'], false, 1);
+          finishShutdown();
         });
     },
     deadlineMs: SHUTDOWN_DEADLINE_MS,
-    onClosed: () => finishShutdown(signal, [...stepsCompleted, 'http-server.close'], false, 0),
-    onDeadline: () => finishShutdown(signal, [...stepsCompleted, 'shutdown.deadline'], true, 1),
+    onClosed: () => finishShutdown(0),
+    onDeadline: () => forceShutdownAtDeadline(signal, stepsCompleted.length),
   });
 }
 
@@ -1151,34 +1153,19 @@ async function classifyWorkerCheckpointsAfterSchedulerRecovery(
   return failures;
 }
 
-/** Releases the data-root lock when this process acquired one. */
-function releaseDataRootLock(): void {
-  dataRootLock?.release();
-}
-
 /** Finishes shutdown through one terminal path. */
-function finishShutdown(
-  signal: NodeJS.Signals,
-  stepsCompleted: string[],
-  deadlineForcedExit: boolean,
-  exitCode: number
-): void {
+function finishShutdown(exitCode = 1): void {
   vaultUnlockState?.lock();
-  if (deadlineForcedExit)
-    console.warn(
-      `Shutdown ${signal} deadline reached after ${stepsCompleted.length} steps; pending Audit durability is unknown.`
-    );
   // The acknowledged Audit covers completed steps; terminal database close cannot audit itself.
   const finalExitCode = closeProcessCoreDatabase() ? exitCode : 1;
-  releaseDataRootLock();
+  // On incomplete shutdown only process termination may release the flock.
   process.exit(finalExitCode);
 }
 
-/** Locks secret state and closes owned storage before releasing the data-root lock. */
+/** Locks secret state and closes the serving reader; an undrained writer owns the flock until exit. */
 function releaseProcessResources(): void {
   vaultUnlockState?.lock();
   if (!closeProcessCoreDatabase()) process.exitCode = 1;
-  releaseDataRootLock();
 }
 
 /** Closes the process-owned Core connection once, allowing SQLite to checkpoint its WAL. */

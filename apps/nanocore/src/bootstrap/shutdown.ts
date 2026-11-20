@@ -1,3 +1,14 @@
+/** Force process-wide termination without joining blocked native Worker threads. */
+export function forceShutdownAtDeadline(signal: NodeJS.Signals, completedSteps: number): void {
+  try {
+    console.warn(
+      `Shutdown ${signal} deadline reached after ${completedSteps} steps; pending Audit durability is unknown.`
+    );
+  } finally {
+    process.kill(process.pid, 'SIGKILL');
+  }
+}
+
 /** Input for closing a resource with a bounded shutdown deadline. */
 export interface CloseWithDeadlineInput {
   /** Starts resource close and invokes the callback when close completes. */
