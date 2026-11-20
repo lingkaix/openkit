@@ -22,4 +22,6 @@ Each inbound event is one `channel.discord.inbound` command row: the request id 
 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/channels src/storage/migrate.test.ts` for signature, pairing, revocation, disclosure, native operation projection, duplicate/restart and REST boundary coverage. Tests use generated keys, isolated real SQLite and fake fetch only. They make no Discord contact and prove no real-account or deployment acceptance.
 
+`discord-guild-gateway.ts` opens one Reports connection with `GUILDS` and `GUILD_MESSAGES`. It verifies the bot on `READY`, keeps Resume state in memory, and projects only eligible `MESSAGE_CREATE` events. `discord-group-mention.ts` preserves the exact addressed text and derives a receipt key and digest independent of the connection. The native receipt owner must recheck current binding and authority, resolve replays before rejecting stale unseen messages, and reserve before invoking work. These boundaries are fixture-tested and not wired into server startup.
+
 Discord account pairing resolves an ordinary session-shaped actor without administrator credential projection, including in local mode. Each action still requires current membership and its exact Pending authority. Pairing never inherits an unpresented administrator Token.

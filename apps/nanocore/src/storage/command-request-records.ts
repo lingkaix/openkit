@@ -75,7 +75,7 @@ const APP_COMMAND_REQUEST_SELECT = `SELECT
 FROM idempotency_requests`;
 
 /** App receipts retain the existing native Kernel format; Core/User/Workspace version their JSON row. */
-const COMMAND_REQUEST_SELECT = APP_COMMAND_REQUEST_SELECT.replace(
+export const COMMAND_REQUEST_SELECT = APP_COMMAND_REQUEST_SELECT.replace(
   'SELECT\n',
   'SELECT\n  schema_version AS schemaVersion,\n'
 );

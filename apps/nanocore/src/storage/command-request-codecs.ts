@@ -154,6 +154,15 @@ const DiscordInboundCommandScopeSchema = z
   })
   .strict();
 
+/** Guild ingress keeps sender identity in Communication's binding, not in the permanent receipt. */
+const DiscordGuildMentionScopeSchema = z
+  .object({
+    coreId: z.literal('server'),
+    guildId: z.string().regex(/^[0-9]{1,20}$/),
+    channelId: z.string().regex(/^[0-9]{1,20}$/),
+  })
+  .strict();
+
 /** Commands whose retained Core row is the permanent event record. */
 export const PERMANENT_COMMANDS: readonly CommandRequestName[] = [
   'scheduler.external-trigger.admit',
@@ -173,7 +182,9 @@ export function parseCommandScope(
   if (command === 'scheduler.external-trigger.admit')
     return ExternalTriggerCommandScopeSchema.parse(input);
   if (command === 'channel.discord.inbound')
-    return DiscordInboundCommandScopeSchema.parse(input) as CommandRequestScope;
+    return z
+      .union([DiscordInboundCommandScopeSchema, DiscordGuildMentionScopeSchema])
+      .parse(input) as CommandRequestScope;
   return parseStoredCommandScope(input);
 }
 
