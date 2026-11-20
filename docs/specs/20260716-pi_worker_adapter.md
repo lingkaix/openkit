@@ -61,6 +61,8 @@ Only an absent native agent directory is initialized, by validated staging. Ther
 
 `PI_OFFLINE` is `1`, `PI_SKIP_VERSION_CHECK` is `1`, and `PI_TELEMETRY` is `0`, with the admitted agent directory. There is no native package install or update. Installed resources still load.
 
+Pi SDK 1.4.0 native handled/accepted intake and its volatile pending queue do not establish consumption. Qualify receiver read-back that identifies the original Item and generation while processing on the exact Turn, including two identical texts, ACK loss, queue loss, abort and a successor racing a stale steer. Treat unproved processing as unknown. Refuse paths whose required safe boundary cannot qualify before contact. Preserve input at the work owner through read-back or governed resolution. [Retained Delivery Proof](20260703-worker_control_protocol.md#retained-delivery-proof) owns the shared boundary.
+
 ## Event Mapping
 
 ### Native Output Mapping
@@ -133,11 +135,15 @@ A real Pi Task exercises repository tools and review or apply, with a consistent
 
 ## Implementation Gaps
 
+- Pi SDK 1.4.0 processing read-back - Exact original input correlation after lost ACK or volatile queue loss awaits qualification - #947
+
 - Advertising script composition requires the released upstream fix, the carried patch, and exact-target, asset, credential, cancel, continuity, and image-result qualification - On main, the host supplies no composer and that qualification is open - #772
 - A script or image result path is usable only after the pinned image-validation defect and supported result packaging are qualified - On main, that path is not claimed and retained data is not deleted to force a pass - #772
 - A real Pi Task exercises repository tools and review or apply, with a consistent Web or remote MCP terminal result, and the built non-root image digest is proved - On main, synthetic search and host fixtures do not establish that proof - #120
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)
 - [Pi native MCP discovery](../decisions/20260930-pi_native_mcp_discovery.md)

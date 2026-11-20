@@ -260,6 +260,10 @@ Execution-generated runtime provenance is inapplicable only when the same comple
 
 An original native Worker execution interrupted by restart before allocation may use the same complete command, input, admission, package, Session and checkpoint lineage checks with first terminal cause `restart-before-effects`. This distinct branch requires positive adapter-owned proof of definite non-acceptance: no operation, backend Session, runtime binding, heartbeat, Worker sequence, process key, route-token evidence, competing owner or contradictory Worker-control evidence. It MUST retain its original execution and exactly its original materialize, terminal-publication and release obligations. The existing native terminal owner must acknowledge the original failed Turn, AgentSession and terminal-publication outcome. Only then may the native journal owner cancel the proved unused materialize and release obligations, preserving immutable step identities and any exclusion until every original obligation is resolved without an unknown result. Cancelling an unused release claims no physical release or fence. Checkpoint deletion requires that acknowledged closed original root and the original command receipt and Audit; input and package evidence remains required, while execution-generated provenance is inapplicable only under this complete positive absence proof. Restart resumes those same local transitions, skips their immutable ended outcomes and never submits Worker work. Missing, extra, unknown or contradictory obligations retain recovery ownership.
 
+### Durable Input Ownership
+
+Write exact input through [the work owner](20260921-work_data_retention_format.md#work-owned-input-and-proof) before public acceptance. Freeze any selected batch's member order and digests. Before native contact, open the attempt-bound kernel obligation. Native acceptance is observable intake. Only exact processing read-back establishes consumption. Keep the obligation open until consumption or governed resolution, and record which occurred. If contact may have occurred and proof is lost, keep it unknown and inspect the original operation. Refuse unqualified steer before contact. For a Worker Pending Request, report delivered only after exact read-back. Preserve accepted bytes until consumption or governed resolution. For busy-loop selection, see [Work Model](../core/work-model.md#active-work-semantics).
+
 ### Interrupted Retry Eligibility
 
 The following predicate is the only authority for projecting an interrupted-worker recovery row and accepting its retry command. It is derived from existing records and MUST NOT be persisted as another recovery state.
@@ -345,12 +349,16 @@ No test is required for deferred multi-process, multi-target, fairness, hot-fail
 
 ## Implementation Gaps
 
+- Restart recovery of accepted input - Exact per-input processing, lost ACK/inbox survival, and unresolved held inputs await qualification - #947
+
 - Original context-package recovery - Recovery does not restore the original package - #132
 - Interrupted-worker guidance and disabled-resume projection - Those recovery actions are not projected - #733
 - Worker package policy summaries and Knowledge descriptors - Those package contents are absent - #565
 - Checkpoint stages are exactly the five accepted stages - The stored schema still admits unproduced `waiting_for_user` - #726
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md)
 - [Truthful Native Stop Classification](../decisions/20261009-truthful_native_stop_classification.md)

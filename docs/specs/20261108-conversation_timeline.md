@@ -29,11 +29,10 @@ The following product decisions are accepted (2026-11-08) and govern this contra
 2. **Work | Full** is one switch over the same entries, not two interfaces.
 3. **Live steer per adapter.** `task.steer` is in v0.1.0 and is enabled per Worker adapter after qualification: Codex and Pi first, then OpenCode if its inbox qualifies. DeepSeek is unsupported. Workers on other adapters offer *Keep draft* and *Stop*.
 4. **Personal Assistant handoff state.** The Personal Assistant's "Started a Task" line shows that Task's current state. It is a view of existing records, not a result card.
-5. **No queued follow-up in v0.1.0.** Delivery stays optimistic: a message reaches the agent as fast as possible, through steer where the adapter supports it. The first item after v0.1.0 is a Core-held follow-up ([#643](https://github.com/lingkaix/openkit/issues/643)): NanoCore holds a message sent during a run and delivers it through the ordinary Send path when the run ends. When the run ends failed, stopped or waiting for a decision, the message stays held with its reason, and the person chooses Send now, Edit or Cancel.
-6. **Reporting rules within the built-in prompt cap.** The Goal Coordinator prompt is trimmed first; its cap is raised only if trimming cannot fit the rules.
-7. **Toast scope.** In v0.1.0, toasts fire only for decisions that are or become blocking, and for failures that already raise an attention row and concern work the viewer waits on, plus the existing handoff toast. Other failure toasts and opted-in completion toasts wait for a Thread event stream ([#644](https://github.com/lingkaix/openkit/issues/644)).
-8. **v0.1.0 scope.** Both the Minimal tier and the Extended tier are in v0.1.0. A live multi-Thread board stays deferred ([#648](https://github.com/lingkaix/openkit/issues/648)). Decision Trace links stay deferred ([#278](https://github.com/lingkaix/openkit/issues/278)).
-9. **Settled vocabulary and state.** "Run" is the word for a Turn in user-facing prose. The catch-up anchor is derived, at the level of a single Item. `thread.timeline` is a new read. The lens is remembered per device.
+5. **Reporting rules within the built-in prompt cap.** The Goal Coordinator prompt is trimmed first; its cap is raised only if trimming cannot fit the rules.
+6. **Toast scope.** In v0.1.0, toasts fire only for decisions that are or become blocking, and for failures that already raise an attention row and concern work the viewer waits on, plus the existing handoff toast. Other failure toasts and opted-in completion toasts wait for a Thread event stream ([#644](https://github.com/lingkaix/openkit/issues/644)).
+7. **v0.1.0 scope.** Both the Minimal tier and the Extended tier are in v0.1.0. A live multi-Thread board stays deferred ([#648](https://github.com/lingkaix/openkit/issues/648)). Decision Trace links stay deferred ([#278](https://github.com/lingkaix/openkit/issues/278)).
+8. **Settled vocabulary and state.** "Run" is the word for a Turn in user-facing prose. The catch-up anchor is derived, at the level of a single Item. `thread.timeline` is a new read. The lens is remembered per device.
 
 ## Contract / Expected Behavior
 
@@ -416,21 +415,13 @@ Failures that raise no attention row, and opted-in completion, require an author
 `task.steer` is specified by [Task Mode](20260704-task_mode_worker_delegation.md#live-steer) and the [Task Live-Steer Rulings](../decisions/20261008-task_live_steer_rulings.md); the Composer owns the submission ([Explicit Live Input](20260831-unified_conversation_composer.md#explicit-live-input)).
 
 - **Rollout and fallback.** Steer is enabled per adapter, in the order Codex, Pi, OpenCode, each only after its qualification passes (races, interrupt, stale target and no spill into later runs). DeepSeek is unsupported. Workers on other adapters show "This worker can't take notes while running", with *Keep draft* and *Stop*.
-- **State survives reload.** The steer state is not mutation-local. The timeline reads completed disposition from the original retained `user-message` Item revision, so reload, other devices and ordinary command-receipt pruning preserve the same state. An Item without provable completed disposition shows *Delivery unknown*. Check and Retry reuse the exact target, text and request identifier without native resend. No separate receipt mechanism is added.
+- **Replay reads the original Item.** Reload and receipt pruning preserve the original retained `user-message` Item revision and its disposition. Check and Retry reuse the exact target, text and request identifier without native resend.
 
-#### Core-Held Follow-up (After v0.1.0)
+Render the original Item’s committed intake disposition after reload. Show ‘Accepted’ for proved native acceptance, ‘Not delivered’ for proved refusal and ‘Delivery unknown’ for unproved intake after possible contact. Processing may still be unknown after acceptance.
 
-This behavior is deferred to the first item after v0.1.0 ([#643](https://github.com/lingkaix/openkit/issues/643)) and is recorded here so the timeline reserves its rendering.
+#### Input on a busy Thread
 
-Delivery today is Send when the Thread is idle, and Steer while a qualified Task run is in progress. A second submission to a Thread with a nonterminal Turn returns `thread_busy`. [Task live steer](20260704-task_mode_worker_delegation.md#live-steer) is the exception. The timeline keeps the draft. There is no submission queue.
-
-1. The person sends while a run is in progress.
-2. NanoCore records the message as held for this Thread, under the message's request identifier.
-3. When the current run ends, NanoCore hands the message to the agent through the ordinary Send path, which starts the next run.
-
-A held message renders in place after the running run, in the human voice, with the state *Waiting for this run to end*. Edit and Cancel work until delivery starts; both are ordinary commands with request identifiers. On delivery it becomes an ordinary user message of the next run. If the run ends failed, stopped or waiting for a decision, the message stays held and says why: "Not sent: the run stopped. Send now · Edit · Cancel".
-
-Core holds and delivers the message and the client only shows Core's state, so the rule that clients must not invent queueing or follow-ups ([Active-Turn Input Projection](../core/communication.md#active-turn-input-projection)) holds. The [Delivery Policies](20260531-human_attention_intervention_model.md#delivery-policies) items are: owner, the Thread's input path in NanoCore; durable proof, the held record exists before the request returns; failure, the message stays held with a reason; restart, it survives and is delivered once the run is terminal; replay, the request identifier returns the original outcome. One held message per Thread is the initial scope. Where steer is supported both are offered; where it is not, the held message is the natural fallback, and *Keep draft* remains.
+For ordinary submission to a Thread with a nonterminal Turn, project `thread_busy` and preserve the draft. Exact Task live steer keeps its own qualified path. [Work Model](../core/work-model.md#active-work-semantics) owns the pending busy-loop decision.
 
 #### Other Rules
 
@@ -578,11 +569,15 @@ The prompt-cap test passes and the package trace records the digest. Delivery of
 
 ## Implementation Gaps
 
+- Original retained delivery disposition - The v0.2.0 per-input proof linkage and projection-loss acceptance are not qualified - #947
+
 - Discarding a draft can be undone for 10 seconds - no timed discard undo exists - #791
 - Busy retry honors HTTP `Retry-After` - the client reads `error.details.retryAfter` only - #791
 - Outputs over 1 MB never render inline - no common media-size guard enforces that cap - #791
 - Knowledge revision and Connection references resolve to their surfaces - those two destinations are unavailable - #791
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Conversation timeline rulings](../decisions/20261108-conversation_timeline_rulings.md)

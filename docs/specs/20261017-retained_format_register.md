@@ -8,51 +8,107 @@ aspect: contract-evolution
 
 This register owns the inventory of retained families and their current format evidence. [Storage](../core/storage.md) owns persistence rules; each linked family owner retains its semantics and lifecycle.
 
-## Status
+## Scope
 
-Accepted as a Storage inventory. The register changes no retained-family behavior.
+Owns the retained-family inventory, authority classification, predecessor marker evidence, target version tags, reader boundaries and fixture pointers.
 
-## Implementation
+Does not own family schemas, persistence, access, retention, recovery, migration or release qualification. Each family owner defines those rules.
 
-Implemented as a document. Individual marker and reader gaps remain listed in the projection below.
+Core: [Storage](../core/storage.md), [Contract Evolution](../core/contract-evolution.md), [Knowledge](../core/knowledge.md), [Evidence](../core/evidence.md) and [Fault Tolerance](../core/fault-tolerance.md).
 
-## Owns
+## Baseline And Tag Rules
 
-The register owns the family inventory, authority classification, current marker evidence, reader boundary, fixture pointers and identified gaps.
-
-## Does Not Own
-
-Family schemas, persistence guarantees, access, retention, recovery, migration mechanisms and release qualification remain with their existing owners. This register creates none of them.
-
-## Core References
-
-- [Storage](../core/storage.md)
-- [Contract Evolution](../core/contract-evolution.md)
-- [Knowledge](../core/knowledge.md)
-- [Evidence](../core/evidence.md)
-- [Fault Tolerance](../core/fault-tolerance.md)
-
-## Summary
-
-This is the sole current pre-v0.1.0 baseline under [Pre-Release SQL Baselines](../decisions/20261114-pre_release_sql_baselines.md). Core and Workspace each start with `0000_baseline`. The [Workspace AgentSession exception](../decisions/20261114-pre_release_sql_baselines.md#workspace-agentsession-continuity) adds one forward migration from rc.10. Other intermediate development formats, upgrade fixtures and previous-candidate qualification are retired. Named current-format tests are source pointers, not execution claims. Actual runtime and evidence databases are not cleanup targets.
+The [Control Kernel And Service Storage decision](../decisions/20261120-control_kernel_and_service_storage.md) sets the one-time v0.2.0 baseline. Every owner journal starts with one `0000_baseline.sql` at index 0. The version tag inventory gives the target. The remaining inventory records predecessor marker and fixture evidence for comparison. The [Storage Layout](20260703-storage_layout_record_ownership.md#server-database-allowlist) fixes target placement. Neither evidence nor this register qualifies any release pair.
 
 The Artifact rows track immutable versions and exact retained originals in this baseline. Exact-version choices share the existing Review judgement array. Candidate sets and their selections retain the Evaluation Foundation owner below.
 
-[Contract Evolution](../core/contract-evolution.md#retained-data-continuity) and [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md) set the continuity boundary at v0.1.0. Explicit pre-stable resets remain permitted. This register introduces no marker, migration, legacy reader or release-pair qualification. The existing family owners govern creation, publication, update, deletion, retry, restart and failure; this inventory grants no runtime or recovery authority.
+[Contract Evolution](../core/contract-evolution.md#retained-data-continuity) and [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md) set the continuity boundary at v0.1.0. The named v0.2.0 fresh-root cutover is the sole post-v0.1.0 reset. Other stable updates follow [Retained Data Continuity](../core/contract-evolution.md#retained-data-continuity). This register introduces no marker, migration, legacy reader or release-pair qualification. The existing family owners govern creation, publication, update, deletion, retry, restart and failure; this inventory grants no runtime or recovery authority.
 
 The class column describes data authority, not the closed retention-class vocabulary in Storage. Canonical records and authored configuration retain their owning authority. Evidence and backups retain their existing access and coverage conditions. Opaque execution bytes have a retention lifecycle, without an OpenKit promise to parse their native format. Rebuildable and disposable material is separated below.
 
 A content version, digest, Git commit, protocol version or SQLite migration journal does not by itself version every retained payload. The marker column distinguishes these facts. No product-release fixture pair is qualified by this register. Current round-trip, restart and fresh-baseline tests have narrower scope.
 
-## Decision
-
 Keep one inventory row for each retained format family. Where tables share one owned format and reader boundary, one row can name that family group. Record an absent marker as absent; do not treat a content identity as a schema version.
-
-## Contract / Expected Behavior
 
 Each row identifies location, owning contract, authority class, current marker, closed-core and open-extension boundary, fixtures and gap. A gap reports current implementation evidence; it does not change the owning requirement. Recheck affected rows when a family, marker or reader boundary changes. No program reads this register to authorize an effect or reconstruct missing authority.
 
-## Current Implementation Projection
+## v0.2.0 Version Tag Inventory
+
+The named fresh-root cutover freezes the target below. Compare the predecessor and target as separate formats. A target writer emits explicit version 1. A target reader rejects a missing marker, zero and unsupported values before decoding. Closed-core fields, required features and owner checks continue to apply even when the number is unchanged. Journal indexes start at zero. Contents, entity revisions, grants, epochs, digests, dependency pins, wire protocols and external native format values are distinct from an OpenKit retained version tag.
+
+| OpenKit retained tag | Predecessor value | v0.2.0 value | Owner |
+| --- | --- | --- | --- |
+| Native Core journal | Index 0, `0000_baseline.sql` | Index 0, frozen Core `0000_baseline.sql` and matched native ledger hash | Storage Layout, Control Kernel |
+| Native Workspace journal and portable journal count `drizzle.workspace` | Indexes 0–1, count 2 | Index 0, one `0000_baseline.sql`, count 1 | Storage Layout, Workspace Backup |
+| Native User journal | Indexes 0–6, count 7 | Index 0, one `0000_baseline.sql` | Storage Layout, User |
+| Native App journal and portable `drizzle.app.<count>` marker | Indexes 0–4, `drizzle.app.1`–`drizzle.app.5` with values 1–5 for recognized prefixes | Index 0, one `0000_baseline.sql`, `drizzle.app.1` = 1 | Storage Layout, Light App and Workspace Backup |
+| Native service and extension journals | No separate entries | One `0000_baseline.sql` at index 0 per provisioned owner | Each service or stateful extension |
+| Data Root layout | `schemaVersion` 1, `layoutVersion` 2 | `schemaVersion` 1, `layoutVersion` 1 | Storage Layout |
+| Shared file and record header `schemaVersion` | 1 | 1 | Schema Evolution and each family owner |
+| Workspace, Thread, Turn, AgentSession, Item revision and stream-event product `schemaVersion` and SQL `schema_version` | 1 | 1 | Workspace owns Workspace metadata and AgentSession product records. Workspace and Server work each own their respective Thread, Turn, Item, event and body records. |
+| Workspace metadata and immutable work-body descriptor markers | `schemaVersion` / `schema_version` 1 | 1 | Workspace owns Workspace metadata. Workspace and Server work each own their respective body records. |
+| Thread entry and audience features | `openkit.thread-entry.v1`, `openkit.thread-visibility.v1` | Same strings | Thread product owner and Thread Visibility |
+| Private Thread Login affinity | `openkit.thread-login.v1` | Same string | Native Thread owner and Vault Login |
+| Registered Server work feature | `openkit.server-threads.v1` | Same string | Schema Evolution and Server work |
+| Artifact head and immutable version descriptor | `schemaVersion` 1 | 1 | Work Resource Interaction |
+| Conversation file-input inventory | Turn `schemaVersion` 1 | 1 | Workspace Turn owner |
+| Work observation header, row and required feature | `schema_version` 1, `v=1`, `openkit.work-observations.v1` | Same | Work Data Retention, Workspace or Server work |
+| Normalized runtime evidence, restricted capture metadata and unaccepted capture source | `schemaVersion` or `schema_version` 1; `runtime.evidence.v1`, `worker.runtime-provenance.v1` where used | Same | Work Data Retention, Workspace or Server work evidence |
+| EvidenceBundle metadata and registered family | `schema_version` 1, `evidence.bundle.v1` | Same | Audit, Usage And Evidence, Workspace or Server work |
+| SQL CapabilityCall and Usage JSON | `schema_version` 1 | 1 | Workspace or Server work |
+| Conversation feedback and retrieval traces | `schemaVersion` 1 on each codec | 1 for each codec | Turn feedback and retrieval owners |
+| Knowledge, Notebook and Source profile | `openkit-knowledge-profile-v4` | `openkit-knowledge-profile-v1` | Knowledge Store |
+| Scope Notebook schema `schema_version` | `openkit-scope-knowledge-schema-v4` | `openkit-scope-knowledge-schema-v1` | Knowledge Store and Notebook Editing |
+| Notebook commit metadata | `openkit-knowledge-notebook-commit-v1` | Same | Notebook Editing |
+| Workspace Notebook heads, Proposals and Reviews | Record and Review entry `schemaVersion` 1 | 1 | Workspace Knowledge |
+| Notebook export features and Knowledge package | `openkit.knowledge-git-notebook.v1`, `openkit.knowledge-owner-scope.v1`; `openkit.knowledge-package` `schemaVersion` 1 | Same | Knowledge Store and File Storage And Knowledge Packages |
+| Memory suppression envelope and feature | `schemaVersion` 1, `openkit.memory-suppression.v1` | Same | User Memory |
+| Agent Environment Package and retained snapshot | Outer `schemaVersion` 1, embedded AEP `schemaVersion` 4 | Outer 1, embedded 1 | Agent Environment Package and scope retaining the snapshot |
+| Context Package trace and manifest | Each `schemaVersion` 1. Manifest `policyVersion` `worker-context-v1` | Each `schemaVersion` 1. Manifest `policyVersion` `worker-context-v1` | Worker Context Package |
+| Resource catalog and tree representation | `schemaVersion` 1, `agent.resource-catalog.v1`, `openkit-tree-v1` | Same | Scope catalog and Skill or Agent Plugin package owner |
+| MCP catalog configuration | `openkit-mcp-config-v1` | Same string | MCP catalog |
+| Scope-owned Tool snapshot | `schema_version` 1 | 1 | Scope-owned Tool schema capture |
+| Policy participant Tool summary input contract | `mcp-tool-summary-v1` | Same string | Policy |
+| Redacted resolved Agent setup row | `resolved_agent_setups.schema_version` 1 | 1 | Workspace Agent setup |
+| Local AI settings file | `schemaVersion` 1 | 1 | Local AI settings store |
+| Authored Server, User, Workspace, Agent, internal role profile, Provider, Gateway, Source and model catalog records | Owned `schemaVersion` 1 for each record family | 1 for each | Config And Identity and each scope owner |
+| Policy shape and retained Policy identities | Policy v1, `openkit.workspace-resource-policy.v1`, `nanocore-policy:v1`, `nanocore-gateway-policy:v1`, `nanocore-worker-policy:v1`, `nanocore-workspace-role-policy:v1`, `policy-kernel:v1` | Same | Policy and its scope-specific producers |
+| Access Tokens, Server Bootstrap/default access, PermissionDecision, Audit and command receipts | independently tagged `schema_version` 1 | 1 | Control Kernel, User and Workspace for their records |
+| Kernel boot and Vault-administration evidence | Boot Audit `schema_version` 1 and scalar Vault-administration Audit with no independent marker | Kernel Audit envelope `schema_version` 1 | Kernel Audit |
+| Governed Policy action and terminal Audit action `repair.model-call` | Absent | v1 in the existing Policy and Audit contracts. Admission uses `permission.decision`. | Kernel Audit and Policy |
+| Cross-owner request UUID name prefix | Absent | `openkit:storage-receipt:v1` | Protocol Identifiers. The deciding owner commits its original result. |
+| Permanent inbound command | `channel.discord.inbound` | `channel.inbound` | Kernel receipt owner and Communication |
+| Guild mention semantic-input digest domain | `guild-mention-v1` | Same string | Discord input producer |
+| User receipts, read receipts, Audit, notebook admission and permission records | `schema_version` 1 on owned JSON | 1 | User |
+| Vault store, reference state, Vault grant, Login observation, refresh-family writer and subscription metadata | `schemaVersion` or `schema_version` 1 for each independently decoded record | 1 for each | Vault and Provider Subscription |
+| Scheduler admission, attempt, recurrence and Pending Request owned JSON | `schema_version` 1 on marker-bearing records | 1 | Control Kernel for scheduling, Workspace for Pending Requests |
+| Recurrence export features and structured delegation input | `workspace.recurring-triggers.v1`, `workspace.recurring-history.v1`, delegation draft/request `schemaVersion` 1 | Same | Recurring Scheduler and work input owner |
+| Execution journal roots and steps | `schema_version` 1, `core-image-acquire/v1`, `core-idle-cleanup/v1`, `core-harness-consume/v1`, `core-workspace-recovery/v1`; retain versioned producer identities such as `workspace-worker-turn/v1` | Step and root 1, version 1 on retained definition identifiers | Durable Execution and allocating definition owner |
+| Containment step control codec and image evidence references | `containment/v1`, `native-image-invocation/v1`, `image-input/v1` | Same | Kernel containment and NanoHost image settlement |
+| Retained runtime cache lineage and prompt-cache digest domain | `openkit:runtime-cache-lineage-ref:v1`, `openkit:worker-prompt-cache-key:v1` | Same | Gateway and CapabilityCall evidence |
+| Image acquisition step references | `artifact/v1:`, `turn/v1:` | Same prefixes | Image acquisition producer and execution step reader |
+| Gateway semantic and Worker native capture boundaries | `gateway-admitted-semantic-v1` (Gateway), `native-content-v1` (Worker) | Same respective strings | Gateway model capture and Worker Control respectively, with the work observation owner |
+| Kernel input-proof carriage | Absent as an independent bounded proof | 1 in existing step carriage; original invocation and native proof reference/digest | Durable Execution |
+| Worker/NanoHost durable adapter wrapper records and receipts | Owned `schema_version` 1, `worker-image-settlement/v1`, `nanohost-target/v1`, `openkit.nanohost.inspection.v1` | Same owned versions | NanoHost extension and existing wrapper/receipt owners |
+| Workspace-bound Harness Login required feature | `worker.harness-login.v1` | Same string | Worker Login and the feature registry |
+| Host storage identity, native volume layout and image index | Identity `schemaVersion` 1, shipped image `org.openkit.storage.version` string `"1"`, private image index `format_version` 1 | Identity 1, shipped image label string `"1"`, and private image index 1 | NanoHost physical storage. A retained volume records its actual image layout family and version. |
+| All six security-trigger tables | SQL `schema_version` 1 | 1 | Security-trigger service |
+| Artifact Review, Human Judgement, candidate sets, Goals, cards, Plans and Task facts | `schemaVersion` or `schema_version` 1 on owned row or record formats | 1 | Workspace and each work family |
+| Workspace synchronization and snapshot-chain rows | `schema_version` 1 | 1 | Workspace Synchronization |
+| Generative UI presentations and export features | `schema_version` 1, `workspace.generative-ui.native-v1`, `urn:openkit:a2ui:catalog:native:v1` | Same | Generative UI |
+| Light App kernel, portable marker and definitions | `kernel_format_version` 2, recognized `light-app.kernel.1` / `.2`; `openkit.light-app` `schemaVersion` 1; `workspace.generative-kernel.v1` | Kernel 1, `light-app.kernel.1` = 1; definition and feature 1 | Generative Kernel and Workspace Backup |
+| App-local Audit | `audit_events.schema_version` 1 | 1 | Each Light App database |
+| Portable Light App, definition and record rows | `schemaVersion` 1 on each exported row | 1 on each | Workspace analytical export and Generative Kernel |
+| App recovery snapshot metadata | `schemaVersion` 1 | 1 | Light App Recovery |
+| Analytical Workspace export | Envelope 1, `exportFormatVersion` 3 | Envelope 1, export format 1 | Workspace Backup And Export |
+| Whole-root backup | `schemaVersion` 1, `backupFormatVersion` 1 | 1 each | Data Root backup owner |
+| Workspace backup/MOVE manifest and seal | `openkit-workspace-backup` and `openkit-workspace-backup-seal`, version 1 | 1 each | Workspace Backup And MOVE |
+| Workspace deletion closure and offline layout migration report | Envelope/schema marker 1; deletion closure 1 | 1 each | Workspace lifecycle and Storage Layout |
+| App update settings, receipts and component outcomes | `schemaVersion` 1 | 1 | App Update Delivery |
+
+Retain vendor API versions, MCP, ACP, native Harness wire versions, OCI, OKF interchange version 0.2 and the external Generative UI protocol version. A recorded `protocolVersion` identifies the wire that produced the record and retains its wire meaning independently of the record envelope. An adapter wrapper marker does not relabel embedded native bytes. Immutable payloads with no owner-defined codec retain their exact bytes. Scalar relations with no independent payload keep their owner journal rather than gaining a JSON tag. Rebuildable processor and index versions do not version retained records.
+
+## Predecessor Marker And Fixture Evidence
 
 ### Navigation
 
@@ -60,7 +116,7 @@ Paths beginning with `C/` resolve under `apps/nanocore/src/`; `S/` under `docs/s
 
 `W` means `workspaces/<workspaceId>`, `T` means `W/threads/<threadId>/turns/<turnId>`, and `A` means `W/runtime/agent-sessions/<agentSessionId>`. These directories retain supporting files, not the mutable Workspace, Thread, Turn, Item, event, observation or AgentSession authority. `N` means one notebook root: `users/<userId>/memory`, `W/knowledge` or `server/knowledge`. `J(scope)` means that database's `__drizzle_migrations` and the checked-in `apps/nanocore/drizzle/<scope>/meta/_journal.json`. SQL journals version DDL, not each JSON payload.
 
-Workspace product records live in `W/db/workspace.sqlite`; Server Thread, Turn, Item, event and observation records live in `server/db/core.sqlite`. Current control readers use `C/storage/control-store-product-records.ts`, `C/storage/retained-work-{metadata,items,events}-v1.ts`, `C/storage/workspace-file-records.ts` and `C/storage/work-observations.ts`. Scope-owned immutable bodies use the `backend-evidence` mount; accepted small product bodies can be inline in SQL. Server EvidenceBundle bodies use `server/evidence/backend/`. Thread, Turn, Item and CapabilityCall retain explicit Workspace or Server ownership. The retired top-level work-record `workspaceId` is rejected. Workspace operation selectors remain addressing inputs and grant no Server authority. Current Server administration admission is separate from retained ownership; no alternate stale-file reader is granted.
+In the predecessor, Workspace product records used the Workspace database and Server product records used `server/db/core.sqlite`. The [Server Database Allowlist](20260703-storage_layout_record_ownership.md#server-database-allowlist) specifies their v0.2.0 placement. Predecessor control readers use `C/storage/control-store-product-records.ts`, `C/storage/retained-work-{metadata,items,events}-v1.ts`, `C/storage/workspace-file-records.ts` and `C/storage/work-observations.ts`. Scope-owned immutable bodies use the `backend-evidence` mount; accepted small product bodies can be inline in SQL. Server EvidenceBundle bodies use `server/evidence/backend/`. Thread, Turn, Item and CapabilityCall retain explicit Workspace or Server ownership. The retired top-level work-record `workspaceId` is rejected. Workspace operation selectors remain addressing inputs and grant no Server authority. Current Server administration admission is separate from retained ownership; no alternate stale-file reader is granted.
 
 | Owner | Document |
 | --- | --- |
@@ -80,9 +136,9 @@ Workspace product records live in `W/db/workspace.sqlite`; Server Thread, Turn, 
 
 The SQLite section below owns the inventory rows for mutable product records, execution journals and Workspace Knowledge publication selections. This section inventories their supporting immutable bytes and the remaining file-owned families. A directory's presence does not restore retired file authority.
 
-Two further dispositions stay open. The storage layout and this register still disagree about where Light App definition history lives, and ownership of the App package and source-reference seam remains open. This register settles neither and adds no history table, format or transfer contract for them; the storage release resolves both.
+Light App Catalog owns reusable definition interchange. Workspace Backup owns the analytical export and operational backup or MOVE representations. The App retains exact references. Knowledge, Skill, Plugin, presentation and external capability owners resolve their own resources under current destination authority.
 
-| Family | Location | Owner | Class | Current version marker or identity | Closed core / open extension and reader | Fixture sources | Gap or limit |
+| Family | Predecessor location | Predecessor owner | Class | Predecessor version marker or identity | Closed core / open extension and reader | Fixture sources | Gap or limit |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Layout marker | server/layout.json | L/E | canonical | schemaVersion 1; layoutVersion 2 | E; C/storage/fs-layout.ts validates the owned layout and identity | C/storage/fs-layout.test.ts | No qualified prior-release layout fixture. |
 | Restricted evidence bytes | `W/evidence/bundles/<id>/{content,chunk-*}` | D; S/20260703-audit_usage_evidence_records.md | retained evidence | Manifest identity and content digests | E; C/evidence-bundles.ts binds bytes to published metadata | C/evidence-bundles.test.ts; C/storage/workspace-export-observations.test.ts | Bytes need their SQLite manifest; no independent raw format. |
@@ -131,7 +187,7 @@ SQL columns and embedded JSON have separate reader boundaries. Marked JSON rows 
 
 The rows include control product records, execution/step journals, recovery admissions and Workspace Knowledge publication authority. The current baseline omits retired Goal and host-repository setup families; it runs no historical post-journal cutover. AEP snapshots and immutable App definitions remain files. SQLite content references retain exact immutable bytes without moving mutable authority back into files. Default Core access is now read-only and query-only under [#616](https://github.com/lingkaix/openkit/issues/616). [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md) records the landed cold-read, pin, close and exclusion cuts; its exhaustive physical-writer and read-lifetime census remains open under [#715](https://github.com/lingkaix/openkit/issues/715). Its acceptance scope does not close this register's marker, App package/source-reference seam, or historical-reader gaps, qualify busy capture, or supply a release-pair fixture.
 
-| Family | Location | Owner | Class | Current version marker or identity | Closed core / open extension and reader | Fixture sources | Gap or limit |
+| Family | Predecessor location | Predecessor owner | Class | Predecessor version marker or identity | Closed core / open extension and reader | Fixture sources | Gap or limit |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Workspace metadata | `W/db/workspace.sqlite: control_workspaces` | L; X | canonical product record | SQL schema_version 1 and record schemaVersion 1; J(workspace) | C/storage/control-store-product-records.ts checks markers and exact Workspace identity before payload decoding; descriptive additions remain readable | C/storage/workspace-file-record-schema.test.ts; C/storage/control-store-products.test.ts | W/workspace-record.json is not current authority; no release-pair fixture is qualified. |
 | Thread and Turn records | Core/Workspace SQLite: `control_threads`, `control_turns` | L/D; X; S/20260909-thread_visibility_and_sharing.md; S/20260813-internal_agent_runtime.md | canonical scope-owned product records | SQL schema_version 1 and record schemaVersion 1; J(scope) | C/storage/control-store-product-records.ts and C/storage/retained-work-metadata-v1.ts check the marker, exact owner and lineage. Turn internalExecution retains role/model/context/threshold, selected nullable profileId and effective initial limits. P/src/models/thread.ts and C/storage/retained-work-events-v1.ts retain the optional `segment` and `segmentation` reader reservations | C/storage/workspace-file-records-thread-envelope.test.ts; C/storage/workspace-file-record-boundaries.test.ts; C/internal-agents/{knowledge-manager-agent,rolling-context}.test.ts; C/storage/work-format-reservations.test.ts | Stale thread.json/turn.json files grant no authority; absent historical internal metadata is not synthesized. New continuous Assistant conversations produce `segment` and `segmentation`; native admission checks successor lineage and boundary-only rollover. Historical absence is not a default and is not a clear. Settled product Thread outputs still omit the reservations (`packages/app-api-schemas/src/thread-projection.ts`). Boundary-only rollover has native component coverage; no release-pair qualification is claimed. |
@@ -175,11 +231,11 @@ The rows include control product records, execution/step journals, recovery admi
 | Workspace synchronization and snapshot chain | `W/db/workspace.sqlite` | S/20260703-workspace_synchronization.md | canonical operational/evidence graph | Independent SQL schema_version 1 for owned JSON; J(workspace); revision/tree/manifest digests | Shared marker check before JSON decode; C/runtime/{workspace-sync-records,workspace-apply-results}.ts have descriptive retained readers and closed lineage/effect semantics | C/runtime/{workspace-sync-records,workspace-apply-results}.test.ts | Attachment/cursor evidence is not an imported live grant; no release pair is qualified. |
 | Generative UI presentations | `W/db/workspace.sqlite` | S/20260908-generative_ui_interaction.md | canonical declarations | Independent SQL schema_version 1 for owned JSON; J(workspace); A2UI protocolVersion and request/definition digest | Shared marker check before JSON decode; C/generative-ui/commands.ts validates supported core declarations; content/context have explicit open members | C/generative-ui/commands.test.ts; C/storage/generative-portability.test.ts | Protocol version does not separately version the stored SQL row. |
 | Light App metadata, business data, Audit and receipts | `W/light-apps/<appId>/data.sqlite` | S/20260908-generative_kernel_data_operations.md | canonical schema/data and Audit | J(app), through 0004_audit_authentication; ordinary Audit requires schema_version 1; kernel_format_version 2; schema_digest is definitionVersion; app/schema/record revisions and write_schema_revision | API/light-apps.ts and C/generative-kernel/{native,commands}.ts require the admitted definition and exact native columns. definition_source_json records optional selected-template provenance | C/generative-kernel/{commands,snapshots}.test.ts; C/storage/{app-db,generative-portability}.test.ts | Direct schema edits clear template provenance. The implementation has no schema_revisions table or down migration. Pre-stable Kernel receipt lookup is actor-free. Earlier actor-scoped rows remain stored and do not serve replay or reuse detection; there is no migration or dual lookup. The candidate release notes disclose that discontinuity and add no upgrade step. Expired App request identities remain until App retention ends and return recovery_required on reuse; ordinary native pruning never removes them. |
-| Light App immutable definitions | `W/light-apps/<appId>/definitions/<sha256>.json` | S/20260908-generative_kernel_data_operations.md | authored admitted configuration | format openkit.light-app; schemaVersion 1; schemaRevision and digest | API/light-apps.ts and C/storage/app-db.ts verify exact admitted bytes and the current database digest | C/storage/generative-portability.test.ts; C/generative-kernel/snapshots.test.ts | Instance files contain admitted definitions, without template parent, actor or time. Resource Catalog inline versions own those template facts. |
+| Light App immutable definitions | `W/light-apps/<appId>/definitions/<sha256>.json` | S/20260908-generative_kernel_data_operations.md | authored admitted configuration | format openkit.light-app; schemaVersion 1; schemaRevision and digest | API/light-apps.ts and C/storage/app-db.ts verify exact admitted bytes and the current database digest | C/storage/generative-portability.test.ts; C/generative-kernel/snapshots.test.ts | Instance files contain admitted definitions, without template parent, actor or time. Resource Catalog inline versions own those template facts. Generative Kernel owns each instance’s admitted definition history. Verify original definition bytes by digest and establish activation and attribution from that App’s committed evidence. Report missing lineage explicitly. Resource Catalog owns the complete reusable template history, including its parent links. |
 | Light App local recovery snapshots | `W/light-apps/<appId>/snapshots/<snapshotId>.{sqlite,json}` | S/20260908-generative_kernel_data_operations.md; B | retained local recovery copies | Independent metadata schemaVersion 1; snapshot ID, SQLite digest, kernel format, definitionVersion and app/schema revisions | C/generative-kernel/snapshots.ts checks the shared marker before its fixed native v1 decoder, ignores descriptive additions, seals SQLite bytes before metadata publication and validates exact snapshot identity on restore | C/generative-kernel/snapshots.test.ts; C/storage/data-root-backup.test.ts | Full Data Root backup preserves these copies. Logical Workspace export excludes them. Restored older kernel formats require explicit upgrade. |
 | Native migration journals | `__drizzle_migrations` in each Core/User/Workspace/App database | L | canonical setup metadata | J(core): one `0000_baseline`; J(workspace): `0000_baseline`, `0001_agent_session_current_thread` (`1795024632000`); J(user): 7 entries and J(app): 5 entries | C/storage/migrate.ts delegates current DDL and ledger publication to Drizzle; missing SQL, malformed metadata and unsupported identities refuse before product admission | C/storage/fresh-baseline.test.ts; C/storage/migrate.test.ts; C/storage/db.test.ts | Fresh and existing Workspaces apply the same AgentSession index migration. The rc.10 journal refuses the new identity. SQL hashes remain informational; journal identity does not version every JSON payload. No automatic reset or old-file authority conversion. |
 
-### Current Baseline Marker Checks
+### Predecessor Marker Checks
 
 These identifiers locate current decoder checks. They are not supported development-format windows, pending pre-release upgrade work, another schema owner or permission to reset data.
 
@@ -192,7 +248,7 @@ These identifiers locate current decoder checks. They are not supported developm
 
 ### Rebuildable And Disposable Boundary
 
-| Family | Location | Owner | Class | Current version marker or identity | Closed core / open extension and reader | Fixture sources | Gap or limit |
+| Family | Predecessor location | Predecessor owner | Class | Predecessor version marker or identity | Closed core / open extension and reader | Fixture sources | Gap or limit |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Retrieval Kernel generations | `<scope-owner>/indexes/retrieval/<scope-sha>/<generation>/`, CURRENT and LOCK | S/20261014-retrieval_kernel.md | rebuildable derivative | Machinery schema 5, tokenizer, dictionary, processor and Cargo lock digest | packages/retrieval-kernel/src/store.rs admits descriptive serde additions; closed enums and machinery identity govern rebuild | packages/retrieval-kernel/src/tests.rs | Tantivy files are not SQLite or canonical Memory. A machinery mismatch requires rebuilding. |
 | Nonlexical Knowledge indexes | `W/indexes/knowledge-{links,validation,source-refs}.json` | L; G | rebuildable derivative | schemaVersion 1 and canonical notebookRevision | C/storage/index-rebuild.ts validates the known projection and rebuilds incompatible or missing data from Git | C/storage/index-rebuild.test.ts | A successful rebuild does not qualify retained canonical continuity. |
@@ -201,7 +257,7 @@ These identifiers locate current decoder checks. They are not supported developm
 
 ### Security Program Retained Declarations
 
-These rows declare the accepted retained changes from [Runtime Security](20261109-runtime_security.md) on existing owners without creating a new storage authority. Each row states its current reader boundary and remaining implementation or qualification gaps. Unknown required or authority-bearing semantics fail closed. Gate output remains transient.
+The following rows describe predecessor Security readers, physical homes and fixtures. The target allocation is in [Server Database Allowlist](20260703-storage_layout_record_ownership.md#server-database-allowlist) and the target markers are in the [v0.2.0 Version Tag Inventory](#v020-version-tag-inventory).
 
 | Family | Location | Owner and retained change | Class | Marker or identity | Closed core / open extension and reader | Fixture source | Gap or limit |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -230,12 +286,27 @@ These rows declare the accepted retained changes from [Runtime Security](2026110
 
 Containment introduces no new retained credential kind, sensor shape, action queue, run status or actuator enum. Its exact restrictions and evidence use existing Policy, Identity, Vault, Audit, command and EvidenceBundle fields and lifecycle. Route-group owner/switch mapping is source-authored operation metadata; deployed denies remain in ordinary Server Policy. Beyond the accepted nullable Token issuer link and co-located closed Integration selection above, the additional retained values are only `rss` in the existing feed kind, `quarantine` in Policy `lifetime.anchor.kind`, `containment` in the existing Server journal definition field, system Actor id and action `security.containment` with enforcement point `security.containment@admit` in Core PermissionDecision/Audit/journal records, and `route-group-switch` / `context-preset` in the existing Policy `container.kind` (the latter's three fixed ids activate only narrowing templates). Unknown required meanings fail closed. Qualification must prove existing-family representability before writing; another shape requires an accepted owner amendment.
 
-## Rollout / Migration Plan
+## Recovery Boundary
 
-Before `v0.1.0`, edit the current baseline under the existing family owners, without a new format bump or intermediate upgrade fixture. Preserve current closed-core admission and ordinary lifecycle rules. From the first stable release, retained-data evolution follows Contract Evolution and the release plan. A content version, source identity or successful current round trip is not proof of cross-release continuity.
+After the v0.2.0 baseline, retained format changes follow their owner and [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before admitting a restored root, verify the supported owner ledgers and the Core baseline identity. Restore a predecessor archive and image as a matched pair.
 
 External execution storage, local images and helper receipts need explicit backup coverage; a Data Root backup does not silently include them. Native resume can fail even when all working bytes survive. Lost canonical authority must fail closed; a rebuildable index can be reconstructed only from its admitted canonical source.
 
-## Testing Strategy / Acceptance Criteria
+## Acceptance
 
 Inspect each row against its current owner, writer, reader and named fixture source. Confirm that canonical authority, retained evidence and rebuildable derivatives are distinct. Verify document metadata, links and the generated index through the repository checks. Named inline tests establish current-format examples only; they do not establish an executed release-pair migration.
+
+## Implementation
+
+- `apps/nanocore/drizzle/`
+- `apps/nanocore/src/storage/`
+- `packages/config-schema/src/`
+- `packages/protocol/src/`
+
+## Implementation Gaps
+
+None.
+
+## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)

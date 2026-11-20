@@ -118,7 +118,9 @@ The authorized timeline and read projection read the original Item disposition a
 4. The private result is `succeeded`, `refused`, or `unknown`. Success requires the adapter's exact native acceptance evidence, not Core receipt or a successful byte write. Commit the immutable Item disposition, pointer receipt and Audit before releasing the retained private result for slot reuse. A definite refusal discovered after Item admission retains that Item and its refusal disposition; only pre-admission refusal promises zero work-history writes.
 5. Completed exact replay returns the original Item disposition with no native contact or current-target resolution, including after command-receipt pruning. Concurrent identical calls share one attempt; changed text or target under the same command scope returns `409 idempotency_key_conflict`. An Item or private attempt without provable completed disposition prevents fresh execution and exposes unknown or existing recovery evidence. Receipt expiry does not turn retained attempt evidence into fresh authority. The caller inspects before explicitly choosing a new request; no automatic resend, follow-up promotion, compensation, or new-request retry is installed.
 
-Initial Item append, the completed Workspace Item/receipt/Audit tuple, Core Harness storage, and the external runtime are separate effect boundaries, with no cross-store or cross-runtime transaction. A crash between local writes can leave an inspectable Item without delivery. A crash after dispatch can leave an unknown native outcome. Write-before-dispatch and result-before-slot-reuse are required ordering guarantees; an unprovable gap fails closed. If the existing storage seam cannot satisfy either ordering, report that concrete finding rather than adding another durable owner. Steer creates no checkpoint transition, continuation, terminal state, or recovery runner; original Task closeout remains authoritative.
+Initial Item append, the completed Workspace Item/receipt/Audit tuple, the kernel obligation, NanoHost extension storage, and the external runtime are separate effect boundaries, with no cross-store or cross-runtime transaction. A crash between local writes can leave an inspectable Item without delivery. A crash after dispatch can leave an unknown native outcome. Write-before-dispatch and result-before-slot-reuse are required ordering guarantees; an unprovable gap fails closed. If the existing storage seam cannot satisfy either ordering, report that concrete finding rather than adding another durable owner. Steer creates no checkpoint transition, continuation, terminal state, or recovery runner; original Task closeout remains authoritative.
+
+The Workspace Item commits exact input before the success acknowledgement. At selection, the kernel opens a unique input obligation for the original owner, Item, attempt and generation before native contact. The adapter submits the original disposition and exact correlation. Commit the deciding proof and its transition together before ACK. A native intake acknowledgement can settle the existing public success without establishing processing. The original input stays durable until exact same-Turn read-back or governed resolution. Holding it cannot publish to a successor or retry an uncertain call. [Work Data Retention](20260921-work_data_retention_format.md#work-owned-input-and-proof) owns exact input and [Worker Control](20260703-worker_control_protocol.md#retained-delivery-proof) owns delivery evidence. For busy-loop selection, see [Work Model](../core/work-model.md#active-work-semantics).
 
 #### Conflicts, failures, and recovery
 
@@ -261,6 +263,8 @@ Bounded-completion acceptance includes a normally ended Worker Turn whose reques
 
 Explicit Task selection runs through Workflow Coordinator for one bounded worker attempt when the hard admission predicates pass. It preserves the instruction bytes, records visible state, and never silently becomes a Goal or hidden local execution.
 
+For the exact qualified pin, lose an intake ACK and its volatile inbox after admitting two equal-text inputs with different Item IDs. Only exact processing evidence for the respective input may discharge its obligation. Reopen the original work and verify identical bytes and disposition without another contact. Independent completion or restart cannot release the other obligation.
+
 ## Implementation
 
 - `apps/nanocore/src/runtime/`
@@ -270,6 +274,8 @@ Explicit Task selection runs through Workflow Coordinator for one bounded worker
 
 ## Implementation Gaps
 
+- Durable per-input steer settlement - The exact same-Turn processing/read-back and retained input recovery rules await qualification - #947
+
 - The direct Task canonical hash uses logicalModelId - On main, the wire field and the hash use modelId - #745
 - Selected-Worker conversation submission uses the direct Task request shape - On main, that branch builds a different request - #745
 - The dashboard exposes readable taskInputs for the initiating request - On main, the dashboard returns empty taskInputs - #728
@@ -277,6 +283,8 @@ Explicit Task selection runs through Workflow Coordinator for one bounded worker
 - An authorized Coordinator request continues the existing Goal Task - On main, Coordinator dispatch creates a new Thread from a fresh request - #746
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Explicit Task Delegation](../decisions/20261004-explicit_task_delegation.md)
 - [Task Live-Steer Rulings](../decisions/20261008-task_live_steer_rulings.md)

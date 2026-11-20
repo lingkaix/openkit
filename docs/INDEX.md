@@ -84,12 +84,12 @@ and are not listed here.
 - `docs/specs/20260909-internal_agent_resource_integration.md` — Accepted, Partial — Owns trusted assembly of selected Skills, internal MCP bindings, and native Kernel and UI Tools for the internal Assistant.
 - `docs/specs/20260910-agent_operator_skill.md` — Accepted, Partial — Owns the distributable operations Skill and the administrator CLI that travels with it.
 - `docs/specs/20260910-app_update_delivery.md` — Accepted, Partial — Owns how one configured deployment replaces NanoCore and Web.
-- `docs/specs/20261020-compute_neutrality_target.md` — Draft, Implemented — This Draft records the proposed placement and carriage mapping, migration order, retained-meaning dispositions and validation limits.
+- `docs/specs/20261020-compute_neutrality_target.md` — Draft, Partial — This document records the proposed placement mapping and the accepted v0.2.0 backend qualification and scoped release contract.
 
 ### communication
 
 - `docs/specs/20260528-core_client_boundary.md` — Accepted, Implemented — Owns how `@openkit/core-client` groups Core protocol calls and App API calls.
-- `docs/specs/20260703-worker_control_protocol.md` — Accepted, Implemented — Owns `openkit-worker-control-v2`, the end-to-end worker-control wire protocol between governed worker containers and NanoCore, including upward…
+- `docs/specs/20260703-worker_control_protocol.md` — Accepted, Partial — Owns `openkit-worker-control-v2`, the end-to-end worker-control wire protocol between governed worker containers and NanoCore, including upward…
 - `docs/specs/20261002-remote_mcp_interface.md` — Accepted, Implemented — Owns how NanoCore admits a remote MCP call and dispatches it.
 
 ### contract-evolution
@@ -98,7 +98,7 @@ and are not listed here.
 - `docs/specs/20260703-schema_evolution_record_envelope.md` — Accepted, Partial — This specification is the single owner of the common record envelope, the required-feature registry, camelCase-to-snakecase field surface mapping, split…
 - `docs/specs/20260715-contract_stability_baseline.md` — Accepted, Partial — Owns the stability classification of current contract families and the gates that decide when a family is a baseline.
 - `docs/specs/20261012-product_integrity_check.md` — Accepted, Not Started — Owns one read-only Workspace integrity check and the two invariant names in the first set.
-- `docs/specs/20261017-retained_format_register.md` — Accepted, Implemented — The register owns the family inventory, authority classification, current marker evidence, reader boundary, fixture pointers and identified gaps.
+- `docs/specs/20261017-retained_format_register.md` — Accepted, Implemented — This register owns the inventory of retained families and their current format evidence.
 
 ### evidence
 
@@ -186,7 +186,7 @@ and are not listed here.
 ### storage
 
 - `docs/specs/20260703-storage_layout_record_ownership.md` — Accepted, Partial — This specification is the single owner of the physical `DATAROOT` directory hierarchy across Server, User, and owner-independent Workspace scopes, the…
-- `docs/specs/20260704-workspace_backup_export_import.md` — Accepted, Partial — This specification is the single owner of the analytical Workspace export V3 format and `.openkit-workspace.tar.zst` archive transport, per-Workspace…
+- `docs/specs/20260704-workspace_backup_export_import.md` — Accepted, Partial — This specification is the single owner of the analytical Workspace export format and `.openkit-workspace.tar.zst` archive transport, per-Workspace operational…
 - `docs/specs/20260801-nanohost_workspace_data_boundary.md` — Accepted, Implemented — Owns the separation between NanoCore durable product authority and NanoHost worker execution, and the byte, path, integrity, admission and non-authority…
 - `docs/specs/20260921-work_data_retention_format.md` — Accepted, Partial — This specification is the single owner of the work-data observation record format (`controlworkobservations` and portable `observations.jsonl`), the four…
 - `docs/specs/20261018-file_storage_and_knowledge_packages.md` — Accepted, Partial — This specification is the single owner of shared citable content references (`contentRef`), the `@openkit/storage` package boundary and Storage access-lease…

@@ -57,6 +57,8 @@ Cancel acknowledgement is a boolean, correlated with the terminal outcome. A com
 
 This pin has no expected-execution guard. Idle `delivery:steer` can start new work. The adapter exposes no steer hook and refuses without native effects.
 
+OpenCode 2.2.5 is unsupported for live steer before native contact. Qualify a future pin only if it can fence the selected native Turn against idle new-work creation and correlate each original input through processing, including equal-text steers, lost ACK, restart and successor races. Start input uses the common obligation and reports unknown when exact target-Turn read-back is unavailable. [Retained Delivery Proof](20260703-worker_control_protocol.md#retained-delivery-proof) owns the disposition.
+
 ## Event Mapping
 
 ### Native Output Mapping
@@ -107,6 +109,8 @@ A future steer mapping proves native same-Turn inbox acceptance, the exact initi
 - A future steer mapping proves native same-Turn inbox acceptance, the exact initial and steering user lineage, idle-race closure, and no restart or successor spill - On main, 2.2.5 has no qualified steer hook - #771
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)
 - [Earlier-version data](../decisions/20260930-earlier_version_data_not_carried.md)

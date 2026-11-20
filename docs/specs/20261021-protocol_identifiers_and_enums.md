@@ -124,6 +124,10 @@ Clients and channel adapters MUST assign UUID `requestId` values for mutating co
 
 Protocol timestamps MUST be RFC 3339 strings assigned by Core for Core-created records and events. Event ordering MUST use `sequence`; timestamps are for human time, indexing, and cross-system correlation.
 
+### Cross-Owner Storage Receipts
+
+For an internal cross-owner command, derive the bare request UUID with UUIDv5 in the RFC URL namespace. Its name is the complete UTF-8 JCS encoding of `["openkit:storage-receipt:v1", deploymentId, sourceOwner, verb, occurrenceKey]`. Use the exact deployment and source-owner identities and the original occurrence. Inbound occurrence identity binds channel kind, event family and authenticated external event coordinates across principals. Retain the tuple. Compare target, expected generation and semantic input hash independently of UUID equality. A changed request conflicts. Public request IDs keep their existing contract. Keep the permanent channel-neutral `channel.inbound` key separate from external-trigger deduplication. The [deciding owner](20261019-durable_execution_and_control_store.md#cross-owner-command-settlement) retains the receipt or equivalent uniqueness for the replay horizon. The initiator settles its original intent and publishes once only when that receipt permits publication.
+
 ## Canonical Structured-Value Digests
 
 New structured-value digests MUST use the shared browser-safe canonical JSON encoder (`canonicalJsonText` in `@openkit/protocol`) and lowercase hexadecimal SHA-256 (`sha256CanonicalJson` in the Node-only `@openkit/protocol/digest` subpath), unless an owning specification and the table below declare a retained exception. The browser root of `@openkit/protocol` MUST NOT import Node crypto. `sha256CanonicalJson(value)` returns untagged lowercase hex; callers own any `sha256:`, `ctxpkg_sha256_`, or `kp_` prefix and domain framing.
@@ -465,9 +469,13 @@ not-run
 
 ## Implementation Gaps
 
+- Cross-owner storage receipts - The deterministic internal receipt tuple, comparison and replay rules await implementation - #947
+
 - Mutating command UUID `requestId` admission - Some mutation request schemas admit arbitrary nonempty `requestId` strings instead of enforcing UUID syntax - #638
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md)
 - [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md)

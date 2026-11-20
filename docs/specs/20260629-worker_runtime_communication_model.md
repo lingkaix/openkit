@@ -85,6 +85,12 @@ In the resident adapter contract, `session.open` carries `resume: { locator, dig
 
 Raw Turn model output (current default 16,777,216 bytes under [Worker Turn Reliability Envelope](20260531-worker_turn_reliability_envelope.md#worker-raw-output-accounting)), canonical file storage and streaming transfer, and [bounded Context Package model projections](20260703-worker_context_package.md#bounded-model-projection) are three separate accounting domains ([Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md)). Each adapter enforces a 16 MiB (current default) ordinary native stdout, observation, and final-result parser guard and fails closed on overflow. Each adapter retains at most a 16 KiB (current default) redacted diagnostic prefix from each ordinary stdout and stderr stream for the addressed Turn only. The optional Codex provenance stream under [Worker Runtime Subagent Provenance](20260711-worker_runtime_subagent_provenance.md) is separately bounded and is not double-buffered here. Native stdout, final-result, ACP-update, parser, tool-result, and transport guards are resource controls and never debit raw LLM output capacity.
 
+### Adapter Evidence And Input Boundary
+
+The NanoHost extension owns physical routes, liveness, resident bindings, credential verifier material and native result/fingerprint records. An Agents adapter owns its native session, Turn and input inspection references. Submit bounded proof through the typed kernel operation. Kernel admission, generation, revocation, consumption decision and release remain independent of raw adapter handles. Losing the adapter owner holds only affected conflicts. A healthy kernel can revoke grants and schedule disjoint work. Follow the [common qualification and fence criteria](20261020-compute_neutrality_target.md#backend-qualification-and-scoped-release).
+
+Each adapter declares intake durability, exact read-back and the safe steer boundary for the pinned harness. Treat Worker intake as volatile. Report accepted only for acknowledged native intake and consumed only when receiver read-back identifies that input in processing on the addressed Turn. Timeout after possible contact is unknown. Do not resend unknown input or move it to another Turn. The qualified path ties the original operation and generation to its proof and uses the [kernel obligation](20261019-durable_execution_and_control_store.md#retained-kernel-step-carriage).
+
 ## Turn Lifecycle On The Wire
 
 The production `openkit-worker-shim` binary runs as a zero-argument supervisor that keeps one Integration client alive within the bounded outage budget across multiple resident AgentSession bindings. It has no package-argument or one-shot CLI compatibility entrypoint. The NanoHost execution path reuses a compatible Sandbox and Harness across independent AgentSessions and opens each binding with the Thread's exact resume reference and fresh session loopback credentials. It reuses a resident binding across Turns only after terminal `session.inspect` proves the exact surviving native host and conversation read-only without starting work. It materializes fresh per-Turn AEP and Context Package inputs and refuses unknown adapter IDs at the Harness registry.
@@ -209,6 +215,8 @@ Adapter-normalized stop classification adds no automatic retry, prompt replay, r
 
 ## Implementation Gaps
 
+- Adapter-owned evidence and exact input read-back - Per-input proof across transport loss and independent extension unavailability await qualification - #156, #947
+
 - Image-default layering and the loaded system requirements hold in a deployed Sandbox - On main, local fixtures do not prove the loaded image - #120
 - Transport loss and a Core restart adopt only an exact surviving binding - On main, local adapter fixtures do not establish that adoption - #156
 - Real Task, review, Web, and remote MCP outcomes are separate required evidence - On main, local adapter fixtures do not establish them - #177
@@ -218,6 +226,8 @@ Adapter-normalized stop classification adds no automatic retry, prompt replay, r
 - A native preparation uses only the remaining outer deadline - On main, adapter open starts a fresh 60000 ms allowance after queue admission - #622
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Tool Surface Changes At Turn Boundaries](../decisions/20260929-tool_surface_changes_at_turn_boundaries.md)
 - [Earlier Version Data Not Carried](../decisions/20260930-earlier_version_data_not_carried.md)

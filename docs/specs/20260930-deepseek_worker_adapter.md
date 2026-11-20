@@ -101,6 +101,8 @@ An allow-once permission uses the exact offered id. Otherwise the adapter reject
 
 A broader resume under the currently admitted selection, after the recorded model has been removed, stays unsupported until a native release can represent it. There is no error-text parsing workaround and no retained-data rewrite.
 
+DeepSeek `dsh` 0.2.1-rc.5 on stable ACP v1 exposes no qualified live steer or per-input processing read-back. Unsupported steer refuses before admission or native contact. For a start whose contact was possible, missing exact processing evidence stays unknown. A folded native terminal result, reconnect or new prompt cannot resolve that input. Requalification requires an exact guarded Turn and read-back through ACK loss, cancellation, equal-text inputs and restart, with no spill to a later Turn. This rule keeps the native ACP wire version and relies on [Retained Delivery Proof](20260703-worker_control_protocol.md#retained-delivery-proof).
+
 ## Acceptance
 
 The exclusion above is the acceptance boundary for this pin. A nonempty assistant chunk, and the absence of an OpenKit cancellation, do not prove completion while `end_turn` also covers aborted, error, and the vendor default.
@@ -121,6 +123,8 @@ A future steer mapping needs an accepted interface and pin, plus exact native sa
 - Resume under the currently admitted selection survives removal of the recorded model - On main, that resume fails closed until a native release can represent it - #773
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)
 - [Downward common runtime contract](../decisions/20260929-downward_common_runtime_contract.md)

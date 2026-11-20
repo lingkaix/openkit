@@ -106,6 +106,10 @@ Restart recomputes desired inputs from current owners and adopts only an exact s
 - After deadline-owned cleanup, the AgentSession becomes non-reusable and the prior Turn retains the truthful result its lifecycle owner determined. Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen.
 - NanoHost service, effect-capable member, or execution-server failure interrupts or leaves unknown every affected AgentSession independently. It MUST NOT infer a shared result, migrate an AgentSession, or authorize an automatic replacement, and affected capacity remains unavailable until the NanoHost owner proves fresh-ready recovery.
 
+## Kernel Grant And Adapter Affinity
+
+Workspace owns AgentSession product continuity. The adapter owns native affinity, lineage and recovery evidence. Attach a native binding only against the original admitted package, attempt, AgentSession and current generation. Route hashes and retained native session IDs do not confer authority. An unavailable adapter yields unknown where exact identity or outcome cannot be proved. Keep the matching conflict held, revoke predecessor grants and Vault holders before successor readiness, and issue only the grants the new placement actually requires. Later inspection of the original releases only the writers covered by proof. [Scoped release](20261020-compute_neutrality_target.md#backend-qualification-and-scoped-release) governs unknown writers and backend-specific cancellation.
+
 ## Successor Fallback
 
 A fresh successor AgentSession is allowed for a separately authorized attempt only after the predecessor is terminal and runtime-fenced and current manifest resolution, policy, Vault grants, Sandbox requirements, AEP compatibility, Workspace materialization, and scheduler admission succeed.
@@ -145,11 +149,15 @@ L1 and L2 cover the predicates in Exact Reconnect Contract, Later-Turn Reuse And
 
 ## Implementation Gaps
 
+- Owner-local native affinity and scoped release - The v0.2.0 adapter-store loss, original-generation inspection and successor refusal fixtures await qualification - #156
+
 - The Sandbox compatibility key includes the complete declared Harness set, Integration version, trust class and sensitivity class - Current packages cannot prove those inputs, so the partial digest confines placement to one Thread and the native binding owner requires proved closure before another AgentSession binds; general co-residency remains unavailable - #735
 - A declared Harness set is admitted before shared placement - On main, that admission is not established - #641
 - Real-runner, restart, interrupt, cleanup, and shared-Sandbox fault acceptance is proved - On main, that physical qualification is not established - #156
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Compute and harness neutrality](../decisions/20261020-compute_and_harness_neutrality.md)
 - [Earlier-version data is not carried](../decisions/20260930-earlier_version_data_not_carried.md)

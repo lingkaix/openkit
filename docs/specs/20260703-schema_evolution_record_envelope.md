@@ -26,6 +26,10 @@ The clean target wins over pre-baseline internal compatibility. For the current 
 
 The shape and validation contract starts at the accepted baseline created by the active storage, manifest, audit, vault, and context specifications. Mandatory cross-release data continuity starts with `v0.1.0` under [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). Before `v0.1.0`, an explicit deployment reset may replace migration; the closed-core, open-extension, and fail-closed rules still apply. Future versions follow the optional-field, fail-closed, and retained-data continuity rules in [Contract Evolution](../core/contract-evolution.md).
 
+### Frozen Retained Format Baseline
+
+The named v0.2.0 fresh-root cutover in [Contract Evolution](../core/contract-evolution.md#retained-data-continuity) starts each OpenKit-owned retained version tag at 1. This includes independently decoded SQL JSON rows, file envelopes, registered formats and versioned receipt and codec prefixes. The [Retained Format Register](20261017-retained_format_register.md#v020-version-tag-inventory) lists each predecessor tag and target owner. Require the marker before decoding. Missing values or zero cannot select a valid decoder. Unknown closed core, required feature or authority-bearing semantics refuse. Read only the supported formats of the installed baseline; later format upgrades follow the owning contract. Content identities, revisions, digests, epochs and external protocol versions keep their own meaning. Drizzle journals version SQL, while each independently decoded JSON payload keeps its own marker.
+
 ## Record Envelope
 
 Canonical file-backed records SHOULD use the common envelope defined by `RecordEnvelopeSchema` in `@openkit/config-schema` (`packages/config-schema/src/schema-evolution.ts`) unless the owning specification explicitly defines a narrower line-oriented format.
@@ -141,7 +145,7 @@ When tolerant storage records project into protocol or App API payloads, the pro
 
 ## Personal Scope And Knowledge Profile Projection
 
-Thread `visibility` and `privateOwnerUserId` are authority-bearing creation metadata owned by [Thread Visibility And Sharing](20260909-thread_visibility_and_sharing.md); missing or contradictory data cannot default to shared. The scoped Knowledge extension adds exact owner scope under profile v4 plus notebook Git base and candidate commit assertions on publication and required Review; page revision counters are absent. Implementations MUST apply these through the record and schema migration owners, preserving source lineage and failing closed on ambiguous scope or revision. Retired Workspace Memory aliases remain absent; User Memory is a distinct scoped projection, not a compatibility parser.
+Thread `visibility` and `privateOwnerUserId` are authority-bearing creation metadata owned by [Thread Visibility And Sharing](20260909-thread_visibility_and_sharing.md); missing or contradictory data cannot default to shared. The scoped Knowledge extension adds exact owner scope under `openkit-knowledge-profile-v1` plus notebook Git base and candidate commit assertions on publication and required Review; page revision counters are absent. Implementations MUST apply these through the record and schema migration owners, preserving source lineage and failing closed on ambiguous scope or revision. Retired Workspace Memory aliases remain absent; User Memory is a distinct scoped projection, not a compatibility parser.
 
 ## Authority-Bearing Fields
 
@@ -225,9 +229,13 @@ Evidence bundle readers MUST NOT promote unknown evidence kinds into canonical i
 
 ## Implementation Gaps
 
+- Frozen retained versions - Producers and readers for the v0.2.0 baseline tag reset and missing-marker refusal await implementation - #619
+
 - Common envelope `ownerScope` closed set (`server`, `user`, `workspace`) - `RecordOwnerScopeSchema` in `packages/config-schema/src/schema-evolution.ts` admits `organization` without an accepted organization scope owner - #761
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md)
 - [Open Extension Partition](../decisions/20261005-open_extension_partition.md)

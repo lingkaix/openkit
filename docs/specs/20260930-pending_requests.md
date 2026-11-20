@@ -140,7 +140,7 @@ When admission is attempted, with no polling process:
 Only one outcome-initiated Turn is admitted at a time. When several executors have waiting outcomes, the worker, Assistant, or Coordinator Turn goes first and person or `automation` outcomes follow at the next idle point.
 
 Execution and the proof that ends delivery, per executor:
-- **Worker requester.** The Thread's worker Agent runs the Turn, which is created `pending`, is admitted under current authority, and waits for worker scheduler capacity. The frozen outcomes enter its worker input as structured context: each request, its resolution or ending, and, for every approval that governs a call, the disposition with its reason and any bounded result. The Turn runs on the current AgentSession, or on a successor that resumes the native conversation when that binding has ended. Delivery is proved by native submission.
+- **Worker requester.** The Thread's worker Agent runs the Turn, which is created `pending`, is admitted under current authority, and waits for worker scheduler capacity. The frozen outcomes enter its worker input as structured context: each request, its resolution or ending, and, for every approval that governs a call, the disposition with its reason and any bounded result. The Turn runs on the current AgentSession, or on a successor that resumes the native conversation when that binding has ended. Delivery requires exact receiver read-back that identifies the frozen input in processing on that Turn. A native submission acknowledgement establishes intake only.
 - **Assistant requester.** The Chat Mode owner runs the Turn with the answer as the clarified input, with no AgentSession and no worker scheduler capacity. Delivery is proved when the Assistant service durably accepts the Turn input.
 - **Coordinator requester.** The Goal owner runs the Turn with the granted or refused intent as input, with no AgentSession and no worker scheduler capacity. Delivery is proved when that owner durably accepts the Turn input. The grant does not admit a worker Turn.
 - **Person requester.** A Core-local Turn records the Items and completes, runs no agent, and needs no scheduler capacity. Delivery is proved by that Turn's completion, written together with its Items.
@@ -169,8 +169,10 @@ A person's grant is delivered as a decision only: its Core-local Turn writes the
 
 Outcome of delivery:
 - The executor's proof sets `delivered` and clears any held result.
-- A refusal proved before that proof returns the frozen outcomes to `undelivered`, with their publication Turn kept.
-- When that proof is unknown, as when native submission or the Assistant's input acceptance cannot be established, the outcomes are set to `delivery-unknown`. They are never resubmitted automatically; the Turn follows ordinary recovery, and a later user message does not re-deliver them.
+- Return the frozen outcomes to `undelivered` only on proof that the original delivery was refused before any effect. Preserve the original publication Turn. After possible contact, missing processing proof keeps the original delivery unknown and inspectable.
+- When that proof is unknown, as when Worker processing or the Assistant's input acceptance cannot be established, the outcomes are set to `delivery-unknown`. They are never resubmitted automatically; the Turn follows ordinary recovery, and a later user message does not re-deliver them.
+
+For Worker delivery, keep the complete, immutable frozen outcome batch with the Workspace Turn. Its order and digests make recovery resolve the original bytes after restart. Open the [kernel input obligation](20261019-durable_execution_and_control_store.md#retained-kernel-step-carriage) when delivery is selected. A transport ACK, repeated text or the Turn's later response cannot prove per-input processing. Missing evidence after possible contact stays unknown, with no automatic delivery to a successor. Release and restage only after definite refusal before effect or through governed resolution. The original publication Turn and request identity stay fixed.
 
 ### Closeout
 
@@ -287,9 +289,13 @@ Each supported worker runtime, under its existing runtime owner, exercises `work
 
 ## Implementation Gaps
 
+- Worker delivery read-back - Proof of exact frozen input processing after native ACK or restart is not qualified - #947
+
 - A security trigger raises at most one open renotice per item and recipient - Delivery of the original outstanding notice is implemented; no producer raises a new renotice request - #785
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Pending tool calls](../decisions/20260930-pending_tool_calls.md) deliver an outcome on a later Turn.
 - [No default deadline](../decisions/20260930-pending_requests_have_no_deadline.md) keeps a request decidable until an owner ends it.

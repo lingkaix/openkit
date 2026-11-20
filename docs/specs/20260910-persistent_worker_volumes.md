@@ -126,6 +126,8 @@ Only one current Sandbox attachment may own a retained storage group; per-Thread
 
 An authorized Worker may still modify or delete files through its ordinary granted filesystem access; lifecycle retention does not provide application undo or snapshots. Default retention has no implicit time-to-live. Admission checks available host headroom and existing resource-limit policy; a configured limit or insufficient capacity refuses admission, without an invented automatic eviction policy. Status distinguishes capacity refusal from authorization, compatibility and readiness failures. Explicit resource purge follows current deletion authority, writer fencing, restricted data/hold checks and an auditable exact target. Resource retirement, lost transport, service stop, epoch cleanup, image pruning and disk pressure cannot silently remove retained work. Resource deletion reports incomplete while unavailable execution-host storage cannot be inspected or erased. A bounded operator export includes ignored/untracked files and native data, quiesces writers for a consistent copy and preserves identity metadata separately from public reports. Deleting a Thread does not purge group volumes or another Thread's files; purge granularity is the whole storageRef and must respect every surviving reference and audience. When a private source is narrowed, deleted or revoked and its owner requires access withdrawal, fence affected shared attachment and withhold reuse unless whole-volume retention can prove protected bytes absent. An explicitly published copy follows its publication owner's retention rules rather than an inferred retroactive cascade. Do not infer safe removal by scanning filenames or hiding a Core Thread. A still-authorized existing private association continues only under its exact source restrictions; no migration broadens them. A Core-only backup declares execution-host roots absent; it cannot claim full work-environment recovery. Host loss remains unavailable unless an actual backup has been restored and re-admitted.
 
+The NanoHost extension owns storage bindings, contributor history, native storage refs and image settlements. Keep contributor history and manifests in verified owner backups. Core authorizes attachment, purge and disclosure under current scope and Policy from typed proof. A stale binding, missing audience evidence or unsupported owner ledger holds the affected operation. Kernel grant revocation remains available without the NanoHost store. Require predecessor writer fencing for reuse of the same volume. A proved-disjoint destination can proceed once old publishers are fenced. Preserve unfenced resource refs on the original kernel execution even after logical attempt closure. See [restore evidence](../core/fault-tolerance.md#restore-evidence) and [scoped release](20261020-compute_neutrality_target.md#backend-qualification-and-scoped-release).
+
 ## Resource Lifecycle And Observable Refusals
 
 User workload-resource mutations consume admitted supply under current resource and affected-work authority. Administrator template publication, policy changes, arbitrary builds and retained-storage purge remain technical administration. Creation and stopped metadata reserve no physical capacity; image equality never merges resources.
@@ -307,10 +309,14 @@ Permit user-supplied native harness configuration within existing policy, includ
 
 ## Implementation Gaps
 
+- Independent volume and contributor recovery - Verified restore, fenced reuse and absent extension-store fixtures await v0.2.0 implementation - #156
+
 - User-selected named Workspace-shared Sandboxes, administrator templates, shared-source and legacy-private admission, and equal-member operations are the accepted resource contract - Those operations are not implemented - #122
 - The Sandbox compatibility key includes the complete declared Harness set, Integration version, trust class and sensitivity class - Current packages cannot prove those inputs, so the partial digest confines placement to one Thread and the native binding owner requires proved closure before another AgentSession binds; general co-residency remains unavailable - #735
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [User-selected Workspace-shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records the shared-resource admission boundary. Named shared Sandboxes and administrator template publication are accepted after `v0.1.0-rc.1`.
 - [Native environment managed outside the Sandbox](../decisions/20260930-native_environment_managed_outside_the_sandbox.md) records where native environment values live.

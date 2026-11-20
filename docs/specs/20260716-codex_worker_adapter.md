@@ -53,6 +53,8 @@ The adapter protects only native state destination names it has proved, in addit
 
 At 0.166.0, steer maps to `turn/steer` with the exact `threadId` and `expectedTurnId`. The returned `turnId` correlates with the public Item and digest. Stale, busy, or invalid input refuses. An uncertain RPC fences the slot and does not resend.
 
+Codex App Server 0.166.0 correlates native intake through the expected Turn and the returned native Turn ID. This qualifies the acceptance observation only. To discharge the kernel obligation, read the original input through receiver evidence identifying its processing on that exact native Turn. Qualification must cover lost steer ACK, exact original Items after reconnect, two equal-text inputs, idle/terminal race and no successor spill. Processing read-back on this pin is unqualified until those checks pass. Refuse any path without the required same-Turn guard before contact. Preserve an unknown result after possible contact and never resend it. [Retained Delivery Proof](20260703-worker_control_protocol.md#retained-delivery-proof) owns the common evidence.
+
 ## Event Mapping
 
 ### Native Output Mapping
@@ -110,6 +112,8 @@ Native system defaults stay enabled below the user and session layers. Image app
 
 ## Implementation Gaps
 
+- App Server 0.166.0 processing read-back - Exact input correlation after lost ACK and native state recovery awaits qualification - #947
+
 - A deployed Sandbox proves whole-home credential absence, external-authority isolation, native plugins and hooks, image defaults, and the loaded system requirements - On main, local synthetic probes do not close that proof - #120
 - Host-managed Login and server-side compaction are qualified on the real Worker path, and a cross-account continuation is qualified or refused - On main, the Login path exists and that Worker-path qualification is open - #604
 - Opt-in App Server provenance export runs before native work, while the rollout forest is retained either way - On main, that export refuses and has no collector - #770
@@ -117,6 +121,8 @@ Native system defaults stay enabled below the user and session layers. Image app
 - Native system defaults stay enabled below the user and session layers, and the image applies them with protected precedence - On main, image qualification of that precedence is not established - #770
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)
 - [Codex home retained whole](../decisions/20260930-codex_home_retained_whole.md)

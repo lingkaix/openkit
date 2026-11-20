@@ -83,7 +83,9 @@ The existing authorized target/read surface projects `activeTurnId`, qualified `
 
 Live-steer controls accept only the Task owner's text shape. Model, effort, environment reuse, Artifact references, uploaded files, and capability changes are inapplicable to live input. The client requires an explicit resolution of inapplicable draft fields and never silently discards them or sends them as configuration. New-Turn selectors and Artifact import behavior remain the ordinary submission contract. Explicit live input requires non-whitespace text and no identical request already pending.
 
-The client retains the exact text, Thread, Turn, request identity, and inapplicable draft fields after failure or uncertainty. Catalog refresh does not replace that pending Turn, choose a successor, submit automatically, or fall through to a new Turn. It clears the live draft only after the exact accepted response. Render native acceptance, definite non-delivery, and delivery unknown distinctly through the Task owner's Item/result projection; success never says the model read, obeyed, or completed the instruction. Sending is only the live attempt's projection, not a durable queue or promise of delivery. Lifecycle, replay, races, recovery, and receipt authority remain with Task Mode; the Composer adds no independent routing or retry logic.
+The client retains the exact text, Thread, Turn, request identity, and inapplicable draft fields after failure or uncertainty. Catalog refresh does not replace that pending Turn, choose a successor, submit automatically, or fall through to a new Turn. It clears the live draft only after the exact accepted response. Native acceptance makes no claim about model reading, compliance, or completion. Sending is only the live attempt's projection, not a durable queue or promise of delivery. Lifecycle, replay, races, recovery, and receipt authority remain with Task Mode; the Composer adds no independent routing or retry logic.
+
+Render the original Item’s committed intake disposition after reload. Show ‘Accepted’ for proved native acceptance, ‘Not delivered’ for proved refusal and ‘Delivery unknown’ for unproved intake after possible contact. Processing may still be unknown after acceptance.
 
 ## Structured Submission
 
@@ -98,6 +100,8 @@ The file-body form uses `Content-Type: application/vnd.openkit.conversation-file
 NanoCore validates the selected catalog entry and logical model at command acceptance. An omitted model uses the effective preference chain owned by the configuration, Agent-profile, and internal-role contracts. A supplied model is a per-submission logical-model preference and must be admitted for the selected target. The accepted logical model stays visible in the response and durable inference lineage, while concrete Gateway route selection remains private and may vary for each Provider call within the accepted logical model's derived capability and model-family contract.
 
 Optional `reasoningEffort` uses the [canonical reasoning-effort enum](20261021-protocol_identifiers_and_enums.md#canonical-enums) and the admission, immutable Turn, omission, and replay rules of [Core Protocol](../core/protocol.md#turn-reasoning-effort). It is forwarded through the selected existing execution owner to the admitted Turn and AEP, with submission → composed Agent default precedence at new Turn admission and no recorded value when both are omitted; omission does not reset a native conversation selection. Unknown core effort values fail before effects; changed effort under the same request identity conflicts. Current metadata is revalidated through the existing model owner, and a serving-member mismatch uses Gateway fitting rather than rewriting the submitted effort. The decision and its reason are recorded in [the reasoning-effort decision record](../decisions/20261001-reasoning_effort_rulings.md).
+
+Successful submission binds exact inputs and preparation choices at the work owner. The original Turn and immutable input references survive restart. The queue can represent them by identity and digest. If the work owner cannot supply the original bytes, hold dispatch and show the owner's safe pending or unavailable reason. A draft or action on another Turn cannot substitute. For busy-loop selection, see [Work Model](../core/work-model.md#active-work-semantics).
 
 ## Target Dispatch
 
@@ -142,10 +146,14 @@ One end-to-end proof selects New Shard + Worker, submits a supported Artifact an
 
 ## Implementation Gaps
 
+- Work-owned submission recovery - The exact payload and original disposition after restart and owner unavailability await qualification - #947
+
 - The Goal target wire kind is `goal-orchestrator` - code emits `goal-coordinator` - #744
 - Advanced settings offer a fresh Sandbox, a published template revision, and an existing shared Sandbox - the shared control emits only a selected work environment - #122
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Reasoning effort retention](../decisions/20261001-reasoning_effort_retention.md)
 - [User-selected Workspace-shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md)
