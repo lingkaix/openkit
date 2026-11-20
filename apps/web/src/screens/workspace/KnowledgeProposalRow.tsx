@@ -8,6 +8,7 @@ import type {
   KnowledgeProposalDecision,
   KnowledgeProposalDecisionInput,
 } from './data';
+import { readKnowledgePageLifecycle } from './knowledge-okf';
 
 type Source = KnowledgeProposalDecisionInput['source'];
 type Preview = Awaited<ReturnType<CoreClient['operations']['knowledge.proposal.read']>>;
@@ -215,6 +216,10 @@ function ProposalPage({
     refetchOnMount: 'always',
   });
   const complete = chunks.isSuccess && !chunks.isFetching && !chunks.hasNextPage;
+  const lifecycle =
+    complete && !path.startsWith('@sources/') && !/(^|\/)(index|log)\.md$/i.test(path)
+      ? readKnowledgePageLifecycle(chunks.data.pages.map(({ after }) => after ?? '').join(''))
+      : null;
   useEffect(() => {
     if (!complete) onUnavailable();
   }, [complete, onUnavailable]);
@@ -239,6 +244,11 @@ function ProposalPage({
                 void chunks.refetch();
               }}
             />
+          ) : null}
+          {lifecycle && chunks.isSuccess && !chunks.isFetching ? (
+            <p className="text-xs text-fg-muted">
+              {lifecycle === 'draft' ? 'draft, excluded from ordinary retrieval' : lifecycle}
+            </p>
           ) : null}
           {chunks.isSuccess && !chunks.isFetching
             ? chunks.data.pages.map((chunk, index) => (

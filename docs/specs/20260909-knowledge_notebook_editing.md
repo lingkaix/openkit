@@ -73,6 +73,8 @@ Public operations are `knowledge.notebook.list`, `knowledge.notebook.create`, `k
 
 ## Final-Tree Validation And Multi-Page Operations
 
+Workspace Knowledge intake stages complete Pages intended for ordinary retrieval as active in the exact reviewed candidate. Deliberate drafts remain draft. Web reads Page lifecycle from the complete immutable candidate bytes in the Proposal preview and identifies draft Pages as excluded from ordinary retrieval. Acceptance still publishes the exact reviewed candidate through current schema, Source, conflict, and human authority checks.
+
 Before publication, the service computes one candidate tree and runs the OKF parser, profile, Scope Schema, and source-disclosure checks across all changed files and affected references:
 
 - `openkit_entry_id`, when present, MUST equal the path-derived concept ID; case collisions, non-regular files, and oversized files are rejected; unknown OKF metadata and unedited body bytes are preserved while normalizing service-owned system facts (attribution and, for User Memory `tell`, lifecycle and timestamps per `docs/specs/20260909-personal_memory_and_knowledge_learning.md`).

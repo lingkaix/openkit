@@ -1,4 +1,4 @@
-import { Document, parseDocument } from 'yaml';
+import { Document, isMap, parseDocument } from 'yaml';
 
 const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION = 'openkit-scope-knowledge-schema-v4';
 const REQUIRED_SCOPED_KNOWLEDGE_FEATURES = [
@@ -68,6 +68,23 @@ const STANDARD_STATUS_BY_PAGE_STATE = {
 /** Reports whether one value is a selectable page lifecycle state. */
 export function isKnowledgePageState(value: unknown): value is KnowledgePageState {
   return typeof value === 'string' && (KNOWLEDGE_PAGE_STATES as readonly string[]).includes(value);
+}
+
+/** Reads any governed lifecycle state from complete candidate bytes for Proposal review. */
+export function readKnowledgePageLifecycle(
+  content: string
+): KnowledgePageState | 'invalid' | 'deleted' | null {
+  const framing = splitOkfDocument(content);
+  if (framing.frontmatter === null || framing.unclosed) return null;
+  try {
+    const document = parseDocument(framing.frontmatter, { uniqueKeys: true });
+    if (document.errors.length > 0 || !isMap(document.contents)) return null;
+    const state: unknown = document.toJS({ maxAliasCount: 50 }).openkit_status;
+    return isKnowledgePageState(state) || state === 'invalid' || state === 'deleted' ? state : null;
+  } catch {
+    // The exact diff stays readable even when the YAML cannot be converted for the label.
+    return null;
+  }
 }
 
 /** Reads human title, body, OKF type and page state from complete page bytes. */
