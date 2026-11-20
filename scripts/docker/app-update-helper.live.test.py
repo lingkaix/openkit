@@ -178,6 +178,7 @@ HTTPServer(("127.0.0.1", port), Handler).serve_forever()
 DOCKERFILE = """FROM python:3.12-alpine
 COPY openkit-app-entrypoint /usr/local/bin/openkit-app-entrypoint
 COPY fixture.json /etc/openkit-fixture.json
+COPY drizzle/ /app/nanocore/drizzle/
 COPY web/ /srv/web/
 RUN chmod +x /usr/local/bin/openkit-app-entrypoint
 ENTRYPOINT ["/usr/local/bin/openkit-app-entrypoint"]
@@ -290,8 +291,12 @@ def fixture_boot_projection(*, boot_id: str, product_ready: bool) -> Dict[str, A
 
 def write_source_tree(root: Path, *, accepting: bool, boot_id: str, web_body: str) -> None:
     web = root / "web"
-    web.mkdir(exist_ok=True)
+    web.mkdir(parents=True, exist_ok=True)
     (web / "index.html").write_text(web_body, encoding="utf-8")
+    for scope in ("app", "core", "user", "workspace"):
+        journal = root / "drizzle" / scope / "meta" / "_journal.json"
+        journal.parent.mkdir(parents=True)
+        journal.write_text('{"entries":[{"idx":0,"tag":"0000_setup","when":1}]}\n', encoding="utf-8")
     (root / "openkit-app-entrypoint").write_text(ENTRYPOINT_PY, encoding="utf-8")
     (root / "Dockerfile").write_text(DOCKERFILE, encoding="utf-8")
     (root / "fixture.json").write_text(
@@ -330,12 +335,15 @@ def load_fixture_helper():
     module = load_helper()
     class FixtureHelper(module.AppUpdateHelper):
         """A host mechanism fixture with prebuilt local images, never a published-release proof."""
+        def _local_candidate_image_id(self, source):
+            return self._image_identity(source["appDigest"])["id"]
+
         def _acquire_candidate(self, source):
-            image = self._image_identity(source["appDigest"])
+            image_id = self._local_candidate_image_id(source)
             time.sleep(ACQUISITION_HOLD_SECONDS)
             return {
-                "image_id": image["id"], "published_digest": source["appDigest"],
-                "ref": image["id"], "source_commit": source["sourceCommit"],
+                "image_id": image_id, "published_digest": source["appDigest"],
+                "ref": image_id, "source_commit": source["sourceCommit"],
             }
     module.AppUpdateHelper = FixtureHelper
     return module
@@ -470,7 +478,7 @@ def container_id_running() -> Dict[str, bool]:
 
 def invoke_helper(config_path: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
     completed = subprocess.run(
-        [sys.executable, str(HELPER_PATH), "--config", str(config_path)],
+        [sys.executable, str(Path(__file__).resolve()), "--fixture-helper", "--config", str(config_path)],
         input=json.dumps(payload) if payload else "",
         capture_output=True,
         text=True,
@@ -945,7 +953,7 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
         self.assertIsNone(prepared.get("error"), prepared)
         self.request_id = prepared["requestId"]
         start_proc = subprocess.Popen(
-            [sys.executable, str(HELPER_PATH), "--config", str(config_path)],
+            [sys.executable, str(Path(__file__).resolve()), "--fixture-helper", "--config", str(config_path)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

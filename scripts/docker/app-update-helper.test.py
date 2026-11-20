@@ -70,6 +70,7 @@ OTHER_DIGEST = "sha256:" + ("d" * 64)
 OTHER_COMMIT = "e" * 40
 CONTAINER = "openkit-staging"
 PREVIOUS = CONTAINER + "-previous"
+JOURNAL_CONTAINER_ID = "f" * 64
 APP_UPDATE_IDENTITY_DEST = "/run/openkit/app-update/id_ed25519"
 APP_UPDATE_KNOWN_HOSTS_DEST = "/run/openkit/app-update/known_hosts"
 IMAGE_ENTRYPOINT = ["tini", "--", "/usr/local/bin/openkit-app-entrypoint"]
@@ -201,6 +202,8 @@ class RecordingEffects:
         self.boot_payload_after: Optional[dict] = None
         self.diagnostics_status = 200
         self.applied_migrations = ["core_0000_setup"]
+        self.candidate_journal_entries: Dict[str, List[str]] = {}
+        self.missing_candidate_journal: Optional[str] = None
         self.tokens = json.loads(json.dumps(RETAINED_TOKENS))
         self.status_probe: Optional[dict] = None
         self.fail_commands: Dict[str, int] = {}
@@ -255,7 +258,7 @@ class RecordingEffects:
     def _container_payload(self) -> dict:
         image = self.image_id if self.replaced else self.inspect_image
         payload = {
-            "Id": "ctr-current",
+            "Id": "1" * 64,
             "Name": "/" + CONTAINER,
             "Image": image,
             "State": {"Running": self.container_running},
@@ -385,9 +388,22 @@ class RecordingEffects:
                 return 1, "", self.pull_error
             return 0, self.pull_digest, ""
         if argv[:2] == ["docker", "create"]:
+            if "--pull" in argv:
+                return 0, JOURNAL_CONTAINER_ID + "\n", ""
             return 0, "extract-ctr\n", ""
         if argv[:2] == ["docker", "cp"]:
             dest = Path(argv[-1])
+            if argv[2].endswith("/meta/_journal.json"):
+                container, journal = argv[2].split(":", 1)
+                scope = Path(journal).parents[1].name
+                tags = ["0000_setup"]
+                if container == JOURNAL_CONTAINER_ID:
+                    if scope == self.missing_candidate_journal:
+                        return 1, "", "No such file"
+                    tags = self.candidate_journal_entries.get(scope, tags)
+                entries = [{"idx": index, "tag": tag, "when": index + 1} for index, tag in enumerate(tags)]
+                dest.write_text(json.dumps({"entries": entries}), encoding="utf-8")
+                return 0, "", ""
             dest.mkdir(parents=True, exist_ok=True)
             if not self.extract_empty:
                 (dest / "index.html").write_text('<div id="root"></div>\n', encoding="utf-8")
@@ -721,6 +737,74 @@ def _prepare(module, root: Path, source=None, expected=DIGEST, now=None, effects
     return config_path, effects, code, body
 
 
+class StageTargetTests(unittest.TestCase):
+    def stage_target(self, module, path, effects):
+        stdout = io.StringIO()
+        with patch.object(module, "PRODUCTION_CONFIG_PATH", str(path)):
+            code = module.main(argv=[str(HELPER_PATH), "--stage-target"], stdin=io.BytesIO(), stdout=stdout, effects=effects)
+        return code, json.loads(stdout.getvalue())
+
+    def test_each_filesystem_shortage_refuses_before_the_first_pull(self) -> None:
+        module = load_helper()
+        required = 3 * 1024 ** 3
+        for filesystem in ("Docker data root", "receipt directory"):
+            with self.subTest(filesystem=filesystem), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                path = write_config(root)
+                effects = RecordingEffects()
+                effects.bind(root)
+                low_path = root if filesystem == "Docker data root" else root / "receipts"
+
+                def statvfs(observed_path):
+                    available = required - 4096 if Path(observed_path) == low_path else required
+                    return SimpleNamespace(f_bavail=available // 4096, f_frsize=4096)
+
+                with patch.object(module.os, "statvfs", side_effect=statvfs):
+                    code, result = self.stage_target(module, path, effects)
+
+                self.assertEqual(code, 1, result)
+                self.assertEqual(result["error"]["code"], "app_update_capacity", result)
+                self.assertIn(filesystem, result["error"]["message"])
+                self.assertIn(str(required - 4096), result["error"]["message"])
+                self.assertIn(str(required), result["error"]["message"])
+                self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+                self.assertFalse(list((root / "receipts").iterdir()))
+                self.assertEqual(effects.running, {CONTAINER})
+
+    def test_stages_exact_configured_digest_after_both_capacity_observations(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_config(root)
+            effects = RecordingEffects()
+            effects.bind(root)
+            observed = []
+
+            def statvfs(observed_path):
+                observed.append(Path(observed_path))
+                return SimpleNamespace(f_bavail=(3 * 1024 ** 3) // 4096, f_frsize=4096)
+
+            run = effects.run
+
+            def assert_pull(argv, timeout=None):
+                if list(argv)[:2] == ["docker", "pull"]:
+                    self.assertEqual(observed, [root, root / "receipts"])
+                return run(argv, timeout)
+
+            effects.run = assert_pull
+            with patch.object(module.os, "statvfs", side_effect=statvfs):
+                code, result = self.stage_target(module, path, effects)
+
+            self.assertEqual(code, 0, result)
+            self.assertEqual(result, {"staged": True, "appDigest": DIGEST})
+            self.assertEqual([call for call in effects.calls if call[:2] == ["docker", "pull"]], [
+                ["docker", "pull", "ghcr.io/example/openkit-app@" + DIGEST],
+            ])
+            self.assertFalse(any(call[:2] in (["docker", "create"], ["docker", "run"], ["docker", "stop"]) for call in effects.calls))
+            self.assertFalse(list((root / "receipts").iterdir()))
+            self.assertEqual(effects.running, {CONTAINER})
+
+
 class ReleaseOnlyRegressionTests(unittest.TestCase):
     def test_config_ignores_unknown_fields_and_old_commit_only_keys(self) -> None:
         module = load_helper()
@@ -1019,7 +1103,7 @@ class RC6RegressionTests(unittest.TestCase):
             original = effects.run
             def run(argv, timeout=None):
                 result = original(argv, timeout)
-                if argv[:2] == ["docker", "cp"]:
+                if argv[:2] == ["docker", "cp"] and argv[2].endswith(":/srv/web/."):
                     effects.preflight = idle_preflight()
                     effects.preflight["counts"]["inFlightCommands"] = 1
                     effects.preflight["state"] = "busy"
@@ -1310,6 +1394,95 @@ class DoctorReadinessTests(unittest.TestCase):
             server.server_close()
 
 
+class MigrationJournalTests(unittest.TestCase):
+    def test_prepare_refuses_configured_forward_migration_without_app_effect(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.candidate_journal_entries["core"] = ["0000_setup", "0001_append", "0002_append"]
+            _, effects, _, result = _prepare(module, root, effects=effects)
+
+            error = result.get("error") or {}
+            self.assertEqual(error.get("code"), "app_update_invalid_request", result)
+            self.assertIn("stopped-App", error["message"])
+            self.assertIn("verified cold", error["message"])
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertEqual(effects.running, {CONTAINER})
+            self.assertEqual(effects.containers, {CONTAINER})
+            self.assertEqual(os.readlink(root / "web" / "current"), PREV_COMMIT)
+            self.assertFalse(any(call[:2] in (["docker", "stop"], ["docker", "rename"], ["docker", "run"]) for call in effects.calls))
+
+    def test_start_and_apply_refuse_legacy_receipt_for_workspace_migration(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.candidate_journal_entries["workspace"] = ["0000_setup", "0001_append"]
+            with patch.object(module.AppUpdateHelper, "_assert_migration_free"):
+                path, effects, _, prepared = _prepare(module, root, effects=effects)
+            request_id = prepared["requestId"]
+            receipt = root / "receipts" / (request_id + ".json")
+            original = receipt.read_bytes()
+
+            _, start = invoke(module, {"op": "start", "requestId": request_id, "maintenanceConsent": True}, path, effects)
+            self.assertEqual(start["error"]["code"], "app_update_invalid_request", start)
+            self.assertIn("workspace migration journal", start["error"]["message"])
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertFalse(any(call[:1] == ["systemd-run"] for call in effects.calls))
+
+            _, apply = invoke(module, {}, path, effects, extra_argv=["--apply", request_id], stdin_bytes=b"")
+            self.assertEqual(apply["stage"], "failed", apply)
+            self.assertEqual(apply["errorCode"], "app_update_invalid_request", apply)
+            self.assertEqual(effects.running, {CONTAINER})
+            self.assertEqual(effects.containers, {CONTAINER})
+            self.assertEqual(os.readlink(root / "web" / "current"), PREV_COMMIT)
+            self.assertFalse(any(call[:2] in (["docker", "stop"], ["docker", "rename"], ["docker", "run"]) for call in effects.calls))
+
+    def test_prepare_refuses_missing_target_journal_and_removes_inspection_container(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.missing_candidate_journal = "user"
+            _, effects, _, result = _prepare(module, root, effects=effects)
+
+            self.assertEqual(result["error"]["code"], "app_update_unavailable", result)
+            self.assertIn("user migration journal", result["error"]["message"])
+            self.assertIn(["docker", "rm", "-v", JOURNAL_CONTAINER_ID], effects.calls)
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertEqual(effects.running, {CONTAINER})
+
+    def test_formatting_only_journal_change_still_matches(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            effects = RecordingEffects()
+            run = effects.run
+
+            def reformat_target_journal(argv, timeout=None):
+                result = run(argv, timeout)
+                if argv[:2] == ["docker", "cp"] and argv[2].startswith(JOURNAL_CONTAINER_ID + ":"):
+                    path = Path(argv[-1])
+                    journal = json.loads(path.read_text(encoding="utf-8"))
+                    entry = dict(reversed(list(journal["entries"][0].items())))
+                    entry["idx"] = -0.0
+                    journal["entries"][0] = entry
+                    path.write_text(json.dumps(journal, indent=2) + "\n", encoding="utf-8")
+                return result
+
+            effects.run = reformat_target_journal
+            _, _, _, prepared = _prepare(module, Path(tmp), effects=effects)
+            self.assertEqual(prepared.get("stage"), "prepared", prepared)
+
+    def test_migration_free_replacement_still_succeeds(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            _, effects, prepared, result = _start_apply(module, Path(tmp))
+            self.assertEqual(prepared["stage"], "prepared", prepared)
+            self.assertEqual(result["stage"], "succeeded", result)
+            self.assertTrue(effects.replaced)
+
+
 class PrepareReceiptTests(unittest.TestCase):
     def test_prepare_writes_host_uuid_receipt_pinning_source_and_current_image(self) -> None:
         module = load_helper()
@@ -1344,12 +1517,14 @@ class PrepareReceiptTests(unittest.TestCase):
             self.assertEqual(stored["source"], RELEASE_SOURCE)
             self.assertEqual(stored["expectedCurrentImageId"], DIGEST)
             self.assertEqual(
-                effects.calls,
+                effects.calls[:3],
                 [
                     ["docker", "inspect", "--format", "{{json .}}", CONTAINER],
                     ["docker", "image", "inspect", "--format", "{{json .}}", DIGEST],
+                    ["docker", "image", "inspect", "--format", "{{json .}}", "ghcr.io/example/openkit-app@" + DIGEST],
                 ],
             )
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
 
 
 class ClosedStdinTests(unittest.TestCase):
@@ -1463,6 +1638,7 @@ class ReceiptLifecycleTests(unittest.TestCase):
             clock = {"t": 1_000_000.0}
             config_path, effects, _code, prepared = _prepare(module, root, now=lambda: clock["t"])
             clock["t"] += 601
+            effects.calls.clear()
             _code, body = invoke(
                 module,
                 {
@@ -1475,14 +1651,35 @@ class ReceiptLifecycleTests(unittest.TestCase):
                 now=lambda: clock["t"],
             )
             self.assertEqual(body["error"]["code"], "app_update_expired")
-            self.assertEqual(
-                effects.calls,
-                [
-                    ["docker", "inspect", "--format", "{{json .}}", CONTAINER],
-                    ["docker", "image", "inspect", "--format", "{{json .}}", DIGEST],
-                ],
-            )
+            self.assertEqual(effects.calls, [])
             self.assertTrue((root / "receipts" / (prepared["requestId"] + ".json")).is_file())
+
+    def test_prepare_expiring_during_start_journal_reads_cannot_launch(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clock = {"t": 1_000_000.0}
+            path, effects, _, prepared = _prepare(module, root, now=lambda: clock["t"])
+            request_id = prepared["requestId"]
+            receipt = root / "receipts" / (request_id + ".json")
+            original = receipt.read_bytes()
+            clock["t"] += 599
+            run = effects.run
+
+            def slow_journal_reads(argv, timeout=None):
+                if argv[:2] == ["docker", "cp"] and argv[2].startswith(JOURNAL_CONTAINER_ID + ":"):
+                    clock["t"] += 1
+                return run(argv, timeout)
+
+            effects.run = slow_journal_reads
+            _, started = invoke(
+                module, {"op": "start", "requestId": request_id, "maintenanceConsent": True},
+                path, effects, now=lambda: clock["t"],
+            )
+            self.assertEqual(clock["t"], 1_000_603.0)
+            self.assertEqual((started.get("error") or {}).get("code"), "app_update_expired", started)
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertFalse(any(call[:1] == ["systemd-run"] for call in effects.calls))
 
     def test_start_launches_systemd_job_and_repeat_does_not_recreate_it(self) -> None:
         module = load_helper()
@@ -1901,8 +2098,8 @@ class ApplyJobTests(unittest.TestCase):
             self.assertTrue(body["predicates"]["nanohostReady"])
             docker = [call for call in effects.calls if call and call[0] == "docker"]
             self.assertTrue(any(call[:2] == ["docker", "pull"] and DIGEST in call[2] for call in docker))
-            create_index = next(i for i, call in enumerate(docker) if call[:2] == ["docker", "create"])
-            cp_index = next(i for i, call in enumerate(docker) if call[:2] == ["docker", "cp"])
+            create_index = next(i for i, call in enumerate(docker) if call == ["docker", "create", "ghcr.io/example/openkit-app@" + DIGEST])
+            cp_index = next(i for i, call in enumerate(docker) if call[:2] == ["docker", "cp"] and call[2].endswith(":/srv/web/."))
             stop_index = next(
                 i for i, call in enumerate(docker) if call[:2] == ["docker", "stop"] and CONTAINER in call
             )
@@ -2445,7 +2642,6 @@ class ApplyJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            effects.repo_digests = ["ghcr.io/example/openkit-app@" + OTHER_DIGEST]
             config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
             invoke(
                 module,
@@ -2457,6 +2653,7 @@ class ApplyJobTests(unittest.TestCase):
                 config_path,
                 effects=effects,
             )
+            effects.repo_digests = ["ghcr.io/example/openkit-app@" + OTHER_DIGEST]
             body = invoke(
                 module,
                 {},
@@ -2473,7 +2670,6 @@ class ApplyJobTests(unittest.TestCase):
             effects = RecordingEffects()
             effects.inspect_image = OTHER_DIGEST
             effects.image_id = OTHER_DIGEST
-            effects.repo_digests = ["ghcr.io/example/openkit-app@" + OTHER_DIGEST]
             config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
             invoke(
                 module,
@@ -2485,6 +2681,7 @@ class ApplyJobTests(unittest.TestCase):
                 config_path,
                 effects=effects,
             )
+            effects.repo_digests = ["ghcr.io/example/openkit-app@" + OTHER_DIGEST]
             body = invoke(
                 module,
                 {},
@@ -3337,7 +3534,7 @@ class GettingStartedBindingTests(unittest.TestCase):
             )
             self.assertIn("OPENKIT_TLS_CERT_FILE=/run/openkit-secrets/native.crt", replacement)
             self.assertIn("OPENKIT_TLS_KEY_FILE=/run/openkit-secrets/native.key", replacement)
-            self.assertFalse(any(call[:2] in (["docker", "create"], ["docker", "cp"]) for call in effects.calls))
+            self.assertFalse(any(call[:2] == ["docker", "cp"] and call[2].endswith(":/srv/web/.") for call in effects.calls))
 
     def test_bridge_rechecks_publication_before_interruption(self) -> None:
         module = load_helper()
@@ -3403,12 +3600,12 @@ class GettingStartedConversionTests(unittest.TestCase):
                     return 1, "", "copy failed"
                 self.backup_copy.write_bytes(b"damaged" if self.corrupt_copy else self.old_backup.read_bytes())
                 return 0, "", ""
-            if argv[:2] == ["docker", "create"]:
+            if argv[:2] == ["docker", "create"] and "--pull" not in argv:
                 self.calls.append(list(argv))
                 self.names[case.REPLACEMENT_ID] = CONTAINER
                 self.containers.add(CONTAINER)
                 return 0, case.REPLACEMENT_ID + "\n", ""
-            if argv[:2] in (["docker", "stop"], ["docker", "start"], ["docker", "rm"]):
+            if argv[:2] in (["docker", "stop"], ["docker", "start"], ["docker", "rm"]) and argv[-1] in self.names:
                 rewritten = [*argv[:-1], self.names.get(argv[-1], argv[-1])]
                 if argv[:2] == ["docker", "start"] and argv[-1] == case.REPLACEMENT_ID:
                     self.replaced = True
