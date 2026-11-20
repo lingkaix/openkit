@@ -104,6 +104,31 @@ export function assertSupportedNativeLedger(
   }
 }
 
+/** Requires the exact shipped baseline row before portable storage replaces live authority. */
+export function assertNativeBaseline(
+  sqlite: Database.Database,
+  scope: StorageMigrationScope
+): void {
+  const folder = findMigrationsFolder(scope);
+  const baseline = readJournal(folder).entries[0];
+  if (baseline?.tag !== '0000_baseline')
+    throw new BootConfigError(
+      'migration_failed',
+      `Missing frozen ${scope} baseline at index zero.`
+    );
+  const hash = readMigrationFiles({ migrationsFolder: folder })[0]?.hash;
+  const rows = hasSqliteTable(sqlite, NATIVE_LEDGER_TABLE)
+    ? (sqlite
+        .prepare(`SELECT hash FROM ${NATIVE_LEDGER_TABLE} WHERE created_at = ?`)
+        .all(baseline.when) as { hash: string }[])
+    : [];
+  if (rows.length !== 1 || rows[0]?.hash !== hash)
+    throw new BootConfigError(
+      `migration_unsupported_${scope}`,
+      `Unsupported ${scope} baseline. A fresh v0.2.0 installation is required.`
+    );
+}
+
 /** Reads the existing App journal before its recovery copy and native DDL are prepared. */
 export function hasPendingAppMigrations(sqlite: SetupDb['sqlite']): boolean {
   const migrationsFolder = findMigrationsFolder('app');

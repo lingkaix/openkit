@@ -1,5 +1,4 @@
 import {
-  LIGHT_APP_KERNEL_FORMAT_VERSION,
   LightAppDefinitionExportSchema,
   LightAppSchemaInputSchema,
   type OperationOutput,
@@ -650,7 +649,6 @@ function AppActivation({
   });
   const disabled = blocked || app.isFetching || !app.isSuccess || change.isPending;
   const current = app.data;
-  const canUpgrade = current?.lifecycle === 'unavailable' && current.kernelFormatVersion === 1;
   return (
     <div className="flex flex-col gap-3">
       <h4 className="text-sm font-bold text-fg">App: {current?.title ?? appId}</h4>
@@ -716,29 +714,6 @@ function AppActivation({
       >
         Apply definition to this app
       </Button>
-      {canUpgrade ? (
-        <Button
-          size="sm"
-          isDisabled={disabled || current?.appRevision == null}
-          onPress={() => {
-            if (!current) return;
-            if (current.appRevision == null) return;
-            const expectedAppRevision = current.appRevision;
-            setRestore(null);
-            change.mutate({
-              run: () =>
-                client.operations['kernel.format.upgrade']({
-                  workspaceId,
-                  appId,
-                  expectedAppRevision,
-                  requestId: createRequestId(),
-                }),
-            });
-          }}
-        >
-          Upgrade app format to {LIGHT_APP_KERNEL_FORMAT_VERSION}
-        </Button>
-      ) : null}
       <h4 className="text-sm font-bold text-fg">Automatic snapshots</h4>
       {snapshots.isError ? (
         <ErrorBanner message="Couldn't list this app's snapshots. App inspection remains available." />

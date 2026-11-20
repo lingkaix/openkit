@@ -32,9 +32,19 @@ CREATE TABLE `audit_events` (
   `summary` text NOT NULL,
   `error_code` text,
   `created_at` text NOT NULL,
-  `occurred_at` text NOT NULL
-, `permission_decision_id` text, `vault_grant_id` text, `actor_json` text, `subject_json` text, `resource_revision` integer
-CHECK (`resource_revision` IS NULL OR (typeof(`resource_revision`) = 'integer' AND `resource_revision` > 0)));
+  `occurred_at` text NOT NULL,
+  `permission_decision_id` text,
+  `vault_grant_id` text,
+  `actor_json` text,
+  `subject_json` text,
+  `resource_revision` integer,
+  `notebook_admission_json` text,
+  `schema_version` integer NOT NULL,
+  `policy_invocation_json` text,
+  `policy_write_outcome_json` text,
+  `authentication_json` text,
+  CHECK (`resource_revision` IS NULL OR (typeof(`resource_revision`) = 'integer' AND `resource_revision` > 0))
+);
 
 --> statement-breakpoint
 
@@ -54,6 +64,8 @@ CREATE TABLE `app_metadata` (
   `last_mutator_json` text NOT NULL,
   `create_request_id` text NOT NULL,
   `last_request_id` text NOT NULL,
+  `kernel_format_version` integer NOT NULL DEFAULT 1 CHECK (`kernel_format_version` = 1),
+  `definition_source_json` text,
   CHECK (`lifecycle` IN ('active', 'retired')),
   CHECK (typeof(`app_revision`) = 'integer' AND `app_revision` > 0),
   CHECK (typeof(`schema_revision`) = 'integer' AND `schema_revision` > 0)

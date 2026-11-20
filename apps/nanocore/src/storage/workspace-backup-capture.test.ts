@@ -729,11 +729,11 @@ describe('D0-1: capture complete stopped authority', () => {
       expect.arrayContaining([
         {
           path: 'db/workspace.sqlite',
-          markers: { 'drizzle.workspace': 2 },
+          markers: { 'drizzle.workspace': 1 },
         },
         {
           path: `light-apps/${f.app.appId}/data.sqlite`,
-          markers: { 'drizzle.app.5': 5, 'light-app.kernel.2': 2 },
+          markers: { 'drizzle.app.1': 1, 'light-app.kernel.1': 1 },
         },
       ])
     );
@@ -1082,7 +1082,7 @@ async function sealedFixture(f: Fixture) {
         markers:
           path === 'db/workspace.sqlite'
             ? { 'drizzle.workspace': WORKSPACE_BACKUP_DATABASE_FORMATS['drizzle.workspace']! }
-            : { 'drizzle.app.5': 5, 'light-app.kernel.2': 2 },
+            : { 'drizzle.app.1': 1, 'light-app.kernel.1': 1 },
       })),
     capture: { startedAt: timestamp, completedAt: timestamp, consistency: 'quiescent' },
     inventory,
@@ -1174,7 +1174,7 @@ describe('D0-1: full staging, independently sealed real-owner fixtures', () => {
         },
         {
           path: `light-apps/${f.app.appId}/data.sqlite`,
-          markers: { 'drizzle.app.5': 5, 'light-app.kernel.2': 2 },
+          markers: { 'drizzle.app.1': 1, 'light-app.kernel.1': 1 },
         },
       ])
     );

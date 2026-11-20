@@ -2,11 +2,9 @@
 
 This directory owns NanoCore's native Drizzle Kit journals. Each of `core`, `user`, `workspace`, and `app` has its own SQL files and `meta/_journal.json`. Startup reads those journals with `drizzle-orm/migrator` `readMigrationFiles` and applies them through the SQLite dialect migrator on a `drizzle-orm/better-sqlite3` session. The TypeScript table exports under `src/storage/schema` mix scopes and must not generate every table into every database.
 
-Core and Workspace start with `0000_baseline.sql`. Workspace setup and upgrade apply `0001_agent_session_current_thread.sql` after the preserved rc.10 baseline under [Pre-Release SQL Baselines](../../../docs/decisions/20261114-pre_release_sql_baselines.md#workspace-agentsession-continuity). User and App keep their journals.
+The v0.2.0 fresh-root cutover folds Core, User, Workspace, and App into one `0000_baseline.sql` per scope at Drizzle index 0. The Workspace baseline includes the corrected current AgentSession predicate. App opens require the explicit Light App kernel format 1. See [Control Kernel And Service Storage](../../../docs/decisions/20261120-control_kernel_and_service_storage.md#baseline-and-cutover).
 
-Before the first release, an explicitly authorized reset-bound schema correction may edit an existing SQL file while preserving its journal entry and tag. Do not squash or rename journals as part of such a correction. After release, each schema-changing release adds one SQL file per affected scope.
-
-Runtime admission inspects all retained native ledger timestamps against the exact packaged scope journal before migration or ordinary use. Unknown or future identities receive a typed scope-specific refusal. Supported sparse histories remain valid; this check does not impose a universal prefix or compare informational SQL hashes. Restore uses the same read-only admission before root replacement.
+After the cutover, schema-changing releases append one SQL file per affected scope. Boot and restore verify the installed Core baseline hash and native journal identity before admitting the root. Each database also verifies its supported journal identities before ordinary use.
 
 ## Create SQL for one scope
 

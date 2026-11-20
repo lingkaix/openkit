@@ -77,35 +77,6 @@ export type ParsedBatchEntry =
       data: Record<string, string | number | boolean | null>;
     };
 
-/** Projects a restored migration base without admitting old-format data operations. */
-export function projectRestoredApp(appDb: AppDb): CreateLightAppResponse {
-  const hasMarker = (
-    appDb.sqlite.pragma('table_info(app_metadata)') as Array<{ name: string }>
-  ).some((column) => column.name === 'kernel_format_version');
-  if (hasMarker) return projectApp(appDb);
-  const row = appDb.sqlite
-    .prepare(
-      'SELECT title, purpose, app_revision AS appRevision, schema_revision AS schemaRevision, schema_digest AS schemaDigest FROM app_metadata WHERE app_id = ?'
-    )
-    .get(appDb.appId) as {
-    title: string;
-    purpose: string;
-    appRevision: number;
-    schemaRevision: number;
-    schemaDigest: string;
-  };
-  return {
-    appId: appDb.appId,
-    ...row,
-    lifecycle: 'unavailable',
-    kernelFormatVersion: 1,
-    definitionVersion: row.schemaDigest,
-    definitionSource: null,
-    schema: null,
-    capabilities: LIGHT_APP_CAPABILITIES,
-  };
-}
-
 /**
  * Replays one batch from the verified original request.
  *

@@ -41,10 +41,9 @@ import {
   restoreDataRootBackup,
   writeColdDataRootBackupManifest,
 } from './data-root-backup.js';
-import { openExistingCoreDbWithIntegrityCheck, openUserDb } from './db.js';
+import { openUserDb } from './db.js';
 import { coreDbPath, readDataRootLayoutMarker, userDbPath, workspaceDbPath } from './fs-layout.js';
 import {
-  applyNativeScopeMigrations,
   applyScopedMigrations,
   listAppliedNativeMigrationIds,
   type StorageMigrationScope,
@@ -237,14 +236,14 @@ it.each(['core', 'user', 'workspace', 'app', 'app-snapshot'] as const)(
   }
 );
 
-it('G2 restores a cold rc.10 Workspace and upgrades its journal with the interrupted session intact', async () => {
-  const parent = mkdtempSync(join(tmpdir(), 'openkit-root-rc10-ledger-'));
+it('G2 restores a cold baseline Workspace with the interrupted session intact', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'openkit-root-workspace-ledger-'));
   roots.push(parent);
   const source = join(parent, 'source');
   const backup = join(parent, 'backup');
   const target = join(parent, 'target');
   const store = createTestStore({ dataRoot: source });
-  const { id: workspaceId } = await store.createWorkspace('rc.10 backup Workspace');
+  const { id: workspaceId } = await store.createWorkspace('Baseline backup Workspace');
   const { id: threadId } = await store.createThread(workspaceId, 'Interrupted Thread');
   const input = {
     workspaceId,
@@ -263,25 +262,6 @@ it('G2 restores a cold rc.10 Workspace and upgrades its journal with the interru
   await shutdownControlStoreWorkerClient();
   closeWorkspaceProductReadHandles(source);
 
-  const baseline = readFileSync(
-    new URL('../../drizzle/workspace/0000_baseline.sql', import.meta.url),
-    'utf8'
-  );
-  const oldIndex = baseline
-    .split('--> statement-breakpoint')
-    .find((statement) =>
-      statement.includes('CREATE UNIQUE INDEX `control_agent_sessions_current_thread_idx`')
-    )!;
-  const predecessor = new Database(workspaceDbPath(source, workspaceId), { fileMustExist: true });
-  try {
-    // Re-create only the rc.10 derived index and ledger prefix on this stopped fixture.
-    predecessor.exec(`DROP INDEX control_agent_sessions_current_thread_idx; ${oldIndex}`);
-    predecessor
-      .prepare('DELETE FROM __drizzle_migrations WHERE created_at > ?')
-      .run(journal('workspace')[0]!.when);
-  } finally {
-    predecessor.close();
-  }
   const readWorkspace = (root: string) => {
     const db = new Database(workspaceDbPath(root, workspaceId), {
       readonly: true,
@@ -305,11 +285,7 @@ it('G2 restores a cold rc.10 Workspace and upgrades its journal with the interru
   await restoreDataRootBackup({ backupRoot: backup, dataRoot: target });
   expect(readWorkspace(target)).toEqual(original);
   await verifyAndMigrateExistingScopedDatabases(target);
-  const upgraded = readWorkspace(target);
-  expect(upgraded).toEqual({
-    migrations: ['workspace_0000_baseline', 'workspace_0001_agent_session_current_thread'],
-    session: original.session,
-  });
+  expect(readWorkspace(target)).toEqual(original);
 
   const restored = new FsStore({ dataRoot: target });
   expect(restored.getAgentSession(interrupted.id)).toEqual(interrupted);
@@ -324,46 +300,21 @@ it('G2 restores a cold rc.10 Workspace and upgrades its journal with the interru
   expect(tree(backup)).toEqual(originalBackup);
 });
 
-it('G2 restores supported User and sparse App-snapshot journals while preserving the current Workspace journal', async () => {
+it('G2 restores the frozen User and Workspace ledgers and a byte-exact App snapshot', async () => {
   const f = await fixture();
-  const prefix = join(f.parent, 'original-user-journal');
-  const original = new URL('../../drizzle/user/', import.meta.url);
-  const metadata = JSON.parse(readFileSync(new URL('meta/_journal.json', original), 'utf8'));
-  const first = metadata.entries[0]!;
-  mkdirSync(join(prefix, 'meta'), { recursive: true });
-  writeFileSync(
-    join(prefix, 'meta', '_journal.json'),
-    JSON.stringify({ ...metadata, entries: [first] })
-  );
-  copyFileSync(new URL(`${first.tag}.sql`, original), join(prefix, `${first.tag}.sql`));
-  // Stopped, private predecessor fixture: the real original SQL owns its tables and ledger.
-  rmSync(f.paths.user);
-  const user = openUserDb(f.source, FIXTURE_LOCAL_USER_ID);
-  try {
-    applyNativeScopeMigrations(user.sqlite, 'user', prefix);
-  } finally {
-    user.sqlite.close();
+  for (const [kind, scope] of [
+    ['user', 'user'],
+    ['workspace', 'workspace'],
+    ['app', 'app'],
+    ['app-snapshot', 'app'],
+  ] as const) {
+    const sqlite = new Database(f.paths[kind], { readonly: true, fileMustExist: true });
+    try {
+      expect(listAppliedNativeMigrationIds(sqlite, scope)).toEqual([`${scope}_0000_baseline`]);
+    } finally {
+      sqlite.close();
+    }
   }
-  const workspace = new Database(f.paths.workspace, { fileMustExist: true });
-  try {
-    expect(listAppliedNativeMigrationIds(workspace, 'workspace')).toEqual([
-      'workspace_0000_baseline',
-      'workspace_0001_agent_session_current_thread',
-    ]);
-  } finally {
-    workspace.close();
-  }
-  const snapshotDb = new Database(f.paths['app-snapshot'], { fileMustExist: true });
-  try {
-    expect(
-      snapshotDb
-        .prepare('DELETE FROM __drizzle_migrations WHERE created_at=?')
-        .run(journal('app')[1]!.when).changes
-    ).toBe(1);
-  } finally {
-    snapshotDb.close();
-  }
-  refreshSnapshotDigest(f.paths['app-snapshot']);
   capture(f);
   const backup = tree(f.backup);
   const userBefore = readFileSync(join(f.backup, relative(f.source, f.paths.user)));
@@ -372,18 +323,10 @@ it('G2 restores supported User and sparse App-snapshot journals while preserving
   );
   expect(tree(f.backup)).toEqual(backup);
   expect(readFileSync(userDbPath(f.target, FIXTURE_LOCAL_USER_ID))).toEqual(userBefore);
-  const upgraded = openUserDb(f.target, FIXTURE_LOCAL_USER_ID);
-  try {
-    expect(listAppliedNativeMigrationIds(upgraded.sqlite, 'user')).toEqual([`user_${first.tag}`]);
-    applyScopedMigrations(upgraded);
-    expect(listAppliedNativeMigrationIds(upgraded.sqlite, 'user')).toEqual(
-      journal('user')
-        .map((entry) => `user_${entry.tag}`)
-        .sort()
-    );
-  } finally {
-    upgraded.sqlite.close();
-  }
+  const snapshotPath = relative(f.source, f.paths['app-snapshot']);
+  expect(readFileSync(join(f.target, snapshotPath))).toEqual(
+    readFileSync(join(f.backup, snapshotPath))
+  );
   const reopened = new FsStore({ dataRoot: f.target });
   expect(reopened.getWorkspace(DEMO_WORKSPACE_ID).name).toBe('Demo Workspace');
   expect(
@@ -534,62 +477,31 @@ it('G2 refuses unsupported Core history committed only in backup WAL while its b
   expect(failure).toMatchObject({ code: 'migration_unsupported_core' });
 });
 
-it('G2 treats the current Core baseline SQL hash as informational through public open, backup and restore', async () => {
-  const f = await fixture();
-  // A mismatched informational hash must not alter admission of a supported baseline timestamp.
-  const informationalHash = 'independent-current-baseline-ledger-fixture';
-  const entry = journal('core').find((row) => row.tag === '0000_baseline')!;
-  const sqlite = new Database(f.paths.core, { fileMustExist: true });
-  let retainedLedger: unknown[];
-  try {
-    const current = sqlite
-      .prepare('SELECT hash FROM __drizzle_migrations WHERE created_at=?')
-      .get(entry.when) as { hash: string };
-    expect(current.hash).not.toBe(informationalHash);
-    expect(
-      sqlite
-        .prepare('UPDATE __drizzle_migrations SET hash=? WHERE created_at=?')
-        .run(informationalHash, entry.when).changes
-    ).toBe(1);
-    retainedLedger = sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
-  } finally {
-    sqlite.close();
+it.each(['core', 'workspace', 'app-snapshot'] as const)(
+  'G2 refuses predecessor %s bytes that reuse the current baseline timestamp',
+  async (kind) => {
+    const f = await fixture();
+    const scope = kind === 'app-snapshot' ? 'app' : kind;
+    const entry = journal(scope)[0]!;
+    const sqlite = new Database(f.paths[kind], { fileMustExist: true });
+    try {
+      expect(
+        sqlite
+          .prepare('UPDATE __drizzle_migrations SET hash=? WHERE created_at=?')
+          .run('independent-predecessor-baseline', entry.when).changes
+      ).toBe(1);
+    } finally {
+      sqlite.close();
+    }
+    if (kind === 'app-snapshot') refreshSnapshotDigest(f.paths[kind]);
+
+    capture(f);
+    const before = tree(f.target);
+    const backup = tree(f.backup);
+    await expect(
+      restoreDataRootBackup({ backupRoot: f.backup, dataRoot: f.target })
+    ).rejects.toMatchObject({ code: `migration_unsupported_${scope}` });
+    expect(tree(f.target)).toEqual(before);
+    expect(tree(f.backup)).toEqual(backup);
   }
-  const opened = openExistingCoreDbWithIntegrityCheck(f.source);
-  try {
-    expect(opened.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
-      retainedLedger
-    );
-    expect(
-      opened.sqlite
-        .prepare('SELECT hash FROM __drizzle_migrations WHERE created_at=?')
-        .get(entry.when)
-    ).toEqual({ hash: informationalHash });
-  } finally {
-    opened.sqlite.close();
-  }
-  const sourceBytes = readFileSync(f.paths.core);
-  capture(f);
-  const backupCore = join(f.backup, relative(f.source, f.paths.core));
-  expect(readFileSync(backupCore)).toEqual(sourceBytes);
-  const backup = tree(f.backup);
-  await Promise.resolve().then(() =>
-    restoreDataRootBackup({ backupRoot: f.backup, dataRoot: f.target })
-  );
-  expect(tree(f.backup)).toEqual(backup);
-  expect(readFileSync(coreDbPath(f.target))).toEqual(sourceBytes);
-  const restored = openExistingCoreDbWithIntegrityCheck(f.target);
-  try {
-    expect(restored.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
-      retainedLedger
-    );
-    expect(
-      restored.sqlite
-        .prepare('SELECT hash FROM __drizzle_migrations WHERE created_at=?')
-        .get(entry.when)
-    ).toEqual({ hash: informationalHash });
-  } finally {
-    restored.sqlite.close();
-  }
-  expect(tree(f.backup)).toEqual(backup);
-});
+);

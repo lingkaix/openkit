@@ -6,49 +6,7 @@
       "idx": 0,
       "version": "6",
       "when": 1789709608694,
-      "tag": "0000_setup",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1792173777545,
-      "tag": "0001_thread_read_receipts",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1792199260401,
-      "tag": "0002_notebook_admission",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1792199260402,
-      "tag": "0003_policy_audit_v1",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1792367087402,
-      "tag": "0004_retained_record_formats",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "6",
-      "when": 1792367634020,
-      "tag": "0005_audit_authentication",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "6",
-      "when": 1793653572512,
-      "tag": "0006_permission_decisions",
+      "tag": "0000_baseline",
       "breakpoints": true
     }
   ]

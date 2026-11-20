@@ -218,10 +218,7 @@ describe('database setup', () => {
         ['control_execution_steps', 'control_executions'].includes(name)
       );
       expect(tables).toEqual(['control_execution_steps', 'control_executions']);
-      expect(listMigrationIds(db, 'workspace')).toEqual([
-        'workspace_0000_baseline',
-        'workspace_0001_agent_session_current_thread',
-      ]);
+      expect(listMigrationIds(db, 'workspace')).toEqual(['workspace_0000_baseline']);
       const ledger = db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
       const before = db.sqlite.serialize();
       applyScopedMigrations(db);
@@ -715,15 +712,7 @@ describe('database setup', () => {
       applyScopedMigrations(workspaceDb);
       applyScopedMigrations(workspaceDb);
 
-      expect(listMigrationIds(userDb, 'user')).toEqual([
-        'user_0000_setup',
-        'user_0001_thread_read_receipts',
-        'user_0002_notebook_admission',
-        'user_0003_policy_audit_v1',
-        'user_0004_retained_record_formats',
-        'user_0005_audit_authentication',
-        'user_0006_permission_decisions',
-      ]);
+      expect(listMigrationIds(userDb, 'user')).toEqual(['user_0000_baseline']);
       expect(listTableNames(userDb)).toEqual([
         '__drizzle_migrations',
         'audit_events',
@@ -819,10 +808,7 @@ describe('database setup', () => {
           'other-schema-approval'
         )
       ).not.toThrow();
-      expect(listMigrationIds(workspaceDb, 'workspace')).toEqual([
-        'workspace_0000_baseline',
-        'workspace_0001_agent_session_current_thread',
-      ]);
+      expect(listMigrationIds(workspaceDb, 'workspace')).toEqual(['workspace_0000_baseline']);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       // These are present-schema defaults, independent of the retired Review and usage upgrades.
       expect(workspaceDb.sqlite.pragma('table_info(artifact_reviews)')).toEqual(

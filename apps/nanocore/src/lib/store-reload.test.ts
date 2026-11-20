@@ -160,7 +160,7 @@ async function replaceEntry(
 
 const timestamp = '2026-07-06T00:00:00.000Z';
 const localActor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
-const rc10WorkspaceMigration = { tag: '0000_baseline', when: 1794664200000 };
+const workspaceIndexMigration = '0001_agent_session_current_thread';
 
 /**
  * Computes the canonical S16 digest for exact UTF-8 Artifact content.
@@ -256,9 +256,38 @@ async function interruptedSessionWorkspace() {
   return { dataRoot, store, input, turn, artifact, interrupted };
 }
 
-/** Restores the exact rc.10 index and ledger on a private fixture with the product writer stopped. */
-async function restoreRc10SessionIndex(dataRoot: string, workspaceId: string) {
+/** Stages a real append-only index correction using a private journal and a stopped Workspace. */
+async function stageWorkspaceIndexMigration(dataRoot: string, workspaceId: string) {
   await shutdownControlStoreWorkerClient();
+  const shipped = new URL('../../drizzle/workspace/', import.meta.url);
+  const metadata = JSON.parse(readFileSync(new URL('meta/_journal.json', shipped), 'utf8'));
+  const baseline = metadata.entries[0];
+  const baselineSql = readFileSync(new URL('0000_baseline.sql', shipped), 'utf8');
+  const currentIndex = baselineSql
+    .split('--> statement-breakpoint')
+    .find((statement) =>
+      statement.includes('CREATE UNIQUE INDEX `control_agent_sessions_current_thread_idx`')
+    )!;
+  const journalRoot = join(dataRoot, 'test-workspace-journal');
+  const folder = join(journalRoot, 'drizzle', 'workspace');
+  mkdirSync(join(folder, 'meta'), { recursive: true });
+  writeFileSync(join(folder, '0000_baseline.sql'), baselineSql);
+  writeFileSync(
+    join(folder, `${workspaceIndexMigration}.sql`),
+    `DROP INDEX control_agent_sessions_current_thread_idx;
+--> statement-breakpoint
+${currentIndex}`
+  );
+  writeFileSync(
+    join(folder, 'meta', '_journal.json'),
+    JSON.stringify({
+      ...metadata,
+      entries: [
+        baseline,
+        { ...baseline, idx: 1, tag: workspaceIndexMigration, when: baseline.when + 1 },
+      ],
+    })
+  );
   workspaceSql(dataRoot, workspaceId, (db) => {
     db.exec(`
       DROP INDEX control_agent_sessions_current_thread_idx;
@@ -266,10 +295,8 @@ async function restoreRc10SessionIndex(dataRoot: string, workspaceId: string) {
         ON control_agent_sessions (thread_id)
         WHERE thread_id IS NOT NULL AND status NOT IN ('closed', 'failed');
     `);
-    db.prepare('DELETE FROM __drizzle_migrations WHERE created_at > ?').run(
-      rc10WorkspaceMigration.when
-    );
   });
+  return { journalRoot, folder, baseline };
 }
 
 /**
@@ -1970,8 +1997,8 @@ describe('FsStore canonical reload', () => {
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
-  it.each(['fresh', 'upgraded rc.10'])(
-    'opens a successor after interruption in the %s Workspace',
+  it.each(['fresh', 'after an appended index migration'])(
+    'opens a successor after interruption in the Workspace %s',
     async (origin) => {
       const fixture = await interruptedSessionWorkspace();
       const { dataRoot, input, interrupted, turn, artifact } = fixture;
@@ -1982,40 +2009,44 @@ describe('FsStore canonical reload', () => {
         );
       const originalRow = readSessionRow();
       const originalArtifact = fixture.store.getArtifactVersion(workspaceId, artifact.id, 1);
-      let store = fixture.store;
+      const migration =
+        origin === 'fresh' ? undefined : await stageWorkspaceIndexMigration(dataRoot, workspaceId);
+      const originalCwd = process.cwd();
+      try {
+        if (migration) {
+          process.chdir(migration.journalRoot);
+          await verifyAndMigrateExistingScopedDatabases(dataRoot);
+        }
+        const store = migration ? createTestStore({ dataRoot }) : fixture.store;
+        const successor = await store.createAgentSession({ ...input, id: allocateEntityId('as') });
+        expect(store.listThreadAgentSessions(workspaceId, threadId)).toHaveLength(2);
+        expect(store.getAgentSession(successor.id)).toEqual(successor);
+        expect(store.getAgentSession(interrupted.id)).toEqual(interrupted);
+        expect(readSessionRow()).toEqual(originalRow);
+        expect(store.getTurn(workspaceId, threadId, turn.id).agentSessionId).toBe(interrupted.id);
+        expect(store.getArtifactVersion(workspaceId, artifact.id, 1)).toEqual(originalArtifact);
 
-      if (origin === 'upgraded rc.10') {
-        await restoreRc10SessionIndex(dataRoot, workspaceId);
-        await verifyAndMigrateExistingScopedDatabases(dataRoot);
-        store = createTestStore({ dataRoot });
-      }
-
-      const successor = await store.createAgentSession({ ...input, id: allocateEntityId('as') });
-      expect(store.listThreadAgentSessions(workspaceId, threadId)).toHaveLength(2);
-      expect(store.getAgentSession(successor.id)).toEqual(successor);
-      expect(store.getAgentSession(interrupted.id)).toEqual(interrupted);
-      expect(readSessionRow()).toEqual(originalRow);
-      expect(store.getTurn(workspaceId, threadId, turn.id).agentSessionId).toBe(interrupted.id);
-      expect(store.getArtifactVersion(workspaceId, artifact.id, 1)).toEqual(originalArtifact);
-
-      if (origin === 'upgraded rc.10') {
-        const oldJournal = join(dataRoot, 'rc10-workspace-journal');
-        mkdirSync(join(oldJournal, 'meta'), { recursive: true });
-        writeFileSync(
-          join(oldJournal, 'meta', '_journal.json'),
-          JSON.stringify({ entries: [rc10WorkspaceMigration] })
-        );
-        workspaceSql(dataRoot, workspaceId, (db) => {
-          expect(listAppliedNativeMigrationIds(db, 'workspace')).toEqual([
-            'workspace_0000_baseline',
-            'workspace_0001_agent_session_current_thread',
-          ]);
-          const upgraded = db.serialize();
-          expect(() => applyNativeScopeMigrations(db, 'workspace', oldJournal)).toThrow(
-            expect.objectContaining({ code: 'migration_unsupported_workspace' })
+        if (migration) {
+          const oldJournal = join(dataRoot, 'baseline-only-journal');
+          mkdirSync(join(oldJournal, 'meta'), { recursive: true });
+          writeFileSync(
+            join(oldJournal, 'meta', '_journal.json'),
+            JSON.stringify({ entries: [migration.baseline] })
           );
-          expect(db.serialize()).toEqual(upgraded);
-        });
+          workspaceSql(dataRoot, workspaceId, (db) => {
+            expect(listAppliedNativeMigrationIds(db, 'workspace')).toEqual([
+              'workspace_0000_baseline',
+              `workspace_${workspaceIndexMigration}`,
+            ]);
+            const upgraded = db.serialize();
+            expect(() => applyNativeScopeMigrations(db, 'workspace', oldJournal)).toThrow(
+              expect.objectContaining({ code: 'migration_unsupported_workspace' })
+            );
+            expect(db.serialize()).toEqual(upgraded);
+          });
+        }
+      } finally {
+        process.chdir(originalCwd);
       }
     }
   );
@@ -2072,9 +2103,9 @@ describe('FsStore canonical reload', () => {
     }
   );
 
-  it('rolls back the rc.10 AgentSession index drop when its replacement fails', async () => {
+  it('rolls back the AgentSession index drop when the appended migration fails', async () => {
     const { dataRoot, input } = await interruptedSessionWorkspace();
-    await restoreRc10SessionIndex(dataRoot, input.workspaceId);
+    const { folder } = await stageWorkspaceIndexMigration(dataRoot, input.workspaceId);
     workspaceSql(dataRoot, input.workspaceId, (db) => {
       const readIndex = () =>
         db
@@ -2097,7 +2128,7 @@ describe('FsStore canonical reload', () => {
         return prepare(sql);
       });
       try {
-        expect(() => applyNativeScopeMigrations(db, 'workspace')).toThrow(
+        expect(() => applyNativeScopeMigrations(db, 'workspace', folder)).toThrow(
           expect.objectContaining({
             code: 'migration_failed',
             message: expect.stringContaining(

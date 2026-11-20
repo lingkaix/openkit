@@ -72,9 +72,7 @@ it.each(['core', 'workspace'] as const)(
       kind === 'core' ? openCoreDb(sourceRoot) : openWorkspaceDb(sourceRoot, DEMO_WORKSPACE_ID);
     try {
       expect(listAppliedNativeMigrationIds(target.sqlite, kind)).toEqual(
-        kind === 'core'
-          ? ['core_0000_baseline']
-          : ['workspace_0000_baseline', 'workspace_0001_agent_session_current_thread']
+        kind === 'core' ? ['core_0000_baseline'] : ['workspace_0000_baseline']
       );
       const rows = target.sqlite
         .prepare(

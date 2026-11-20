@@ -322,7 +322,7 @@ describe('Light App migration recovery', () => {
     const migrate = request(ctx);
     const updated = await updateLightAppSchema(migrate, app.appId, 1, 1, next);
     expect(updated).toMatchObject({
-      kernelFormatVersion: 2,
+      kernelFormatVersion: 1,
       definitionVersion: updated.schemaDigest,
       definitionSource: null,
     });
@@ -366,7 +366,7 @@ describe('Light App migration recovery', () => {
     expect(restored).toMatchObject({
       appRevision: 3,
       schemaRevision: 1,
-      kernelFormatVersion: 2,
+      kernelFormatVersion: 1,
       definitionVersion: app.schemaDigest,
       definitionSource: app.definitionSource,
     });
@@ -657,97 +657,147 @@ describe('Light App migration recovery', () => {
     const ctx = await context();
     const app = await createLightApp(ctx, schema);
     const path = lightAppDbPath(ctx.dataRoot, ctx.workspaceId, app.appId);
-    const db = new Database(path);
-    // Keep the reset-only Audit format in the baseline; rewind only the later nullable authentication migration.
-    db.exec(
-      'ALTER TABLE audit_events DROP COLUMN authentication_json; DELETE FROM __drizzle_migrations WHERE created_at >= 1792367635406'
-    );
-    db.close();
-    expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId).kernelFormatVersion).toBe(2);
-    const snapshotDirectory = join(
-      lightAppRoot(ctx.dataRoot, ctx.workspaceId, app.appId),
-      'snapshots'
-    );
-    writeFileSync(snapshotDirectory, 'blocked');
-    await expect(upgradeLightAppFormat(request(ctx), app.appId, 1)).rejects.toMatchObject({
-      code: 'EEXIST',
-    });
-    const unchanged = new Database(path);
-    expect(
-      unchanged
-        .prepare('SELECT COUNT(*) FROM __drizzle_migrations WHERE created_at = 1792367635406')
-        .pluck()
-        .get()
-    ).toBe(0);
-    unchanged.close();
-    rmSync(snapshotDirectory);
-    const upgrade = request(ctx);
-    const client = getControlStoreWorkerClient();
-    const appKernel = client.appKernel.bind(client);
-    let journalCommitted = false;
-    const interrupted = vi.spyOn(client, 'appKernel').mockImplementation(async (...args) => {
-      if (args[1].change.kind !== 'format-complete') return appKernel(...args);
-      const journal = new Database(path, { fileMustExist: true, readonly: true });
-      try {
-        journalCommitted =
-          journal
-            .prepare('SELECT COUNT(*) FROM __drizzle_migrations WHERE created_at = 1792367635406')
-            .pluck()
-            .get() === 1;
-      } finally {
-        journal.close();
-      }
-      throw new Error('Simulated interruption after native journal commit.');
-    });
-    try {
-      await expect(upgradeLightAppFormat(upgrade, app.appId, 1)).rejects.toThrow(
-        'Simulated interruption'
-      );
-    } finally {
-      interrupted.mockRestore();
-    }
-    expect(journalCommitted).toBe(true);
-    const restarted = {
-      ...upgrade,
-      store: await createDemoStore({ dataRoot: ctx.dataRoot }),
-      inflightCommands: new WeakMap(),
+    await shutdownControlStoreWorkerClient();
+    const cwd = process.cwd();
+    const fixture = mkdtempSync(join(tmpdir(), 'light-app-journal-'));
+    roots.push(fixture);
+    const journalRoot = join(fixture, 'drizzle', 'app');
+    mkdirSync(join(journalRoot, 'meta'), { recursive: true });
+    const source = new URL('../../drizzle/app/', import.meta.url);
+    const journal = JSON.parse(readFileSync(new URL('meta/_journal.json', source), 'utf8'));
+    const next = {
+      ...journal.entries[0],
+      idx: 1,
+      when: journal.entries[0].when + 1,
+      tag: '0001_app_migration_fixture',
     };
-    const upgraded = await upgradeLightAppFormat(restarted, app.appId, 1);
-    expect(upgraded.kernelFormatVersion).toBe(2);
-    expect(await upgradeLightAppFormat(upgrade, app.appId, 1)).toEqual(upgraded);
-    const selected = listLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId).snapshots[0]!;
-    expect(selected).toMatchObject({ reason: 'kernel-format-migration', kernelFormatVersion: 2 });
-    const restored = await rollbackLightAppSnapshot(
-      request(ctx),
-      app.appId,
-      2,
-      selected.snapshotId
+    copyFileSync(new URL('0000_baseline.sql', source), join(journalRoot, '0000_baseline.sql'));
+    writeFileSync(
+      join(journalRoot, `${next.tag}.sql`),
+      'ALTER TABLE audit_events ADD COLUMN app_migration_fixture text;'
     );
-    expect(restored).toMatchObject({
-      lifecycle: 'active',
-      appRevision: 3,
-      kernelFormatVersion: 2,
-      definitionVersion: app.schemaDigest,
-    });
-    expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId)).toMatchObject({
-      lifecycle: 'active',
-      appRevision: 3,
-      kernelFormatVersion: 2,
-    });
-    const raw = new Database(path);
-    expect(
-      (raw.pragma('table_info(audit_events)') as Array<{ name: string }>).map(
-        (column) => column.name
-      )
-    ).not.toContain('authentication_json');
-    raw.close();
-    expect((await upgradeLightAppFormat(request(ctx), app.appId, 3)).kernelFormatVersion).toBe(2);
-    const unknown = new Database(path);
-    unknown.pragma('ignore_check_constraints = ON');
-    unknown.exec('UPDATE app_metadata SET kernel_format_version = 999');
-    unknown.close();
-    await expect(upgradeLightAppFormat(request(ctx), app.appId, 4)).rejects.toMatchObject({
+    writeFileSync(
+      join(journalRoot, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries: [...journal.entries, next] })
+    );
+    process.chdir(fixture);
+    try {
+      await getControlStoreWorkerClient().openExistingAppForRead(
+        ctx.dataRoot,
+        ctx.workspaceId,
+        app.appId
+      );
+      expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId).kernelFormatVersion).toBe(1);
+      const snapshotDirectory = join(
+        lightAppRoot(ctx.dataRoot, ctx.workspaceId, app.appId),
+        'snapshots'
+      );
+      writeFileSync(snapshotDirectory, 'blocked');
+      await expect(upgradeLightAppFormat(request(ctx), app.appId, 1)).rejects.toMatchObject({
+        code: 'EEXIST',
+      });
+      const unchanged = new Database(path);
+      expect(
+        unchanged
+          .prepare('SELECT COUNT(*) FROM __drizzle_migrations WHERE created_at = ?')
+          .pluck()
+          .get(next.when)
+      ).toBe(0);
+      unchanged.close();
+      rmSync(snapshotDirectory);
+      const upgrade = request(ctx);
+      const client = getControlStoreWorkerClient();
+      const appKernel = client.appKernel.bind(client);
+      let journalCommitted = false;
+      const interrupted = vi.spyOn(client, 'appKernel').mockImplementation(async (...args) => {
+        if (args[1].change.kind !== 'format-complete') return appKernel(...args);
+        const journal = new Database(path, { fileMustExist: true, readonly: true });
+        try {
+          journalCommitted =
+            journal
+              .prepare('SELECT COUNT(*) FROM __drizzle_migrations WHERE created_at = ?')
+              .pluck()
+              .get(next.when) === 1;
+        } finally {
+          journal.close();
+        }
+        throw new Error('Simulated interruption after native journal commit.');
+      });
+      try {
+        await expect(upgradeLightAppFormat(upgrade, app.appId, 1)).rejects.toThrow(
+          'Simulated interruption'
+        );
+      } finally {
+        interrupted.mockRestore();
+      }
+      expect(journalCommitted).toBe(true);
+      const restarted = {
+        ...upgrade,
+        store: await createDemoStore({ dataRoot: ctx.dataRoot }),
+        inflightCommands: new WeakMap(),
+      };
+      const upgraded = await upgradeLightAppFormat(restarted, app.appId, 1);
+      expect(upgraded.kernelFormatVersion).toBe(1);
+      expect(await upgradeLightAppFormat(upgrade, app.appId, 1)).toEqual(upgraded);
+      const selected = listLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId)
+        .snapshots[0]!;
+      expect(selected).toMatchObject({ reason: 'kernel-format-migration', kernelFormatVersion: 1 });
+      const restored = await rollbackLightAppSnapshot(
+        request(ctx),
+        app.appId,
+        2,
+        selected.snapshotId
+      );
+      expect(restored).toMatchObject({
+        lifecycle: 'active',
+        appRevision: 3,
+        kernelFormatVersion: 1,
+        definitionVersion: app.schemaDigest,
+      });
+      expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId)).toMatchObject({
+        lifecycle: 'active',
+        appRevision: 3,
+        kernelFormatVersion: 1,
+      });
+      const raw = new Database(path);
+      expect(
+        (raw.pragma('table_info(audit_events)') as Array<{ name: string }>).map(
+          (column) => column.name
+        )
+      ).not.toContain('app_migration_fixture');
+      raw.close();
+      expect((await upgradeLightAppFormat(request(ctx), app.appId, 3)).kernelFormatVersion).toBe(1);
+    } finally {
+      try {
+        await shutdownControlStoreWorkerClient();
+      } finally {
+        process.chdir(cwd);
+      }
+    }
+  });
+
+  it.each(['missing', 2, 999])('refuses App format %s before native upgrade', async (marker) => {
+    const ctx = await context();
+    const app = await createLightApp(ctx, schema);
+    const path = lightAppDbPath(ctx.dataRoot, ctx.workspaceId, app.appId);
+    const db = new Database(path);
+    if (marker === 'missing') {
+      db.exec('ALTER TABLE app_metadata DROP COLUMN kernel_format_version');
+    } else {
+      db.pragma('ignore_check_constraints = ON');
+      db.prepare('UPDATE app_metadata SET kernel_format_version = ?').run(marker);
+    }
+    const ledger = db.prepare('SELECT * FROM __drizzle_migrations').all();
+    db.close();
+    await expect(upgradeLightAppFormat(request(ctx), app.appId, 1)).rejects.toMatchObject({
       code: 'unavailable',
     });
+    const unchanged = new Database(path, { readonly: true });
+    try {
+      expect(unchanged.prepare('SELECT * FROM __drizzle_migrations').all()).toEqual(ledger);
+      expect(unchanged.prepare('SELECT app_revision FROM app_metadata').pluck().get()).toBe(1);
+    } finally {
+      unchanged.close();
+    }
   });
 });

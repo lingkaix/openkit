@@ -1,5 +1,4 @@
--- Pre-v0.1.0 fresh baseline. Edit this file directly before the first stable release.
--- This initializes an empty scope; it does not upgrade a predecessor database.
+-- OpenKit v0.2.0 fresh-root workspace baseline.
 CREATE TABLE `artifact_reviews` (
 	`workspace_id` text NOT NULL,
 	`review_id` text NOT NULL,
@@ -746,7 +745,8 @@ CREATE INDEX `capability_calls_workspace_idx` ON `capability_calls` (`workspace_
 --> statement-breakpoint
 CREATE INDEX `command_receipts_pending_target_idx` ON `idempotency_requests` (coalesce(json_extract(scope_json,'$.approvalRequestId'),json_extract(scope_json,'$.userInputRequestId'),json_extract(scope_json,'$.pendingRequestId')));
 --> statement-breakpoint
-CREATE UNIQUE INDEX `control_agent_sessions_current_thread_idx` ON `control_agent_sessions` (`thread_id`) WHERE `thread_id` IS NOT NULL AND `status` NOT IN ('closed', 'failed');
+CREATE UNIQUE INDEX `control_agent_sessions_current_thread_idx` ON `control_agent_sessions` (`thread_id`)
+WHERE `thread_id` IS NOT NULL AND `status` IN ('created', 'initializing', 'ready', 'busy', 'idle', 'degraded');
 --> statement-breakpoint
 CREATE INDEX `control_execution_steps_inspection_idx` ON `control_execution_steps` (`inspected_execution_id`, `inspected_step_id`, `execution_id`, `ordinal`);
 --> statement-breakpoint

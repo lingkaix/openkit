@@ -133,6 +133,7 @@ import {
   openWorkspaceReadDb,
 } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
+import { assertNativeBaseline, assertSupportedNativeLedger } from './migrate.js';
 import {
   exportRecurringPortableHistory,
   RECURRING_PORTABLE_FEATURE,
@@ -820,16 +821,11 @@ export interface WorkspaceBackupStageResult {
   readonly report: WorkspaceBackupReport;
 }
 
-/** Installed native formats; app keys also admit recognized immutable recovery versions. */
+/** Installed native formats for Workspace, live App and immutable App recovery copies. */
 export const WORKSPACE_BACKUP_DATABASE_FORMATS: Readonly<Record<string, number>> = Object.freeze({
-  'drizzle.workspace': 2,
+  'drizzle.workspace': 1,
   'drizzle.app.1': 1,
-  'drizzle.app.2': 2,
-  'drizzle.app.3': 3,
-  'drizzle.app.4': 4,
-  'drizzle.app.5': 5,
   'light-app.kernel.1': 1,
-  'light-app.kernel.2': 2,
 });
 const recurringPaths = Object.values(RECURRING_PORTABLE_PATHS);
 const omitted = new Set(['indexes', 'logs', 'projections']);
@@ -1009,20 +1005,16 @@ function database(path: string): Database.Database {
   }
 }
 
-/** Proves the complete one-based native journal prefix, including unknown/interior ledger rows. */
-function nativePrefix(db: Database.Database, scope: 'workspace' | 'app'): number {
-  const journal = JSON.parse(
-    readFileSync(new URL(`../../drizzle/${scope}/meta/_journal.json`, import.meta.url), 'utf8')
-  ) as { entries: { when: number }[] };
-  const applied = db
-    .prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at')
-    .all() as { created_at: number }[];
-  if (
-    !applied.length ||
-    applied.some((row, i) => Number(row.created_at) !== journal.entries[i]?.when)
-  )
+/** Verifies that a portable database carries the single exact v0.2.0 journal row. */
+function assertPortableLedger(db: Database.Database, scope: 'workspace' | 'app'): void {
+  try {
+    assertSupportedNativeLedger(db, scope);
+    assertNativeBaseline(db, scope);
+    if (db.prepare('SELECT count(*) FROM __drizzle_migrations').pluck().get() === 1) return;
+  } catch {
     refuse('unsupported-format');
-  return applied.length;
+  }
+  refuse('unsupported-format');
 }
 
 /** Checks every captured database's actual schema/identity and saved app definitions, without upgrading it. */
@@ -1033,23 +1025,17 @@ function databaseFormats(dataRoot: string, workspaceId: string, root: string) {
     if (path !== 'db/workspace.sqlite' && !app) refuse('unsupported-format');
     const db = database(join(root, path));
     try {
-      const prefix = nativePrefix(db, app ? 'app' : 'workspace');
+      assertPortableLedger(db, app ? 'app' : 'workspace');
       if (!app) {
-        if (prefix !== WORKSPACE_BACKUP_DATABASE_FORMATS['drizzle.workspace'])
-          refuse('unsupported-format');
-        formats.push({ path, markers: { 'drizzle.workspace': prefix } });
+        formats.push({ path, markers: { 'drizzle.workspace': 1 } });
       } else {
         const snapshot = app[2] !== 'data.sqlite';
-        const hasKernel = (db.pragma('table_info(app_metadata)') as { name: string }[]).some(
-          (c) => c.name === 'kernel_format_version'
-        );
         const row = db.prepare('SELECT * FROM app_metadata').get() as
           | Record<string, unknown>
           | undefined;
-        const kernel = hasKernel ? Number(row?.kernel_format_version) : 1;
         if (row?.app_id !== app[1] || row?.workspace_id !== workspaceId) refuse('invalid-database');
-        if ((!snapshot && (prefix !== 5 || kernel !== 2)) || prefix > 5 || ![1, 2].includes(kernel))
-          refuse('unsupported-format');
+        const kernel = row.kernel_format_version;
+        if (kernel !== 1) refuse('unsupported-format');
         const schema = LightAppAdmittedSchemaSchema.parse(JSON.parse(String(row.schema_json)));
         if (
           schema.appId !== app[1] ||
@@ -1058,45 +1044,41 @@ function databaseFormats(dataRoot: string, workspaceId: string, root: string) {
         )
           refuse('invalid-database');
         // The native owner supplies names and types; no DDL, migration or replacement database runs.
-        if (kernel === 2) {
-          const tables = new Set([
-            '__drizzle_migrations',
-            'app_metadata',
-            'idempotency_requests',
-            'audit_events',
-            ...schema.collections.map((c) => collectionTableName(c.id)),
-          ]);
-          const actual = db
-            .prepare(
-              "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-            )
-            .pluck()
-            .all() as string[];
-          if (actual.length !== tables.size || actual.some((name) => !tables.has(name)))
+        const tables = new Set([
+          '__drizzle_migrations',
+          'app_metadata',
+          'idempotency_requests',
+          'audit_events',
+          ...schema.collections.map((c) => collectionTableName(c.id)),
+        ]);
+        const actual = db
+          .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+          .pluck()
+          .all() as string[];
+        if (actual.length !== tables.size || actual.some((name) => !tables.has(name)))
+          refuse('invalid-database');
+        for (const collection of schema.collections) {
+          const base: Record<string, string> = {
+            id: 'TEXT',
+            revision: 'INTEGER',
+            created: 'TEXT',
+            updated: 'TEXT',
+            creator_json: 'TEXT',
+            last_mutator_json: 'TEXT',
+            create_request_id: 'TEXT',
+            last_request_id: 'TEXT',
+            write_schema_revision: 'INTEGER',
+          };
+          for (const field of collection.fields)
+            base[fieldColumnName(field.id)] = sqliteTypeForField(field);
+          const columns = db.pragma(
+            `table_info(${quoteIdent(collectionTableName(collection.id))})`
+          ) as { name: string; type: string }[];
+          if (
+            columns.length !== Object.keys(base).length ||
+            columns.some((c) => base[c.name] !== c.type)
+          )
             refuse('invalid-database');
-          for (const collection of schema.collections) {
-            const base: Record<string, string> = {
-              id: 'TEXT',
-              revision: 'INTEGER',
-              created: 'TEXT',
-              updated: 'TEXT',
-              creator_json: 'TEXT',
-              last_mutator_json: 'TEXT',
-              create_request_id: 'TEXT',
-              last_request_id: 'TEXT',
-              write_schema_revision: 'INTEGER',
-            };
-            for (const field of collection.fields)
-              base[fieldColumnName(field.id)] = sqliteTypeForField(field);
-            const columns = db.pragma(
-              `table_info(${quoteIdent(collectionTableName(collection.id))})`
-            ) as { name: string; type: string }[];
-            if (
-              columns.length !== Object.keys(base).length ||
-              columns.some((c) => base[c.name] !== c.type)
-            )
-              refuse('invalid-database');
-          }
         }
         assertAppDefinitionMatches({
           scope: 'app',
@@ -1122,7 +1104,7 @@ function databaseFormats(dataRoot: string, workspaceId: string, root: string) {
         }
         formats.push({
           path,
-          markers: { [`drizzle.app.${prefix}`]: prefix, [`light-app.kernel.${kernel}`]: kernel },
+          markers: { 'drizzle.app.1': 1, 'light-app.kernel.1': kernel },
         });
       }
     } catch (error) {

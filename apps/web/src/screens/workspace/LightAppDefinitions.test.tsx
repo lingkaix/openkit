@@ -1,4 +1,8 @@
-import { LIGHT_APP_CAPABILITIES, LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
+import {
+  LIGHT_APP_CAPABILITIES,
+  LIGHT_APP_KERNEL_FORMAT_VERSION,
+  LightAppSchemaInputSchema,
+} from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -78,7 +82,7 @@ function fixture() {
         schemaDigest: digest,
         definitionVersion: digest,
         definitionSource: { entryId: 'notes', digest },
-        kernelFormatVersion: 2,
+        kernelFormatVersion: LIGHT_APP_KERNEL_FORMAT_VERSION,
       },
     ],
   });
@@ -100,7 +104,7 @@ function fixture() {
         appRevision: 5,
         schemaRevision: 2,
         definitionVersion: earlier,
-        kernelFormatVersion: 2,
+        kernelFormatVersion: LIGHT_APP_KERNEL_FORMAT_VERSION,
         digest,
       },
     ],
@@ -140,7 +144,7 @@ function liveAppFixture() {
     schemaDigest: digest,
     definitionVersion: digest,
     definitionSource: { entryId: 'notes', digest },
-    kernelFormatVersion: 2,
+    kernelFormatVersion: LIGHT_APP_KERNEL_FORMAT_VERSION,
   };
 }
 
@@ -364,59 +368,48 @@ describe('Light App definitions in the Workspace Catalog', () => {
     expect(screen.getByText('Selected file: unsaved.json')).toBeInTheDocument();
   });
 
-  it('offers explicit format upgrade only for a known supported older app', async () => {
-    const user = userEvent.setup();
-    const { client, queryClient } = fixture();
-    const current = await client.operations['kernel.apps.get']({ workspaceId, appId });
-    vi.mocked(client.operations['kernel.apps.get']).mockResolvedValue({
-      ...current,
-      lifecycle: 'unavailable',
-      kernelFormatVersion: 1,
-    });
-    const upgrade = vi
-      .spyOn(client.operations, 'kernel.format.upgrade')
-      .mockRejectedValue(new Error('refused'));
-    await user.click(await screen.findByRole('button', { name: 'Inspect definition Notes' }));
-    await user.click(await screen.findByRole('button', { name: `Choose version ${digest}` }));
-    await user.click(await screen.findByRole('button', { name: 'Inspect app Live notes' }));
-    const upgradeButton = await screen.findByRole('button', { name: 'Upgrade app format to 2' });
-    expect(screen.getByRole('button', { name: 'Apply definition to this app' })).toBeDisabled();
-    expect(upgrade).not.toHaveBeenCalled();
-    await user.click(upgradeButton);
-    await waitFor(() =>
-      expect(upgrade).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceId, appId, expectedAppRevision: 8 })
-      )
-    );
-    await screen.findByText(
-      "Couldn't complete that Light App change. Refresh and inspect the current state before trying again."
-    );
-    vi.mocked(client.operations['kernel.apps.get']).mockResolvedValue({
-      ...current,
-      lifecycle: 'unavailable',
-      kernelFormatVersion: null,
-      definitionVersion: null,
-    });
-    await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ['light-apps', workspaceId, appId] });
-    });
-    await waitFor(() =>
+  it.each([
+    ['current', LIGHT_APP_KERNEL_FORMAT_VERSION],
+    ['unsupported', 2],
+    ['unknown', null],
+  ] as const)(
+    'offers no upgrade for an unavailable app with a %s format',
+    async (_format, kernelFormatVersion) => {
+      const user = userEvent.setup();
+      const { client } = fixture();
+      const current = await client.operations['kernel.apps.get']({ workspaceId, appId });
+      vi.mocked(client.operations['kernel.apps.get']).mockResolvedValue({
+        ...current,
+        lifecycle: 'unavailable',
+        kernelFormatVersion,
+        definitionVersion: kernelFormatVersion === null ? null : current.definitionVersion,
+      });
+      const upgrade = vi
+        .spyOn(client.operations, 'kernel.format.upgrade')
+        .mockRejectedValue(new Error('refused'));
+      await user.click(await screen.findByRole('button', { name: 'Inspect definition Notes' }));
+      await user.click(await screen.findByRole('button', { name: `Choose version ${digest}` }));
+      await user.click(await screen.findByRole('button', { name: 'Inspect app Live notes' }));
+      const definitionVersion = kernelFormatVersion === null ? 'Unknown' : digest;
       expect(
-        screen.queryByRole('button', { name: 'Upgrade app format to 2' })
-      ).not.toBeInTheDocument()
-    );
-    expect(screen.getByText(/Format Unknown · Active definition Unknown/)).toBeInTheDocument();
-  });
+        await screen.findByText(
+          new RegExp(
+            `Format ${kernelFormatVersion ?? 'Unknown'} · Active definition ${definitionVersion}`
+          )
+        )
+      ).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Apply definition to this app' })).toBeDisabled();
+      expect(screen.queryByRole('button', { name: /Upgrade app format/i })).not.toBeInTheDocument();
+      expect(upgrade).not.toHaveBeenCalled();
+    }
+  );
 
   it('shows unknown revisions and blocks mutating commands when app revision facts are missing', async () => {
     const user = userEvent.setup();
     const { client, activate, restore } = fixture();
-    const upgrade = vi.spyOn(client.operations, 'kernel.format.upgrade');
     const current = await client.operations['kernel.apps.get']({ workspaceId, appId });
     vi.mocked(client.operations['kernel.apps.get']).mockResolvedValue({
       ...current,
-      lifecycle: 'unavailable',
-      kernelFormatVersion: 1,
       appRevision: null,
       schemaRevision: null,
       schemaDigest: null,
@@ -431,10 +424,8 @@ describe('Light App definitions in the Workspace Catalog', () => {
       screen.getByText("This app's revision is unknown. Refresh before changing it.")
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Apply definition to this app' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Upgrade app format to 2' })).toBeDisabled();
     expect(screen.getByRole('button', { name: `Restore snapshot ${snapshotId}` })).toBeDisabled();
     expect(activate).not.toHaveBeenCalled();
-    expect(upgrade).not.toHaveBeenCalled();
     expect(restore).not.toHaveBeenCalled();
   });
 

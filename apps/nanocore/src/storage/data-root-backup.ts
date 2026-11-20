@@ -35,7 +35,7 @@ import Database from 'better-sqlite3';
 import { writeFileAtomic } from './canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import { openSupportedScopeReadOnlySqlite } from './db.js';
-import type { StorageMigrationScope } from './migrate.js';
+import { assertNativeBaseline, type StorageMigrationScope } from './migrate.js';
 
 /** File name for the data-root backup manifest. */
 export const DATA_ROOT_BACKUP_MANIFEST_FILE = 'openkit-data-root-backup.json';
@@ -740,6 +740,7 @@ async function assertSupportedRestoreDatabases(
         });
       }
       sqlite = openSupportedScopeReadOnlySqlite(dbPath, scope);
+      assertNativeBaseline(sqlite, scope);
       if (scope !== 'app' || !path.endsWith('/data.sqlite')) continue;
       const appPath = dirname(path);
       const row = sqlite

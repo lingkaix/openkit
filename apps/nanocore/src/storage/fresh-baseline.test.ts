@@ -8,11 +8,13 @@ import { type CoreDb, openCoreReadDb, openWorkspaceReadDb, type WorkspaceDb } fr
 
 const journalTags = {
   core: ['0000_baseline'],
-  workspace: ['0000_baseline', '0001_agent_session_current_thread'],
+  workspace: ['0000_baseline'],
+  user: ['0000_baseline'],
+  app: ['0000_baseline'],
 } as const;
 
 describe('fresh Core and Workspace setup', () => {
-  it.each(['core', 'workspace'] as const)(
+  it.each(['core', 'workspace', 'user', 'app'] as const)(
     'packages the complete native journal and SQL for %s',
     (scope) => {
       const folder = new URL(`../../drizzle/${scope}/`, import.meta.url);

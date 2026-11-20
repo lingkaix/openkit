@@ -146,13 +146,12 @@ afterAll(() => {
 });
 
 /** Actual owned User schema for a transport tuple; not a substitute product owner. */
-const setup: readonly ControlSqlStatement[] = ['0000_setup', '0001_thread_read_receipts'].map(
-  (journal) => ({
-    mode: 'run',
-    sql: readFileSync(new URL(`../../drizzle/user/${journal}.sql`, import.meta.url), 'utf8'),
-    parameters: [],
-  })
-);
+const setup: readonly ControlSqlStatement[] = readFileSync(
+  new URL('../../drizzle/user/0000_baseline.sql', import.meta.url),
+  'utf8'
+)
+  .split('--> statement-breakpoint')
+  .map((sql) => ({ mode: 'run', sql, parameters: [] }));
 
 describe('shipped native worker bundle', () => {
   it.each(['stage_verified', 'quarantine'] as const)(
@@ -295,7 +294,7 @@ describe('shipped native worker bundle', () => {
     const statements: readonly ControlSqlStatement[] = [
       {
         mode: 'run',
-        sql: "INSERT INTO thread_read_receipts VALUES ('fixture', 'bundled', '[]')",
+        sql: "INSERT INTO thread_read_receipts (workspace_id, thread_id, item_ids_json) VALUES ('fixture', 'bundled', '[]')",
         parameters: [],
         expectChanges: 1,
       },

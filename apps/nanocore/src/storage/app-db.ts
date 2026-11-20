@@ -85,15 +85,9 @@ const APP_BUSY_TIMEOUT_MS = 1000;
  * @param dataRoot Data root.
  * @param workspaceId Workspace id.
  * @param appId App UUID.
- * @param admission Current-format reads or explicit native migration admission.
  * @returns Open app database.
  */
-export function openExistingAppDb(
-  dataRoot: string,
-  workspaceId: string,
-  appId: string,
-  admission: 'current' | 'format-upgrade' = 'current'
-): AppDb {
+export function openExistingAppDb(dataRoot: string, workspaceId: string, appId: string): AppDb {
   const path = lightAppDbPath(dataRoot, workspaceId, appId);
   assertNotSymlink(path);
   if (!existsSync(path)) {
@@ -109,7 +103,7 @@ export function openExistingAppDb(
   const sqlite = openAppDbReadOnly(path);
   const db: AppDb = { scope: 'app', sqlite, dataRoot, workspaceId, appId };
   try {
-    assertAppAuthority(db, admission === 'format-upgrade');
+    assertAppAuthority(db);
     return db;
   } catch (error) {
     sqlite.close();
@@ -296,12 +290,10 @@ export function openAppDbReadOnly(path: string): Database.Database {
 }
 
 /** Refuses unknown app formats before applying any pending native migration. */
-function assertKnownKernelFormat(db: AppDb, permitMigrationBase = false): void {
+function assertKnownKernelFormat(db: AppDb): void {
   const columns = db.sqlite.pragma('table_info(app_metadata)') as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === 'kernel_format_version')) {
-    if (permitMigrationBase) return;
-    throw new KernelCommandError('unavailable', 'App kernel format requires an explicit upgrade.');
-  }
+  if (!columns.some((column) => column.name === 'kernel_format_version'))
+    throw new KernelCommandError('unavailable', 'App kernel format marker is missing.');
   const version = db.sqlite
     .prepare('SELECT kernel_format_version FROM app_metadata LIMIT 1')
     .pluck()
@@ -312,8 +304,8 @@ function assertKnownKernelFormat(db: AppDb, permitMigrationBase = false): void {
 }
 
 /** Rechecks existing physical App authority without opening another connection or running migration. */
-export function assertAppAuthority(db: AppDb, permitMigrationBase = false): void {
+export function assertAppAuthority(db: AppDb): void {
   assertAppIdentity(db);
   assertAppDefinitionMatches(db);
-  assertKnownKernelFormat(db, permitMigrationBase);
+  assertKnownKernelFormat(db);
 }

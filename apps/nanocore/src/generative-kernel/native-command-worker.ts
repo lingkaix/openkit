@@ -36,7 +36,6 @@ import {
   parseBatchEntries,
   parseSchema,
   projectApp,
-  projectRestoredApp,
   readMetadata,
   readProjectedRecord,
   readRecordRow,
@@ -86,13 +85,7 @@ export async function prepareControlApp(
 ): Promise<PreparedControlApp> {
   assertControlAppReceipt(appDb, input);
   const change = input.change;
-  if (change.kind !== 'create')
-    assertAppAuthority(
-      appDb,
-      change.kind === 'format-complete' ||
-        change.kind === 'format-journal' ||
-        change.kind === 'rollback'
-    );
+  if (change.kind !== 'create') assertAppAuthority(appDb);
   if (getCommandRequestRecordFromDb(appDb, input.receipt.key, input.receipt.createdAt)) return {};
   if (change.kind === 'format-journal') {
     const current = readMetadata(appDb);
@@ -188,9 +181,7 @@ export function applyControlApp(
       ? replayNamedRecord(appDb, old.response.id)
       : change.kind === 'record-batch'
         ? replayBatch(appDb, input, change.body)
-        : change.kind === 'rollback'
-          ? projectRestoredApp(appDb)
-          : projectApp(appDb);
+        : projectApp(appDb);
   }
   const result = applyChange();
   const response = boundedKernelResponse(ControlAppResultSchema.parse(result));
@@ -413,7 +404,7 @@ export function applyControlApp(
           expectedAppRevision + 1,
           { schemaRevision: selected.metadata.schemaRevision }
         );
-        return projectRestoredApp(candidateDb);
+        return projectApp(candidateDb);
       }
       case 'format-journal':
         throw new KernelCommandError(

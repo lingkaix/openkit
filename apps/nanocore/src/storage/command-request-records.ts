@@ -214,7 +214,7 @@ export function getCommandRequestRecord(
       : undefined;
   const db =
     owner.scope === 'app'
-      ? openExistingAppDb(dataRoot, owner.workspaceId, owner.appId, 'format-upgrade')
+      ? openExistingAppDb(dataRoot, owner.workspaceId, owner.appId)
       : owner.scope === 'user'
         ? openUserReadDb(dataRoot, owner.userId)
         : owner.scope === 'workspace'
@@ -499,7 +499,7 @@ export function listCommandRequestRecords(
       owner.scope === 'user'
         ? openUserReadDb(dataRoot, owner.userId)
         : owner.scope === 'app'
-          ? openExistingAppDb(dataRoot, owner.workspaceId, owner.appId, 'format-upgrade')
+          ? openExistingAppDb(dataRoot, owner.workspaceId, owner.appId)
           : owner.scope === 'workspace'
             ? bindWorkspaceSqlite(reader!.sqlite, dataRoot, owner.workspaceId)
             : bindCoreSqlite(reader!.sqlite, dataRoot);

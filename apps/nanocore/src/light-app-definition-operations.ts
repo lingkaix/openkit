@@ -128,7 +128,7 @@ export function createLightAppDefinitionOperationImplementations(
     input: object
   ): CreateLightAppResponse | null => {
     if (!appAuthorityExists(context, appId)) return null;
-    const appDb = openExistingAppDb(context.dataRoot, context.workspaceId, appId, 'format-upgrade');
+    const appDb = openExistingAppDb(context.dataRoot, context.workspaceId, appId);
     try {
       const receipt = context.store.getCommandRequest(
         command,

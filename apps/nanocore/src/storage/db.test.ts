@@ -344,15 +344,7 @@ describe('scoped storage databases', () => {
         'permission_decisions',
         'thread_read_receipts',
       ]);
-      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual([
-        'user_0000_setup',
-        'user_0001_thread_read_receipts',
-        'user_0002_notebook_admission',
-        'user_0003_policy_audit_v1',
-        'user_0004_retained_record_formats',
-        'user_0005_audit_authentication',
-        'user_0006_permission_decisions',
-      ]);
+      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual(['user_0000_baseline']);
     } finally {
       userDb.sqlite.close();
     }
@@ -447,7 +439,6 @@ describe('scoped storage databases', () => {
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_baseline',
-        'workspace_0001_agent_session_current_thread',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -660,17 +651,8 @@ describe('scoped storage databases', () => {
     try {
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_baseline',
-        'workspace_0001_agent_session_current_thread',
       ]);
-      expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
-        'user_0000_setup',
-        'user_0001_thread_read_receipts',
-        'user_0002_notebook_admission',
-        'user_0003_policy_audit_v1',
-        'user_0004_retained_record_formats',
-        'user_0005_audit_authentication',
-        'user_0006_permission_decisions',
-      ]);
+      expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual(['user_0000_baseline']);
     } finally {
       workspaceDb.sqlite.close();
       migratedUserDb.sqlite.close();
@@ -992,18 +974,9 @@ process.kill(process.pid, 'SIGKILL');`,
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     try {
-      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual([
-        'user_0000_setup',
-        'user_0001_thread_read_receipts',
-        'user_0002_notebook_admission',
-        'user_0003_policy_audit_v1',
-        'user_0004_retained_record_formats',
-        'user_0005_audit_authentication',
-        'user_0006_permission_decisions',
-      ]);
+      expect(listMigrationIds(userDb.sqlite, 'user')).toEqual(['user_0000_baseline']);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_baseline',
-        'workspace_0001_agent_session_current_thread',
       ]);
     } finally {
       userDb.sqlite.close();

@@ -18,7 +18,6 @@ import {
   parseFields,
   projectApp,
   projectRecord,
-  projectRestoredApp,
   readMetadata,
   readProjectedRecord,
   replayBatch,
@@ -362,13 +361,13 @@ export async function upgradeLightAppFormat(
  *
  * The candidate carries the existing app-local receipt and audit before atomic placement.
  * No application handle stays open across the replacement or an await.
- * Old-format recovery copies remain unavailable until explicit format upgrade.
+ * The copy must carry the current admitted App format.
  *
  * @param context Authorized command context.
  * @param appId App identity.
  * @param expectedAppRevision Exact current app revision.
  * @param snapshotId Explicit recovery copy.
- * @returns Restored app or explicit old-format unavailable projection.
+ * @returns Restored app.
  */
 export async function rollbackLightAppSnapshot(
   context: KernelCommandContext,
@@ -381,7 +380,7 @@ export async function rollbackLightAppSnapshot(
     responseKind: 'light_app',
     input: { expectedAppRevision, snapshotId },
     change: { kind: 'rollback', expectedAppRevision, snapshotId },
-    replay: (db) => projectRestoredApp(db),
+    replay: (db) => projectApp(db),
     responseId: (result) => result.appId,
   });
 }
@@ -709,22 +708,6 @@ function inspectCatalogItem(
       if (appDb.sqlite.open) appDb.sqlite.close();
     }
   } catch {
-    // Migration inspection can expose the old marker and exact revision while ordinary Kernel data access remains closed until explicit upgrade.
-    try {
-      const migrationDb = openExistingAppDb(dataRoot, workspaceId, appId, 'format-upgrade');
-      try {
-        const {
-          schema: _schema,
-          capabilities: _capabilities,
-          ...item
-        } = projectRestoredApp(migrationDb);
-        return item;
-      } finally {
-        migrationDb.sqlite.close();
-      }
-    } catch {
-      /* Missing, corrupt, and unknown formats have no admitted projection. */
-    }
     return unavailableCatalogItem(appId);
   }
 }
@@ -771,18 +754,8 @@ function countAppDirectories(dataRoot: string, workspaceId: string): number {
 }
 
 /** Executes only readonly projections with a short App connection. */
-function readApp<T>(
-  context: KernelCommandContext,
-  appId: string,
-  replay: (db: AppDb) => T,
-  permitOldFormat = false
-): T {
-  const db = openExistingAppDb(
-    context.dataRoot,
-    context.workspaceId,
-    appId,
-    permitOldFormat ? 'format-upgrade' : 'current'
-  );
+function readApp<T>(context: KernelCommandContext, appId: string, replay: (db: AppDb) => T): T {
+  const db = openExistingAppDb(context.dataRoot, context.workspaceId, appId);
   try {
     return boundedKernelResponse(replay(db));
   } finally {
@@ -823,13 +796,7 @@ function runPreparedNativeAppCommand<T extends ControlAppResult>(
     input: { actor: context.actor, ...asObject(spec.input) },
     responseKind: spec.responseKind,
     responseId: spec.responseId,
-    replay: () =>
-      readApp(
-        context,
-        appId,
-        spec.replay,
-        spec.command === 'kernel.format.upgrade' || spec.command === 'kernel.snapshots.rollback'
-      ),
+    replay: () => readApp(context, appId, spec.replay),
     execute: async (receipt) => {
       await context.recheckAdmission?.();
       const client = getControlStoreWorkerClient();
@@ -851,14 +818,7 @@ function runPreparedNativeAppCommand<T extends ControlAppResult>(
           });
         createDirectoryExclusive(root, 0o777);
       } else {
-        const checked = openExistingAppDb(
-          context.dataRoot,
-          context.workspaceId,
-          appId,
-          spec.change.kind === 'format-complete' || spec.change.kind === 'rollback'
-            ? 'format-upgrade'
-            : 'current'
-        );
+        const checked = openExistingAppDb(context.dataRoot, context.workspaceId, appId);
         checked.sqlite.close();
       }
       const path = lightAppDbPath(context.dataRoot, context.workspaceId, appId);

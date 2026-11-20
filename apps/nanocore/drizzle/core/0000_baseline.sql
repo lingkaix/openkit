@@ -1,5 +1,4 @@
--- Pre-v0.1.0 fresh baseline. Edit this file directly before the first stable release.
--- This initializes an empty scope; it does not upgrade a predecessor database.
+-- OpenKit v0.2.0 fresh-root core baseline.
 CREATE TABLE `account` (
   `id` text PRIMARY KEY NOT NULL,
   `account_id` text NOT NULL,

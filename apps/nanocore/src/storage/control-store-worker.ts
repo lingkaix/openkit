@@ -3633,7 +3633,7 @@ function maintainDatabase(
           throw new ControlProductPreconditionError();
         const db = appDatabase(owner);
         assertControlAppReceipt(db, input);
-        assertAppAuthority(db, true);
+        assertAppAuthority(db);
         const current = owner.sqlite
           .prepare('SELECT app_revision AS appRevision,lifecycle FROM app_metadata WHERE app_id=?')
           .get(db.appId) as { appRevision: number; lifecycle: 'active' | 'retired' };
@@ -3958,7 +3958,7 @@ async function inspectExistingAppOpening(
     try {
       assertSavepointSafeSchema(sqlite);
       // Definition bytes belong to the original App, not to the disposable inspection directory.
-      assertAppAuthority({ scope: 'app', sqlite, dataRoot, ...scope }, true);
+      assertAppAuthority({ scope: 'app', sqlite, dataRoot, ...scope });
       schemaDigest = (
         sqlite.prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1').get() as {
           schemaDigest: string;

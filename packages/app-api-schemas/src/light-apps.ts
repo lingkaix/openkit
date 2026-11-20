@@ -11,7 +11,7 @@ import {
 import { z } from 'zod';
 
 /** Current Light App kernel format supported by this release. */
-export const LIGHT_APP_KERNEL_FORMAT_VERSION = 2;
+export const LIGHT_APP_KERNEL_FORMAT_VERSION = 1;
 
 /** Reserved record metadata names that callers cannot declare as fields. */
 export const LIGHT_APP_RESERVED_FIELD_NAMES = ['id', 'created', 'updated', 'revision'] as const;

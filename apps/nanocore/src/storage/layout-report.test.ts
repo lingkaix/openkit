@@ -47,7 +47,6 @@ describe('storage layout report', () => {
       expect(report.workspaces[0]?.workspaceId).toBe(workspaceId);
       expect(report.workspaces[0]?.workspaceDb.appliedMigrations).toEqual([
         'workspace_0000_baseline',
-        'workspace_0001_agent_session_current_thread',
       ]);
       expect(report.serverDb.appliedMigrations).toEqual(['core_0000_baseline']);
       expect(report.serverDb.appliedMigrations).not.toContain('workspace_0000_baseline');
@@ -79,15 +78,7 @@ describe('storage layout report', () => {
             userId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
             userDb: expect.objectContaining({
               exists: true,
-              appliedMigrations: [
-                'user_0000_setup',
-                'user_0001_thread_read_receipts',
-                'user_0002_notebook_admission',
-                'user_0003_policy_audit_v1',
-                'user_0004_retained_record_formats',
-                'user_0005_audit_authentication',
-                'user_0006_permission_decisions',
-              ],
+              appliedMigrations: ['user_0000_baseline'],
             }),
           },
         ])
@@ -98,10 +89,7 @@ describe('storage layout report', () => {
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           workspaceDb: expect.objectContaining({
             exists: true,
-            appliedMigrations: [
-              'workspace_0000_baseline',
-              'workspace_0001_agent_session_current_thread',
-            ],
+            appliedMigrations: ['workspace_0000_baseline'],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),
         },

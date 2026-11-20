@@ -9,7 +9,7 @@ import {
   statSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import type { LightAppSnapshot } from '@openkit/app-api-schemas';
+import { LIGHT_APP_KERNEL_FORMAT_VERSION, type LightAppSnapshot } from '@openkit/app-api-schemas';
 import {
   compareCodeUnits,
   readRetainedV1,
@@ -36,7 +36,7 @@ const StoredLightAppSnapshotV1Schema = z.object({
   appRevision: z.number().int().positive(),
   schemaRevision: z.number().int().positive(),
   definitionVersion: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  kernelFormatVersion: z.number().int().positive(),
+  kernelFormatVersion: z.literal(LIGHT_APP_KERNEL_FORMAT_VERSION),
   digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 });
 
@@ -57,18 +57,16 @@ export function planLightAppSnapshot(
 ): PreparedLightAppSnapshot {
   const row = appDb.sqlite
     .prepare(
-      'SELECT app_revision AS appRevision, schema_revision AS schemaRevision, schema_digest AS definitionVersion FROM app_metadata WHERE app_id = ?'
+      'SELECT app_revision AS appRevision, schema_revision AS schemaRevision, schema_digest AS definitionVersion, kernel_format_version AS kernelFormatVersion FROM app_metadata WHERE app_id = ?'
     )
-    .get(appDb.appId) as Pick<
-    LightAppSnapshot,
-    'appRevision' | 'schemaRevision' | 'definitionVersion'
-  >;
-  const hasMarker = (
-    appDb.sqlite.pragma('table_info(app_metadata)') as Array<{ name: string }>
-  ).some((column) => column.name === 'kernel_format_version');
-  const kernelFormatVersion = hasMarker
-    ? Number(appDb.sqlite.prepare('SELECT kernel_format_version FROM app_metadata').pluck().get())
-    : 1;
+    .get(appDb.appId) as
+    | Pick<
+        LightAppSnapshot,
+        'appRevision' | 'schemaRevision' | 'definitionVersion' | 'kernelFormatVersion'
+      >
+    | undefined;
+  if (row?.kernelFormatVersion !== LIGHT_APP_KERNEL_FORMAT_VERSION)
+    throw new KernelCommandError('unavailable', 'App snapshot format is unsupported.');
   const copyBytes =
     Number(appDb.sqlite.pragma('page_count', { simple: true })) *
     Number(appDb.sqlite.pragma('page_size', { simple: true }));
@@ -79,7 +77,6 @@ export function planLightAppSnapshot(
     createdAt: new Date().toISOString(),
     reason,
     ...row,
-    kernelFormatVersion,
   };
   const root = snapshotRoot(appDb.dataRoot, appDb.workspaceId, appDb.appId);
   const directory = lstatSync(root, { throwIfNoEntry: false });
