@@ -2921,6 +2921,36 @@ class OwnerAmendmentTests(unittest.TestCase):
             self.assertNotIn("blocks", body["candidateBoot"])
             self.assertTrue(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
+    def test_gateway_readiness_compares_each_block_with_the_previous_boot(self) -> None:
+        module = load_helper()
+        for before, after, candidate_state, expected in (
+            (["llm.inference"], ["llm.inference"], "degraded", "succeeded"),
+            (["llm.inference"], ["llm.inference", "llm.other"], "degraded", "failed"),
+            ([], ["llm.inference"], "degraded", "failed"),
+            (["llm.inference"], ["llm.inference"], "failed", "failed"),
+        ):
+            with self.subTest(before=before, after=after, state=candidate_state), tempfile.TemporaryDirectory() as tmp:
+                effects = RecordingEffects()
+                effects.boot_payload_before = typed_boot(
+                    PREVIOUS_BOOT_ID,
+                    llmGateway={
+                        "state": "degraded",
+                        "reasons": [boot_reason("llm.gateway_unavailable", "Previous observation.", before)],
+                    },
+                )
+                effects.boot_payload_after = typed_boot(
+                    CANDIDATE_BOOT_ID,
+                    llmGateway={
+                        "state": candidate_state,
+                        "reasons": [boot_reason("llm.gateway_unavailable", "Candidate observation.", after)],
+                    },
+                )
+                _config_path, effects, _prepared, body = _start_apply(module, Path(tmp), effects=effects)
+                self.assertEqual(body["stage"], expected, body)
+                self.assertEqual(body["predicates"]["noBlockingReadiness"], expected == "succeeded")
+                self.assertEqual(body["previousAppRestored"], expected == "failed")
+                self.assertIn("llm.gateway_unavailable", body["candidateBoot"]["blockingReasons"])
+
     def test_malformed_candidate_reasons_fail_closed(self) -> None:
         module = load_helper()
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:

@@ -420,7 +420,7 @@ const PREDICATE_CHECKS = [
   { key: 'imageMatch', label: 'Image match' },
   { key: 'sourceMatch', label: 'Source match' },
   { key: 'acceptingProductWork', label: 'Accepting product work' },
-  { key: 'noBlockingReadiness', label: 'No blocking readiness' },
+  { key: 'noBlockingReadiness', label: 'Readiness verified' },
   { key: 'newBoot', label: 'New boot' },
   { key: 'retainedAuthRead', label: 'Retained auth read' },
   { key: 'nanohostReady', label: 'NanoHost ready' },
