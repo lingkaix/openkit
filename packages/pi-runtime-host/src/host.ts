@@ -518,10 +518,16 @@ export class PiRuntimeHost {
       turn.turnId !== turnId ||
       this.#state !== 'active' ||
       turn.interrupted ||
-      turn.failure ||
-      turn.settingUp ||
-      !session?.isStreaming
+      turn.failure
     ) {
+      respond('refused', 'stale');
+      return;
+    }
+    if (turn.settingUp) {
+      respond('refused', 'busy');
+      return;
+    }
+    if (!session?.isStreaming) {
       respond('refused', 'stale');
       return;
     }
