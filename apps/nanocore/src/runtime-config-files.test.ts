@@ -677,10 +677,8 @@ describe('runtime config file API', () => {
       expect(invalid.valid).toBe(false);
       expect(invalid.diagnostics[0]?.range?.startLine).toBe(1);
       expect(changed.valid).toBe(true);
-      expect(changed.plan.applied).toEqual([]);
-      expect(changed.plan.requiresRestart).toEqual([
-        expect.objectContaining({ path: 'providers' }),
-      ]);
+      expect(changed.plan.applied).toEqual([expect.objectContaining({ path: 'providers' })]);
+      expect(changed.plan.requiresRestart).toEqual([]);
       expect(readFileSync(providerPath, 'utf8')).toBe(original);
       // Temporary-root hygiene includes removal before either validation result returns.
       // Owner: File Storage And Knowledge Packages, Control-Store Integration.

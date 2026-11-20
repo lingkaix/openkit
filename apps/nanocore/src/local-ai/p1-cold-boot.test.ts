@@ -63,7 +63,7 @@ describe('local speech inert profile', () => {
     expect(existsSync(join(localAiRoot(installation.dataRoot), 'bin'))).toBe(false);
   });
 
-  it('enables speech on the running server and leaves ordinary provider edits restart-required', async () => {
+  it('enables speech independently and applies ordinary Provider edits on the running server', async () => {
     const local = await startPeer(() => ({
       status: 200,
       body: { text: 'local words', duration: 0.4 },
@@ -137,14 +137,13 @@ describe('local speech inert profile', () => {
       join(installation.dataRoot, 'config', 'providers', 'ordinary.provider.jsonc'),
       JSON.stringify(ordinaryProvider('Renamed ordinary'))
     );
-    const restarted = await installation.manager.reload({ dryRun: false, mode: 'safe' });
-    expect(restarted.status).toBe('applied');
-    expect(restarted.runtimeConfig.pendingRestart.map((change) => change.path)).toContain(
-      'providers'
-    );
+    const reloaded = await installation.manager.reload({ dryRun: false, mode: 'safe' });
+    expect(reloaded.status).toBe('applied');
+    expect(reloaded.plan.applied).toContainEqual(expect.objectContaining({ path: 'providers' }));
+    expect(reloaded.runtimeConfig.pendingRestart).toEqual([]);
     expect(
       installation.manager.current().providerRegistry.get('ordinary-provider')?.displayName
-    ).toBe('Ordinary');
+    ).toBe('Renamed ordinary');
     await local.close();
   });
 

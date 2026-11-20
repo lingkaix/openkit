@@ -163,15 +163,15 @@ describe('deployment model extension catalog', () => {
         expectedRevision: revision,
       })
     ).rejects.toThrow();
-    expect(
-      (await manager.reload({ mode: 'safe', dryRun: false })).plan.requiresRestart
-    ).toContainEqual(expect.objectContaining({ path: 'modelCatalog' }));
+    expect((await manager.reload({ mode: 'safe', dryRun: false })).plan.applied).toContainEqual(
+      expect.objectContaining({ path: 'modelCatalog' })
+    );
     expect(
       resolveEffectiveModelMetadata(
         manager.current().providerRegistry.get('primary')!,
         'future-model'
       ).limit?.context
-    ).toBe(300000);
+    ).toBe(280000);
     expect(
       resolveEffectiveModelMetadata(
         loadRuntimeConfig(root).providerRegistry.get('primary')!,
@@ -219,7 +219,7 @@ describe('deployment model extension catalog', () => {
     expect(readFileSync(path, 'utf8')).toBe(before);
   });
 
-  it('keeps unused catalog edits restart-required and rejects strict reload without changing the active snapshot', async () => {
+  it('applies an unused catalog edit in strict mode', async () => {
     const { root, path, catalog } = fixture();
     const manager = createRuntimeConfigManager({ dataRoot: root });
     const active = manager.current();
@@ -231,12 +231,12 @@ describe('deployment model extension catalog', () => {
       })
     );
     const result = await manager.reload({ mode: 'strict', dryRun: false });
-    expect(result.status).toBe('rejected');
-    expect(result.plan.requiresRestart.map((change) => change.path)).toEqual(['modelCatalog']);
-    expect(manager.current()).toBe(active);
-    await manager.reload({ mode: 'safe', dryRun: false });
-    expect(manager.current().modelCatalog).toEqual(active.modelCatalog);
-    expect(manager.current().providerRegistry).toBe(active.providerRegistry);
+    expect(result.status).toBe('applied');
+    expect(result.plan.requiresRestart).toEqual([]);
+    expect(result.plan.applied.map((change) => change.path)).toEqual(['modelCatalog']);
+    expect(manager.current()).not.toBe(active);
+    expect(manager.current().modelCatalog.providers.other?.models.unused?.reasoning).toBe(true);
+    expect(manager.current().providerRegistry.list()).toEqual(active.providerRegistry.list());
   });
 
   it('does not match another vendor or a shortened native ID and rejects removal of required context', async () => {
@@ -326,11 +326,12 @@ describe('deployment model extension catalog', () => {
       writeFileSync(path, JSON.stringify(edited));
       expect(await manager.reload({ mode: 'safe', dryRun: false })).toMatchObject({
         status: 'applied',
+        plan: {
+          applied: expect.arrayContaining([expect.objectContaining({ path: 'modelCatalog' })]),
+        },
       });
-      expect(manager.current().providerRegistry).toBe(active.providerRegistry);
-      expect(manager.status().pendingRestart.map((change) => change.path)).toContain(
-        'modelCatalog'
-      );
+      expect(manager.current().providerRegistry).not.toBe(active.providerRegistry);
+      expect(manager.status().pendingRestart).toEqual([]);
     }
   );
 
@@ -627,7 +628,7 @@ it.each([
   }
 );
 
-it('retains active reasoning options on safe reload and invalid edits, activating valid options after restart', async () => {
+it('applies valid reasoning options live and retains them after invalid edits', async () => {
   const { root, path, catalog } = fixture();
   const initial = {
     ...catalog,
@@ -666,10 +667,10 @@ it('retains active reasoning options on safe reload and invalid edits, activatin
     },
   };
   writeFileSync(path, JSON.stringify(edited));
-  expect(
-    (await manager.reload({ mode: 'safe', dryRun: false })).plan.requiresRestart
-  ).toContainEqual(expect.objectContaining({ path: 'modelCatalog' }));
-  expect(resolve()).toHaveProperty('reasoningEffortLevels', ['low', 'high']);
+  expect((await manager.reload({ mode: 'safe', dryRun: false })).plan.applied).toContainEqual(
+    expect.objectContaining({ path: 'modelCatalog' })
+  );
+  expect(resolve()).toHaveProperty('reasoningEffortLevels', []);
   const restarted = loadRuntimeConfig(root);
   expect(
     resolveLogicalModelCatalog(restarted.gatewayConfig, restarted.providerRegistry)[0]
@@ -688,5 +689,5 @@ it('retains active reasoning options on safe reload and invalid edits, activatin
   );
   expect((await manager.reload({ mode: 'safe', dryRun: false })).status).toBe('failed');
   expect(manager.current()).toBe(active);
-  expect(resolve()).toHaveProperty('reasoningEffortLevels', ['low', 'high']);
+  expect(resolve()).toHaveProperty('reasoningEffortLevels', []);
 });

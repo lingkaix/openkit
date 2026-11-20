@@ -19,6 +19,7 @@ import {
   type ModelCatalog,
   parseWorkspaceDataSourceCatalog,
   type ResourceCatalogDocument,
+  resolveProviderSubscriptionFamily,
   type UserConfig,
   UserConfigSchema,
   type WorkspaceConfig,
@@ -55,11 +56,13 @@ import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
 import { type ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
 import {
+  ControlStoreWorkerError,
   getControlStoreWorkerClient,
   type WorkspaceFrozenAdmission,
 } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import {
+  type RuntimePolicyPublicationResult,
   runtimePolicyIdentityForSnapshot,
   sameRuntimePolicyIdentity,
 } from '../storage/runtime-policy-publication.js';
@@ -474,16 +477,6 @@ export function loadRuntimeConfig(
     undefined,
     quarantinedWorkspaceIds
   );
-  // #604: a rotating-family refresh shape stays parseable; its delivery refuses before effects.
-  for (const shape of gatewayConfig.providerAccessShapes ?? []) {
-    if (shape.refresh && BLOCKED_DELEGATED_REFRESH_STRATEGIES.includes(shape.refresh.strategy))
-      gatewayDiagnostics.push({
-        code: 'credential_delegation_blocked',
-        message: `Provider access shape ${shape.id} cannot delegate refresh: rotating-family recovery is unproved.`,
-        severity: 'warning',
-        source: 'DATA_ROOT/config/gateway.jsonc',
-      });
-  }
   const diagnostics: RuntimeConfigDiagnostic[] = [
     ...configLoadResult.diagnostics.map(configDiagnostic),
     ...authoredDiagnostics,
@@ -549,11 +542,13 @@ const gatewayCompositionCodes = {
   unknownContext: 'provider.unknown_model_context',
   unavailableMember: 'gateway.unavailable_member',
   invalidLogicalModel: 'gateway.invalid_logical_model',
+  delegatedRefreshBlocked: 'credential_delegation_blocked',
 };
 const effectiveGatewayDiagnosticCodes = new Set([
   gatewayCompositionCodes.speechAsChat,
   gatewayCompositionCodes.unavailableMember,
   gatewayCompositionCodes.invalidLogicalModel,
+  gatewayCompositionCodes.delegatedRefreshBlocked,
 ]);
 
 /** Checks the exact Gateway and Provider combination without contacting an upstream. */
@@ -575,6 +570,16 @@ function gatewayCompositionDiagnostics(
         });
       }
     }
+  }
+  // #604: a rotating-family refresh shape stays parseable; its delivery refuses before effects.
+  for (const shape of gatewayConfig.providerAccessShapes ?? []) {
+    if (shape.refresh && BLOCKED_DELEGATED_REFRESH_STRATEGIES.includes(shape.refresh.strategy))
+      gatewayDiagnostics.push({
+        code: gatewayCompositionCodes.delegatedRefreshBlocked,
+        message: `Provider access shape ${shape.id} cannot delegate refresh: rotating-family recovery is unproved.`,
+        severity: 'warning',
+        source: 'DATA_ROOT/config/gateway.jsonc',
+      });
   }
   try {
     assertConfiguredModelsHaveKnownContext(providerRegistry, gatewayConfig);
@@ -666,7 +671,9 @@ export function createRuntimeConfigManager(
       providerCredentialConfigured: options.providerCredentialConfigured,
     });
     const plan = diffRuntimeConfig(previous, candidate);
-    if (plan.rejected.length > 0) return { snapshot: candidate, plan };
+    if (plan.rejected.length > 0) {
+      return { snapshot: candidate, plan: { ...plan, applied: [], deferred: [] } };
+    }
 
     assertCatalogContextRemovalIsValid(previous, candidate);
     if (mode === 'strict' || plan.requiresRestart.length === 0)
@@ -704,10 +711,13 @@ export function createRuntimeConfigManager(
   ) {
     if (installation) throw new Error('Runtime Policy publication is still pending.');
     const previous = current;
-    const install = () => {
+    const assertCurrent = () => {
       validate();
       if (current !== previous)
         throw new Error('Runtime configuration changed during publication.');
+    };
+    const install = () => {
+      assertCurrent();
       if (next !== previous) {
         current = next;
         installed(previous, next);
@@ -725,9 +735,7 @@ export function createRuntimeConfigManager(
       const observed = await client.runtimePolicyPublication(db, { kind: 'inspect' });
       if (observed.publisherId !== null && observed.publisherId !== publisherId)
         throw new Error('Native Policy publisher is unavailable.');
-      validate();
-      if (current !== previous)
-        throw new Error('Runtime configuration changed during publication.');
+      assertCurrent();
       if (
         observed.state === 'active' &&
         observed.identity &&
@@ -744,9 +752,30 @@ export function createRuntimeConfigManager(
         ...target,
         expectedTransitionId: observed.transitionId,
       });
-      // No awaited operation separates fresh validation from installation of the actual snapshot.
+      assertCurrent();
+      const confirmsActivation = (result: RuntimePolicyPublicationResult | null) =>
+        result?.state === 'active' &&
+        result.openingId === target.openingId &&
+        result.publisherId === target.publisherId &&
+        result.transitionId === target.transitionId &&
+        result.identity !== null &&
+        sameRuntimePolicyIdentity(result.identity, identity);
+      const activated = await client
+        .runtimePolicyPublication(db, { kind: 'activate', ...target, identity })
+        .catch(async (error: unknown) => {
+          if (!(error instanceof ControlStoreWorkerError) || error.commit !== 'unknown')
+            throw error;
+          // Inspect the exact handoff before changing Main after a lost reply. Never replay activate.
+          const inspected = await client
+            .runtimePolicyPublication(db, { kind: 'inspect' })
+            .catch(() => null);
+          if (!confirmsActivation(inspected)) throw error;
+          return inspected;
+        });
+      if (!confirmsActivation(activated))
+        throw new Error('Native Policy activation could not be confirmed.');
+      // Old-snapshot effects with a changed Policy identity remain refused until Main publishes.
       install();
-      await client.runtimePolicyPublication(db, { kind: 'activate', ...target, identity });
     })();
     const pending = handoff.finally(() => {
       if (installation === pending) installation = undefined;
@@ -777,7 +806,7 @@ export function createRuntimeConfigManager(
       while (installation) await installation;
       const previous = findWorkspaceConfig(current, workspaceId);
       if (previous?.config.workspace.name === name) {
-        // A prior activation acknowledgement may have failed after installation.
+        // Refresh native publication for the active snapshot after an interrupted handoff.
         await installSnapshot(current);
         return;
       }
@@ -1134,6 +1163,7 @@ function applySafeRuntimeConfigReload(
   const restartPaths = new Set(plan.requiresRestart.map((change) => change.path));
   const retainProviders = restartPaths.has('providers') || restartPaths.has('modelCatalog');
   const providerRegistry = retainProviders ? previous.providerRegistry : next.providerRegistry;
+  const gatewayConfig = restartPaths.has('gateway') ? previous.gatewayConfig : next.gatewayConfig;
   let diagnostics = next.diagnostics;
   if (retainProviders) {
     // Unknown context in a saved Provider remains actionable before restart.
@@ -1142,7 +1172,7 @@ function applySafeRuntimeConfigReload(
     );
     diagnostics = [
       ...diagnostics.filter((entry) => !effectiveGatewayDiagnosticCodes.has(entry.code)),
-      ...gatewayCompositionDiagnostics(next.gatewayConfig, providerRegistry, options).filter(
+      ...gatewayCompositionDiagnostics(gatewayConfig, providerRegistry, options).filter(
         (entry) =>
           entry.code !== gatewayCompositionCodes.unknownContext ||
           entry.message !== authoredContextWarning?.message
@@ -1173,7 +1203,7 @@ function applySafeRuntimeConfigReload(
         ? previous.providerDiagnostics
         : next.providerDiagnostics,
       agentManifests: restartPaths.has('agents') ? previous.agentManifests : next.agentManifests,
-      gatewayConfig: next.gatewayConfig,
+      gatewayConfig,
       internalRoleProfiles: next.internalRoleProfiles,
       userConfigs: next.userConfigs,
       workspaceConfigs: next.workspaceConfigs,
@@ -1355,24 +1385,32 @@ export function diffRuntimeConfig(
   const deferred: RuntimeConfigChange[] = [];
   const requiresRestart: RuntimeConfigChange[] = [];
 
+  const providersChanged = !equalSemantic(providerSummary(previous), providerSummary(next));
+  const handoverRequired =
+    providersChanged &&
+    providerCredentialHandoverRequired(previous.providerRegistry, next.providerRegistry);
+  // A pending credential change holds the same Gateway bundle across every edited path.
+  const planSupplyChange = (path: string, summary: string) => {
+    if (handoverRequired) {
+      requiresRestart.push(change(path, 'restart-required', 'requires-restart', summary));
+    } else {
+      applied.push(change(path, 'hot-swappable', 'applied', summary));
+    }
+  };
   if (!equalSemantic(previous.modelCatalog, next.modelCatalog)) {
-    requiresRestart.push(
-      change(
-        'modelCatalog',
-        'restart-required',
-        'requires-restart',
-        'Model extension catalog changes require restart.'
-      )
+    planSupplyChange(
+      'modelCatalog',
+      handoverRequired
+        ? 'The catalog waits for the Provider credential binding to take effect.'
+        : 'Model extension catalog changed.'
     );
   }
-  if (!equalSemantic(providerSummary(previous), providerSummary(next))) {
-    requiresRestart.push(
-      change(
-        'providers',
-        'restart-required',
-        'requires-restart',
-        'Provider registry changes require restart.'
-      )
+  if (providersChanged) {
+    planSupplyChange(
+      'providers',
+      handoverRequired
+        ? 'An existing Provider credential binding changed and requires restart.'
+        : 'Provider registry changed.'
     );
   }
   if (
@@ -1419,13 +1457,11 @@ export function diffRuntimeConfig(
     );
   }
   if (!equalSemantic(previous.gatewayConfig, next.gatewayConfig)) {
-    applied.push(
-      change(
-        'gateway',
-        'hot-swappable',
-        'applied',
-        'Gateway logical models or private routes changed.'
-      )
+    planSupplyChange(
+      'gateway',
+      handoverRequired
+        ? 'Gateway routes wait for the Provider credential binding to take effect.'
+        : 'Gateway logical models or private routes changed.'
     );
   }
   if (!equalSemantic(agentSummary(previous), agentSummary(next))) {
@@ -1756,6 +1792,33 @@ function readPath(value: unknown, path: string): unknown {
 
     return (current as Record<string, unknown>)[part];
   }, value);
+}
+
+/** Keeps the old generation only when a running Provider's credential binding needs handover. */
+function providerCredentialHandoverRequired(
+  previous: ProviderRegistry,
+  next: ProviderRegistry
+): boolean {
+  return previous.list().some((profile) => {
+    const replacement = next.get(profile.id);
+    return !equalSemantic(
+      providerCredentialBinding(profile),
+      providerCredentialBinding(replacement)
+    );
+  });
+}
+
+/** Selects the authored binding identity used by current credential and subscription owners. */
+function providerCredentialBinding(profile: ReturnType<ProviderRegistry['get']>) {
+  if (!profile) return null;
+  const accountSlotId = profile.extensions?.openkit?.subscriptionAccount?.accountSlotId;
+  if (!profile.secretRef && !accountSlotId) return null;
+  return {
+    kind: profile.kind,
+    secretRef: profile.secretRef ?? null,
+    accountSlotId: accountSlotId ?? null,
+    subscriptionProviderId: accountSlotId ? resolveProviderSubscriptionFamily(profile) : null,
+  };
 }
 
 /**

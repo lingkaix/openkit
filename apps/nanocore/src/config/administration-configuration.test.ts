@@ -922,7 +922,7 @@ describe('administration catalog configuration', () => {
     ).toHaveLength(1);
     const request = f.confirm(proposal);
     const applied = await f.service.apply(request);
-    expect(applied).toMatchObject({ persisted: true, reload: 'applied', restartRequired: true });
+    expect(applied).toMatchObject({ persisted: true, reload: 'applied', restartRequired: false });
     expect(JSON.parse(readFileSync(f.providerPath, 'utf8'))).toMatchObject({
       models: ['gpt-5', 'gpt-6'],
       extensions: f.provider.extensions,

@@ -389,7 +389,7 @@ describe('runtime config reload API', () => {
     );
   });
 
-  it('keeps provider changes pending restart and exposes the live runtime status', async () => {
+  it('applies ordinary Provider changes and exposes the installed registry', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
     const coreDb = openCoreDb(dataRoot);
     onTestFinished(() => {
@@ -421,23 +421,24 @@ describe('runtime config reload API', () => {
     };
 
     expect(reload.runtimeConfig.currentVersion).toBe(2);
-    expect(reload.plan.applied).toEqual([]);
-    expect(reload.plan.requiresRestart).toEqual([expect.objectContaining({ path: 'providers' })]);
-    expect(reload.runtimeConfig.pendingRestart).toEqual([
-      expect.objectContaining({ path: 'providers' }),
-    ]);
+    expect(reload.plan.applied).toEqual([expect.objectContaining({ path: 'providers' })]);
+    expect(reload.plan.requiresRestart).toEqual([]);
+    expect(reload.runtimeConfig.pendingRestart).toEqual([]);
 
     const diagnosticsRes = await app.request(...operationRequest('diagnostics.app', {}));
     const diagnostics = (await diagnosticsRes.json()) as {
       runtimeConfig: { currentVersion: number };
-      providers: { registry: Array<{ id: string; models: string[] }> };
+      providers: { registry: Array<{ id: string; displayName: string; models: string[] }> };
     };
 
     expect(diagnostics.runtimeConfig.currentVersion).toBe(2);
-    expect(diagnostics.providers.registry[0]?.models).toContain('openai/gpt-5.1');
+    expect(diagnostics.providers.registry[0]).toMatchObject({
+      displayName: 'Agent OpenRouter openai/gpt-5.2',
+      models: ['openai/gpt-5.1'],
+    });
   });
 
-  it('keeps the active AgentSession across a restart-required provider reload', async () => {
+  it('keeps the active AgentSession across a live Provider reload', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -479,6 +480,15 @@ describe('runtime config reload API', () => {
       completion.resolve(run);
       return run;
     });
+    const provider = {
+      defaultModel: 'openai/gpt-5.1',
+      displayName: 'Agent OpenRouter',
+      id: 'agent-openrouter',
+      kind: 'llm-gateway' as const,
+      models: ['openai/gpt-5.1'],
+      vendor: 'openrouter',
+      secretRef: 'env:OPENKIT_RELOAD_FIXTURE_KEY',
+    };
     const app = createApp({
       agentManifests: [agentSetup.manifest],
       coreDb,
@@ -503,17 +513,7 @@ describe('runtime config reload API', () => {
         ],
         requiredFeatures: [],
       },
-      providerRegistry: new ProviderRegistry([
-        {
-          defaultModel: 'openai/gpt-5.1',
-          displayName: 'Agent OpenRouter',
-          id: 'agent-openrouter',
-          kind: 'llm-gateway',
-          models: ['openai/gpt-5.1'],
-          vendor: 'openrouter',
-          secretRef: 'env:OPENKIT_RELOAD_FIXTURE_KEY',
-        },
-      ]),
+      providerRegistry: new ProviderRegistry([provider]),
       // This lifecycle fixture needs configured non-Vault supply, without a Provider call.
       providerCredentialResolver: (secretRef) =>
         secretRef === 'env:OPENKIT_RELOAD_FIXTURE_KEY' ? 'test-only-reload-key' : null,
@@ -563,7 +563,10 @@ describe('runtime config reload API', () => {
         expect.objectContaining({ configVersion: 1, stale: false, status: 'idle' }),
       ]);
 
-      writeServerConfig(dataRoot, 'openai/gpt-5.2');
+      writeFileSync(
+        join(dataRoot, 'config', 'providers', 'agent-openrouter.provider.jsonc'),
+        JSON.stringify({ schemaVersion: 1, ...provider, displayName: 'Updated Agent OpenRouter' })
+      );
       const reloadRes = await app.request(
         ...operationRequest(
           'runtime.reload',
@@ -579,14 +582,11 @@ describe('runtime config reload API', () => {
       expect(reloadRes.status).toBe(200);
       const reload = (await reloadRes.json()) as {
         runtimeConfig: { pendingRestart: Array<{ path: string }> };
-        plan: { requiresRestart: Array<{ path: string }> };
+        plan: { applied: Array<{ path: string }>; requiresRestart: Array<{ path: string }> };
       };
-      expect(reload.plan.requiresRestart).toContainEqual(
-        expect.objectContaining({ path: 'providers' })
-      );
-      expect(reload.runtimeConfig.pendingRestart).toContainEqual(
-        expect.objectContaining({ path: 'providers' })
-      );
+      expect(reload.plan.applied).toContainEqual(expect.objectContaining({ path: 'providers' }));
+      expect(reload.plan.requiresRestart).toEqual([]);
+      expect(reload.runtimeConfig.pendingRestart).toEqual([]);
 
       const dashboardRes = await app.request('/api/app/operations/thread.dashboard', {
         method: 'POST',

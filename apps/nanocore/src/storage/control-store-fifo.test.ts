@@ -38,6 +38,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
+import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { prepareImmutableProductJson } from './immutable-content.js';
 import {
@@ -1137,12 +1138,13 @@ describe('runtime Policy publication through the actual native FIFO', () => {
         traffic.frames.some((frame) => frame.action.kind === 'activate' && !frame.forwarded)
       ).toBe(true)
     );
-    expect(policyDigest(f.manager.current().openKitConfig.policy!.mediation)).toBe(
-      policyDigest(documentB)
-    );
+    expect(f.manager.current()).toBe(initialSnapshot);
     expect((await inspectPublication(f.client, f.db)).state).toBe('closed');
     traffic.releasePosts();
     expect((await reload).status).toBe('applied');
+    expect(policyDigest(f.manager.current().openKitConfig.policy!.mediation)).toBe(
+      policyDigest(documentB)
+    );
     const after = await inspectPublication(f.client, f.db);
     expect(after.state).toBe('active');
     expect(after.identity!.serverRevision).toBe(policyDigest(documentB));
@@ -1204,6 +1206,100 @@ describe('runtime Policy publication through the actual native FIFO', () => {
     }
   });
 
+  it('retains the old Provider and Gateway bundle when native refuses activation before any effect', async () => {
+    const f = await publicationFixture();
+    const traffic = observePublicationTraffic(f.client);
+    const model = 'openai/gpt-5.1';
+    const writeSupply = (id: string) => {
+      mkdirSync(join(f.root, 'config/providers'), { recursive: true });
+      writeFileSync(
+        join(f.root, 'config/providers/supply.provider.jsonc'),
+        JSON.stringify({
+          schemaVersion: 1,
+          id,
+          vendor: 'openrouter',
+          kind: 'local',
+          displayName: id,
+          models: [model],
+        })
+      );
+      writeFileSync(
+        join(f.root, 'config/gateway.jsonc'),
+        JSON.stringify({
+          schemaVersion: 1,
+          enabled: true,
+          logicalModels: [
+            {
+              id: 'reasoning',
+              displayName: 'Reasoning',
+              contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+              routes: [{ id, providerProfileId: id, providerModel: model }],
+            },
+          ],
+        })
+      );
+    };
+    writeSupply('old-supply');
+    const manager = createRuntimeConfigManager({ dataRoot: f.root });
+    await manager.bindNativePolicyPublication(f.db);
+    const previous = manager.current();
+    expect(previous.providerRegistry.get('old-supply')).toMatchObject({ id: 'old-supply' });
+    expect(previous.gatewayConfig.logicalModels[0]?.routes[0]?.id).toBe('old-supply');
+
+    policySource(f, 'B');
+    writeSupply('new-supply');
+    traffic.faults.post = 'activate';
+    const reload = retainPolicyWork(Promise.resolve(manager.reload({ mode: 'safe' })));
+    await vi.waitFor(() =>
+      expect(
+        traffic.frames.some((frame) => frame.action.kind === 'activate' && !frame.forwarded)
+      ).toBe(true)
+    );
+    const closed = await inspectPublication(f.client, f.db);
+    expect(closed.state).toBe('closed');
+    expect(manager.current()).toBe(previous);
+
+    // Supersede the held transition in the actual owner. The original activate must refuse.
+    const superseding = await f.client.runtimePolicyPublication(f.db, {
+      kind: 'close',
+      openingId: closed.openingId,
+      publisherId: closed.publisherId!,
+      transitionId: randomUUID(),
+      expectedTransitionId: closed.transitionId,
+    });
+    traffic.releasePosts();
+    expect(await reload).toMatchObject({
+      status: 'failed',
+      runtimeConfig: { currentVersion: previous.version },
+    });
+    expect(await inspectPublication(f.client, f.db)).toEqual(superseding);
+    expect(manager.current()).toBe(previous);
+    expect(manager.current().providerRegistry.get('new-supply')).toBeNull();
+    expect(manager.current().gatewayConfig.logicalModels[0]?.routes[0]?.id).toBe('old-supply');
+  });
+
+  it('publishes after inspecting the exact native activation when its reply was lost', async () => {
+    const f = await publicationFixture();
+    await f.manager.bindNativePolicyPublication(f.db);
+    const original = f.client.runtimePolicyPublication.bind(f.client);
+    const effects: PolicyAction['kind'][] = [];
+    vi.spyOn(f.client, 'runtimePolicyPublication').mockImplementation(async (db, action) => {
+      effects.push(action.kind);
+      const result = await original(db, action);
+      if (action.kind === 'activate')
+        throw new ControlStoreWorkerError('delivery-unknown', 'unknown');
+      return result;
+    });
+    const before = f.manager.current();
+    const next = policySource(f, 'B');
+    expect((await f.manager.reload({ mode: 'safe' })).status).toBe('applied');
+    expect(f.manager.current().version).toBe(before.version + 1);
+    expect(policyDigest(f.manager.current().openKitConfig.policy!.mediation)).toBe(
+      policyDigest(next)
+    );
+    expect(effects).toEqual(['inspect', 'close', 'activate', 'inspect']);
+  });
+
   it.each(['close', 'activate'] as const)(
     'reports actual loaded state after loss of the original %s ACK',
     async (phase) => {
@@ -1240,8 +1336,8 @@ describe('runtime Policy publication through the actual native FIFO', () => {
       );
       const observed = await inspectPublication(f.client, f.db);
       expect(observed.state).toBe(phase === 'close' ? 'closed' : 'active');
-      if (phase === 'close') expect(f.manager.current()).toBe(before);
-      else expect(observed.identity!.serverRevision).toBe(policyDigest(next));
+      expect(f.manager.current()).toBe(before);
+      if (phase === 'activate') expect(observed.identity!.serverRevision).toBe(policyDigest(next));
       const selected = traffic.frames.find(
         (frame) => frame.action.kind === phase && frame.forwarded
       )!;
@@ -1251,21 +1347,15 @@ describe('runtime Policy publication through the actual native FIFO', () => {
       await selected.worker.terminate();
       expect((await reload).status).toBe('failed');
       expect(f.manager.status().currentVersion).toBe(f.manager.current().version);
-      expect(f.manager.current().version).toBe(before.version + (phase === 'activate' ? 1 : 0));
+      expect(f.manager.current()).toBe(before);
+      expect(f.manager.current().version).toBe(before.version);
       expect(f.manager.current().openKitConfig.server?.bind).toEqual(
         before.openKitConfig.server?.bind
       );
-      expect(f.manager.status().pendingRestart).toEqual(
-        phase === 'activate' ? expectedPlan.requiresRestart : previousRestart
-      );
+      expect(f.manager.status().pendingRestart).toEqual(previousRestart);
       expect((await reload).runtimeConfig.pendingRestart).toEqual(
         f.manager.status().pendingRestart
       );
-      if (phase === 'close') expect(f.manager.current()).toBe(before);
-      else
-        expect(policyDigest(f.manager.current().openKitConfig.policy!.mediation)).toBe(
-          policyDigest(next)
-        );
       await expect(
         f.client.runtimePolicyPublication(f.db, { kind: 'inspect' })
       ).rejects.toBeDefined();

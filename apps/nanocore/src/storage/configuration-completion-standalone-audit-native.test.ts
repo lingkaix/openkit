@@ -610,9 +610,9 @@ function exactEvent(
   expect(Date.parse(event.occurredAt!)).toBeGreaterThanOrEqual(startedAt);
   expect(Date.parse(event.createdAt!)).toBeLessThanOrEqual(Date.now());
   expect(Date.parse(event.occurredAt!)).toBeLessThanOrEqual(Date.now());
-  // Config/Identity: startup-captured Provider registry metadata remains restart-required.
+  // Config/Identity: ordinary Provider metadata uses the installed runtime generation.
   expect(event.summary).toBe(
-    `Candidate ${f.request.candidate.contentDigest}; base ${f.expectedRevision}; persisted true; reload ${f.mode === 'failed' ? 'failed' : 'applied'}; restart required ${f.family === 'provider'}.`
+    `Candidate ${f.request.candidate.contentDigest}; base ${f.expectedRevision}; persisted true; reload ${f.mode === 'failed' ? 'failed' : 'applied'}; restart required false.`
   );
   expect(JSON.stringify(event)).not.toContain('fixture-private-provider-note');
   if (f.family === 'policy') {
@@ -757,7 +757,7 @@ for (const scenario of [
         f.family === 'policy' ? 'server.jsonc' : 'providers/catalog.provider.jsonc'
       ).file.revision,
       reload: scenario.mode === 'failed' ? 'failed' : 'applied',
-      restartRequired: f.family === 'provider',
+      restartRequired: false,
     });
     const outcome = f.store.getArtifact(f.workspaceId, f.outcomeId);
     expect(outcome).toMatchObject({
