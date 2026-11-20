@@ -30,6 +30,7 @@ import {
   CODEX_APPROVAL_POLICY,
   CODEX_SANDBOX,
   CodexAppServer,
+  CodexRpcError,
   codexThreadItemTypes,
   codexTurnStatuses,
   redactDiagnostic,
@@ -45,6 +46,21 @@ import {
 const CODEX_STOP_GRACE_MS = LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs / 2;
 /** Filesystem inspection and correlated interrupt-terminal deadlines. */
 const CODEX_INSPECT_TIMEOUT_MS = 1_000;
+
+/** Recognizes the pinned App Server's definite no-effect steer errors. */
+function codexSteerRefusal(error: unknown, expectedTurnId: string): 'stale' | 'busy' | undefined {
+  if (!(error instanceof CodexRpcError) || error.code !== -32600) return;
+  const message = error.message;
+  if (message === 'no active turn to steer') return 'stale';
+  if (message === 'cannot steer a compact turn' || message === 'cannot steer a review turn')
+    return 'busy';
+
+  const mismatchPrefix = `expected active turn id \`${expectedTurnId}\` but found \``;
+  if (!message.startsWith(mismatchPrefix) || !message.endsWith('`')) return;
+  const actualTurnId = message.slice(mismatchPrefix.length, -1);
+  if (actualTurnId && actualTurnId !== expectedTurnId && !/[`\r\n]/.test(actualTurnId))
+    return 'stale';
+}
 
 /** Races a control operation and always releases its deadline timer. Model work is not timed. */
 async function controlDeadline<T>(
@@ -1174,7 +1190,9 @@ class CodexResidentSession implements WorkerResidentSession {
               inputItemId: instruction.inputItemId,
               inputDigest: instruction.inputDigest,
             };
-          } catch {
+          } catch (error) {
+            const refusal = codexSteerRefusal(error, turnId);
+            if (refusal) return { disposition: 'refused', reasonCode: refusal };
             // The native effect may exist. Fence this binding so no new input can inherit uncertainty.
             this.unusable = true;
             return { disposition: 'unknown', reasonCode: 'outcome_unknown' };

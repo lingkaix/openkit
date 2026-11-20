@@ -28,6 +28,16 @@ interface RpcMessage {
   readonly error?: { readonly message: string; readonly code: number };
 }
 
+/** A correlated native JSON-RPC error with its code and a bounded, redacted message. */
+export class CodexRpcError extends Error {
+  constructor(
+    readonly code: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
 /** Prefix retained from a native stream before redaction. The shared runner redacts again. */
 export const CODEX_DIAGNOSTIC_MAX_BYTES = 16 * 1024;
 
@@ -166,7 +176,7 @@ export interface CodexAuthTokensRefreshReply {
 export class CodexAppServer {
   readonly permissionRecords: CodexPermissionRecord[] = [];
   private readonly pending = new Map<
-    string,
+    number | string,
     { resolve: (message: RpcMessage) => void; reject: (error: Error) => void }
   >();
   private readonly stderrDecoder = new TextDecoder('utf-8');
@@ -267,7 +277,7 @@ export class CodexAppServer {
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const response = new Promise<RpcMessage>((resolve, reject) => {
-      this.pending.set(String(id), { resolve, reject });
+      this.pending.set(id, { resolve, reject });
     });
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
@@ -283,12 +293,15 @@ export class CodexAppServer {
         deadline,
       ]);
       if (message.error) {
-        throw new Error(redactDiagnostic(message.error.message, this.secrets));
+        throw new CodexRpcError(
+          message.error.code,
+          redactDiagnostic(message.error.message, this.secrets)
+        );
       }
       return message.result;
     } finally {
       clearTimeout(timer);
-      this.pending.delete(String(id));
+      this.pending.delete(id);
       abort.abort();
     }
   }
@@ -391,8 +404,8 @@ export class CodexAppServer {
       (message.result !== undefined) !== (message.error !== undefined) &&
       !message.method
     ) {
-      const pending = this.pending.get(String(message.id));
-      this.pending.delete(String(message.id));
+      const pending = this.pending.get(message.id);
+      this.pending.delete(message.id);
       pending?.resolve(message);
       return;
     }

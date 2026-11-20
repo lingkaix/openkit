@@ -3527,15 +3527,18 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
       releaseInference.resolve();
       expect((await turn.settled).status).toBe('completed');
       release.resolve();
-      // An unclassified native rejection retains uncertainty; it is never success or a new prompt.
-      expect(await pending).toMatchObject({ disposition: 'unknown' });
+      expect(await pending).toEqual({ disposition: 'refused', reasonCode: 'stale' });
       expect(await turn.steer!(input)).toMatchObject({
         disposition: 'refused',
         reasonCode: 'stale',
       });
-      await expect(session.startTurn(turnInput(roots, [], 'Say other.'))).rejects.toThrow();
       expect(nativeCalls).toBe(1);
       expect(inference.bodies).toHaveLength(1);
+      const successor = await session.startTurn(turnInput(roots, [], 'Requested successor.'));
+      expect((await successor.settled).status).toBe('completed');
+      expect(inference.bodies).toHaveLength(2);
+      expect(inference.bodies[1]).not.toContain(input.input);
+      expect(nativeCalls).toBe(1);
     } finally {
       releaseInference.resolve();
       release.resolve();
@@ -3910,6 +3913,100 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
 });
 
 describe('round 4 failure boundaries', () => {
+  it('keeps the native code on one correlated steer RPC refusal', async () => {
+    const child = controlledPeer();
+    child.stdin.removeAllListeners('data');
+    const rpc = new CodexAppServer(
+      child,
+      [],
+      () => undefined,
+      () => undefined
+    );
+    const requests: string[] = [];
+    child.stdin.on('data', (chunk) => {
+      const request = JSON.parse(chunk.toString());
+      requests.push(request.method);
+      child.stdout.write(
+        `${JSON.stringify({
+          id: request.id,
+          error: { code: -32600, message: 'no active turn to steer' },
+        })}\n`
+      );
+    });
+    try {
+      await expect(
+        rpc.request('turn/steer', { expectedTurnId: 'controlled-turn' })
+      ).rejects.toMatchObject({ message: 'no active turn to steer', code: -32600 });
+      expect(requests).toEqual(['turn/steer']);
+    } finally {
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+    }
+  });
+
+  it.each([
+    ['absent target', -32600, 'no active turn to steer', 'refused', 'stale'],
+    [
+      'mismatched target',
+      -32600,
+      'expected active turn id `controlled-turn` but found `successor`',
+      'refused',
+      'stale',
+    ],
+    ['manual compaction', -32600, 'cannot steer a compact turn', 'refused', 'busy'],
+    ['review', -32600, 'cannot steer a review turn', 'refused', 'busy'],
+    [
+      'unrecognized invalid request',
+      -32600,
+      'server rejected the request',
+      'unknown',
+      'outcome_unknown',
+    ],
+    ['unexpected native code', -32603, 'cannot steer a compact turn', 'unknown', 'outcome_unknown'],
+    ['string response ID', -32600, 'no active turn to steer', 'unknown', 'outcome_unknown', true],
+  ] as const)(
+    'classifies definite Codex steer refusal only with exact native evidence: %s',
+    async (_case, code, message, disposition, reasonCode, stringResponseId = false) => {
+      const roots = await tempRoots();
+      closers.push(() => rm(roots.base, { recursive: true, force: true }));
+      let calls = 0;
+      const child = controlledPeer(undefined, undefined, NATIVE_THREAD, {
+        handleFrame(request) {
+          if (request.method !== 'turn/steer') return false;
+          calls++;
+          const id = stringResponseId ? String(request.id) : request.id;
+          child.stdout.write(`${JSON.stringify({ id, error: { code, message } })}\n`);
+          return true;
+        },
+      });
+      const session = await openCodexResidentSession(openInput(roots), {
+        spawnProcess: () => child,
+        stopGraceMs: 5,
+        controlTimeoutMs: 100,
+      });
+      const turn = await session.startTurn(turnInput(roots, []));
+      const input = 'fixture instruction';
+      const instruction = {
+        input,
+        inputItemId: 'it_00000000-0000-7000-8000-000000000802',
+        inputDigest: createHash('sha256').update(input).digest('hex'),
+      };
+      try {
+        expect(await turn.steer!(instruction)).toEqual({ disposition, reasonCode });
+        if (disposition === 'unknown')
+          expect(await turn.steer!(instruction)).toEqual({
+            disposition: 'refused',
+            reasonCode: 'stale',
+          });
+        expect(calls).toBe(1);
+      } finally {
+        child.stdout.end();
+        await turn.settled.catch(() => undefined);
+      }
+    }
+  );
+
   it('uses the shared native request budget and releases an expired request timer', async () => {
     const child = controlledPeer();
     child.stdin.removeAllListeners('data');
