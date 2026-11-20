@@ -60,6 +60,7 @@ import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
 import { prepareServerAuditEvent } from '../audit-events.js';
+import { LISTENER_TLS_PLAN_PATH } from '../native-listener-tls.js';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import type { CoreDb } from '../storage/db.js';
 
@@ -76,9 +77,12 @@ const CONFIG_ROOT = 'config';
 const VALID_FILE_NAME = /^[A-Za-z0-9._-]+$/;
 const DATA_SOURCE_AUTHORITY_FIELDS = ['kind', 'access', 'sensitivity', 'vaultGrantRef'] as const;
 
-/** A current transport fence is independent of the authored candidate and its approval identity. */
+/** Reports restart requirements attributable to the authored candidate and its approval identity. */
 export function runtimeConfigCandidateRequiresRestart(plan: RuntimeConfigReloadPlan): boolean {
-  return plan.requiresRestart.some((entry) => entry.path !== NANO_HOST_TRANSPORT_RESTART_PATH);
+  return plan.requiresRestart.some(
+    (entry) =>
+      entry.path !== NANO_HOST_TRANSPORT_RESTART_PATH && entry.path !== LISTENER_TLS_PLAN_PATH
+  );
 }
 
 /** Authority-bearing data source catalog change emitted after a successful file write. */

@@ -116,8 +116,6 @@
     "apps/nanocore/src/generative-kernel/snapshots.ts\tfs:realpathSync\tf69ab7be588d4d74697c86b472d60acfa66f12a1747d5d4b59aaf0d4b77c58cc": 2,
     "apps/nanocore/src/generative-kernel/snapshots.ts\tfs:statSync\t60309d32d874d0064b6657533da1885264d271038caa928f5c250e18414dfa61": 1,
     "apps/nanocore/src/index.ts\tfs:existsSync\t7a7ae6fd6944d23ffee515a34a283b8cc094b0cb12987ac451175282493ebb4e": 1,
-    "apps/nanocore/src/index.ts\tfs:readFileSync\t6702814079d1fbc3c7a694befa635cfaca3ccc6b15ee9e863074e7c2e5e6c761": 1,
-    "apps/nanocore/src/index.ts\tfs:readFileSync\t7c5bb76b0d98feb2f995085289d5e2cdafdfc4b9de9c63b75ae2cd899b62af82": 1,
     "apps/nanocore/src/internal-agents/assistant-skill-resources.ts\tfs:lstatSync\t095eafcd7082743641f039f3950663c40fa032b527c136064ac4a1f07072e7d1": 1,
     "apps/nanocore/src/internal-agents/assistant-skill-resources.ts\tfs:realpathSync\te7b569cdfc59c5e51d0ace47ae35e877a5f92cf605074457c7d3e6039b4af7d2": 1,
     "apps/nanocore/src/internal-agents/assistant-skill-resources.ts\tfs:realpathSync\te99efe4810f360f623f7fe91c830d02536f893f9a46346f19f66efe4ef49f511": 1,

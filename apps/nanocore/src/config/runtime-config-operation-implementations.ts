@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { RUNTIME_CONFIG_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { parse } from 'jsonc-parser';
 import type { Actor } from '../auth/identity.js';
+import { INVALID_NATIVE_TLS_PAIR, LISTENER_TLS_PLAN_PATH } from '../native-listener-tls.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import type { createAgentNativeEnvironmentService } from './agent-native-environment.js';
@@ -82,9 +83,37 @@ export function createRuntimeConfigOperationImplementations(
         owner().filesForActor(publicOperationActor(context)).schemaCatalog()
       ),
     'runtime.validate': (input, context) =>
-      runConfigOperation(() =>
-        owner().filesForActor(publicOperationActor(context)).validate(input)
-      ),
+      runConfigOperation(async () => {
+        const service = owner();
+        const tls = await service.manager.checkListenerTlsCandidate().then(
+          (restart) => ({ restart, invalid: false }) as const,
+          () => ({ restart: undefined, invalid: true }) as const
+        );
+        const draft = service.filesForActor(publicOperationActor(context)).validate(input);
+        if (tls.restart) {
+          draft.plan.requiresRestart.push(tls.restart);
+        } else if (tls.invalid) {
+          draft.valid = false;
+          draft.diagnostics.push({
+            fileId: 'server.jsonc',
+            severity: 'error',
+            code: 'runtime_config.listener_tls_invalid',
+            message: INVALID_NATIVE_TLS_PAIR,
+            source: 'server.jsonc',
+            jsonPath: null,
+            range: null,
+          });
+          draft.plan.applied = [];
+          draft.plan.deferred = [];
+          draft.plan.rejected.push({
+            path: LISTENER_TLS_PLAN_PATH,
+            category: 'rejected',
+            action: 'rejected',
+            summary: INVALID_NATIVE_TLS_PAIR,
+          });
+        }
+        return draft;
+      }),
   } satisfies FamilyImplementations<typeof RUNTIME_CONFIG_OPERATION_DEFINITIONS>;
 }
 

@@ -24,6 +24,7 @@ import { isCurrentServerPolicyAuthor } from '../auth/operation-authorizer.js';
 import { readThreadPolicyAncestors, readThreadPolicyFacts } from '../auth/thread-visibility.js';
 import { createMcpConfig, updateMcpBinding } from '../catalog/resource-catalog.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { LISTENER_TLS_PLAN_PATH } from '../native-listener-tls.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
@@ -124,7 +125,10 @@ function expectedReviewedDefaults(userId: string) {
 }
 
 /** Real temporary configuration, private Artifact store and current durable token authority. */
-async function fixture(withWorkspaceSchemas = false) {
+async function fixture(
+  withWorkspaceSchemas = false,
+  checkListenerTlsChange?: () => Promise<boolean>
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-proposal-'));
   const coreDb = openCoreDb(dataRoot);
   cleanup.push(() => {
@@ -196,7 +200,7 @@ async function fixture(withWorkspaceSchemas = false) {
       defaultLogicalModelId: 'reasoning',
     })
   );
-  const manager = createRuntimeConfigManager({ dataRoot });
+  const manager = createRuntimeConfigManager({ dataRoot, checkListenerTlsChange });
   const files = new RuntimeConfigFileService({
     dataRoot,
     userId: actor.userId,
@@ -951,6 +955,34 @@ describe('administration catalog configuration', () => {
     expect(
       JSON.parse(readFileSync(f.gatewayPath, 'utf8')).logicalModels[0].routes[0].providerModel
     ).toBe('gpt-6');
+  });
+
+  it('keeps process TLS rotation out of the Gateway proposal and its application receipt', async () => {
+    let listenerChanged = false;
+    const f = await fixture(false, async () => listenerChanged);
+    const gateway = await f.service.propose(
+      {
+        targetFamily: 'gateway',
+        targetId: 'gateway',
+        expectedRevision: f.files.readFile('gateway.jsonc').file.revision,
+        changes: { logicalModels: [{ ...f.logicalModel, displayName: 'Updated reasoning' }] },
+      },
+      f.home
+    );
+    expect(gateway.preview.restartRequired).toBe(false);
+
+    listenerChanged = true;
+    expect(await f.service.apply(f.confirm(gateway))).toMatchObject({
+      persisted: true,
+      reload: 'applied',
+      restartRequired: false,
+    });
+    expect(f.manager.current().gatewayConfig.logicalModels[0]?.displayName).toBe(
+      'Updated reasoning'
+    );
+    expect(f.manager.status().pendingRestart).toEqual([
+      expect.objectContaining({ path: LISTENER_TLS_PLAN_PATH }),
+    ]);
   });
 
   it('rejects unsupported fields, missing dependencies, stale revisions and changed confirmations without writes', async () => {

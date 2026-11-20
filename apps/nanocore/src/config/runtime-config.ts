@@ -45,6 +45,7 @@ import {
   resolveLogicalModelCatalog,
 } from '../llm/logical-models.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
+import { LISTENER_TLS_PLAN_PATH } from '../native-listener-tls.js';
 import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
@@ -245,6 +246,8 @@ interface LoadRuntimeConfigOptions {
 interface RuntimeConfigManagerOptions {
   /** Data root to reload from. */
   dataRoot: string | null;
+  /** The listener owner's bounded check for a new valid public certificate generation. */
+  checkListenerTlsChange?: (() => Promise<boolean>) | undefined;
   /** Optional initial snapshot for tests or already-loaded startup state. */
   initialSnapshot?: RuntimeConfigSnapshot;
   /** Live API-key presence, inspected without resolving Vault material. */
@@ -318,6 +321,8 @@ export interface RuntimeConfigManager {
     dataRoot: string,
     mode: RuntimeConfigReloadRequest['mode']
   ): { snapshot: RuntimeConfigSnapshot; plan: RuntimeConfigReloadPlan };
+  /** Checks listener material without modifying the running TLS contexts. */
+  checkListenerTlsCandidate(): Promise<RuntimeConfigChange | undefined>;
   /** Reloads runtime config from the configured data root. */
   reload(
     input: RuntimeConfigReloadRequest
@@ -647,6 +652,17 @@ export function createRuntimeConfigManager(
     };
   }
 
+  /** Plans a replacement only when the validated public generation differs from boot. */
+  async function checkListenerTlsCandidate(): Promise<RuntimeConfigChange | undefined> {
+    if (!(await options.checkListenerTlsChange?.())) return;
+    return change(
+      LISTENER_TLS_PLAN_PATH,
+      'restart-required',
+      'requires-restart',
+      'The configured TLS certificate generation requires a NanoCore restart.'
+    );
+  }
+
   /** One bounded handoff excludes competing installers; it does not queue configuration requests. */
   function installSnapshot(
     next: RuntimeConfigSnapshot,
@@ -806,9 +822,10 @@ export function createRuntimeConfigManager(
       return ready instanceof Promise ? ready.then(() => current) : current;
     },
     prepareReloadCandidate,
+    checkListenerTlsCandidate,
     reload: (input) => {
       const startedAt = new Date().toISOString();
-      const nextVersion = current.version + 1;
+      let nextVersion = current.version + 1;
       const respond = (
         status: RuntimeConfigReloadResponse['status'],
         plan: RuntimeConfigReloadPlan
@@ -844,60 +861,73 @@ export function createRuntimeConfigManager(
         return respond('failed', plan);
       };
 
-      try {
-        if (installation) throw new Error('Runtime Policy publication is still pending.');
-        const { snapshot, plan } = prepareReloadCandidate(
-          requireDataRoot(options.dataRoot),
-          input.mode
-        );
-        assertNoBlockingDiagnostics(snapshot);
-
-        if (input.mode === 'strict' && plan.requiresRestart.length > 0) {
-          pendingRestart = plan.requiresRestart;
-          lastReload = reloadSummary(
-            startedAt,
-            input,
-            current.version,
-            current.version,
-            'rejected'
+      const run = (tlsRestart?: RuntimeConfigChange) => {
+        nextVersion = current.version + 1;
+        try {
+          if (installation) throw new Error('Runtime Policy publication is still pending.');
+          const { snapshot, plan: authoredPlan } = prepareReloadCandidate(
+            requireDataRoot(options.dataRoot),
+            input.mode
           );
+          assertNoBlockingDiagnostics(snapshot);
+          const plan = tlsRestart
+            ? { ...authoredPlan, requiresRestart: [...authoredPlan.requiresRestart, tlsRestart] }
+            : authoredPlan;
 
-          return respond('rejected', {
-            ...plan,
-            rejected: [
-              ...plan.rejected,
-              ...plan.requiresRestart.map((change) => ({
-                ...change,
-                action: 'rejected' as const,
-                category: 'rejected' as const,
-              })),
-            ],
+          if (input.mode === 'strict' && plan.requiresRestart.length > 0) {
+            pendingRestart = plan.requiresRestart;
+            lastReload = reloadSummary(
+              startedAt,
+              input,
+              current.version,
+              current.version,
+              'rejected'
+            );
+
+            return respond('rejected', {
+              ...plan,
+              rejected: [
+                ...plan.rejected,
+                ...plan.requiresRestart.map((change) => ({
+                  ...change,
+                  action: 'rejected' as const,
+                  category: 'rejected' as const,
+                })),
+              ],
+            });
+          }
+
+          if (input.dryRun) {
+            lastReload = reloadSummary(
+              startedAt,
+              input,
+              current.version,
+              current.version,
+              'dry-run'
+            );
+
+            return respond('dry-run', plan);
+          }
+
+          const ready = installSnapshot(snapshot, undefined, () => {
+            pendingRestart = plan.requiresRestart;
           });
+          const complete = () => {
+            lastReload = reloadSummary(
+              startedAt,
+              input,
+              snapshot.version - 1,
+              current.version,
+              'applied'
+            );
+            return respond('applied', plan);
+          };
+          return ready instanceof Promise ? ready.then(complete, failed) : complete();
+        } catch (error) {
+          return failed(error);
         }
-
-        if (input.dryRun) {
-          lastReload = reloadSummary(startedAt, input, current.version, current.version, 'dry-run');
-
-          return respond('dry-run', plan);
-        }
-
-        const ready = installSnapshot(snapshot, undefined, () => {
-          pendingRestart = plan.requiresRestart;
-        });
-        const complete = () => {
-          lastReload = reloadSummary(
-            startedAt,
-            input,
-            snapshot.version - 1,
-            current.version,
-            'applied'
-          );
-          return respond('applied', plan);
-        };
-        return ready instanceof Promise ? ready.then(complete, failed) : complete();
-      } catch (error) {
-        return failed(error);
-      }
+      };
+      return options.checkListenerTlsChange ? checkListenerTlsCandidate().then(run, failed) : run();
     },
     bindNanoHostTransportFence: (fence) => {
       fenceNanoHostTransport = fence;

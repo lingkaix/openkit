@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import {
   createServer as createHttp2Server,
@@ -71,6 +71,12 @@ import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-
 import { closeActiveLocalAiSupervisor } from './local-ai/supervisor.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { createListenerFetches } from './nanohost-listener.js';
+import {
+  createNativeTlsReloadCheck,
+  loadNativeTlsMaterial,
+  type NativeTlsListenOptions,
+  readNativeTlsSource,
+} from './native-listener-tls.js';
 import { AttentionNotifications } from './notifications/attention.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
 import { resolveEnvSecretRef } from './providers/registry.js';
@@ -178,6 +184,7 @@ let mode: ReturnType<typeof resolveMode> | undefined;
 let bindHost: string | undefined;
 let bindPort: number | undefined;
 let appTlsListen: NativeTlsListenOptions | null | undefined;
+let checkListenerTlsChange: (() => Promise<boolean>) | undefined;
 let nanoHostListener: NanoHostTransportListener | null | undefined;
 let nanoHostTlsListen: NativeTlsListenOptions | null | undefined;
 let coreDb: CoreDb | undefined;
@@ -216,7 +223,7 @@ const bootResult = await runBootPhases({
       name: 'config',
       subsystem: 'config',
       critical: true,
-      run: () => {
+      run: async () => {
         try {
           releaseIdentity = readReleaseIdentity();
         } catch (error) {
@@ -248,14 +255,17 @@ const bootResult = await runBootPhases({
           runtimeConfigSnapshot.openKitConfig.nanohost,
           bindPort
         );
-        appTlsListen = resolveNativeTlsListenOptions(bindHost, process.env);
-        nanoHostTlsListen = nanoHostListener
-          ? resolveNativeTlsListenOptions(
-              nanoHostListener.hostname,
-              process.env,
-              nanoHostListener.secure
-            )
-          : null;
+        const appUsesTls = bindRequiresServerAuthenticatedTls(bindHost);
+        if (appUsesTls || nanoHostListener?.secure) {
+          const source = readNativeTlsSource(process.env);
+          const { listenOptions, publicGeneration } = await loadNativeTlsMaterial(source);
+          appTlsListen = appUsesTls ? listenOptions : null;
+          nanoHostTlsListen = nanoHostListener?.secure ? listenOptions : null;
+          checkListenerTlsChange = createNativeTlsReloadCheck(source, publicGeneration);
+        } else {
+          appTlsListen = null;
+          nanoHostTlsListen = null;
+        }
 
         for (const diagnostic of runtimeConfigSnapshot.diagnostics) {
           console.warn(diagnostic.message);
@@ -651,6 +661,7 @@ const providerCredentialConfigured = createProviderCredentialConfigured({
 });
 const runtimeConfigManager = createRuntimeConfigManager({
   captureCoverage: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
+  checkListenerTlsChange,
   dataRoot,
   initialSnapshot: runtimeConfigSnapshot,
   subscriptionAccounts: providerSubscriptionAccountManager,
@@ -1080,67 +1091,6 @@ function requireBootValue<T>(value: T | null | undefined, message: string): T {
   }
 
   return value;
-}
-
-/**
- * Environment shape used to resolve native server-authenticated TLS material.
- */
-interface TlsListenEnv {
-  /** Absolute or process-relative path to the PEM certificate chain. */
-  OPENKIT_TLS_CERT_FILE?: string;
-  /** Absolute or process-relative path to the PEM private key. */
-  OPENKIT_TLS_KEY_FILE?: string;
-}
-
-/** Native TLS material shared by the two process listeners when required. */
-interface NativeTlsListenOptions {
-  /** PEM certificate chain bytes. */
-  readonly cert: Buffer;
-  /** PEM private-key bytes. */
-  readonly key: Buffer;
-}
-
-/**
- * Resolves native TLS listen options for the NanoCore process listener.
- *
- * Non-loopback binds require server-authenticated TLS and therefore PEM cert
- * plus key paths. Exact same-host loopback may remain plaintext. Missing TLS
- * material on a TLS-required bind fails closed with no plaintext downgrade.
- *
- * @param bindHost Resolved NanoCore bind host.
- * @param env Process environment carrying optional TLS file paths.
- * @returns HTTPS server options when TLS is required, otherwise null.
- * @throws Error when a non-loopback bind lacks readable TLS material.
- */
-function resolveNativeTlsListenOptions(
-  bindHost: string,
-  env: TlsListenEnv,
-  required = bindRequiresServerAuthenticatedTls(bindHost)
-): NativeTlsListenOptions | null {
-  if (!required) {
-    return null;
-  }
-
-  const certPath = env.OPENKIT_TLS_CERT_FILE?.trim();
-  const keyPath = env.OPENKIT_TLS_KEY_FILE?.trim();
-  if (!certPath || !keyPath) {
-    throw new Error(
-      `TLS listener for bind host "${bindHost}" requires OPENKIT_TLS_CERT_FILE and OPENKIT_TLS_KEY_FILE.`
-    );
-  }
-
-  try {
-    return {
-      cert: readFileSync(certPath),
-      key: readFileSync(keyPath),
-    };
-  } catch (error) {
-    throw new Error(
-      `Failed to load NanoCore TLS listen material from OPENKIT_TLS_CERT_FILE / OPENKIT_TLS_KEY_FILE: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
 }
 
 /**
