@@ -98,11 +98,15 @@ An otherwise authorized request without Workspace scope may dispatch. For an att
 
 Admit only the authenticated repair role under the restricted `repair.model-call` v1 Policy action. At entry bind the original actor, role, invocation, model call and attempt in a kernel step. Reuse the logical route planner, final current Policy and Vault checks, and a kernel-accessible credential. Kernel Audit and steps support completion and inspection without opening a Thread, Turn, capture or Server work ledger. Ordinary calls use their work-owned evidence.
 
-The Budget owner pre-authorizes a repair allocation within the shared Budget with exact scope, counting window, call unit and limit. Deduct that allowance from ordinary capacity. If allocation spans owners, hold ordinary capacity under the original request ID and enable the matching kernel allocation only from its receipt. After a lost ACK inspect that ID. In one kernel transaction recheck live grant and remaining allowance and reserve one call in the original invocation and attempt's existing `reserve` step. Complete that reservation before Provider contact. Competing invocations can consume the final slot only once. An exact replay inspects the original result. A lost response or restart keeps the slot consumed. Revocation or an unproved Budget refuses new Provider contact.
+The `repair.model-call` v1 kernel Policy grant supplies the [v0.2.0 repair allowance](../core/mediation.md#governed-repair-calls). It counts one model Call per reservation in Server scope in the current UTC day. The limit defaults to 10 and an administrator can change it through a governed Policy edit. Use the grant's existing Policy approval and Audit.
+
+In one kernel transaction recheck the live grant, count committed Server repair reservations for that UTC day, and commit one existing `reserve` step under the original repair entry if capacity remains. Competing invocations can consume the final slot only once. The first committed reservation authorizes exactly one Provider contact. After a lost ACK, inspect the original step. Replay authorizes no additional contact, and a lost response or restart keeps the slot consumed. Refuse new Provider contact when current authority or remaining allowance cannot be proved.
+
+Once an ordinary shared Budget owner exists, it must count these repair reservations against ordinary capacity. Use the cross-owner hold only when that allocation spans owners.
 
 Return to the original invocation. Denial makes zero Provider calls. Mutations need their own governed steps. Observe only available usage. If contact may have occurred and the response is lost, retain the `unknown` outcome. A terminal Audit failure withholds success. Use [repair Audit](20260703-audit_usage_evidence_records.md#server-work-publication-and-kernel-repair-evidence) for exact admission and terminal attribution.
 
-Qualify with the Server work store absent, one repair call remaining, two concurrent invocations and a lost reply followed by restart. Verify a single Provider contact, the original committed reservation, and no refunded capacity. Separately deny Policy, Vault or Budget, and fail terminal Audit. Denials make zero calls and failed terminal Audit produces no success.
+Qualify with the Server work store absent, one repair call remaining, two concurrent invocations and a lost reply followed by restart. Verify a single Provider contact, the original committed reservation, and no refunded capacity. Separately deny Policy or Vault, exhaust the repair allowance, and fail terminal Audit. Admission refusals make zero calls. Failed terminal Audit produces no success.
 
 ## Logical Model Catalog And Ordered Routing
 
@@ -325,7 +329,7 @@ The legacy `oauth.openaiCodexAccounts` diagnostics field is removed rather than 
 
 ## Implementation Gaps
 
-- Governed kernel-only repair call - The pre-authorized shared allocation, concurrent reservation and recovery path await implementation - #766
+- Governed kernel-only repair call - The grant-backed allowance, concurrent reservation and recovery path await implementation - #766
 
 - Public Responses compaction - The route validates context-management metadata and does not inject the control, execute the compactor, or round-trip an OpenKit compaction item. Internal-role compaction is a different path. - #812
 - Public Codex Gateway real-use evidence - An opt-in run has not proved one authenticated public Codex request, accepted streaming, a stable public envelope, and redaction. - #814

@@ -241,7 +241,7 @@ The runtime domain governs container launch, local or remote placement, backend 
 
 #### Governed Repair Action
 
-`repair.model-call` v1 is a restricted Policy action for the authenticated repair role under a bounded current grant. Bind the original actor, attempt and invocation to a kernel step. Check that grant and its current scope at the final effect boundary. The ordinary role context and a model-supplied identity confer no repair authority. Revocation denies new calls. Keep Policy, Vault and shared Budget predicates independent. A Policy allow or linked `permission.decision` event does not by itself reserve a call or permit Provider contact. Use the [Gateway repair owner](20260526-llm_gateway_responses_api.md#governed-repair-call) for reservation and [Audit](20260703-audit_usage_evidence_records.md#server-work-publication-and-kernel-repair-evidence) for evidence.
+`repair.model-call` v1 is a restricted Policy action for the authenticated repair role under a bounded current grant. Bind the original actor, attempt and invocation to a kernel step. Check that grant and its current scope at the final effect boundary. The ordinary role context and a model-supplied identity confer no repair authority. Revocation denies new calls. The grant supplies the Server repair allowance. Check current Policy and Vault authority and commit the repair reservation before Provider contact. A Policy allow or linked `permission.decision` event does not by itself reserve a call or permit Provider contact. Use the [Gateway repair owner](20260526-llm_gateway_responses_api.md#governed-repair-call) for reservation and [Audit](20260703-audit_usage_evidence_records.md#server-work-publication-and-kernel-repair-evidence) for evidence.
 
 Channel publication permission is decided by Policy under current User, Workspace, request and destination authority. Communication establishes the binding and applicable disclosure; it does not issue a Policy grant. Historical Audit and restored bindings cannot supply current authority.
 
@@ -304,7 +304,7 @@ Acceptance rejects quarantine statements carrying `notAfter`, `uses`, or both. E
 
 ## Implementation Gaps
 
-- Restricted repair-model admission - The `repair.model-call` v1 action and its separation of permission from shared Budget reservation await implementation - #766
+- Restricted repair-model admission - The `repair.model-call` v1 grant and its separate kernel reservation await implementation - #766
 
 - General agent-principal grants beyond the bounded gate - not implemented - #152
 - A generic `policy.write` retains no classification, and direct narrowing apply is absent - unmet on main - #627
