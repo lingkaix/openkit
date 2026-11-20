@@ -242,6 +242,7 @@ import {
   type ControlHarnessLifecycleResult,
   ControlHarnessLifecycleResultSchema,
 } from './harness-lifecycle-codecs.js';
+import { SPLIT_STORAGE_JOURNALS, type SplitStorageOwner } from './migrate.js';
 import {
   type ControlPrivateWorkspaceInput,
   ControlPrivateWorkspaceInputSchema,
@@ -740,6 +741,14 @@ export type ControlSqlResult =
 /** Existing journals that require no app-specific recovery-copy callback. */
 export type ControlInitializationScope = 'core' | 'user' | 'workspace';
 
+/** Trusted composition data sent to the fixed journal/file for a split Server owner. */
+export interface ServerOwnerDescriptor<
+  Owner extends Exclude<SplitStorageOwner, 'discord'> = Exclude<SplitStorageOwner, 'discord'>,
+> {
+  readonly owner: Owner;
+  readonly requiredTables: readonly string[];
+}
+
 /**
  * Trusted internal database-worker requests.
  *
@@ -750,7 +759,7 @@ export type ControlWorkerCommand =
   | ({ readonly database: string } & (
       | {
           readonly operation: 'open';
-          /** Absolute, admitted path with an existing parent; never a public path argument. */
+          /** Absolute admitted path. Only split owner provisioning can create its parent. */
           readonly path: string;
           /** Explicit fresh-scope admission; false must never initialize a missing database. */
           readonly create: boolean;
@@ -760,6 +769,8 @@ export type ControlWorkerCommand =
           readonly productOwner?: ControlProductOwner;
           /** Exact App physical binding, never a retained product owner. */
           readonly physicalScope?: ControlAppScope;
+          /** Independent service or extension writer with no legacy raw SQL entry. */
+          readonly serverOwner?: ServerOwnerDescriptor;
           /** Exact admitted root for same-connection scoped domain bodies; never inferred from a caller-selected database key. */
           readonly dataRoot?: string;
           /** Admitted private Storage binding; never derived from an incoming content locator. */
@@ -1089,6 +1100,9 @@ export const CONTROL_WORKER_FAILURE_CODES = [
   'migration_unsupported_user',
   'migration_unsupported_workspace',
   'migration_unsupported_app',
+  'owner-missing',
+  'owner-unsupported',
+  'owner-recovery-required',
   'integrity',
 ] as const;
 
@@ -2266,13 +2280,30 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(
         value,
         [...scoped, 'path', 'create'],
-        ['initialize', 'productOwner', 'physicalScope', 'dataRoot', 'contentMount']
+        ['initialize', 'productOwner', 'physicalScope', 'dataRoot', 'contentMount', 'serverOwner']
       ) &&
       typeof value.path === 'string' &&
       isAbsolute(value.path) &&
       typeof value.create === 'boolean' &&
       (value.dataRoot === undefined ||
         (typeof value.dataRoot === 'string' && isAbsolute(value.dataRoot))) &&
+      (value.serverOwner === undefined ||
+        (isRecord(value.serverOwner) &&
+          exactFields(value.serverOwner, ['owner', 'requiredTables']) &&
+          typeof value.serverOwner.owner === 'string' &&
+          value.serverOwner.owner !== 'discord' &&
+          Object.hasOwn(SPLIT_STORAGE_JOURNALS, value.serverOwner.owner) &&
+          Array.isArray(value.serverOwner.requiredTables) &&
+          value.serverOwner.requiredTables.length > 0 &&
+          value.serverOwner.requiredTables.length <= 64 &&
+          value.serverOwner.requiredTables.every(
+            (table) => typeof table === 'string' && /^[a-z][a-z0-9_]{0,95}$/.test(table)
+          ) &&
+          value.productOwner === undefined &&
+          value.initialize === undefined &&
+          value.physicalScope === undefined &&
+          value.contentMount === undefined &&
+          typeof value.dataRoot === 'string')) &&
       (value.physicalScope === undefined ||
         (ControlAppScopeSchema.safeParse(value.physicalScope).success &&
           value.productOwner === undefined &&

@@ -19,8 +19,14 @@ import {
   changeVerifiedFileMode,
   copyFileForCut,
   createPrivateTree,
+  createPrivateTreeSync,
+  ensureCanonicalDirectory,
   publishVerifiedFileReplacement,
+  readCanonicalFile,
   removePrivateTree,
+  removePrivateTreeSync,
+  syncCanonicalDirectory,
+  writeCanonicalFileAtomic,
 } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { ZodError } from 'zod';
@@ -256,6 +262,7 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
   readControlSchemaApplicationInput,
+  type ServerOwnerDescriptor,
 } from './control-store-worker-protocol.js';
 import { CoreJournalRefusal } from './core-journal-codecs.js';
 import { applyControlCoreJournal } from './core-journal-native.js';
@@ -264,7 +271,10 @@ import {
   bindCoreSqlite,
   bindWorkspaceSqlite,
   type CoreDb,
+  inspectServerOwnerFile,
+  openServerOwnerReadDb,
   openSupportedScopeReadOnlySqlite,
+  serverStoragePath,
   type WorkspaceDb,
 } from './db.js';
 import { EvaluationCandidateCommandError } from './evaluation-candidate-codecs.js';
@@ -282,6 +292,8 @@ import {
   applyAppMigrations,
   applyNativeScopeMigrations,
   assertSupportedNativeLedger,
+  provisionServerOwnerSchema,
+  ServerOwnerAdmissionError,
 } from './migrate.js';
 import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
 import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
@@ -538,6 +550,7 @@ interface OwnedDatabase {
   readonly identity: string;
   readonly productOwner: ControlProductOwner | undefined;
   readonly physicalScope: ControlAppScope | undefined;
+  readonly serverOwner: ServerOwnerDescriptor['owner'] | undefined;
   readonly contentMount: ControlProductContentMount | undefined;
   readonly pending: WriteRequest[];
   readonly publications: ControlContentPreparation['publications'];
@@ -1282,6 +1295,18 @@ function failureCode(
   ids: readonly number[] = [],
   scope: 'request' | 'batch' = 'request'
 ): ControlWorkerFailureCode {
+  if (error instanceof ServerOwnerAdmissionError) {
+    switch (error.reason) {
+      case 'corrupt':
+        return 'integrity';
+      case 'full':
+        return 'no-space';
+      case 'migration-failed':
+        return 'migration_failed';
+      default:
+        return `owner-${error.reason}`;
+    }
+  }
   if (refusalObservation.hasSubscribers && ids.length) {
     const cause =
       error instanceof OperationError && error.code === 'usage_record_failed' ? error.cause : error;
@@ -3984,6 +4009,30 @@ async function inspectExistingAppOpening(
 }
 
 /** Opens only a trusted admitted path; neither directory discovery nor opening grants ownership. */
+/** Publishes a fully migrated owner file once, without replacing an existing file. */
+function provisionServerOwnerFile(path: string, descriptor: ServerOwnerDescriptor): void {
+  const parent = dirname(path);
+  ensureCanonicalDirectory(parent);
+  const stage = createPrivateTreeSync(parent, '.owner-provision-');
+  const candidate = join(stage, basename(path));
+  try {
+    const sqlite = new Database(candidate);
+    try {
+      provisionServerOwnerSchema(sqlite, descriptor.owner, descriptor.requiredTables);
+      assertSavepointSafeSchema(sqlite);
+      if ((sqlite.pragma('wal_checkpoint(TRUNCATE)') as { busy: number }[])[0]?.busy !== 0)
+        throw new ServerOwnerAdmissionError('migration-failed');
+    } finally {
+      sqlite.close();
+    }
+    const bytes = readCanonicalFile(candidate);
+    writeCanonicalFileAtomic(path, bytes, bytes.byteLength, undefined, 0o600, 'create');
+  } finally {
+    removePrivateTreeSync(stage);
+  }
+  syncCanonicalDirectory(parent);
+}
+
 async function openDatabase(request: OpenRequest): Promise<void> {
   if (databases.has(request.database)) {
     reply(failure(request.id, 'invalid-request'));
@@ -4001,12 +4050,17 @@ async function openDatabase(request: OpenRequest): Promise<void> {
   )
     throw new ControlProductPreconditionError();
   let contentMount = request.contentMount;
-  const path =
-    request.create && !existsSync(request.path)
+  const dataRoot = request.dataRoot === undefined ? undefined : realpathSync(request.dataRoot);
+  const split = request.serverOwner;
+  const path = split
+    ? serverStoragePath(dataRoot!, split.owner)
+    : request.create && !existsSync(request.path)
       ? join(realpathSync(dirname(request.path)), basename(request.path))
       : realpathSync(request.path);
-  const dataRoot = request.dataRoot === undefined ? undefined : realpathSync(request.dataRoot);
-  if (dataRoot !== undefined) {
+  if (split) {
+    if (path !== request.path || request.database !== `server-owner:${path}`)
+      throw new ServerOwnerAdmissionError('unsupported');
+  } else if (dataRoot !== undefined) {
     if (!request.productOwner && !request.physicalScope)
       throw new ControlProductPreconditionError();
     const expected = request.physicalScope
@@ -4024,7 +4078,9 @@ async function openDatabase(request: OpenRequest): Promise<void> {
     )
       throw new ControlProductPreconditionError();
   }
-  const existing = statSync(path, { throwIfNoEntry: false });
+  const existing = split
+    ? await inspectServerOwnerFile(dataRoot!, split.owner)
+    : statSync(path, { throwIfNoEntry: false });
   const existingIdentity = existing ? `${existing.dev}:${existing.ino}` : null;
   if (paths.has(path) || (existingIdentity !== null && identities.has(existingIdentity))) {
     reply(failure(request.id, 'invalid-request'));
@@ -4038,8 +4094,8 @@ async function openDatabase(request: OpenRequest): Promise<void> {
     throw new ControlProductPreconditionError();
   const inspectingApp =
     existing !== undefined && request.physicalScope !== undefined && !request.create;
-  if (inspectingApp) {
-    request.inspectingApp = true;
+  if (inspectingApp || split) {
+    request.inspectingApp = inspectingApp;
     paths.add(path);
     if (existingIdentity !== null) identities.add(existingIdentity);
   }
@@ -4098,10 +4154,18 @@ async function openDatabase(request: OpenRequest): Promise<void> {
         appInspection.schemaDigest
       );
     }
+    if (split) {
+      if (!existing) {
+        if (!request.create) throw new ServerOwnerAdmissionError('missing');
+        provisionServerOwnerFile(path, split);
+      }
+      (await openServerOwnerReadDb(dataRoot!, split.owner, split.requiredTables)).close();
+      if (existing && request.create) syncCanonicalDirectory(dirname(path));
+    }
     request.inspectingApp = false;
     const sqlite = new Database(path, {
-      fileMustExist: !request.create,
-      ...(request.physicalScope ? { timeout: 1000 } : {}),
+      fileMustExist: split !== undefined || !request.create,
+      ...(request.physicalScope ? { timeout: 1000 } : split ? { timeout: 5 } : {}),
     });
     try {
       if (migrationScope !== undefined) assertSupportedNativeLedger(sqlite, migrationScope);
@@ -4172,6 +4236,7 @@ async function openDatabase(request: OpenRequest): Promise<void> {
         identity,
         productOwner: request.productOwner,
         physicalScope: request.physicalScope,
+        serverOwner: split?.owner,
         contentMount,
         pending: [],
         publications: new Map(),
@@ -4341,6 +4406,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     let code: ControlWorkerFailureCode | undefined;
     if (stopping || owner?.poisoned) code = 'unavailable';
     else if (!owner || owner.closing) code = 'not-open';
+    else if (owner.serverOwner) code = 'precondition';
     else if (
       owner.pending.length + value.requests.length > CONTROL_WORKER_LIMITS.pendingTransitions ||
       value.requests.reduce((bytes, request) => bytes + controlWorkerInputBytes(request) + 64, 0) >
@@ -4411,7 +4477,9 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           failure(
             request.id,
             request.inspectingApp || code !== 'sql-failed' ? code : 'unavailable',
-            request.inspectingApp ? 'not-committed' : 'unknown'
+            request.inspectingApp || (request.serverOwner && code !== 'sql-failed')
+              ? 'not-committed'
+              : 'unknown'
           )
         );
       });
@@ -4424,6 +4492,15 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     }
     if (owner.closing) {
       reply(failure(value.id, 'not-open'));
+      return;
+    }
+    if (
+      owner.serverOwner &&
+      value.operation !== 'close' &&
+      value.operation !== 'checkpoint' &&
+      value.operation !== 'reclaim'
+    ) {
+      reply(failure(value.id, 'precondition'));
       return;
     }
     if (

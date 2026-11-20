@@ -110,7 +110,7 @@ import type { ControlWorkspaceTakeover } from './workspace-takeover-codecs.js';
 export { ControlStoreWorkerError } from './control-store-worker-error.js';
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { lstatSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, realpathSync, type Stats, statSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -285,12 +285,15 @@ import {
   isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
+  type ServerOwnerDescriptor,
 } from './control-store-worker-protocol.js';
 import { type ControlCoreJournalInput, readCoreJournalLineage } from './core-journal-codecs.js';
 import {
   type CoreDb,
+  inspectServerOwnerFile,
   openCoreReadDb,
   openUserReadDb,
+  serverStoragePath,
   type UserDb,
   type WorkspaceDb,
 } from './db.js';
@@ -305,13 +308,14 @@ import type {
   ControlHarnessLifecycleInput,
   ControlHarnessLifecycleResult,
 } from './harness-lifecycle-codecs.js';
-import { hasPendingUserMigrations } from './migrate.js';
+import { hasPendingUserMigrations, ServerOwnerAdmissionError } from './migrate.js';
 import type { ControlRemoteMcpAudit } from './remote-mcp-audit-codecs.js';
 import type {
   ControlRuntimeTargetInput,
   ControlRuntimeTargetResult,
 } from './runtime-target-codecs.js';
 import type { ControlServerAdminTokenDefault } from './server-admin-token-default-codecs.js';
+import type { StorageStatus, StorageUnavailable } from './storage-owner.js';
 import {
   type ControlThreadReadMembership,
   THREAD_READ_RECEIPT_INVALID,
@@ -642,7 +646,7 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
   switch (command.operation) {
     case 'open':
       // Existing scopes must reopen for recovery and control closeout below the ordinary watermark.
-      return !command.create;
+      return !command.create && command.serverOwner === undefined;
     case 'terminal':
     case 'project-cleanup':
     case 'recovery-cleanup':
@@ -2147,7 +2151,10 @@ class ControlStoreWorkerClient {
   }
 
   /** Reserves physical identity before posting; unrelated openings never wait for another native ACK. */
-  private reserveOpening(command: Omit<OpenCommand, 'operation'>): {
+  private reserveOpening(
+    command: Omit<OpenCommand, 'operation'>,
+    serverFile: Stats | undefined
+  ): {
     path: string;
     identity: string | undefined;
     host: WriterHost;
@@ -2155,13 +2162,22 @@ class ControlStoreWorkerClient {
     let path: string;
     let identity: string | undefined;
     try {
-      const incoming = statSync(command.path, { throwIfNoEntry: false });
-      const leaf = lstatSync(command.path, { throwIfNoEntry: false });
-      if (!incoming && leaf?.isSymbolicLink())
-        throw new Error('A dangling link cannot reserve a new database.');
-      path = incoming
-        ? realpathSync(command.path)
-        : join(realpathSync(dirname(command.path)), basename(command.path));
+      let incoming: Stats | undefined;
+      if (command.serverOwner) {
+        path = serverStoragePath(command.dataRoot!, command.serverOwner.owner);
+        if (command.path !== path || command.database !== `server-owner:${path}`)
+          throw new ServerOwnerAdmissionError('unsupported');
+        incoming = serverFile;
+        if (!incoming && !command.create) throw new ServerOwnerAdmissionError('missing');
+      } else {
+        incoming = statSync(command.path, { throwIfNoEntry: false });
+        const leaf = lstatSync(command.path, { throwIfNoEntry: false });
+        if (!incoming && leaf?.isSymbolicLink())
+          throw new Error('A dangling link cannot reserve a new database.');
+        path = incoming
+          ? realpathSync(command.path)
+          : join(realpathSync(dirname(command.path)), basename(command.path));
+      }
       identity = incoming ? `${incoming.dev}:${incoming.ino}` : undefined;
       // Incoming identity is read first: an alias of a newly initialized file implies
       // that its earlier reserved path can now supply that inode, even before ACK.
@@ -2173,7 +2189,8 @@ class ControlStoreWorkerClient {
         if (opening.path === path || (identity !== undefined && opening.identity === identity))
           throw new Error('Duplicate physical database.');
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ServerOwnerAdmissionError) throw error;
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     }
     const candidates =
@@ -2751,6 +2768,73 @@ class ControlStoreWorkerClient {
     );
   }
 
+  /** Opens an existing file after kernel boot and before its owner starts effects. */
+  async openServerOwner<Owner extends ServerOwnerDescriptor['owner']>(
+    dataRoot: string,
+    descriptor: ServerOwnerDescriptor<Owner>
+  ): Promise<StorageStatus<Owner>> {
+    return this.admitServerOwner(dataRoot, descriptor, false);
+  }
+
+  /** Creates storage only for trusted fresh install, first enable or authorized rebuild. */
+  async provisionServerOwner<Owner extends ServerOwnerDescriptor['owner']>(
+    dataRoot: string,
+    descriptor: ServerOwnerDescriptor<Owner>
+  ): Promise<StorageStatus<Owner>> {
+    return this.admitServerOwner(dataRoot, descriptor, true);
+  }
+
+  /** Closes an admitted owner and retains its bytes. */
+  async closeServerOwner(dataRoot: string, owner: ServerOwnerDescriptor['owner']): Promise<void> {
+    const database = `server-owner:${serverStoragePath(await realpath(dataRoot), owner)}`;
+    if (this.openings.has(database)) await this.close(database);
+  }
+
+  /** Projects owner-local admission failures without failing Core or another owner. */
+  private async admitServerOwner<Owner extends ServerOwnerDescriptor['owner']>(
+    dataRoot: string,
+    descriptor: ServerOwnerDescriptor<Owner>,
+    create: boolean
+  ): Promise<StorageStatus<Owner>> {
+    const owner = descriptor.owner;
+    try {
+      const root = await realpath(dataRoot);
+      const path = serverStoragePath(root, owner);
+      await this.open({
+        database: `server-owner:${path}`,
+        path,
+        dataRoot: root,
+        create,
+        serverOwner: descriptor,
+      });
+      return { state: 'ready', owner };
+    } catch (error) {
+      let reason: StorageUnavailable<Owner>['reason'] = 'recovery-required';
+      if (error instanceof ServerOwnerAdmissionError) reason = error.reason;
+      if (error instanceof ControlStoreWorkerError) {
+        switch (error.code) {
+          case 'owner-missing':
+            reason = 'missing';
+            break;
+          case 'owner-unsupported':
+            reason = 'unsupported';
+            break;
+          case 'integrity':
+            reason = 'corrupt';
+            break;
+          case 'no-space':
+            reason = 'full';
+            break;
+          case 'migration_missing':
+          case 'migration_failed':
+            reason = 'migration-failed';
+            break;
+        }
+      }
+      return { state: 'unavailable', owner, reason };
+    }
+  }
+
   /** Internal open shared by ordinary admission and the existing recovery lifecycle. */
   private async openFrozen(
     command: Omit<OpenCommand, 'operation'>,
@@ -2766,6 +2850,10 @@ class ControlStoreWorkerClient {
       })
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const serverFile = command.serverOwner
+      ? await inspectServerOwnerFile(command.dataRoot!, command.serverOwner.owner)
+      : undefined;
+    this.assertAccepting();
     this.assertFrozenCall({ ...command, operation: 'open' }, recovery);
     const existing = this.openings.get(command.database);
     if (existing) {
@@ -2778,8 +2866,19 @@ class ControlStoreWorkerClient {
           throw new ControlStoreWorkerError('busy', 'not-committed');
       }
       this.assertParentOpenAdmission(command, existing.path);
+      if (command.serverOwner) {
+        if (
+          existing.acknowledged &&
+          (!serverFile || `${serverFile.dev}:${serverFile.ino}` !== existing.identity)
+        )
+          throw new ServerOwnerAdmissionError('recovery-required');
+      }
       if (
         !isDeepStrictEqual(existing.command, command) &&
+        !(
+          command.serverOwner &&
+          isDeepStrictEqual({ ...existing.command, create: command.create }, command)
+        ) &&
         !(
           // Acknowledged first-User creation may join later existing-User callers on the exact binding.
           (command.physicalScope || command.initialize === 'user') &&
@@ -2795,7 +2894,7 @@ class ControlStoreWorkerClient {
       return;
     }
     const binding = structuredClone(command);
-    const physical = this.reserveOpening(binding);
+    const physical = this.reserveOpening(binding, serverFile);
     this.assertParentOpenAdmission(binding, physical.path);
     const opening: Opening = {
       command: binding,

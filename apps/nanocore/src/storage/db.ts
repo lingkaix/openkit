@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { lstat, realpath } from 'node:fs/promises';
+import { dirname, join, relative, sep } from 'node:path';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -9,6 +10,7 @@ import { configureOwnedSqlite } from './control-store.js';
 import {
   openControlStoreProductReadHandle,
   ownMainScopeReadHandle,
+  reserveMainScopeReadAcquisition,
 } from './control-store-product-records.js';
 import {
   coreDbPath,
@@ -18,11 +20,89 @@ import {
   ensureWorkspaceLayout,
   ensureWorkspaceLayoutRoot,
   readDataRootLayoutMarker,
+  resolveDataRootPath,
   userDbPath,
   workspaceDbPath,
 } from './fs-layout.js';
-import { assertSupportedNativeLedger, type StorageMigrationScope } from './migrate.js';
+import {
+  assertCurrentServerOwnerSchema,
+  assertSupportedNativeLedger,
+  ServerOwnerAdmissionError,
+  SPLIT_STORAGE_JOURNALS,
+  type SplitStorageOwner,
+  type StorageMigrationScope,
+} from './migrate.js';
 import * as schema from './schema/index.js';
+
+/** Resolves an installed Server owner to its canonical SQLite path. */
+export function serverStoragePath(
+  dataRoot: string,
+  owner: 'control-kernel' | SplitStorageOwner
+): string {
+  return owner === 'control-kernel'
+    ? coreDbPath(dataRoot)
+    : resolveDataRootPath(dataRoot, 'server', SPLIT_STORAGE_JOURNALS[owner], 'state.sqlite');
+}
+
+/** Inspects a split owner path without creating it or following owner-directory/file aliases. */
+export async function inspectServerOwnerFile(dataRoot: string, owner: SplitStorageOwner) {
+  const path = serverStoragePath(dataRoot, owner);
+  let directory = dataRoot;
+  for (const part of relative(dataRoot, dirname(path)).split(sep)) {
+    directory = join(directory, part);
+    const metadata = await serverOwnerMetadata(directory);
+    if (!metadata) return undefined;
+    if (!metadata.isDirectory()) throw new ServerOwnerAdmissionError('unsupported');
+  }
+  const file = await serverOwnerMetadata(path);
+  if (file && (!file.isFile() || file.nlink !== 1))
+    throw new ServerOwnerAdmissionError('unsupported');
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    const sidecar = await serverOwnerMetadata(`${path}${suffix}`);
+    if (sidecar && (!sidecar.isFile() || sidecar.nlink !== 1))
+      throw new ServerOwnerAdmissionError('unsupported');
+    if (sidecar && !file) throw new ServerOwnerAdmissionError('recovery-required');
+  }
+  if (file?.size === 0) throw new ServerOwnerAdmissionError('corrupt');
+  return file;
+}
+
+/** Returns absent only for a missing filesystem entry. */
+async function serverOwnerMetadata(path: string) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return undefined;
+  }
+}
+
+/** Opens a read-only handle on an admitted split owner. The caller closes the handle. */
+export async function openServerOwnerReadDb(
+  dataRoot: string,
+  owner: SplitStorageOwner,
+  requiredTables: readonly string[]
+): Promise<Database.Database> {
+  const root = await realpath(dataRoot);
+  const path = serverStoragePath(root, owner);
+  const releaseAcquisition = reserveMainScopeReadAcquisition(path);
+  let sqlite: Database.Database | undefined;
+  try {
+    if (!(await inspectServerOwnerFile(root, owner)))
+      throw new ServerOwnerAdmissionError('missing');
+    sqlite = openSqliteConnection(path, { fileMustExist: true, readonly: true });
+    sqlite.pragma('query_only = ON');
+    if (sqlite.prepare('PRAGMA quick_check').pluck().get() !== 'ok')
+      throw new ServerOwnerAdmissionError('corrupt');
+    assertCurrentServerOwnerSchema(sqlite, owner, requiredTables);
+    return ownMainScopeReadHandle(sqlite);
+  } catch (error) {
+    sqlite?.close();
+    throw error;
+  } finally {
+    releaseAcquisition();
+  }
+}
 
 /**
  * Open NanoCore SQLite database handles.
@@ -219,12 +299,14 @@ export function openCoreDbWithIntegrityCheck(
 ): CoreDb {
   const freshInitialization =
     options.freshInitialization ?? isFreshCoreInitializationScope(dataRoot);
-  const path = coreDbPath(dataRoot);
+  const path = serverStoragePath(dataRoot, 'control-kernel');
   // SQLite accepts a zero-byte file as new; an established deployment has no such initialization proof.
-  if (!freshInitialization && (!existsSync(path) || statSync(path).size === 0)) {
+  const present = existsSync(path);
+  if (!freshInitialization && (!present || statSync(path).size === 0)) {
     throw new Error('Core database is missing from an existing deployment.');
   }
   ensureLayout(dataRoot);
+  if (!freshInitialization || present) return openExistingCoreDbWithIntegrityCheck(dataRoot);
   assertSqliteIntegrity(path);
   return openCoreDb(dataRoot, { freshInitialization });
 }
