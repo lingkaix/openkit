@@ -69,6 +69,16 @@ For a complete NanoHost release, supply `--nanohost-amd64-binary`, `--nanohost-a
 
 Before `v0.1.0`, Core and Workspace each use one current SQL baseline. Previous-candidate upgrade instruments and their file/SQL corpora are retired under [Release Management](../docs/specs/20260829-release_management.md#pre-stable-baseline-qualification). Run current fresh-schema, native publication and affected owner tests with their required normal build outputs. Do not add intermediate upgrade fixtures or treat this source retirement as authority to delete preserved runtime or evidence data.
 
+## Storage Fitness Oracles
+
+`node scripts/storage-table-partition-oracle.mjs` and `node scripts/storage-removed-lookup-oracle.mjs` are report-mode checks for the v0.2.0 owner partition. They print a verdict per check and exit 0. They are not part of `check:repo`.
+
+The partition oracle applies each signed journal to a fresh in-memory SQLite database. The kernel journal is `apps/nanocore/drizzle/core`. Service journals are `apps/nanocore/drizzle/services/{server-work,communication,security-trigger}`. Extension journals are `apps/nanocore/drizzle/extensions/{nanohost,openai-agents,discord}`. It compares application tables with the Appendix A sets. Real SQLite metadata is the `sqlite_` prefix, and Drizzle metadata is excluded by exact name. Each destination journal may add one `<owner>_intents` table, reported as `N moved + 1 supporting`. The kernel count stays exact. A kernel table, column, check, seed, index, or index predicate fails when it names `discord`, `guild`, or a retired product predicate.
+
+The lookup oracle scans production files under `apps/nanocore/src`, including startup, offline, and disabled-owner modules. Test files are outside the scan. A retired or old table name is a REMOVED hit from any owner. A missing or empty scan root is INCOMPLETE. Zero hits print `NO-HITS (heuristic, not a reachability proof; A10 runtime test is the gate)`. The scan does not resolve cross-file imports or re-export barrels. A typed `CoreDb` or `WorkspaceDb` receiver in the same function wins over the path owner, including `receiver.sqlite` and a string bound in that function and passed to the call.
+
+`scripts/storage-fitness-oracles.test.mjs` proves a misplaced table, a flat journal path, supporting-table bounds, forbidden kernel DDL, a product check, a product seed, a cross-owner lookup, a removed old name, and a typed CoreDb receiver. Pass `--root` to point either oracle at a repository checkout. The default root is the current directory.
+
 ## NanoHost Static Checks
 
 After checking the outer archive checksum, extract the NanoHost archive beside its original `.tar.gz`, then run the bundled `./install.sh --check-host`. The checker reads only bundled checksum-verified inputs and verifies that the adjacent archive contains those exact bytes. Checking and installation, including staging verification, require Python 3.8 or later with its standard library at `/usr/bin/python3`, with isolated imports and bytecode writes disabled. It is not a NanoHost service runtime dependency; missing or unusable inspection returns one bounded `cannot-check` result and blocks installation. Every static probe has a deadline, and no checker mode provisions packages or invokes a service lifecycle command.
