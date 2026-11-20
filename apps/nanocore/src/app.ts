@@ -907,13 +907,25 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use(createHttpTelemetryMiddleware());
   const nanohostTransportSessionAuthority =
     options.nanohostTransportSessionAuthority ?? createNanoHostTransportSessionAuthority();
-  // A real startup-config mismatch ends this App lifetime's NanoHost authority, even when strict reload rejects the candidate or a later file edit restores it. Dry-run remains observational.
-  let nanoHostRestartRequired = false;
+  const nanoHostRestartRequired = runtimeConfigManager.bindNanoHostTransportFence(async () => {
+    const identityId = startupOpenKitConfig.nanohost?.identityId;
+    if (!identityId) return;
+    if (options.coreDb) {
+      await fenceNanoHostTransportAuthority(
+        options.coreDb,
+        nanohostTransportSessionAuthority,
+        identityId,
+        new Date().toISOString()
+      );
+    } else {
+      nanohostTransportSessionAuthority.fenceAuthoritative(identityId);
+    }
+  });
   const admitNanoHostSession = nanohostTransportSessionAuthority.admit.bind(
     nanohostTransportSessionAuthority
   );
   nanohostTransportSessionAuthority.admit = (input) =>
-    nanoHostRestartRequired
+    nanoHostRestartRequired()
       ? {
           connectionGeneration: input.connectionGeneration,
           identityId: input.identityId,
@@ -926,25 +938,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     const wasPaused = runtimeConfig().openKitConfig.security?.pauseAgentWork === true;
     const result = reloadRuntimeConfig(input);
     const response = result instanceof Promise ? await result : result;
-    if (
-      !input.dryRun &&
-      response.plan.requiresRestart.some((change) => change.path.startsWith('nanohost.'))
-    ) {
-      nanoHostRestartRequired = true;
-      const identityId = startupOpenKitConfig.nanohost?.identityId;
-      if (identityId) {
-        if (options.coreDb) {
-          await fenceNanoHostTransportAuthority(
-            options.coreDb,
-            nanohostTransportSessionAuthority,
-            identityId,
-            new Date().toISOString()
-          );
-        } else {
-          nanohostTransportSessionAuthority.fenceAuthoritative(identityId);
-        }
-      }
-    }
     if (!input.dryRun && wasPaused && !runtimeConfig().openKitConfig.security?.pauseAgentWork)
       await resumeAgentWork?.();
     return response;

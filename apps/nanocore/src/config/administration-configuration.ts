@@ -59,6 +59,7 @@ import type { RuntimeConfigManager, RuntimeConfigSnapshot } from './runtime-conf
 import {
   type RuntimeConfigFileService,
   RuntimeConfigFileServiceError,
+  runtimeConfigCandidateRequiresRestart,
 } from './runtime-config-files.js';
 import { prepareWorkerGitReadCorrection } from './worker-git-read-correction.js';
 
@@ -172,7 +173,10 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         mode: 'safe',
       });
       if (!validation.valid) fail('configuration_validation_failed');
-      return { ...prepared, restartRequired: validation.plan.requiresRestart.length > 0 };
+      return {
+        ...prepared,
+        restartRequired: runtimeConfigCandidateRequiresRestart(validation.plan),
+      };
     }
     const current = source(request.targetFamily, request.targetId);
     if (current.read.file.revision !== request.expectedRevision) fail('config_revision_conflict');
@@ -209,7 +213,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       changes,
       content,
       after: project(request.targetFamily, normalized),
-      restartRequired: validation.plan.requiresRestart.length > 0,
+      restartRequired: runtimeConfigCandidateRequiresRestart(validation.plan),
     };
   }
 
@@ -505,7 +509,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           reload = 'failed';
           const result = await options.reload();
           reload = result.status === 'dry-run' ? 'failed' : result.status;
-          restartRequired = result.plan.requiresRestart.length > 0;
+          restartRequired = runtimeConfigCandidateRequiresRestart(result.plan);
         } catch {
           // An interrupted write has no verified result; its start Item fences retries.
           if (!persisted) fail('configuration_recovery_required');
