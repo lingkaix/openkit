@@ -8,6 +8,7 @@ export const serverWorkStorageDescriptor = {
     'control_turns',
     'control_work_observations',
     'evidence_bundles',
+    'server_work_intents',
     'usage_records',
   ],
 } as const;

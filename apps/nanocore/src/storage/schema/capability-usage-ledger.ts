@@ -109,7 +109,7 @@ export const capabilityCalls = sqliteTable(
     ),
     check(
       'capability_calls_system_prompt_digest_check',
-      sql`${table.systemPromptDigest} IS NULL OR (${table.family} = 'llm' AND ${table.capabilityId} IN ('llm.chat_completions', 'llm.responses'))`
+      sql`${table.systemPromptDigest} IS NULL OR ${table.family} = 'llm'`
     ),
   ]
 );

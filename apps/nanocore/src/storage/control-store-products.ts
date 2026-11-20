@@ -257,6 +257,18 @@ export function applyControlProducts(
   applyProducts(sqlite, owner, mutations, entries);
 }
 
+/** Publishes the native Server Knowledge admission's verified busy skip without an execution. */
+export function applyServerBusyKnowledgeSkip(
+  sqlite: Database.Database,
+  products: readonly ControlProductMutation[],
+  turnId: string
+): void {
+  assertControlProductWriter(sqlite);
+  const owner = { kind: 'server' } as const;
+  if (readProduct(sqlite, owner, 'turn', turnId)) throw new ControlProductPreconditionError();
+  applyProducts(sqlite, owner, products, [], turnId);
+}
+
 /** Derives restrictive context changes in the same transaction, using only the existing product writer. */
 function withReceivedInfluence(
   sqlite: Database.Database,

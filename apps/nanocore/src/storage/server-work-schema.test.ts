@@ -31,7 +31,7 @@ describe('Server work baseline', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('ships and applies one baseline with exactly the seven Server tables', () => {
+  it('ships and applies one baseline with seven moved tables and one supporting intent table', () => {
     expect(readdirSync(journalFolder).filter((name) => name.endsWith('.sql'))).toEqual([
       '0000_baseline.sql',
     ]);
@@ -63,6 +63,7 @@ describe('Server work baseline', () => {
       'control_turns',
       'control_work_observations',
       'evidence_bundles',
+      'server_work_intents',
       'usage_records',
     ]);
     expect(serverWorkStorageDescriptor.owner).toBe('server-work');

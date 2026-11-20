@@ -170,3 +170,15 @@ END;
 CREATE TRIGGER control_turns_read_order_insert AFTER INSERT ON control_turns BEGIN
   UPDATE control_turns SET thread_read_order=(SELECT coalesce(max(thread_read_order),0)+1 FROM control_turns WHERE thread_id=NEW.thread_id AND id<>NEW.id) WHERE id=NEW.id;
 END;
+--> statement-breakpoint
+CREATE TABLE server_work_intents (
+  request_id TEXT PRIMARY KEY NOT NULL CHECK (length(request_id) > 0),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  intent_json TEXT NOT NULL CHECK (json_valid(intent_json) AND json_type(intent_json) = 'object'),
+  payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+  receipt_json TEXT CHECK (receipt_json IS NULL OR (json_valid(receipt_json) AND json_type(receipt_json) = 'object'))
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX server_work_pending_product_thread_idx
+  ON server_work_intents (json_extract(intent_json, '$.target.threadId'))
+  WHERE receipt_json IS NULL AND json_extract(intent_json, '$.verb') IN ('admit-thread', 'admit-turn');
