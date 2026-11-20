@@ -13,6 +13,7 @@ import {
   NativeEnvironmentRecordSchema,
   parseHarnessResultBody,
 } from '@openkit/worker-protocol';
+import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { HarnessLoginReplacement } from '../operation-contract.js';
 import { TurnStartValidationError } from '../operation-error.js';
@@ -40,6 +41,8 @@ import {
   getWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
 } from './worker-storage-binding-records.js';
+
+type NanoHostHarnessDb = { readonly sqlite: Database.Database };
 
 /**
  * Pure current release inference over an already verified canonical/raw package read set.
@@ -542,9 +545,11 @@ interface HarnessRow {
   readonly updated_at: string;
 }
 
-/** Creates the private Sandbox projection when absent and adds one resident Harness to it. */
+/**
+ * Creates the private Sandbox projection and resident Harness in the caller's owner transaction.
+ */
 export function createNanoHostHarnessRuntime(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: CreateNanoHostHarnessRuntimeInput
 ): void {
   const capacity = input.maxActiveTurns ?? HARNESS_DEFAULT_MAX_ACTIVE_TURNS;
@@ -573,7 +578,7 @@ export function createNanoHostHarnessRuntime(
   }
 
   try {
-    const sandbox = coreDb.sqlite
+    const sandbox = owner.sqlite
       .prepare('SELECT * FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
       .get(input.sandboxRuntimeId) as
       | {
@@ -590,7 +595,7 @@ export function createNanoHostHarnessRuntime(
           readonly cleanup_state: string;
         }
       | undefined;
-    const target = coreDb.sqlite
+    const target = owner.sqlite
       .prepare(
         `SELECT physical_epoch AS physicalEpoch, predecessor_fenced AS predecessorFenced,
                 ready, fresh_empty AS freshEmpty
@@ -614,7 +619,7 @@ export function createNanoHostHarnessRuntime(
       throw new Error('NanoHost Sandbox publication physical Epoch is not current.');
     }
     if (!sandbox) {
-      coreDb.sqlite
+      owner.sqlite
         .prepare(
           `INSERT INTO sandbox_runtime_records (
              sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
@@ -655,7 +660,7 @@ export function createNanoHostHarnessRuntime(
         sandbox.cleanup_state !== 'clean'
       )
         throw new Error('NanoHost retained Sandbox is not admitting a new Harness.');
-      const count = coreDb.sqlite
+      const count = owner.sqlite
         .prepare(
           'SELECT COUNT(*) AS count FROM harness_instance_records WHERE sandbox_runtime_id = ?'
         )
@@ -664,7 +669,7 @@ export function createNanoHostHarnessRuntime(
         throw new Error('NanoHost retained Sandbox has no Harness capacity.');
       }
     }
-    coreDb.sqlite
+    owner.sqlite
       .prepare(
         `INSERT INTO harness_instance_records (
            harness_instance_id, sandbox_runtime_id, harness_binding_ref, harness_compatibility_key,
@@ -695,11 +700,11 @@ export function createNanoHostHarnessRuntime(
 
 /** Removes one fully deleted physical Sandbox projection and its cascading private bindings. */
 export function removeNanoHostSandboxRuntimeForHarness(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   harnessInstanceId: string
 ): void {
   requireIdentity(harnessInstanceId, 'Harness');
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(
       'SELECT schema_version AS schemaVersion, sandbox_runtime_id AS sandboxRuntimeId FROM harness_instance_records WHERE harness_instance_id = ?'
     )
@@ -710,7 +715,7 @@ export function removeNanoHostSandboxRuntimeForHarness(
     return;
   }
   readRetainedV1(row, () => row);
-  const removed = coreDb.sqlite
+  const removed = owner.sqlite
     .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
     .run(row.sandboxRuntimeId);
   if (removed.changes !== 1) {
@@ -720,11 +725,11 @@ export function removeNanoHostSandboxRuntimeForHarness(
 
 /** Removes one definitely deleted Sandbox projection by its exact physical binding. */
 export function removeNanoHostSandboxRuntimeByBinding(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   sandboxBindingRef: string
 ): void {
   requireIdentity(sandboxBindingRef, 'Sandbox binding');
-  coreDb.sqlite
+  owner.sqlite
     .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?')
     .run(sandboxBindingRef);
 }
@@ -780,20 +785,20 @@ function drainNanoHostHarnessAdmissionInTransaction(
 /**
  * Drains the exact resident and all its Harnesses without claiming unknown cleanup or changing occupancy.
  *
- * @param coreDb Existing runtime record owner.
+ * @param owner Existing runtime record owner.
  * @param input Exact original physical Sandbox and Epoch.
  */
 export function drainNanoHostSandboxAdmission(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: { readonly sandboxBindingRef: string; readonly originPhysicalEpoch: string }
 ): void {
-  coreDb.sqlite
+  owner.sqlite
     .transaction(() => {
-      coreDb.sqlite
+      owner.sqlite
         .prepare(`UPDATE sandbox_runtime_records SET drain_state = 'draining'
       WHERE sandbox_binding_ref = ? AND origin_physical_epoch = ?`)
         .run(input.sandboxBindingRef, input.originPhysicalEpoch);
-      coreDb.sqlite
+      owner.sqlite
         .prepare(`UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining'
       WHERE sandbox_runtime_id IN (SELECT sandbox_runtime_id FROM sandbox_runtime_records
         WHERE sandbox_binding_ref = ? AND origin_physical_epoch = ?)`)
@@ -996,7 +1001,7 @@ export function inspectNanoHostAgentSessionContinuity(
 
 /** Reads the sole native AgentSession occupying one Workspace Thread, if any. */
 export function readNanoHostThreadAgentSessionBinding(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: {
     readonly threadId: string;
     readonly workspaceId: string;
@@ -1004,7 +1009,7 @@ export function readNanoHostThreadAgentSessionBinding(
 ): { readonly agentSessionId: string } | null {
   requireIdentity(input.workspaceId, 'Workspace');
   requireIdentity(input.threadId, 'Thread');
-  const rows = coreDb.sqlite
+  const rows = owner.sqlite
     .prepare(
       `SELECT schema_version AS schemaVersion, agent_session_id AS agentSessionId
        FROM agent_session_runtime_bindings
@@ -1021,9 +1026,12 @@ export function readNanoHostThreadAgentSessionBinding(
   return row ? readRetainedV1(row, () => ({ agentSessionId: row.agentSessionId })) : null;
 }
 
-/** Opens one pending native-conversation binding, copies measured image digest, and consumes only open-session capacity. */
+/**
+ * Opens a pending native binding, copies its measured digest and consumes open-session capacity
+ * in the caller's owner transaction.
+ */
 export function openNanoHostAgentSessionBinding(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: OpenNanoHostAgentSessionBindingInput
 ): void {
   requireIdentity(input.agentSessionId, 'AgentSession');
@@ -1037,7 +1045,7 @@ export function openNanoHostAgentSessionBinding(
   }
 
   try {
-    const harness = requireHarness(coreDb, input.harnessInstanceId);
+    const harness = requireHarness(owner, input.harnessInstanceId);
     if (
       harness.lifecycle_state !== 'open' ||
       harness.drain_state !== 'accepting' ||
@@ -1045,7 +1053,7 @@ export function openNanoHostAgentSessionBinding(
     ) {
       throw new Error('NanoHost Harness cannot admit another AgentSession.');
     }
-    const measuredImageDigest = readSandboxMeasuredImageDigest(coreDb, input.harnessInstanceId);
+    const measuredImageDigest = readSandboxMeasuredImageDigest(owner, input.harnessInstanceId);
     if (input.nativeEnvironment) {
       requireIdentity(input.nativeEnvironment.agentId, 'Agent');
       const record = NativeEnvironmentRecordSchema.parse(input.nativeEnvironment);
@@ -1056,7 +1064,7 @@ export function openNanoHostAgentSessionBinding(
         nativeEnvironment: { agentId: input.nativeEnvironment.agentId, ...record },
       };
     }
-    const threadBinding = coreDb.sqlite
+    const threadBinding = owner.sqlite
       .prepare(
         `SELECT 1 FROM agent_session_runtime_bindings
          WHERE workspace_id = ? AND thread_id = ? LIMIT 1`
@@ -1065,7 +1073,7 @@ export function openNanoHostAgentSessionBinding(
     if (threadBinding) {
       throw new Error('NanoHost Harness already has a current AgentSession for this Thread.');
     }
-    coreDb.sqlite
+    owner.sqlite
       .prepare(
         `INSERT INTO agent_session_runtime_bindings (
            agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
@@ -1090,12 +1098,13 @@ export function openNanoHostAgentSessionBinding(
         writeRetainedV1({}).schemaVersion
       );
     persistCopiedMeasuredHarnessIdentity(
-      coreDb,
+      owner,
       input.agentSessionRuntimeBindingId,
       measuredImageDigest,
-      input.timestamp
+      input.timestamp,
+      'binding'
     );
-    const updated = coreDb.sqlite
+    const updated = owner.sqlite
       .prepare(
         `UPDATE harness_instance_records
          SET open_session_count = open_session_count + 1, updated_at = ?
@@ -1111,13 +1120,13 @@ export function openNanoHostAgentSessionBinding(
 }
 
 /**
- * Copies the measured image digest onto an existing AgentSession binding.
+ * Copies the measured digest onto an existing AgentSession binding in the caller’s transaction.
  *
- * @param coreDb Durable Core database.
+ * @param owner Admitted NanoHost database.
  * @param input Binding identity, digest value, and timestamp.
  */
 export function copyNanoHostMeasuredHarnessIdentity(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: {
     readonly agentSessionRuntimeBindingId: string;
     readonly imageDigest: string;
@@ -1128,7 +1137,7 @@ export function copyNanoHostMeasuredHarnessIdentity(
   if (!/^sha256:[0-9a-f]{64}$/.test(input.imageDigest)) {
     throw new Error('NanoHost image digest is invalid.');
   }
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(
       `SELECT schema_version AS schemaVersion, image_digest AS imageDigest
        FROM agent_session_runtime_bindings
@@ -1141,8 +1150,11 @@ export function copyNanoHostMeasuredHarnessIdentity(
     throw new Error('NanoHost AgentSession binding is missing.');
   }
   readRetainedV1(row, () => row);
+  if (row.imageDigest && row.imageDigest !== input.imageDigest) {
+    throw new Error('NanoHost measured harness identity conflicts with the live binding.');
+  }
   if (!row.imageDigest) {
-    const updated = coreDb.sqlite
+    const updated = owner.sqlite
       .prepare(
         `UPDATE agent_session_runtime_bindings
          SET image_digest = ?, updated_at = ?
@@ -1155,26 +1167,27 @@ export function copyNanoHostMeasuredHarnessIdentity(
     }
   }
   persistCopiedMeasuredHarnessIdentity(
-    coreDb,
+    owner,
     input.agentSessionRuntimeBindingId,
     input.imageDigest,
-    input.timestamp
+    input.timestamp,
+    'copy'
   );
 }
 
 /**
  * Reads the current measured image digest copied for one AgentSession binding.
  *
- * @param coreDb Durable Core database.
+ * @param owner Admitted NanoHost database.
  * @param agentSessionRuntimeBindingId Exact binding identity.
  * @returns Live binding copy, else the latest surviving copy, or null when none exist.
  */
 export function readNanoHostMeasuredHarnessIdentity(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   agentSessionRuntimeBindingId: string
 ): string | null {
   requireIdentity(agentSessionRuntimeBindingId, 'AgentSession runtime binding');
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(
       `SELECT schema_version AS schemaVersion, image_digest AS imageDigest
        FROM agent_session_runtime_bindings
@@ -1187,12 +1200,12 @@ export function readNanoHostMeasuredHarnessIdentity(
   if (typeof row?.imageDigest === 'string' && /^sha256:[0-9a-f]{64}$/.test(row.imageDigest)) {
     return row.imageDigest;
   }
-  const copied = coreDb.sqlite
+  const copied = owner.sqlite
     .prepare(
       `SELECT image_digest AS imageDigest
        FROM agent_session_runtime_binding_image_digests
        WHERE agent_session_runtime_binding_id = ?
-       ORDER BY copied_at DESC, image_digest DESC`
+       ORDER BY rowid DESC`
     )
     .get(agentSessionRuntimeBindingId) as { readonly imageDigest: string } | undefined;
   if (copied && /^sha256:[0-9a-f]{64}$/.test(copied.imageDigest)) {
@@ -1204,16 +1217,16 @@ export function readNanoHostMeasuredHarnessIdentity(
 /**
  * Lists every surviving measured image digest copied for one derived binding identity.
  *
- * @param coreDb Durable Core database.
+ * @param owner Admitted NanoHost database.
  * @param agentSessionRuntimeBindingId Exact binding identity.
  * @returns Distinct copied digests in stable order so a new base image can false-split.
  */
 export function listNanoHostMeasuredHarnessIdentities(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   agentSessionRuntimeBindingId: string
 ): readonly string[] {
   requireIdentity(agentSessionRuntimeBindingId, 'AgentSession runtime binding');
-  const rows = coreDb.sqlite
+  const rows = owner.sqlite
     .prepare(
       `SELECT image_digest AS imageDigest
        FROM agent_session_runtime_binding_image_digests
@@ -2726,8 +2739,8 @@ function fenceNanoHostSandboxRuntimeInTransaction(
 }
 
 /** Reads one Harness by durable identity. */
-function requireHarness(coreDb: CoreDb, harnessInstanceId: string): HarnessRow {
-  const row = coreDb.sqlite
+function requireHarness(owner: NanoHostHarnessDb, harnessInstanceId: string): HarnessRow {
+  const row = owner.sqlite
     .prepare(
       'SELECT *, schema_version AS schemaVersion FROM harness_instance_records WHERE harness_instance_id = ?'
     )
@@ -2801,25 +2814,33 @@ function canonicalJson(value: Readonly<Record<string, unknown>>): string {
   );
 }
 
-/** Writes one immutable binding-time digest copy that survives Sandbox deletion. */
+/** Keeps distinct digest memberships in binding order without moving an exact copy on replay. */
 function persistCopiedMeasuredHarnessIdentity(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   agentSessionRuntimeBindingId: string,
   imageDigest: string,
-  timestamp: string
+  timestamp: string,
+  source: 'binding' | 'copy'
 ): void {
-  coreDb.sqlite
+  // Rebinding a digest inserts it at the end of the retained row order, even at the same clock.
+  owner.sqlite
     .prepare(
-      `INSERT OR IGNORE INTO agent_session_runtime_binding_image_digests (
+      `INSERT INTO agent_session_runtime_binding_image_digests (
          agent_session_runtime_binding_id, image_digest, copied_at
-       ) VALUES (?, ?, ?)`
+       ) VALUES (?, ?, ?)
+       ON CONFLICT (agent_session_runtime_binding_id, image_digest) DO UPDATE
+       SET rowid = excluded.rowid, copied_at = excluded.copied_at
+       WHERE ? = 1`
     )
-    .run(agentSessionRuntimeBindingId, imageDigest, timestamp);
+    .run(agentSessionRuntimeBindingId, imageDigest, timestamp, source === 'binding' ? 1 : 0);
 }
 
 /** Reads the live Sandbox digest so the binding can copy it as a value. */
-function readSandboxMeasuredImageDigest(coreDb: CoreDb, harnessInstanceId: string): string {
-  const sandbox = coreDb.sqlite
+function readSandboxMeasuredImageDigest(
+  owner: NanoHostHarnessDb,
+  harnessInstanceId: string
+): string {
+  const sandbox = owner.sqlite
     .prepare(
       `SELECT s.image_digest AS imageDigest
        FROM harness_instance_records h
