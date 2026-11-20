@@ -3,7 +3,6 @@ import type { CHANNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { OpenKitConfig } from '@openkit/config-schema';
 import { canonicalJsonText, RequestIdSchema, UserIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { resolveSessionDeploymentAdminTokenId } from './auth/access-token-store.js';
 import { type Actor, getLocalUserId } from './auth/identity.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
@@ -27,7 +26,6 @@ import {
   type PendingRequestRecord,
 } from './runtime/pending-requests.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
-import { readSecurityAlarmNoticeInDb } from './storage/security-trigger-native.js';
 
 /** Private Discord transport injected by startup or deterministic external-boundary tests. */
 export type DiscordAttentionTransport = ReturnType<typeof createDiscordRestTransport>;
@@ -59,7 +57,7 @@ export function createChannelServices(input: {
   function currentRequest(
     actor: Actor,
     source: { workspaceId: string; threadId: string; requestId: string },
-    options: { readonly pendingOnly?: boolean; readonly includeArchived?: boolean } = {}
+    options: { readonly pendingOnly?: boolean } = {}
   ): PendingRequestRecord | null {
     if (
       !ordinaryActor(actor.userId) ||
@@ -87,8 +85,7 @@ export function createChannelServices(input: {
       if (record.governedIntent?.operation === 'channel.publish') return null;
       return (options.pendingOnly === false || record.state === 'pending') &&
         record.responsibleUserId === actor.userId &&
-        (options.includeArchived === true ||
-          store.getThread(source.workspaceId, source.threadId).status !== 'archived')
+        store.getThread(source.workspaceId, source.threadId).status !== 'archived'
         ? record
         : null;
     } finally {
@@ -181,42 +178,10 @@ export function createChannelServices(input: {
       })
     : null;
 
-  /** Only the original native notice/recipient/destination can admit the fixed App-link transport. */
-  function securityDelivery(delivery: AttentionDelivery, outstandingOnly: boolean): boolean {
-    if (delivery.source.kind !== 'security-notice') return false;
-    const actor = ordinaryActor(delivery.recipientUserId);
-    if (
-      !actor ||
-      (actor.userId !== localUserId && !resolveSessionDeploymentAdminTokenId(coreDb, actor.userId))
-    )
-      return false;
-    const notice = readSecurityAlarmNoticeInDb(coreDb, delivery.source.requestId);
-    // Archived history remains a readable notice source; no new request or Turn is admitted.
-    const record = currentRequest(actor, delivery.source, {
-      pendingOnly: false,
-      includeArchived: true,
-    });
-    return !!(
-      notice &&
-      record &&
-      record.kind === 'user-input' &&
-      record.requesterKind === 'automation' &&
-      // E6: only the recipient's own answer acknowledges the notice. Endings do not.
-      (!outstandingOnly ||
-        record.resolution !== 'answered' ||
-        record.decidingActor?.kind !== 'user' ||
-        record.decidingActor.id !== actor.userId) &&
-      notice.attention.id === delivery.id &&
-      notice.recipientUserId === actor.userId &&
-      notice.attention.source.workspaceId === delivery.source.workspaceId &&
-      notice.attention.source.threadId === delivery.source.threadId
-    );
-  }
-
   /** Retains readable transport history after a Core decision without granting a later send. */
   function readableDelivery(delivery: AttentionDelivery): boolean {
+    if (delivery.source.kind === 'security-notice') return false;
     try {
-      if (delivery.source.kind === 'security-notice') return securityDelivery(delivery, false);
       const actor = ordinaryActor(delivery.recipientUserId);
       const record = actor && currentRequest(actor, delivery.source, { pendingOnly: false });
       return Boolean(
@@ -231,8 +196,8 @@ export function createChannelServices(input: {
 
   /** Rechecks the recipient and source; transport also calls it after asynchronous DM preparation. */
   function eligible(delivery: AttentionDelivery): boolean {
+    if (delivery.source.kind === 'security-notice') return false;
     try {
-      if (delivery.source.kind === 'security-notice') return securityDelivery(delivery, true);
       const actor = ordinaryActor(delivery.recipientUserId);
       const record = actor && currentRequest(actor, delivery.source);
       return Boolean(
@@ -270,9 +235,8 @@ export function createChannelServices(input: {
               discordUserId: bound.discordUserId,
               appPath: payload.appPath,
               automation:
-                delivery.source.kind === 'security-notice' ||
                 currentRequest(actor, delivery.source, { pendingOnly: false })?.requesterKind ===
-                  'automation',
+                'automation',
               beforeSend: () =>
                 eligible(delivery) && discord?.binding(actor)?.revision === bound.revision,
             });
@@ -295,36 +259,23 @@ export function createChannelServices(input: {
 
   /** Publishes only an exact source reference; a notification write cannot change the Core request. */
   async function attentionRaised(record: PendingRequestRecord): Promise<void> {
+    if (record.requesterKind === 'automation' || record.state !== 'pending') return;
     const actor = ordinaryActor(record.responsibleUserId);
-    if (!actor) return;
-    const originalNotice =
-      record.requesterKind === 'automation'
-        ? readSecurityAlarmNoticeInDb(coreDb, record.requestId)
-        : null;
-    // The security publisher owns its native-only source. Never create a parallel ordinary notification.
-    if (record.requesterKind === 'automation' && !originalNotice) return;
-    if (
-      originalNotice
-        ? !eligible(originalNotice.attention)
-        : record.state !== 'pending' || !currentRequest(actor, record)
-    )
-      return;
-    const delivery = originalNotice
-      ? originalNotice.attention
-      : await notifications.enqueue({
-          source: {
-            workspaceId: record.workspaceId,
-            threadId: record.threadId,
-            requestId: record.requestId,
-            kind: record.kind === 'approval' ? 'approval-request' : 'user-input-request',
-          },
-          recipientUserId: record.responsibleUserId,
-        });
+    if (!actor || !currentRequest(actor, record)) return;
+    const delivery = await notifications.enqueue({
+      source: {
+        workspaceId: record.workspaceId,
+        threadId: record.threadId,
+        requestId: record.requestId,
+        kind: record.kind === 'approval' ? 'approval-request' : 'user-input-request',
+      },
+      recipientUserId: record.responsibleUserId,
+    });
     if (delivery.status === 'queued' && discord?.binding(actor) && input.transport)
       void send(actor, delivery.id, null).catch(() => undefined);
   }
 
-  /** Re-enumerates requests and their original notices at boot or binding change, without implicit retry. */
+  /** Re-enumerates current Pending Requests at boot or binding change, without implicit retry. */
   async function recoverAttention(): Promise<void> {
     for (const workspace of store.listWorkspaces()) {
       try {

@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Actor } from '../auth/identity.js';
+import { type Actor, isDeploymentAdminActor } from '../auth/identity.js';
 import type { DiscordPendingView, DiscordReply } from '../channels/discord-interaction.js';
 import {
   type CommunicationDiscordChannelOptions,
@@ -61,7 +61,6 @@ function text(reply: DiscordReply) {
 }
 
 function signedDm(id: string, command: string, args: Record<string, string> = {}, extra = {}) {
-  const timestamp = String(Math.floor(now / 1000));
   const body = Buffer.from(
     JSON.stringify({
       id,
@@ -86,6 +85,11 @@ function signedDm(id: string, command: string, args: Record<string, string> = {}
       ...extra,
     })
   );
+  return signDmBody(body, now);
+}
+
+function signDmBody(body: Buffer, at: number) {
+  const timestamp = String(Math.floor(at / 1000));
   return {
     body,
     timestamp,
@@ -95,7 +99,13 @@ function signedDm(id: string, command: string, args: Record<string, string> = {}
   };
 }
 
-function fixture(fixtureOptions: { readonly fileBacked?: boolean } = {}) {
+function fixture(
+  fixtureOptions: {
+    readonly fileBacked?: boolean;
+    readonly expiryAgeMs?: number;
+    readonly withoutRetentionKernel?: boolean;
+  } = {}
+) {
   const folder = fixtureOptions.fileBacked
     ? mkdtempSync(join(tmpdir(), 'openkit-discord-dm-'))
     : null;
@@ -115,18 +125,29 @@ function fixture(fixtureOptions: { readonly fileBacked?: boolean } = {}) {
   });
   const active = new Set([alice, bob]);
   let clock = now;
+  let expiryAgeMs = fixtureOptions.expiryAgeMs;
   function apply<Stage extends CommunicationWriterReply['stage']>(
     stage: Stage,
     fields: object
   ): Extract<CommunicationWriterReply, { stage: Stage }> {
     const command = CommunicationWriterCommandSchema.parse({ stage, ...fields });
     const ack = CommunicationWriterReplySchema.parse(
-      applyCommunicationWriterCommand(sqlite, deploymentId, command, () => clock)
+      applyCommunicationWriterCommand(
+        sqlite,
+        deploymentId,
+        command,
+        () => clock,
+        () => {
+          expect(sqlite.inTransaction).toBe(true);
+          return expiryAgeMs;
+        }
+      )
     );
     if (ack.stage !== stage) throw new Error('Unexpected communication worker acknowledgement.');
     return ack as Extract<CommunicationWriterReply, { stage: Stage }>;
   }
   let localSettlementLost = false;
+  let localHandledSettlementLost = false;
   let nextDecisionReceiptDigest: string | undefined;
   let beforeLocalSettlement: (() => void) | undefined;
   let refusalAckLost = false;
@@ -157,6 +178,20 @@ function fixture(fixtureOptions: { readonly fileBacked?: boolean } = {}) {
       apply('settle-origin', { input });
       return ready(undefined);
     },
+    applyRetention: async (input, authority) => {
+      const { acknowledgement } = apply('discord-retention', { input, authority });
+      return acknowledgement === null
+        ? { state: 'unavailable', owner: 'communication', reason: 'disabled' }
+        : ready(acknowledgement);
+    },
+    settleHandled: async (input) => {
+      if (localHandledSettlementLost) {
+        localHandledSettlementLost = false;
+        throw new Error('Local handled settlement acknowledgement lost.');
+      }
+      apply('settle-handled', { input });
+      return ready(undefined);
+    },
     settleRefusal: async (input) => {
       apply('settle-refusal', { input });
       if (refusalAckLost) {
@@ -170,8 +205,14 @@ function fixture(fixtureOptions: { readonly fileBacked?: boolean } = {}) {
   const withAuthority: WithPairingAuthority = async (selection, post) => {
     authoritySelections.push(selection);
     expect(active.has(selection.userId)).toBe(true);
-    return post({ userId: selection.userId, administratorAtEvent: false });
+    return post({
+      userId: selection.userId,
+      administratorAtEvent: isDeploymentAdminActor(selection.actor),
+    });
   };
+  const withProducerDrain = vi.fn<
+    NonNullable<Parameters<typeof createCommunicationDiscord>[0]['retention']>['withProducerDrain']
+  >(async (post) => post());
   const createOwner = () =>
     createCommunicationDiscord({
       status: () => ({ state: 'ready', owner: 'communication' }),
@@ -179,9 +220,10 @@ function fixture(fixtureOptions: { readonly fileBacked?: boolean } = {}) {
       writer,
       withAuthority,
       pairingAuditReady: () => {},
+      ...(fixtureOptions.withoutRetentionKernel ? {} : { kernel }),
+      retention: { withProducerDrain, readExpiryAgeMs: () => expiryAgeMs },
       now: () => clock,
     });
-  let communication = createOwner();
   const events = new Map<string, ChannelInboundState>();
   let settleAckLost = false;
   let afterBind: (() => void | Promise<void>) | undefined;
@@ -268,6 +310,7 @@ function fixture(fixtureOptions: { readonly fileBacked?: boolean } = {}) {
     const decision = decisions.get(origin.envelope.requestId);
     return decision?.inputHash === inputHash ? decision.decisionRef : null;
   });
+  let communication = createOwner();
   const options: CommunicationDiscordChannelOptions = {
     storage: communication.storage,
     deploymentId,
@@ -312,6 +355,12 @@ function fixture(fixtureOptions: { readonly fileBacked?: boolean } = {}) {
     invoke,
     active,
     authoritySelections,
+    withProducerDrain,
+    setExpiryAge: (ageMs: number | undefined) => {
+      expiryAgeMs = ageMs;
+    },
+    retain: (...args: Parameters<typeof communication.runRetention>) =>
+      communication.runRetention(...args),
     events,
     pair,
     disclose,
@@ -331,6 +380,9 @@ function fixture(fixtureOptions: { readonly fileBacked?: boolean } = {}) {
     },
     pending: (overrides: Partial<Extract<DiscordPendingView, { status: 'available' }>>) => {
       if (pending.status === 'available') pending = { ...pending, ...overrides };
+    },
+    loseLocalHandledSettlement: () => {
+      localHandledSettlementLost = true;
     },
     loseLocalSettlement: () => {
       localSettlementLost = true;
@@ -359,6 +411,8 @@ function fixture(fixtureOptions: { readonly fileBacked?: boolean } = {}) {
       channel = openChannel();
     },
     send: (message: ReturnType<typeof signedDm>) => channel.handleSignedInteraction(message),
+    replayWithFreshSignature: (message: ReturnType<typeof signedDm>) =>
+      channel.handleSignedInteraction(signDmBody(message.body, clock)),
   };
 }
 
@@ -444,6 +498,41 @@ describe('communication owner Discord DM cutover', () => {
     expect(f.sqlite.prepare('SELECT count(*) FROM channel_account_bindings').pluck().get()).toBe(1);
   });
 
+  it('retains exact target-free replay proof after a lost local handled acknowledgement', async () => {
+    const f = fixture({ fileBacked: true });
+    const { challenge } = await f.beginPairing(alice);
+    const original = signedDm('201', 'pair', { challenge });
+    f.loseLocalHandledSettlement();
+    expect(text(await f.send(original))).toContain('outcome is unknown');
+    const event = [...f.events.values()][0];
+    if (event?.state !== 'settled') throw new Error('Expected the kernel handled receipt.');
+    expect(event.origin).toBeNull();
+    const localDigest = () =>
+      f.sqlite
+        .prepare('SELECT receipt_digest FROM communication_intents WHERE request_id = ?')
+        .pluck()
+        .get(event.receipt.intent.requestId);
+    expect(localDigest()).toBeNull();
+    f.restart();
+    expect(text(await f.send(original))).toContain('already handled');
+    expect(localDigest()).toBe(event.receipt.receiptDigest);
+
+    const redacted = f.sqlite
+      .prepare(`UPDATE communication_intents SET external_account_id = NULL
+        WHERE request_id = ? AND receipt_digest = ? AND origin_json IS NULL`)
+      .run(event.receipt.intent.requestId, event.receipt.receiptDigest);
+    expect(redacted.changes).toBe(1);
+    f.restart();
+    expect(text(await f.send(original))).toContain('already handled');
+    expect(text(await f.send(signedDm('201', 'pair', { challenge: 'changed' })))).toContain(
+      'identity conflict'
+    );
+    expect(localDigest()).toBe(event.receipt.receiptDigest);
+    expect(f.sqlite.prepare('SELECT count(*) FROM channel_account_bindings').pluck().get()).toBe(1);
+    expect(f.kernel.reserveChannelInbound).toHaveBeenCalledTimes(1);
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
   it('revokes an outstanding challenge through the adapter without a binding', async () => {
     const f = fixture();
     const { challenge } = await f.beginPairing(alice);
@@ -509,7 +598,10 @@ describe('communication owner Discord DM cutover', () => {
     expect(text(await f.send(original))).toContain('already handled');
     await f.unbind(alice);
     expect(text(await f.pair(bob, '204'))).toContain('account paired');
+    f.inspectPendingDecision.mockClear();
+    f.inspectPendingDecision.mockReturnValue(null);
     expect(text(await f.send(original))).toContain('already handled');
+    expect(f.inspectPendingDecision).not.toHaveBeenCalled();
     expect(f.invoke).toHaveBeenCalledTimes(1);
     expect(
       [...f.events.values()].find((event) => event.state === 'settled' && event.origin)
@@ -695,6 +787,233 @@ describe('communication owner Discord DM cutover', () => {
       expect(f.invoke).toHaveBeenCalledTimes(1);
     }
   );
+
+  it('preserves settled replay after the local actor and origin are redacted', async () => {
+    const f = fixture({ fileBacked: true });
+    await f.pair(alice, '201');
+    const disclosure = await f.disclose('202');
+    const original = signedDm('203', 'deny', { ...target, disclosure });
+    expect(text(await f.send(original))).toContain('accepted the response');
+    const originalProof = f.sqlite
+      .prepare(
+        'SELECT request_id, intent_json, receipt_digest FROM communication_intents WHERE origin_json IS NOT NULL'
+      )
+      .get();
+    expect(
+      f.sqlite
+        .prepare(`UPDATE communication_intents
+          SET external_account_id = NULL, origin_json = NULL, native_input_hash = NULL
+          WHERE kind = 'channel.inbound' AND origin_json IS NOT NULL AND receipt_digest IS NOT NULL`)
+        .run().changes
+    ).toBe(1);
+    f.restart();
+    expect(text(await f.send(original))).toContain('already handled');
+    expect(
+      text(await f.send(signedDm('203', 'deny', { ...target, disclosure: 'changed' })))
+    ).toContain('identity conflict');
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+    expect(
+      f.sqlite
+        .prepare(`SELECT request_id, intent_json, receipt_digest, external_account_id AS actor, origin_json AS origin, native_input_hash AS hash
+          FROM communication_intents WHERE kind = 'channel.inbound' AND receipt_digest IS NOT NULL AND external_account_id IS NULL`)
+        .get()
+    ).toEqual({ ...(originalProof as object), actor: null, origin: null, hash: null });
+  });
+
+  it('deletes a revoked Discord account atomically with one redacted administrator Audit', async () => {
+    const f = fixture({ fileBacked: true });
+    const administrator = { userId: alice, kind: 'local' } as const;
+    const selection = { kind: 'delete-account', externalAccountId } as const;
+    const requestId = randomUUID();
+    expect(text(await f.pair(alice, '201'))).toContain('account paired');
+    const disclosure = await f.disclose('202');
+    const denial = signedDm('203', 'deny', { ...target, disclosure });
+    expect(text(await f.send(denial))).toContain('accepted the response');
+
+    await expect(
+      f.retain({ userId: alice, kind: 'session' }, requestId, selection)
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    expect(f.withProducerDrain).not.toHaveBeenCalled();
+    await expect(f.retain(administrator, requestId, selection)).rejects.toMatchObject({
+      code: 'channel_binding_active',
+    });
+
+    await f.unbind(alice);
+    f.sqlite.exec(`CREATE TRIGGER reject_retention_audit
+      BEFORE INSERT ON communication_intents WHEN NEW.kind = 'discord.retention'
+      BEGIN SELECT RAISE(ABORT, 'retention Audit unavailable'); END`);
+    await expect(f.retain(administrator, requestId, selection)).rejects.toThrow(
+      'retention Audit unavailable'
+    );
+    expect(f.sqlite.prepare('SELECT count(*) FROM channel_disclosures').pluck().get()).toBe(1);
+    expect(
+      f.sqlite
+        .prepare('SELECT count(*) FROM communication_intents WHERE external_account_id = ?')
+        .pluck()
+        .get(externalAccountId)
+    ).toBe(3);
+
+    f.sqlite.exec('DROP TRIGGER reject_retention_audit');
+    const applied = await f.retain(administrator, requestId, selection);
+    expect(applied).toEqual(
+      ready({
+        bindings: 1,
+        challenges: 0,
+        disclosures: 1,
+        redactedInbound: 3,
+        heldInbound: 0,
+        auditEventId: expect.any(String),
+      })
+    );
+    f.restart();
+    expect(await f.retain(administrator, requestId, selection)).toEqual(applied);
+    await expect(
+      f.retain(administrator, requestId, { ...selection, externalAccountId: '105' })
+    ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
+    expect(f.sqlite.prepare('SELECT count(*) FROM channel_disclosures').pluck().get()).toBe(0);
+    expect(f.sqlite.prepare('SELECT count(*) FROM channel_account_bindings').pluck().get()).toBe(0);
+    const audit = f.sqlite
+      .prepare("SELECT event_json FROM communication_intents WHERE kind = 'discord.retention'")
+      .pluck()
+      .all() as string[];
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).not.toContain(JSON.stringify(externalAccountId));
+    expect(JSON.parse(audit[0]!)).toMatchObject({
+      action: 'channel.retention.delete-account',
+      actor: { kind: 'user', id: alice },
+      requestId,
+    });
+    expect(text(await f.send(denial))).toContain('already handled');
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains expired pairing and disclosure data by default after reopen', async () => {
+    const f = fixture({ fileBacked: true });
+    const administrator = { userId: alice, kind: 'local' } as const;
+    await f.pair(alice, '201');
+    const disclosure = await f.disclose('202');
+    await f.beginPairing(bob);
+    f.advance(600_000);
+    f.restart();
+    expect(await f.retain(administrator, randomUUID(), { kind: 'expire' })).toEqual({
+      state: 'unavailable',
+      owner: 'communication',
+      reason: 'disabled',
+    });
+    expect(f.withProducerDrain).not.toHaveBeenCalled();
+    expect(f.sqlite.prepare('SELECT count(*) FROM channel_pairing_challenges').pluck().get()).toBe(
+      2
+    );
+    expect(f.sqlite.prepare('SELECT count(*) FROM channel_disclosures').pluck().get()).toBe(1);
+    expect(
+      text(await f.replayWithFreshSignature(signedDm('203', 'deny', { ...target, disclosure })))
+    ).toContain('channel_disclosure_unavailable');
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
+  it('refuses staged retention before draining when the receipt adapter is missing', async () => {
+    const f = fixture({ expiryAgeMs: 1_000, withoutRetentionKernel: true });
+    const { expiresAt } = await f.beginPairing(bob);
+    f.advance(expiresAt - now + 4_000);
+    const administrator = { userId: alice, kind: 'local' } as const;
+    const requestId = randomUUID();
+
+    expect(await f.retain(administrator, requestId, { kind: 'expire' })).toEqual({
+      state: 'unavailable',
+      owner: 'control-kernel',
+      reason: 'missing',
+    });
+    expect(f.withProducerDrain).not.toHaveBeenCalled();
+    expect(f.sqlite.prepare('SELECT count(*) FROM channel_pairing_challenges').pluck().get()).toBe(
+      1
+    );
+    expect(
+      f.sqlite.prepare('SELECT 1 FROM communication_intents WHERE request_id = ?').get(requestId)
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['disabled', undefined],
+    ['extended', 20_000],
+  ] as const)(
+    'uses the policy in the deleting transaction when queued expiry is %s',
+    async (_label, ageMs) => {
+      const f = fixture({ expiryAgeMs: 1_000 });
+      const { expiresAt } = await f.beginPairing(bob);
+      f.advance(expiresAt - now + 4_000);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      f.withProducerDrain.mockImplementationOnce(async (post) => {
+        entered.resolve();
+        await release.promise;
+        return post();
+      });
+      const administrator = { userId: alice, kind: 'local' } as const;
+      const requestId = randomUUID();
+      const sweep = f.retain(administrator, requestId, { kind: 'expire' });
+      await entered.promise;
+      f.setExpiryAge(ageMs);
+      release.resolve();
+      const result = await sweep;
+
+      expect(
+        f.sqlite.prepare('SELECT count(*) FROM channel_pairing_challenges').pluck().get()
+      ).toBe(1);
+      if (ageMs === undefined) {
+        expect(result).toEqual({
+          state: 'unavailable',
+          owner: 'communication',
+          reason: 'disabled',
+        });
+        expect(
+          f.sqlite
+            .prepare('SELECT 1 FROM communication_intents WHERE request_id = ?')
+            .get(requestId)
+        ).toBeUndefined();
+      } else {
+        expect(result).toMatchObject(ready({ challenges: 0 }));
+      }
+    }
+  );
+
+  it('applies opt-in retention while holding an unresolved event and preserving definite replay', async () => {
+    const f = fixture({ fileBacked: true, expiryAgeMs: 1_000 });
+    const administrator = { userId: alice, kind: 'local' } as const;
+    await f.pair(alice, '201');
+    const disclosure = await f.disclose('202');
+    const applied = signedDm('203', 'deny', { ...target, disclosure });
+    expect(text(await f.send(applied))).toContain('accepted the response');
+    const unresolved = signedDm('204', 'deny', { ...target, disclosure });
+    vi.mocked(f.kernel.reserveChannelInbound).mockRejectedValueOnce(
+      new Error('Lost reservation ACK')
+    );
+    expect(text(await f.send(unresolved))).toContain('outcome is unknown');
+    await f.unbind(alice);
+    await expect(
+      f.retain(administrator, randomUUID(), { kind: 'delete-account', externalAccountId })
+    ).rejects.toMatchObject({ code: 'channel_retention_recovery_required' });
+
+    f.advance(600_000);
+    expect(await f.retain(administrator, randomUUID(), { kind: 'expire' })).toMatchObject(
+      ready({
+        bindings: 1,
+        challenges: 1,
+        disclosures: 1,
+        redactedInbound: 3,
+        heldInbound: 1,
+      })
+    );
+    f.restart();
+    expect(text(await f.replayWithFreshSignature(applied))).toContain('already handled');
+    expect(text(await f.replayWithFreshSignature(unresolved))).toContain('outcome is unknown');
+    expect(
+      f.sqlite
+        .prepare('SELECT count(*) FROM communication_intents WHERE external_account_id = ?')
+        .pluck()
+        .get(externalAccountId)
+    ).toBe(1);
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+  });
 
   it('keeps a decision pending locally when another event supplies its digest', async () => {
     const f = fixture();

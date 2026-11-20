@@ -15,7 +15,11 @@ import type { DiscordReply } from './channels/discord.js';
 import { prepareDiscordPublication } from './channels/discord-publication-intent.js';
 import { raiseDiscordPublicationFallback } from './channels/discord-publication-pending.js';
 import { FsStore } from './lib/store.js';
-import { type AttentionDelivery, AttentionNotifications } from './notifications/attention.js';
+import {
+  type AttentionDelivery,
+  AttentionNotifications,
+  enqueueAttentionInDb,
+} from './notifications/attention.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import {
@@ -548,6 +552,50 @@ describe('Discord to native Pending Request seam', () => {
         pendingRequestId: f.target.request,
       })
     ).toMatchObject({ status: 'app-only' });
+  });
+
+  it('refuses the deferred security attention flow before reading its legacy notice', async () => {
+    const f = await fixture('user-input', 'automation');
+    createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: actor.userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    await f.pair();
+    const record = f.record();
+    const delivery = enqueueAttentionInDb(
+      f.coreDb.sqlite,
+      {
+        source: {
+          workspaceId: record.workspaceId,
+          threadId: record.threadId,
+          requestId: record.requestId,
+          kind: 'security-notice',
+        },
+        recipientUserId: actor.userId,
+      },
+      () => new Date().toISOString()
+    );
+    const originalEnqueues = enqueueAck.enqueues;
+    const readLegacy = vi.spyOn(
+      await import('./storage/security-trigger-native.js'),
+      'readSecurityAlarmNoticeInDb'
+    );
+    try {
+      expect(f.services.readableDelivery(delivery)).toBe(false);
+      expect(f.services.eligible(delivery)).toBe(false);
+      await f.services.attentionRaised(record);
+      await expect(f.services.send(actor, delivery.id, null)).rejects.toMatchObject({
+        code: 'notification_unavailable',
+      });
+      expect(readLegacy).not.toHaveBeenCalled();
+      expect(enqueueAck.enqueues).toBe(originalEnqueues);
+      expect(enqueueAck.claims).toBe(0);
+      expect(f.sendAttention).not.toHaveBeenCalled();
+    } finally {
+      readLegacy.mockRestore();
+    }
   });
 
   it('does not enqueue or send after the responsible recipient loses current membership', async () => {

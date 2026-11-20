@@ -214,6 +214,68 @@ export function enqueueAttentionInDb(
   })();
 }
 
+/** Delivers only after the owning transaction acknowledges the exact claimed snapshot. */
+export async function deliverClaimedAttention(
+  delivery: AttentionDelivery,
+  dependencies: {
+    readonly buildAppPath: ((source: AttentionSource) => string) | undefined;
+    readonly isEligible: AttentionEligibility;
+    readonly transport: AttentionTransport;
+    readonly finish: (
+      status: Exclude<AttentionAttempt['status'], 'sending'>,
+      failure: AttentionAttempt['failureCode']
+    ) => Promise<AttentionDelivery>;
+  }
+): Promise<AttentionDelivery> {
+  let appPath: string;
+  try {
+    appPath =
+      dependencies.buildAppPath?.(delivery.source) ??
+      `/tasks/${encodeURIComponent(delivery.source.workspaceId)}/${encodeURIComponent(delivery.source.threadId)}?${new URLSearchParams({ requestId: delivery.source.requestId })}`;
+    if (
+      !appPath.startsWith('/') ||
+      new URL(appPath, 'https://attention.invalid').origin !== 'https://attention.invalid' ||
+      /[\\\r\n]/.test(appPath)
+    ) {
+      throw new Error('Invalid App path');
+    }
+  } catch {
+    await dependencies.finish('failed-no-send', 'transport-refused');
+    throw new AttentionError('invalid_attention_input');
+  }
+  let eligible = false;
+  try {
+    eligible = dependencies.isEligible(delivery) === true;
+  } catch {
+    // Current authority is unavailable before transport; no external contact occurred.
+  }
+  if (!eligible) {
+    await dependencies.finish('failed-no-send', 'authority-unavailable');
+    throw new AttentionError('attention_not_eligible');
+  }
+  // No await, mutable-source read, or external work occurs between admission and transport.
+  let status: 'sent' | 'failed-no-send' | 'delivery-unknown';
+  try {
+    const result = await dependencies.transport({
+      kind: 'attention-link',
+      deliveryId: delivery.id,
+      appPath,
+    });
+    status = z.enum(['sent', 'failed-no-send', 'delivery-unknown']).parse(result.status);
+  } catch {
+    // An adapter throw cannot prove whether the external system accepted the message.
+    status = 'delivery-unknown';
+  }
+  return dependencies.finish(
+    status,
+    status === 'sent'
+      ? null
+      : status === 'failed-no-send'
+        ? 'transport-refused'
+        : 'transport-unknown'
+  );
+}
+
 /** Owns attention delivery only; the injected Core database must already be migrated. */
 export class AttentionNotifications {
   constructor(
@@ -355,54 +417,11 @@ export class AttentionNotifications {
     const delivery = this.options.nativeCoreDb
       ? await this.claimNative(admitted)
       : claimAttentionAttemptInDb(this.sqlite, admitted, () => this.now());
-    let appPath: string;
-    try {
-      appPath =
-        this.options.buildAppPath?.(delivery.source) ??
-        `/tasks/${encodeURIComponent(delivery.source.workspaceId)}/${encodeURIComponent(delivery.source.threadId)}?${new URLSearchParams({ requestId: delivery.source.requestId })}`;
-      if (
-        !appPath.startsWith('/') ||
-        new URL(appPath, 'https://attention.invalid').origin !== 'https://attention.invalid' ||
-        /[\\\r\n]/.test(appPath)
-      ) {
-        throw new Error('Invalid App path');
-      }
-    } catch {
-      await this.finish(delivery, 'failed-no-send', 'transport-refused');
-      throw new AttentionError('invalid_attention_input');
-    }
-    let eligible = false;
-    try {
-      eligible = dependencies.isEligible(delivery) === true;
-    } catch {
-      // Current authority is unavailable before transport; no external contact occurred.
-    }
-    if (!eligible) {
-      await this.finish(delivery, 'failed-no-send', 'authority-unavailable');
-      throw new AttentionError('attention_not_eligible');
-    }
-    // No await, mutable-source read, or external work occurs between admission and transport.
-    let status: 'sent' | 'failed-no-send' | 'delivery-unknown';
-    try {
-      const result = await dependencies.transport({
-        kind: 'attention-link',
-        deliveryId: delivery.id,
-        appPath,
-      });
-      status = z.enum(['sent', 'failed-no-send', 'delivery-unknown']).parse(result.status);
-    } catch {
-      // An adapter throw cannot prove whether the external system accepted the message.
-      status = 'delivery-unknown';
-    }
-    return this.finish(
-      delivery,
-      status,
-      status === 'sent'
-        ? null
-        : status === 'failed-no-send'
-          ? 'transport-refused'
-          : 'transport-unknown'
-    );
+    return deliverClaimedAttention(delivery, {
+      ...dependencies,
+      buildAppPath: this.options.buildAppPath,
+      finish: (status, failure) => this.finish(delivery, status, failure),
+    });
   }
 
   /** At startup before serving, makes every unfinished send unknown without contacting a transport. */

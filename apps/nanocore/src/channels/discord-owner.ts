@@ -12,6 +12,7 @@ import type {
   CommunicationDisclosureWrite,
 } from '../storage/communication-disclosure-native.js';
 import {
+  admitDiscordOwners,
   discordInteractionEnvelope,
   requireChannelStorage,
   reserveDiscordInteraction,
@@ -63,6 +64,7 @@ export interface DiscordChannelStorage extends Pick<CommunicationStore, 'status'
     origin: ChannelInboundOrigin | null
   ): StorageResult<'communication', ChannelInboundProof | null>;
   settleInbound(settlement: ChannelOriginSettlement): Promise<StorageResult<'communication', void>>;
+  settleHandled(receipt: ChannelInboundReceipt): Promise<StorageResult<'communication', void>>;
   settleRefusal(refusal: ChannelInboundRefusal): Promise<StorageResult<'communication', void>>;
   stageEnvelope(
     envelope: ChannelInboundEnvelope,
@@ -148,19 +150,13 @@ export function openCommunicationDiscordChannel(
 ):
   | StorageResult<'communication', ReturnType<typeof createCommunicationDiscordChannel>>
   | StorageUnavailable<'control-kernel'> {
-  const { storage, kernel } = options;
-  if (!storage) return { state: 'unavailable', owner: 'communication', reason: 'missing' };
-  if (!kernel) return { state: 'unavailable', owner: 'control-kernel', reason: 'missing' };
-
-  const communicationStatus = storage.status();
-  if (communicationStatus.state !== 'ready') return communicationStatus;
-  const kernelStatus = kernel.status();
-  if (kernelStatus.state !== 'ready') return kernelStatus;
-
-  return {
-    state: 'ready',
-    value: createCommunicationDiscordChannel({ ...options, storage, kernel }),
-  };
+  const admission = admitDiscordOwners(options.storage, options.kernel);
+  return admission.state === 'ready'
+    ? {
+        state: 'ready',
+        value: createCommunicationDiscordChannel({ ...options, ...admission.value }),
+      }
+    : admission;
 }
 
 type PendingTarget = Pick<ChannelInboundOrigin, 'workspaceId' | 'threadId' | 'pendingRequestId'>;
@@ -310,6 +306,7 @@ function createCommunicationDiscordChannel(options: CommunicationDiscordChannelO
     ) {
       throw new OperationError('channel_receipt_unknown', unknownReply, 503);
     }
+    requireChannelStorage(await storage.settleHandled(decision.receipt));
   }
 
   async function refuse(
@@ -486,6 +483,12 @@ function createCommunicationDiscordChannel(options: CommunicationDiscordChannelO
     if (!origin || receipt.disposition !== 'applied' || receipt.result.kind !== 'pending-decision')
       return false;
     const proof = requireChannelStorage(storage.readInboundProof(receipt.intent, origin));
+    if (proof?.state === 'redacted')
+      return (
+        expectedInputHash === undefined &&
+        proof.refusalCode === null &&
+        proof.receiptDigest === receipt.receiptDigest
+      );
     if (
       !proof?.inputHash ||
       proof.refusalCode ||
@@ -540,6 +543,8 @@ function createCommunicationDiscordChannel(options: CommunicationDiscordChannelO
         ) {
           const proof = requireChannelStorage(storage.readInboundProof(envelope, null));
           if (!proof) return unknownReply;
+          if (proof.receiptDigest !== original.receipt.receiptDigest)
+            requireChannelStorage(await storage.settleHandled(original.receipt));
           return proof.refusalCode ? refusalReply(proof.refusalCode) : handledReply;
         }
         return (await recoverSettlement(original)) ? handledReply : unknownReply;
@@ -552,8 +557,8 @@ function createCommunicationDiscordChannel(options: CommunicationDiscordChannelO
       }
       if (original.state === 'origin-bound') {
         const proof = requireChannelStorage(storage.readInboundProof(envelope, original.origin));
+        if (proof?.refusalCode) return refusalReply(proof.refusalCode);
         if (!proof?.inputHash) return unknownReply;
-        if (proof.refusalCode) return refusalReply(proof.refusalCode);
         if (await recoverOriginal(original.origin, proof.inputHash, externalAccountId))
           return handledReply;
       }

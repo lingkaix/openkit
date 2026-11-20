@@ -1,10 +1,13 @@
 import type Database from 'better-sqlite3';
 import type { CommunicationCredentials } from '../auth/credential-operations.js';
-import type { Actor } from '../auth/identity.js';
-import type { DiscordChannelStorage } from '../channels/discord-owner.js';
+import { type Actor, isDeploymentAdminActor } from '../auth/identity.js';
+import type {
+  CommunicationDiscordChannelOptions,
+  DiscordChannelStorage,
+} from '../channels/discord-owner.js';
 import { OperationError } from '../operation-error-core.js';
 import { readCommunicationDisclosure } from './communication-disclosure-native.js';
-import { requireChannelStorage } from './communication-inbound.js';
+import { admitDiscordOwners, requireChannelStorage } from './communication-inbound.js';
 import {
   type ChannelOriginClaim,
   readChannelInboundProof,
@@ -15,9 +18,16 @@ import {
   readPairingChallengeUser,
 } from './communication-pairing-native.js';
 import type { CommunicationStore } from './communication-port.js';
-import type { StorageResult, StorageStatus } from './storage-owner.js';
+import {
+  type DiscordRetentionAck,
+  type DiscordRetentionCommand,
+  type DiscordRetentionSelection,
+  DiscordRetentionSelectionSchema,
+} from './communication-retention-native.js';
+import type { StorageResult, StorageStatus, StorageUnavailable } from './storage-owner.js';
 
 type Result<T> = StorageResult<'communication', T>;
+type RetentionResult = Result<DiscordRetentionAck> | StorageUnavailable<'control-kernel'>;
 
 export interface PairingAuthorityObservation {
   readonly userId: string;
@@ -46,7 +56,12 @@ export interface CommunicationDiscordWrites {
   ): Promise<Result<void>>;
   claimOrigin(claim: ChannelOriginClaim): Promise<Result<boolean>>;
   settleInbound: DiscordChannelStorage['settleInbound'];
+  settleHandled: DiscordChannelStorage['settleHandled'];
   settleRefusal: DiscordChannelStorage['settleRefusal'];
+  applyRetention(
+    command: DiscordRetentionCommand,
+    authority: PairingAuthorityObservation
+  ): Promise<Result<DiscordRetentionAck>>;
 }
 
 /** Holds current Kernel authority over the original file-local mutation and ACK. */
@@ -55,17 +70,34 @@ export type WithPairingAuthority = <T>(
   post: (authority: PairingAuthorityObservation) => Promise<Result<T>>
 ) => Promise<Result<T>>;
 
-/** Composes the binding admission shared by verified DM commands and credential unbind. */
+/** Holds one recipient's binding decision against overlapping communication effects. */
+export type WithCommunicationBinding = <Result>(
+  userId: string,
+  effect: () => Promise<Result>
+) => Promise<Result>;
+
+/** Composes the binding admission shared by DM commands, credential unbind and Attention. */
 export function createCommunicationDiscord(input: {
   readonly status: () => StorageStatus<'communication'>;
   readonly read: <T>(read: (sqlite: Database.Database) => T) => Result<T>;
   readonly writer: CommunicationDiscordWrites;
   readonly withAuthority: WithPairingAuthority;
   readonly pairingAuditReady: () => void;
+  readonly kernel?: CommunicationDiscordChannelOptions['kernel'];
+  readonly retention?: {
+    readonly withProducerDrain: (post: () => Promise<RetentionResult>) => Promise<RetentionResult>;
+    readonly readExpiryAgeMs?: () => number | undefined;
+  };
   readonly now?: () => number;
 }): {
   readonly storage: DiscordChannelStorage;
   readonly unbindCredential: CommunicationCredentials['unbind'];
+  readonly withBinding: WithCommunicationBinding;
+  readonly runRetention: (
+    actor: Actor,
+    requestId: string,
+    selection: DiscordRetentionSelection
+  ) => Promise<RetentionResult>;
 } {
   const { read, writer, withAuthority } = input;
   const now = input.now ?? Date.now;
@@ -169,11 +201,31 @@ export function createCommunicationDiscord(input: {
     readInboundProof: (envelope, origin) =>
       read((sqlite) => readChannelInboundProof(sqlite, envelope, origin)),
     settleInbound: writer.settleInbound,
+    settleHandled: writer.settleHandled,
     settleRefusal: writer.settleRefusal,
   };
 
   return {
     storage,
+    withBinding,
+    runRetention: async (actor, requestId, selection) => {
+      if (!isDeploymentAdminActor(actor))
+        throw new OperationError('forbidden', 'Current deployment administrator required.', 403);
+      const retention = input.retention;
+      const admission = admitDiscordOwners(storage, input.kernel);
+      if (admission.state !== 'ready') return admission;
+      const action = DiscordRetentionSelectionSchema.parse(selection);
+      if (!retention || (action.kind === 'expire' && retention.readExpiryAgeMs?.() === undefined))
+        return { state: 'unavailable', owner: 'communication', reason: 'disabled' };
+
+      return retention.withProducerDrain(async () => {
+        const current = admitDiscordOwners(storage, input.kernel);
+        if (current.state !== 'ready') return current;
+        return withAuthority({ userId: actor.userId, actor }, (authority) =>
+          writer.applyRetention({ requestId, userId: actor.userId, action }, authority)
+        );
+      });
+    },
     unbindCredential: async ({ actor, bindingRevision }) => {
       const result = await revoke({ userId: actor.userId, bindingRevision }, actor);
       return result.state === 'ready' ? { state: 'ready', value: undefined } : result;

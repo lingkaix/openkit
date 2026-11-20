@@ -31,11 +31,19 @@ export interface ChannelInboundRefusal {
   readonly code: string;
 }
 
-export interface ChannelInboundProof {
-  readonly inputHash: string | null;
-  readonly receiptDigest: string | null;
-  readonly refusalCode: string | null;
-}
+export type ChannelInboundProof =
+  | {
+      readonly state: 'original';
+      readonly inputHash: string | null;
+      readonly receiptDigest: string | null;
+      readonly refusalCode: string | null;
+    }
+  | {
+      readonly state: 'redacted';
+      readonly inputHash: null;
+      readonly receiptDigest: string | null;
+      readonly refusalCode: string | null;
+    };
 
 const originRecord = z.object({
   schemaVersion: z.literal(1),
@@ -51,7 +59,8 @@ const originRecord = z.object({
 export function stageChannelEnvelopeInDb(
   sqlite: Database.Database,
   envelope: ChannelInboundEnvelope,
-  externalAccountId: string
+  externalAccountId: string,
+  recordedAt: number
 ): 'staged-now' | 'inspect-original' | 'conflict' {
   const requestId = RequestIdSchema.parse(envelope.requestId);
   if (requestId !== storageRequestId(envelope)) {
@@ -63,15 +72,16 @@ export function stageChannelEnvelopeInDb(
   }
   const actor = DiscordSnowflakeSchema.parse(externalAccountId);
   const envelopeJson = canonicalJsonText(envelope);
+  const recorded = z.number().int().nonnegative().safe().parse(recordedAt);
   return sqlite
     .transaction(() => {
       const inserted = sqlite
         .prepare(`
       INSERT INTO communication_intents(
-        request_id, schema_version, kind, intent_json, external_account_id
-      ) VALUES (?, 1, 'channel.inbound', ?, ?) ON CONFLICT(request_id) DO NOTHING
+        request_id, schema_version, kind, intent_json, external_account_id, recorded_at
+      ) VALUES (?, 1, 'channel.inbound', ?, ?, ?) ON CONFLICT(request_id) DO NOTHING
     `)
-        .run(requestId, envelopeJson, actor);
+        .run(requestId, envelopeJson, actor, recorded);
       if (inserted.changes === 1) return 'staged-now';
 
       const original = readChannelOriginInDb(sqlite, requestId);
@@ -105,7 +115,12 @@ export function claimChannelOriginInDb(
           409
         );
       }
-      if (original.originJson !== null || original.refusalCode !== null) return false;
+      if (
+        original.originJson !== null ||
+        original.refusalCode !== null ||
+        original.receiptDigest !== null
+      )
+        return false;
       const binding = readCommunicationBinding(sqlite, origin.userId);
       if (
         !binding ||
@@ -163,8 +178,25 @@ export function readChannelInboundProof(
   origin: ChannelInboundOrigin | null
 ): ChannelInboundProof | null {
   const row = readChannelOriginInDb(sqlite, envelope.requestId);
+  // Compact proof only exists after the original outcome is definite locally.
+  if (
+    origin !== null &&
+    row.envelopeJson === canonicalJsonText(envelope) &&
+    row.externalAccountId === null &&
+    row.originJson === null &&
+    row.inputHash === null &&
+    (row.refusalCode !== null || row.receiptDigest !== null)
+  ) {
+    return {
+      state: 'redacted',
+      inputHash: null,
+      receiptDigest: row.receiptDigest,
+      refusalCode: row.refusalCode,
+    };
+  }
   if (!matchesOrigin(row, envelope, origin)) return null;
   return {
+    state: 'original',
     inputHash: row.inputHash,
     receiptDigest: row.receiptDigest,
     refusalCode: row.refusalCode,
@@ -197,28 +229,20 @@ export function settleChannelRefusalInDb(
     .immediate();
 }
 
-/** Settles only the local intent for this exact applied original decision. */
-export function settleChannelOriginInDb(
+function storeInboundReceipt(
   sqlite: Database.Database,
-  { origin, inputHash, receipt }: ChannelOriginSettlement
+  receipt: ChannelInboundReceipt,
+  matches: (row: z.infer<typeof originRecord>) => boolean
 ): void {
-  if (receipt.disposition !== 'applied' || receipt.result.kind !== 'pending-decision') {
-    throw new Error('The kernel receipt does not prove a Pending Request decision.');
-  }
   if (!hasOriginalReceiptDigest(receipt)) {
     throw new Error('The kernel receipt digest does not match the original response.');
   }
-  if (!origin) throw new Error('The kernel receipt has no bound origin.');
   const requestId = RequestIdSchema.parse(receipt.intent.requestId);
   const { receiptDigest } = receipt;
   sqlite
     .transaction(() => {
       const original = readChannelOriginInDb(sqlite, requestId);
-      if (
-        !matchesOrigin(original, receipt.intent, origin) ||
-        original.inputHash !== ChannelNativeInputHashSchema.parse(inputHash) ||
-        original.refusalCode !== null
-      ) {
+      if (!matches(original)) {
         throw new Error(
           'The kernel receipt does not match the original response origin and input.'
         );
@@ -226,11 +250,46 @@ export function settleChannelOriginInDb(
       if (original.receiptDigest === receiptDigest) return;
       if (original.receiptDigest !== null)
         throw new Error('Conflicting inbound settlement receipt.');
-      sqlite
+      const changed = sqlite
         .prepare(
           "UPDATE communication_intents SET receipt_digest = ? WHERE request_id = ? AND kind = 'channel.inbound'"
         )
         .run(receiptDigest, requestId);
+      if (changed.changes !== 1) throw new Error('Original response settlement did not commit.');
     })
     .immediate();
+}
+
+/** Keeps permanent local replay proof for an originally target-free handled interaction. */
+export function settleChannelHandledInDb(
+  sqlite: Database.Database,
+  receipt: ChannelInboundReceipt
+): void {
+  if (receipt.disposition !== 'applied' || receipt.result.kind !== 'handled') {
+    throw new Error('The kernel receipt does not prove a target-free handled interaction.');
+  }
+  storeInboundReceipt(
+    sqlite,
+    receipt,
+    (row) => matchesOrigin(row, receipt.intent, null) && row.inputHash === null
+  );
+}
+
+/** Settles only the local intent for this exact applied original decision. */
+export function settleChannelOriginInDb(
+  sqlite: Database.Database,
+  { origin, inputHash, receipt }: ChannelOriginSettlement
+): void {
+  if (!origin || receipt.disposition !== 'applied' || receipt.result.kind !== 'pending-decision') {
+    throw new Error('The kernel receipt does not prove a bound Pending Request decision.');
+  }
+  const nativeInputHash = ChannelNativeInputHashSchema.parse(inputHash);
+  storeInboundReceipt(
+    sqlite,
+    receipt,
+    (row) =>
+      matchesOrigin(row, receipt.intent, origin) &&
+      row.inputHash === nativeInputHash &&
+      row.refusalCode === null
+  );
 }

@@ -9,7 +9,22 @@ import {
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { DiscordSnowflakeSchema } from '../channels/discord-snowflake.js';
+import {
+  enqueueAttentionInDb,
+  reconcileIncompleteAttentionAttemptsInDb,
+} from '../notifications/attention.js';
+import {
+  AttentionClaimedDeliverySchema,
+  AttentionDeliverySchema,
+  AttentionEnqueueSchema,
+} from '../notifications/attention-codecs.js';
 import { OperationError } from '../operation-error-core.js';
+import { ControlAttentionAttemptCompletionSchema } from './attention-attempt-completion-codecs.js';
+import {
+  CommunicationAttentionClaimSchema,
+  claimCommunicationAttentionInDb,
+  settleCommunicationAttentionInDb,
+} from './communication-attention-native.js';
 import {
   CommunicationDisclosureWriteSchema,
   writeCommunicationDisclosureInDb,
@@ -18,6 +33,7 @@ import {
   ChannelNativeInputHashSchema,
   ChannelRefusalCodeSchema,
   claimChannelOriginInDb,
+  settleChannelHandledInDb,
   settleChannelOriginInDb,
   settleChannelRefusalInDb,
   stageChannelEnvelopeInDb,
@@ -30,6 +46,12 @@ import {
   settlePairingAuditInDb,
   unbindCommunicationInDb,
 } from './communication-pairing-native.js';
+
+import {
+  applyDiscordRetentionInDb,
+  DiscordRetentionAckSchema,
+  DiscordRetentionCommandSchema,
+} from './communication-retention-native.js';
 
 const Digest = z.string().regex(/^[a-f0-9]{64}$/);
 const Instant = z.number().int().nonnegative().safe();
@@ -65,13 +87,18 @@ const InboundReceipt = z.strictObject({
   intent: Envelope,
   result: z.strictObject({ kind: z.literal('pending-decision'), decisionRef: z.string().min(1) }),
 });
+const HandledReceipt = z.strictObject({
+  ...Applied,
+  intent: Envelope,
+  result: z.strictObject({ kind: z.literal('handled') }),
+});
 const PairingReceipt = z.strictObject({
   ...Applied,
   intent: PairingAuditIntentSchema,
   result: z.strictObject({ eventId: AuditEventSchema.shape.id }),
 });
 
-/** Closed DM mutations carried by the shared communication worker channel. */
+/** Closed mutations carried by the shared communication worker channel. */
 export const CommunicationWriterCommandSchema = z.discriminatedUnion('stage', [
   z.strictObject({
     stage: z.literal('stage-envelope'),
@@ -127,7 +154,20 @@ export const CommunicationWriterCommandSchema = z.discriminatedUnion('stage', [
       code: ChannelRefusalCodeSchema,
     }),
   }),
+  z.strictObject({ stage: z.literal('settle-handled'), input: HandledReceipt }),
+  z.strictObject({
+    stage: z.literal('discord-retention'),
+    authority: Authority,
+    input: DiscordRetentionCommandSchema,
+  }),
   z.strictObject({ stage: z.literal('settle-pairing-audit'), input: PairingReceipt }),
+  z.strictObject({ stage: z.literal('enqueue-attention'), input: AttentionEnqueueSchema }),
+  z.strictObject({ stage: z.literal('claim-attention'), input: CommunicationAttentionClaimSchema }),
+  z.strictObject({
+    stage: z.literal('settle-attention'),
+    input: ControlAttentionAttemptCompletionSchema,
+  }),
+  z.strictObject({ stage: z.literal('reconcile-attention') }),
 ]);
 
 export type CommunicationWriterCommand = z.infer<typeof CommunicationWriterCommandSchema>;
@@ -158,7 +198,19 @@ export const CommunicationWriterReplySchema = z.discriminatedUnion('stage', [
   z.strictObject({ stage: z.literal('claim-origin'), claimed: z.boolean() }),
   z.strictObject({ stage: z.literal('settle-origin') }),
   z.strictObject({ stage: z.literal('settle-refusal') }),
+  z.strictObject({ stage: z.literal('settle-handled') }),
+  z.strictObject({
+    stage: z.literal('discord-retention'),
+    acknowledgement: DiscordRetentionAckSchema.nullable(),
+  }),
   z.strictObject({ stage: z.literal('settle-pairing-audit') }),
+  z.strictObject({ stage: z.literal('enqueue-attention'), delivery: AttentionDeliverySchema }),
+  z.strictObject({ stage: z.literal('claim-attention'), delivery: AttentionClaimedDeliverySchema }),
+  z.strictObject({ stage: z.literal('settle-attention') }),
+  z.strictObject({
+    stage: z.literal('reconcile-attention'),
+    changes: z.number().int().nonnegative(),
+  }),
 ]);
 
 export type CommunicationWriterReply = z.infer<typeof CommunicationWriterReplySchema>;
@@ -168,7 +220,8 @@ export function applyCommunicationWriterCommand(
   sqlite: Database.Database,
   deploymentId: string,
   value: CommunicationWriterCommand,
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  readExpiryAgeMs?: () => number | undefined
 ): CommunicationWriterReply {
   const command = CommunicationWriterCommandSchema.parse(value);
   const stage = command.stage;
@@ -197,7 +250,12 @@ export function applyCommunicationWriterCommand(
       }
       return {
         stage,
-        admission: stageChannelEnvelopeInDb(sqlite, command.envelope, command.externalAccountId),
+        admission: stageChannelEnvelopeInDb(
+          sqlite,
+          command.envelope,
+          command.externalAccountId,
+          now()
+        ),
       };
     case 'issue-challenge':
       issuePairingChallengeInDb(sqlite, command.input, context);
@@ -240,8 +298,43 @@ export function applyCommunicationWriterCommand(
       }
       settleChannelRefusalInDb(sqlite, command.input);
       return { stage };
+    case 'settle-handled':
+      settleChannelHandledInDb(sqlite, command.input);
+      return { stage };
+    case 'discord-retention':
+      return {
+        stage,
+        acknowledgement: applyDiscordRetentionInDb(sqlite, command.input, {
+          ...context,
+          readExpiryAgeMs,
+        }),
+      };
     case 'settle-pairing-audit':
       settlePairingAuditInDb(sqlite, command.input);
       return { stage };
+    case 'enqueue-attention':
+      return {
+        stage,
+        delivery: AttentionDeliverySchema.parse(
+          enqueueAttentionInDb(sqlite, command.input, () => new Date(now()).toISOString())
+        ),
+      };
+    case 'claim-attention':
+      return {
+        stage,
+        delivery: claimCommunicationAttentionInDb(sqlite, command.input, () =>
+          new Date(now()).toISOString()
+        ),
+      };
+    case 'settle-attention':
+      settleCommunicationAttentionInDb(sqlite, command.input);
+      return { stage };
+    case 'reconcile-attention':
+      return {
+        stage,
+        changes: reconcileIncompleteAttentionAttemptsInDb(sqlite, () =>
+          new Date(now()).toISOString()
+        ),
+      };
   }
 }

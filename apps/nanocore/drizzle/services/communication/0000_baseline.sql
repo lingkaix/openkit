@@ -76,7 +76,7 @@ CREATE TABLE communication_intents (
   sequence INTEGER PRIMARY KEY,
   request_id TEXT NOT NULL UNIQUE,
   schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-  kind TEXT NOT NULL CHECK (kind IN ('relay-pairing-audit', 'channel.inbound')),
+  kind TEXT NOT NULL CHECK (kind IN ('relay-pairing-audit', 'channel.inbound', 'discord.retention')),
   intent_json TEXT NOT NULL CHECK (json_valid(intent_json)),
   event_id TEXT UNIQUE,
   event_json TEXT CHECK (event_json IS NULL OR json_valid(event_json)),
@@ -85,10 +85,12 @@ CREATE TABLE communication_intents (
   native_input_hash TEXT,
   refusal_code TEXT,
   receipt_digest TEXT,
+  recorded_at INTEGER CHECK (recorded_at IS NULL OR recorded_at >= 0),
   CHECK (
-    (kind = 'relay-pairing-audit' AND event_id IS NOT NULL AND event_json IS NOT NULL
+    (kind IN ('relay-pairing-audit', 'discord.retention') AND event_id IS NOT NULL AND event_json IS NOT NULL
       AND external_account_id IS NULL AND origin_json IS NULL
-      AND native_input_hash IS NULL AND refusal_code IS NULL)
+      AND native_input_hash IS NULL AND refusal_code IS NULL AND recorded_at IS NULL
+      AND (kind = 'relay-pairing-audit' OR receipt_digest IS NOT NULL))
     OR (kind = 'channel.inbound' AND event_id IS NULL AND event_json IS NULL)
   )
 );

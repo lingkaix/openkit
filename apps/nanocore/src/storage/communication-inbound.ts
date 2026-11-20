@@ -7,11 +7,36 @@ import type {
   ChannelInboundEnvelope,
   ChannelInboundOrigin,
   ChannelInboundState,
+  CommunicationStore,
 } from './communication-port.js';
 import { hasOriginalReceiptDigest } from './communication-receipt.js';
 import type { ControlKernelStore } from './control-kernel-port.js';
 import type { WorkspaceDb } from './db.js';
-import { type StorageOwner, type StorageResult, storageRequestId } from './storage-owner.js';
+import {
+  type StorageOwner,
+  type StorageResult,
+  type StorageUnavailable,
+  storageRequestId,
+} from './storage-owner.js';
+
+/** Both owners must be admitted before serving a Discord effect or retention. */
+export function admitDiscordOwners<
+  Communication extends Pick<CommunicationStore, 'status'>,
+  Kernel extends Pick<ControlKernelStore, 'status'>,
+>(
+  storage: Communication | undefined,
+  kernel: Kernel | undefined
+):
+  | StorageResult<'communication', { storage: Communication; kernel: Kernel }>
+  | StorageUnavailable<'control-kernel'> {
+  if (!storage) return { state: 'unavailable', owner: 'communication', reason: 'missing' };
+  if (!kernel) return { state: 'unavailable', owner: 'control-kernel', reason: 'missing' };
+  const storageStatus = storage.status();
+  if (storageStatus.state !== 'ready') return storageStatus;
+  const kernelStatus = kernel.status();
+  if (kernelStatus.state !== 'ready') return kernelStatus;
+  return { state: 'ready', value: { storage, kernel } };
+}
 
 /** Forms the permanent key before any user, binding or request can be resolved. */
 export function discordInteractionEnvelope(
