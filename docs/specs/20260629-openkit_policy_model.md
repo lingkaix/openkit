@@ -239,6 +239,12 @@ The artifact domain governs report, diff, patch, evidence, generated file bundle
 
 The runtime domain governs container launch, local or remote placement, backend selection, backend capability requirements, and future managed-runtime placement decisions.
 
+#### Governed Repair Action
+
+`repair.model-call` v1 is a restricted Policy action for the authenticated repair role under a bounded current grant. Bind the original actor, attempt and invocation to a kernel step. Check that grant and its current scope at the final effect boundary. The ordinary role context and a model-supplied identity confer no repair authority. Revocation denies new calls. Keep Policy, Vault and shared Budget predicates independent. A Policy allow or linked `permission.decision` event does not by itself reserve a call or permit Provider contact. Use the [Gateway repair owner](20260526-llm_gateway_responses_api.md#governed-repair-call) for reservation and [Audit](20260703-audit_usage_evidence_records.md#server-work-publication-and-kernel-repair-evidence) for evidence.
+
+Channel publication permission is decided by Policy under current User, Workspace, request and destination authority. Communication establishes the binding and applicable disclosure; it does not issue a Policy grant. Historical Audit and restored bindings cannot supply current authority.
+
 ### Network Domain
 
 The network domain governs network targets, provider egress, package registries, Git hosts, private IP ranges, and external API reachability.
@@ -298,12 +304,16 @@ Acceptance rejects quarantine statements carrying `notAfter`, `uses`, or both. E
 
 ## Implementation Gaps
 
+- Restricted repair-model admission - The `repair.model-call` v1 action and its separation of permission from shared Budget reservation await implementation - #766
+
 - General agent-principal grants beyond the bounded gate - not implemented - #152
 - A generic `policy.write` retains no classification, and direct narrowing apply is absent - unmet on main - #627
 - External-group preset activation - not active - #720
 - Post-success `react` participation - excluded until a later activation - #375
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Unified mediation and policy](../decisions/20261018-unified_mediation_and_policy.md)
 - [Egress grant descendant scope](../decisions/20261004-egress_grant_descendant_scope.md)

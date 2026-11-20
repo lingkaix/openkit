@@ -95,28 +95,32 @@ Feeds are Server configuration that only administrators change. Kinds are closed
 
 ### Security Trigger (E4)
 
+The security trigger service owns [six tables in one independently journaled security-trigger database](20260703-storage_layout_record_ownership.md#server-database-allowlist). Reports from boot, configuration, enable requests, replay and background work reflect its admission state. At the v0.2.0 cutover these entry points return disabled before detection, notice publication or automatic containment. The following drain and containment rules apply only after the service qualifies for enablement. Kernel Audit and existing kernel Policy restrictions remain effective independently.
+
 **Trigger and grants.** One closed Server trigger on the recurring trigger owner's interface, off by default, running daily inventory matching, exploitation polling at most 3,600 seconds apart and a 300-second audit watch, moving with that owner through the durable engine cutover. No run calls a Provider. Native security page requests use limits from 1 through 128; returned event and alarm arrays contain at most 128 entries and may be empty. A token Workspace view admits at most 512 entries. The refusal set is HTTP 403 `forbidden`, HTTP 409 `recovery_required`, and HTTP 409 `unsupported_retained_format`.
 - **Delegated grant.** The trigger is an `automation` principal. The enabling administrator delegates a fixed grant: read Server audit and the inventory, call the configured feeds, raise security requests to current server administrators. It never exceeds that administrator's authority and is suspended when that authority ends (`policy.md:123`).
 - **Containment preset.** Sensors begin observation-only. After reviewing false trips, limits and reserved recovery capacity, an administrator may enable the fixed E12 grant for a distinct deterministic containment principal. Verified sensor events invoke the separately admitted `containment` consumer outside notification Turns; they never wait for the audit watch. Audit/feed readers gain no containment authority. The existing Server control journal owns consumer progress and receipt linkage; E12 and the [port contract](20260629-worker_runtime_communication_model.md#containment-consumer) define admission and recovery.
 - **Alarm grant.** A separate fixed system grant raises the monitor alarm (R1 "monitoring off", R8) with fixed text to every current administrator, so revoking the delegation cannot silence it.
 
-**States** (`off` → `on` → `stopping` → `off`). Turning off sets `stopping` and inserts the R1 alarm rows in one transaction; detection continues until every alarm row is raised or its recipient is no longer current. Each run checks authority first; on loss it sets `stopping`, records the reason, inserts R8 rows and uses only the alarm grant. A loss found after a crash records a gap outcome (R8). Restart resumes `stopping`. Reaching `off` ends detection and new autonomous containment; outstanding notices keep draining (below). `stopping` and delegation loss refuse new containment too. Existing restrictions remain until a current authorized person clears them.
+**States** (`off` → `on` → `stopping` → `off`). Turning off sets `stopping` and inserts the R1 alarm rows in one transaction; the stop can complete only after each original recipient acknowledges or the owner records an authorized closure. Workspace publication establishes the Turn and request. The raised outbox row proves enqueue through the matching communication receipt. Each run checks authority first; on loss it sets `stopping`, records the reason, inserts R8 rows and uses only the alarm grant. A loss found after a crash records a gap outcome (R8). Restart resumes `stopping`. Reaching `off` ends detection and new autonomous containment; outstanding notices keep draining (below). `stopping` and delegation loss refuse new containment too. Existing restrictions remain until a current authorized person clears them.
 
-**Transactions**, each inside one store; a crash repeats only the later step:
-1. **Detect** (Core SQLite). Read audit after the cursor; advance the cursor and insert outbox rows, each with its identifier inputs, in one transaction.
-2. **Raise** (Pending Requests, Core-local path). For an idle destination, admit a Core-local Turn with trigger source `automation` in the recipient's security Thread; it writes the report Artifact Item and the request. Complete tuples are reused; partial tuples become `recovery_required`.
-3. **Mark and enqueue.** Mark the row raised, then enqueue attention with the recipient notice as its source, idempotent per notice.
+**Transactions** use the original occurrence across independent owners:
+1. **Detect and assess.** Read kernel Audit by append order. In one security-trigger transaction commit the assessment, event-time identities, recipient outbox and cursor compare-and-set. On restart or skew verify the cursor's event identity at the saved append position. Rescan with deduplication or expose a gap.
+2. **Raise.** Publish the original Workspace Turn and Pending Request and wait for its durable ACK. For an idle destination, the Core-local `automation` Turn in the recipient's security Thread writes the report Artifact Item and request. Read an exact replay by original identity. Partial tuples require recovery.
+3. **Enqueue and mark.** Send the existing attention command to communication by original occurrence and recipient. Inspect the same receipt on lost ACK. Compare and set the security outbox to raised with that exact receipt. Raised proves enqueue. Delivery and acknowledgement keep their separate owners.
+
+Serialize disable against containment admission. Before automatic action, recheck live delegation and enable generation. Missing proof holds the effect. A lost trigger store preserves established kernel Policy restrictions.
 
 **Destinations.** Busy: wait for the terminal barrier or the next run. Archived: closeout ends its open requests, and the next run raises unresolved items again, as `reopen` occurrences, in the next-generation Thread. Recipient no longer an administrator: nothing is raised, and their open requests end with a fixed reason. No eligible recipient: a failed outcome in settings. Latency is one run interval for an idle destination, otherwise the next terminal barrier. A Core-local publication Turn publishes outcomes, read by request id.
 
-**Notice drain.** Each outbox row is an outstanding recipient notice until its recipient acknowledges it (E6) or stops being a current administrator. Delivering outstanding notices is a lifecycle separate from detection: the drain runs at boot and every 300 s while any notice is outstanding, whatever the trigger state, including after `off`, after delegation loss and across restart. It reads no audit or feed; it only performs Raise and Mark and enqueue for existing rows, including `renotice` requests. Alarm notices (R1 "monitoring off", R8) drain under the fixed alarm grant. Other notices drain under the delegated grant; while it is suspended they stay outstanding, and the R8 alarm reports why. Another actor's answer or withdrawal never ends a notice.
+**Notice drain.** Each outbox row is an outstanding recipient notice until the original recipient acknowledges it (E6) or the owner records an authorized closure. Loss of current recipient eligibility blocks new effects and leaves historical attribution intact. After the service qualifies for enablement, the drain runs independently of detection at boot and every 300 s while any notice is outstanding, whatever the trigger state, including after `off`, after delegation loss and across restart. It reads no audit or feed; it only performs Raise, Enqueue and mark for existing rows, including `renotice` requests. Alarm notices (R1 "monitoring off", R8) drain under the fixed alarm grant. Other notices drain under the delegated grant; while it is suspended they stay outstanding, and the R8 alarm reports why. Another actor's answer or withdrawal never ends a notice.
 
 **Identifiers.** The producer declaration required by the [identifier owner decision](../decisions/20261015-identifier_owner_declarations.md). The trigger is the only producer, and its state owns every counter.
 
 | Id | Derivation | Inputs |
 | --- | --- | --- |
 | Request | `uuidv5` (URL namespace, `generative-kernel/uuid.ts`) over the JSON text `{"kind":"security-request","key":K,"recipientUserId":U,"occurrence":{"kind":O,"n":N}}` | K is `["finding", feedId, purl, advisoryId]`, `["event", auditEventId]` or `["gap", enableGeneration, gapKind, runId]`. O is `initial`, `reopen`, `reminder`, `renotice` or `conflict`. N counts from 1 per (K, U, O), assigned when the outbox row is inserted; for `conflict`, N is the triage revision. |
-| Security Thread | `deriveEntityId('th', ['security', U, G])` | G is the recipient's Thread generation, from 1; Raise increments it in its own Core SQLite transaction when it finds that generation archived |
+| Security Thread | `deriveEntityId('th', ['security', U, G])` | G is the recipient's Thread generation, from 1; Raise increments it in its own security-trigger owner transaction when it finds that generation archived |
 | Raise Turn; status Turn | `deriveEntityId('tu', ['security-raise' or 'security-status', requestId])` | One status per copy (E6) |
 | Report Artifact | `deriveEntityId('ar', ['security-report', requestId])` | The actual Artifact owner publishes its initial version and content digest |
 | Report reference Item | `artifactReferenceItemId(reportArtifactId, raiseTurnId)` | Reuse the existing Artifact owner, `deriveEntityId('it', [artifactId, turnId])`; no second report-reference formula |
@@ -139,7 +143,7 @@ The v0.1.0 list contains only Server-scope events through existing Audit produce
 | `policy.write` | Policy administration | Scope, full-diff classification, actor | R1d if widening |
 | `user.disable` | User administration | Target, actor | R1d |
 | `app.update.start` | App update | Target digest, actor | R1d |
-| `channel.pairing.bind`, `channel.pairing.unbind` (new) | Channel pairing | Channel kind, user, binding revision, actor | R1 if the user is a server administrator; else R1d |
+| `channel.pairing.bind`, `channel.pairing.unbind` (new) | Channel pairing | Channel kind, user, binding revision, actor, administrator status of the bound User at the binding change | R1 when the bound User was an administrator at the event, otherwise R1d |
 | `auth.failure-threshold` (new) | Limiter, bearer middleware | Kind, key kind, window, count | R2, R4 |
 | `auth.revoked-credential-presented` (new) | Bearer verifier | Token id, scope, status, source | R3 |
 
@@ -175,7 +179,7 @@ R5–R7 and R9–R11 are deferred: their inputs are Workspace-scoped or their pr
 
 **Triage is per revision.** Each item has a durable triage record in trigger state: a revision, the decision with its deciding request and actor, and a conflict flag.
 - The revision advances on every inventory-backed or assessment change (new match, raised class, `fixed` by rescan, reopen). Each request records the revision it was raised for.
-- The trigger applies published outcomes in resolution order, one Core SQLite transaction each. On a revision with no decision, the first answer decides.
+- The trigger applies published outcomes in resolution order, one security-service transaction each. On a revision with no decision, the first answer decides.
 - A later differing answer on that revision sets the conflict once: the finding returns to `open` (R1: "Not expected") and one `conflict` occurrence goes to every administrator. Further answers on that revision are attributed evidence and create no further conflict. There is no quorum.
 - The first answer to the `conflict` occurrence is the explicit decision for the current revision.
 - An answer for an older revision is evidence only and never changes the current disposition: an old "Accept" arriving after `fixed` leaves `fixed`.
@@ -416,6 +420,9 @@ E10 checks the complete Policy diff and refuses self-relaxation; review decision
 
 ## Acceptance
 
+- For the cutover build, attempt detection, notice publication and automatic containment through boot, configuration, enable, replay and background entry paths. Verify typed disabled status, zero such effects and unchanged imposed kernel Policy restrictions. Repeat with a retained service database containing an owed notice.
+- Before a later enablement, interrupt assessment/cursor commit, Workspace publication, attention enqueue and outbox mark. Lose each ACK, race duplicate publishers and race disable with a stale delegated generation. Verify one notice per original recipient, no false acknowledgement, no new containment after disable, and an honest gap when cursor or receipt evidence is missing.
+
 Every case uses adversarial input and shows refusal before any effect.
 A stateful case also holds across a restart.
 Review-route qualification is a real-environment proof on one native route and one bridged route.
@@ -438,6 +445,8 @@ Sign-in uses independent source and account limits and bounded failure-threshold
 
 ## Implementation Gaps
 
+- Independent security trigger store and qualified publication - The isolated disabled cutover, exact cursor/outbox settlement and original-recipient stop proof await implementation - #760, #785
+
 - A K copy unanswered after 12 hours gets one reminder - On main, no emitter creates that reminder - #760
 - At most 8 open security requests per Thread, and overflow becomes one request - On main, that sublimit and overflow are not established - #760
 - R4 bearer-failure detection: 100 failures per source in 15 minutes notify daily, and immediately when the same source repeats the next day - On main, no R4 rule exists, and the bearer middleware only produces the `auth.failure-threshold` event - #760
@@ -445,5 +454,7 @@ Sign-in uses independent source and account limits and bounded failure-threshold
 - A route is offered only after the eval floor, and the gate adds at most 1 second at p95 - On main, the production app supplies no security-review decision route and no qualification record - #760
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Security Program Rulings](../decisions/20261109-security_program_rulings.md)

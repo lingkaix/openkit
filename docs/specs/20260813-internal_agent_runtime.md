@@ -170,7 +170,7 @@ Authored cross-Tool guidance is fixed text and counts toward the same limit. Sel
 
 The caller rebuilds the effective prompt and Tool definitions from current trusted inputs for every new run. An in-progress run remains pinned to its admitted prompt, Tool definitions, model, context policy and limits while its transcript evolves; only a newly admitted run receives configuration changes.
 
-Warm provider state is a disposable cache and never authority. Ordinary users, retrieved content, files, Skills, MCPs, plugins, and model output MUST NOT replace the internal-role prompt or widen Tool set, scope, audience, authority, budget, or autonomy.
+Warm provider state is a disposable cache and never authority. Governed edits may change the built-in role’s editable prompt and Tool descriptions for the next admitted Turn. Ambient content supplies no edit authority. Locked fields and the Policy envelope continue to bound effects.
 
 By default the assembler excludes ambient files, repository summaries, working directory, source catalogs, Knowledge bodies, work overview, diagnostics, Worker transcripts, raw external content, global Tool or Skill catalogs, deployment topology, private runtime identities, duplicated schemas or policies, programming-specific instructions for general roles, hidden-reasoning requests, and instructions to run forever or declare success without an authoritative result.
 
@@ -192,6 +192,14 @@ Conversation reconstruction, interpreter replay and persistent target state are 
 
 Acceptance requires restart reconstruction without a durable loop or toolset record and no duplicate accepted effect when a prior Tool call already settled.
 
+### Server Work And Repair Boundary
+
+Normal Server role work uses the Server work service for its Call, Usage, Thread, Turn, evidence and product records. Stage product or Knowledge admission and terminal content under the original identity. Commit deciding receipt and Audit in the kernel before publishing the relevant stage. A lost receipt ACK requires inspection using that same request. The scoped Notebook publisher retains its own content publication boundary. A missing Server work ledger holds dependent role work and keeps independent kernel operations usable.
+
+The governed repair role admits through the [kernel-only call](20260526-llm_gateway_responses_api.md#governed-repair-call). Bind the authenticated role and original actor to the invocation and attempt at entry. Use an existing bounded Budget allocation and decide the call in kernel Audit and steps. The role must be able to invoke and inspect repair with normal Thread, capture and Server work storage unavailable. Governed mutations continue through their existing owners.
+
+The internal-agent owner specifies definition layout and state placement. The release-owned repair fallback remains available when an ordinary profile is unavailable.
+
 ## Internal Role Execution Profile
 
 `InternalRoleExecutionProfileSchema` in `packages/config-schema/src/internal-role.ts` is the profile.
@@ -204,7 +212,7 @@ Each bounded run is pinned to its resolved logical-model ID, Gateway-derived eff
 
 Selection of another compatible logical model is permitted only before the run's first dispatch and only when the caller explicitly selects an admitted candidate satisfying every required capability. A started run never substitutes another logical model. Gateway-private retry and failover among route members of the pinned logical model follow [the Gateway commit and failure rules](20260526-llm_gateway_responses_api.md#commit-boundary-and-retry) independently for each call. Failure after public commit terminates with its exact typed outcome; retry of the terminated execution is a newly admitted execution reconstructed from current durable truth.
 
-Every internal role, including the Knowledge Manager, uses the existing execution-profile resolver. Each Workspace can configure each role through the same precedence. `DATA_ROOT/config/internal-role-profiles.jsonc` is the sole Server projection of these profiles and contains one Server default logical-model preference for roles that do not select one. `workspace.jsonc` may bind a role to a profile, preferred logical model, and required capabilities, while `user.jsonc` may carry a lighter per-Workspace profile or logical-model preference. Persistent model resolution uses the User's per-Workspace `internalRoles`, then Workspace `internalRoles`, then the selected Server role profile, then the Server and Gateway defaults. An explicit admitted request can select only a compatible model from that resolved contract; it cannot bypass required capabilities. This composition creates no second role catalog and no worker Agent Manifest.
+Ordinary internal-role work, including Knowledge Manager, uses the existing execution-profile resolver. Each Workspace can configure ordinary role profiles through the same precedence. `DATA_ROOT/config/internal-role-profiles.jsonc` is the sole Server projection of these profiles and contains one Server default logical-model preference for roles that do not select one. `workspace.jsonc` may bind a role to a profile, preferred logical model, and required capabilities, while `user.jsonc` may carry a lighter per-Workspace profile or logical-model preference. Persistent model resolution uses the User's per-Workspace `internalRoles`, then Workspace `internalRoles`, then the selected Server role profile, then the Server and Gateway defaults. An explicit admitted request can select only a compatible model from that resolved contract; it cannot bypass required capabilities. This composition creates no second role catalog and no worker Agent Manifest.
 
 Every material role prompt, Tool schema, model policy, or default-model change MUST pass a fixed role-relevant evaluation set before becoming the default. The set covers normal behavior, denied authority, malformed Tool input, prompt injection, result redaction, budget and context boundaries, provider failure, restart reconstruction, and duplicate-effect prevention, plus role-specific success and false-completion cases.
 
@@ -260,8 +268,12 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 
 ## Implementation Gaps
 
+- Independent Server work and governed repair - The owner-isolated normal path and kernel-only repair acceptance are not implemented - #766
+
 - The profile stores conversational objectives, requires the deadline to be at least four times the settled-answer objective, and reports a missed objective as degraded performance - the profile schema has limits only and no objective comparison - #526
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Compute and harness neutrality](../decisions/20261020-compute_and_harness_neutrality.md)

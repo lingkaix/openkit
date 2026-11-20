@@ -18,6 +18,14 @@ Do not change repository or package visibility as an implied part of preparation
 
 Select the reviewed notes from the prerelease being promoted. Set the release title to the stable tag and retain its explicit unresolved items and accepted limitations. Verify that the source commit, image digests, and asset bytes remain those of the selected prerelease. Do not rebuild assets or require a stable-notes file added by another source commit. Present the resulting notes with the existing stable-publication evidence for the reserved engineer gate.
 
+## Frozen Storage Release
+
+For v0.2.0, follow the [storage cutover gate](../specs/20260829-release_management.md#v020-storage-cutover). The prerelease deployment, story and promotion procedures in this cookbook describe the predecessor release process. Storage lands on main with green CI. v0.1.1 is publication-only. The hosts stay on their installed builds until the direct stable v0.2.0 reinstall. Main holds all releases until then. Any emergency fix for v0.1.1 starts on a branch from its tag.
+
+Before first reinstall, record both kernel fitness results, the NanoHost nonce file and transcript with restart read-back and release proof, the pinned external shape probes, current-authority restore/MOVE results, and a paired rollback rehearsal. Verify exact release provenance, image and archive digests. Record the fresh-root requirement and affected deployment scope. The in-platform helper refuses the 0.1.x to v0.2.0 transition.
+
+Use the [serial host procedure](persistent-live-acceptance.md#v020-storage-reinstall). Keep the predecessor cold archive and image together for rollback and keep production intake closed until dev, a1 and a2 all pass. After cutover, a service-only change uses the normal in-platform update path under the existing deployment eligibility and recovery checks when the four compared journals are unchanged. Verify normal readiness, configured NanoHost, and current credentials.
+
 ## Release Bundle
 
 One lowercase semantic-version tag identifies the complete product bundle:

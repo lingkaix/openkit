@@ -444,6 +444,12 @@ Web owns product rendering:
 - Action Center list and filters.
 - Checkpoint and recovery projections authorized by their owning specifications.
 
+## Retained Attention And Transport
+
+Communication owns attention and delivery attempts. Keep original occurrence and recipient as the deduplication identity. Require the Work owner’s durable publication before enqueue and a durable claim before contacting the transport. Recheck the current account, binding revision, recipient scope and source/audience at the effect. Check the exact current Pending Request and applicable disclosure for consequential responses. Commit definite transport observations by original attempt. If contact may have happened and evidence is insufficient, keep delivery unknown. A lost ACK or restart retains the original attempt without sending again. Exact receipt replay can confirm previous enqueue but cannot prove send or recipient acknowledgement.
+
+For security notices, historical event-time attribution stays with the original recipient. That recipient's recorded acknowledgement or authorized closure ends the notice. Another actor's answer or withdrawal cannot complete stop. Use [Runtime Security](20261109-runtime_security.md#security-trigger-e4) for publication, outbox state and disable.
+
 ## Scope
 
 - Pending Request lifecycle and Discord responses belong to [Pending Requests](20260930-pending_requests.md).
@@ -461,10 +467,14 @@ Web owns product rendering:
 
 ## Implementation Gaps
 
+- Cross-owner attention and recipient acknowledgement - Lost-ACK recovery and exact security-notice completion through the communication service await qualification - #720, #785
+
 - A budget threshold recomputes one request-scoped constraint for the next Coordinator decision - On main, no attention producer builds that path - #784
 - A visible secret question states the future Vault reason and stays disabled - On main, the row uses a shorter disabled reason - #733
 - Action Center row kinds and members are exactly those a producer emits - On main, the schemas still declare kinds and members that no producer emits - #795
 
 ## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [Earlier-version data](../decisions/20260930-earlier_version_data_not_carried.md) is not read by this projection.

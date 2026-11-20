@@ -37,13 +37,19 @@ DATA_ROOT/
         user.jsonc
   workspaces/
     <workspaceId>/
-      workspace-record.json
+      workspace-record.json (projection)
       config/
         workspace.jsonc
         data-sources.jsonc
 ```
 
-`workspace-record.json` is a system-written record, not user configuration. It stores only Workspace identity, owner relationship, lifecycle, revision, and timestamps. Editable `name` and `defaultAgentId` live only in `workspace.jsonc`.
+The Workspace product row is authoritative for Workspace metadata. The kernel registry owns the owner relationship and lifecycle revision. Editable settings live in `workspace.jsonc`.
+
+### Database Owners
+
+The Control Kernel uses `server/db/core.sqlite` for identity and revocation, kernel Audit, Policy and Vault control facts, scheduling, executions and deciding receipts. Server work uses `server/services/server-work/state.sqlite` for its product history, Calls, Usage and evidence. Communication uses `server/services/communication/state.sqlite` for bindings, disclosures, attention and delivery. The security trigger uses `server/services/security-trigger/state.sqlite`. Stateful extensions each use `server/extensions/<id>/state.sqlite`, with flat IDs such as `nanohost`, `openai-agents` and `discord`. User, Workspace and App databases remain in their own directories.
+
+Each owner validates its file and journal. An unavailable service or extension blocks its dependent routes. Kernel sign-in and Token revocation can still work when kernel authority is usable. Distinguish disabled, missing, unsupported, corrupt, full and migration-failed status. Preserve the expected file and report the exact owner and check. Serving opens existing authority. Creation requires fresh provisioning, explicit first enable or authorized rebuild. See [Backup And Restore](nanocore-operations.en.md#backup-and-restore) for currentness checks and paired cutover recovery.
 
 ## `config/server.jsonc`
 

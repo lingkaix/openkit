@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 kind: process
 aspect: process
 ---
@@ -63,6 +63,12 @@ The current staging and persistent test server is `a1`. `a2` was the earlier per
 
 The maintained kit runs twelve Worker cases after each deployment update, with concurrent runtime groups and sequential A to D within each Thread, and checks that a DeepSeek Worker selection is refused before any effect while DeepSeek stays disabled. A Worker-only preparation has no browser prerequisite. Non-pass and undecidable rows require independent checks. This mechanical qualification supplies no L6 actor or judge verdict.
 
+## Named Storage Cutover Acceptance
+
+The one-time [v0.2.0 Storage Cutover](20260829-release_management.md#v020-storage-cutover) uses a separately authorized fresh root and exact release evidence. Ordinary persistent acceptance continues to use the existing selected deployment. Run both exact-build fitness fixtures, the NanoHost return-and-release test, scoped restore and paired rollback rehearsal, and the approved external shape probes before the host sequence. External adapters qualify separately for enablement.
+
+Observe dev, a1 and a2 serially with production intake closed. Verify a local predecessor archive and its isolated restore before each replacement. Record the exact host and build, baseline identity, status of each owner, successful admin sign-in, kernel Audit read/write and authorised NanoHost enrolment. Pair and unbind, finish a Server Turn and retain a verified NanoHost nonce file and transcript. Restart and read back the same evidence. Prove typed refusal on disabled or unfinished routes. If any host fails, stop promotion and follow paired rollback. Hold any uncertain effects and keep previously accepted hosts closed. Use deployment-local paths and restrict a2 action to the authorized units without reboot or Docker restart.
+
 ## Test Scope And Default Placement
 
 These modes primarily host L6 Stories and Agent task/benchmark suites representing real user goals and full product flows. They are the default for ordinary L6 execution, not a new home for all L1-L5 checks and not a requirement that the Actor run inside the product. A story selects a dedicated environment only for an explicit condition the persistent deployment cannot witness. The existing L6 admission and repeated-run rules remain applicable; one successful Task proves that execution seam, not automatic admission of a new story.
@@ -111,4 +117,12 @@ Existing public operations, Task/Goal execution and evidence producers remain th
 
 On that same deployment, a later exact-commit App/Web update completes through the public packaged Skill, and an actual Web-directed Worker Task completes with a meaningful CONTRIBUTING-only diff Artifact. Independent exact-base patch/whitespace verification passes; the existing Web action resolves its durable Workspace Sync Review as rejected without applying the test change. The independent external verification report is imported through the existing Artifact interface and visible in the Task. Retained runtime evidence reconciles all seven Gateway calls in that Worker Turn. This proves the bounded composition, not a new internal judge service, a benchmark comparison, release publication, merge, destructive recovery or every Provider's Worker path. Other roadmap plans retain their individual acceptance obligations.
 
-The exact-commit update above is historical evidence for the formerly supported product update mode. It does not establish acceptance of the current release-only update helper. The release flow uses the bounded automatic deployment procedure and built-in update tools under [Release Management](20260829-release_management.md#bounded-test-deployment-update). Its automatic App update step is not executable yet: `scripts/release-update-app.mjs` validates its inputs and then refuses, because the exact live platform identity adapter is pending; Release Management also lists the complete component update sequence and the first preflight-less upgrade as unresolved. Catalog stories 1 and 2 run at cycle/change cadence; story 2 remains required on the prerelease selected for stable promotion. A persistent deployment updates only to a published release. No supported exact-source update procedure exists. [The update-mode removal decision](../decisions/20261010-remove_app_update_exact_commit.md) records why the helper is release-only. [Retire The Exact-Source Update Procedure](../decisions/20261013-retire_exact_source_update.md) records this retirement.
+The exact-commit update above is historical evidence for the formerly supported product update mode. It does not establish acceptance of the current release-only update helper. The release flow uses the bounded automatic deployment procedure and built-in update tools under [Release Management](20260829-release_management.md#bounded-test-deployment-update). Its automatic App update step is not executable yet: `scripts/release-update-app.mjs` validates its inputs and then refuses, because the exact live platform identity adapter is pending; Release Management also lists the complete component update sequence and the first preflight-less upgrade as unresolved. Catalog stories 1 and 2 run at cycle/change cadence. In the 0.1 prerelease promotion process, story 2 ran on the selected prerelease. Release Management owns the direct-stable gates. A persistent deployment updates only to a published release. No supported exact-source update procedure exists. [The update-mode removal decision](../decisions/20261010-remove_app_update_exact_commit.md) records why the helper is release-only. [Retire The Exact-Source Update Procedure](../decisions/20261013-retire_exact_source_update.md) records this retirement.
+
+## Implementation Gaps
+
+- Exact v0.2.0 fresh-root host acceptance - The serial per-host verification, owner fitness gates and paired rollback rehearsal await the selected release candidate - #619, #766
+
+## Decisions
+
+- [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
