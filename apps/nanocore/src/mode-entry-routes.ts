@@ -197,7 +197,10 @@ import {
   type FileStorageAdmission,
 } from './storage/artifacts/file-admission.js';
 import { readArtifactFileText } from './storage/artifacts/file-records.js';
-import { ControlStoreWorkerError } from './storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 import {
@@ -2607,6 +2610,36 @@ function taskModeEvidenceForTurn(
   return { itemIds, artifactIds: [...artifactIds], reviewIds };
 }
 
+/** Closes orphaned command-owned Assistant Turns before boot opens product admission. */
+export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<void> {
+  const dataRoot = store.getDataRoot();
+  for (const { id: workspaceId } of store.listWorkspaces()) {
+    if (dataRoot && getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspaceId))
+      continue;
+    for (const thread of store.listThreads(workspaceId)) {
+      if (thread.entryPath !== 'conversation') continue;
+      const { activeTurn } = store.readThreadNavigationFacts(workspaceId, thread.id);
+      // Scheduled, Pending-outcome and governed Worker Turns have separate recovery owners.
+      if (
+        activeTurn?.agentId !== QUICK_CHAT_AGENT_ID ||
+        activeTurn.agentSessionId ||
+        activeTurn.configVersion !== null ||
+        activeTurn.triggerSource
+      )
+        continue;
+      await store.completeTurn(activeTurn.id, {
+        status: 'interrupted',
+        completedAt: new Date().toISOString(),
+        error: {
+          code: 'recovery_required',
+          message:
+            'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
+        },
+      });
+    }
+  }
+}
+
 /**
  * Supplies the existing direct Quick Chat and conversation entry owners.
  *
@@ -2700,6 +2733,38 @@ export function createConversationService({
     FsStore,
     Map<string, { controller: AbortController; finished: Promise<void> }>
   >();
+  type ChatCloseout = {
+    readonly publish: () => Promise<z.infer<typeof TurnSchema>>;
+    running?: Promise<z.infer<typeof TurnSchema>> | undefined;
+  };
+  const pendingChatCloseouts = new WeakMap<FsStore, Map<string, ChatCloseout>>();
+
+  /** A refused write retains only the original terminal tuple and never runs the Assistant again. */
+  function settlePendingChatCloseout(store: FsStore, turnId: string) {
+    const pending = pendingChatCloseouts.get(store);
+    const closeout = pending?.get(turnId);
+    if (!pending || !closeout) return undefined;
+    closeout.running ??= Promise.resolve().then(async () => {
+      try {
+        const current = store.getTurnById(turnId);
+        const terminal = isSealedTurnTerminal(current.status) ? current : await closeout.publish();
+        pending.delete(turnId);
+        return terminal;
+      } catch (error) {
+        if (!(error instanceof ControlStoreWorkerError) || error.commit !== 'not-committed')
+          pending.delete(turnId);
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The Assistant terminal publication requires inspection.',
+          409
+        );
+      } finally {
+        closeout.running = undefined;
+      }
+    });
+    return closeout.running;
+  }
+
   /** Resolves one internal-role profile and logical model for one User and Workspace. */
   function internalRoleSelection(
     roleId: string,
@@ -3089,6 +3154,11 @@ export function createConversationService({
       const sourceThread = store.getThread(workspaceId, threadId);
       // This runs only for fresh commands; exact receipt and in-flight replays
       // retain their original result even while the origin has later live work.
+      if (pendingChatCloseouts.get(store)?.size) {
+        const head = store.getThreadSegmentHead(workspaceId, threadId);
+        const { activeTurn } = store.readThreadNavigationFacts(workspaceId, head.id);
+        if (activeTurn) await settlePendingChatCloseout(store, activeTurn.id);
+      }
       store.assertThreadIdle(workspaceId, threadId);
       if (
         sourceThread.entryPath === 'conversation' &&
@@ -3376,13 +3446,14 @@ export function createConversationService({
           {
             ...inputFileOptions,
             turnId: turnId ?? providerTurnId,
+            agentId,
+            executorKind: null,
             ...(chatInput.reasoningEffort !== undefined
               ? { reasoningEffort: chatInput.reasoningEffort }
               : {}),
           }
         );
         newlyAdmittedTurn = turn;
-        await store.updateTurn(turn.id, { agentId });
 
         await store.createItem({
           id: deriveEntityId('it', ['chat-user', turn.id]),
@@ -4303,6 +4374,48 @@ export function createConversationService({
       newlyAdmittedTurn = null;
       const controller = new AbortController();
       let cancellationPersisted = false;
+      /** Keeps terminal publication with this run through one definite Store refusal. */
+      async function completeAssistantTurn(
+        patch: Parameters<FsStore['completeTurn']>[1],
+        publication: TerminalTurnPublication
+      ) {
+        try {
+          return await store.completeTurn(turn.id, patch, publication);
+        } catch (error) {
+          if (!(error instanceof ControlStoreWorkerError)) throw error;
+          if (
+            error.commit !== 'not-committed' ||
+            isSealedTurnTerminal(store.getTurnById(turn.id).status)
+          )
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'The Assistant terminal publication requires inspection.',
+              409
+            );
+
+          const failure = {
+            code: 'chat_mode_persistence_failed',
+            message: 'The Assistant result could not be saved.',
+          };
+          const failurePatch = {
+            status: 'failed' as const,
+            completedAt: new Date().toISOString(),
+            error: failure,
+          };
+          const pending = pendingChatCloseouts.get(store) ?? new Map<string, ChatCloseout>();
+          pendingChatCloseouts.set(store, pending);
+          pending.set(turn.id, {
+            publish: () =>
+              patch.status === 'completed'
+                ? store.completeTurn(turn.id, failurePatch, { requestId: chatInput.requestId })
+                : store.completeTurn(turn.id, patch, publication),
+          });
+          const settled = (await settlePendingChatCloseout(store, turn.id))!;
+          if (patch.status !== 'completed') return settled;
+          throw new TurnStartValidationError(failure.code, failure.message, 500);
+        }
+      }
+
       const execution = (async (): Promise<ConversationCommandResult> => {
         let result: AssistantCommandResult;
         let proposedHandoff: AssistantHandoff | null = null;
@@ -4446,8 +4559,7 @@ export function createConversationService({
             controller.signal.aborted ||
             (error instanceof TurnStartValidationError && error.code === 'provider_call_aborted');
           try {
-            await store.completeTurn(
-              turn.id,
+            await completeAssistantTurn(
               {
                 status: aborted ? 'interrupted' : 'failed',
                 completedAt: new Date().toISOString(),
@@ -4499,8 +4611,7 @@ export function createConversationService({
             actorId,
             proposedHandoff
           );
-          const completedTurn = await store.completeTurn(
-            turn.id,
+          const completedTurn = await completeAssistantTurn(
             {
               status: 'completed',
               completedAt,
@@ -4538,8 +4649,7 @@ export function createConversationService({
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
         };
-        const completedTurn = await store.completeTurn(
-          turn.id,
+        const completedTurn = await completeAssistantTurn(
           {
             status: 'completed',
             completedAt,
@@ -4844,6 +4954,16 @@ export function createConversationService({
     submit,
     async interrupt(store: FsStore, turnId: string, context?: TurnCommandRuntimeContext) {
       if (await interruptKnowledgeManagerTurn(store, turnId, context)) return true;
+      const closeout = settlePendingChatCloseout(store, turnId);
+      if (closeout) {
+        await closeout;
+        const receipt = context?.command?.receipt;
+        return (
+          receipt?.command === 'turn.interrupt' &&
+          store.getCommandRequest('turn.interrupt', receipt.requestId, receipt.scope)?.key ===
+            receipt.key
+        );
+      }
       const run = activeChatRuns.get(store)?.get(turnId);
       if (!run) return false;
       if (context?.command && context.command.receipt.command !== 'turn.interrupt')

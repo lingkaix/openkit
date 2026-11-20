@@ -854,8 +854,8 @@ interface CreateTurnOptions {
   agentSessionId?: string | null;
   /** Trigger recorded at admission. */
   triggerSource?: Turn['triggerSource'];
-  /** Executor that this admission may freeze outcomes for. */
-  executorKind?: 'worker' | 'assistant' | 'coordinator' | 'person';
+  /** Executor for Pending freeze. Null limits admission to the command's explicit input. */
+  executorKind?: 'worker' | 'assistant' | 'coordinator' | 'person' | null;
 }
 
 /** Server admission shares existing internal-role Turn choices without Workspace file or runtime hooks. */
@@ -3735,11 +3735,12 @@ export class FsStore {
   /** Prepares the actual Pending freeze and immutable Items for a native owner that admits its own Turn. */
   public async prepareNativeTurnPendingAdmission(
     turn: Turn,
-    executor?: 'worker' | 'assistant' | 'coordinator' | 'person'
+    executor?: CreateTurnOptions['executorKind']
   ): Promise<{ entries: ControlProductEntry[]; pending: readonly ControlPendingCommandInput[] }> {
-    const admission = this.pendingRequestServices
-      ? preparePendingOutcomeFreeze(this, this.pendingRequestServices, turn, executor)
-      : undefined;
+    const admission =
+      this.pendingRequestServices && executor !== null
+        ? preparePendingOutcomeFreeze(this, this.pendingRequestServices, turn, executor)
+        : undefined;
     const entries = await this.prepareNativeItems(
       this.nativeScope(turn.owner),
       admission?.items ?? []

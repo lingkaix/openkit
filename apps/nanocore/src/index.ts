@@ -69,7 +69,10 @@ import { FsStore } from './lib/store.js';
 import { resolveLogicalModelCatalog } from './llm/logical-models.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { closeActiveLocalAiSupervisor } from './local-ai/supervisor.js';
-import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
+import {
+  classifyDirectTaskCheckpointAfterSchedulerRecovery,
+  recoverWorkspaceAssistantTurns,
+} from './mode-entry-routes.js';
 import { createListenerFetches } from './nanohost-listener.js';
 import {
   createNativeTlsReloadCheck,
@@ -435,6 +438,7 @@ const bootResult = await runBootPhases({
         discardAbandonedWorkspaceStaging(dataRoot);
         sharedStore ??= new FsStore({ dataRoot });
         await recoverServerKnowledgeManagerTurns(sharedStore);
+        await recoverWorkspaceAssistantTurns(sharedStore);
         const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
           recoveryCoreDb,
