@@ -1,6 +1,13 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { McpExtensionOptions, McpTransportFactory } from '@earendil-works/pi-coding-agent';
+import { KNOWLEDGE_MANAGER_RUN_DEADLINE_MS } from '@openkit/config-schema';
+import { Agent } from 'undici';
+
+const OPENKIT_WORK_SERVER = 'openkit-work';
+// Admission and terminal result delivery can extend the response wait past the default role bound.
+const KNOWLEDGE_RESPONSE_WAIT_MS = KNOWLEDGE_MANAGER_RUN_DEADLINE_MS + 15_000;
 
 /**
  * Loaded MCP configuration returned by Pi 1.4.0's loader.
@@ -11,9 +18,18 @@ type LoadedMcpConfig = ReturnType<NonNullable<McpExtensionOptions['loadConfig']>
 
 /** Transport object returned by Pi's factory. Methods stay on this object so `instanceof` holds. */
 type NativeTransport = ReturnType<McpTransportFactory>;
+type NativeHttpFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
+type NativeTransportFactory = (
+  ...args: [...Parameters<McpTransportFactory>, httpFetch?: NativeHttpFetch]
+) => NativeTransport;
+
+/** Selects only the two canonical Work tools that wait for a Knowledge Manager Turn. */
+function isKnowledgeTool(name: unknown): boolean {
+  return name === 'knowledge_ask' || name === 'knowledge_tell';
+}
 
 interface PiMcpInternals {
-  createDefaultTransport: McpTransportFactory;
+  createDefaultTransport: NativeTransportFactory;
   loadMcpConfig: (options: {
     agentDir: string;
     cwd: string;
@@ -43,7 +59,7 @@ async function importPiMcpInternals(): Promise<PiMcpInternals> {
   };
   const runtime = (await import(
     pathToFileURL(join(directory, 'extensions/mcp/runtime.js')).href
-  )) as { createDefaultTransport: McpTransportFactory };
+  )) as { createDefaultTransport: NativeTransportFactory };
   return {
     createDefaultTransport: runtime.createDefaultTransport,
     loadMcpConfig: config.loadMcpConfig,
@@ -68,18 +84,21 @@ export class PiMcpNamespaceCollisionError extends Error {
 export class OpenKitMcpGate {
   readonly #admitted: ReadonlySet<string>;
   readonly #agentDir: string;
-  readonly #createDefaultTransport: McpTransportFactory;
+  readonly #createDefaultTransport: NativeTransportFactory;
   readonly #cwd: string;
   readonly #loadMcpConfig: PiMcpInternals['loadMcpConfig'];
   readonly #phase = new Map<string, ServerPhase>();
   readonly #secrets: readonly string[];
   readonly #managed: LoadedMcpConfig['servers'];
+  // The pinned transport retains its own session signal. Carry the selected call's signal to fetch too.
+  readonly #knowledgeCall = new AsyncLocalStorage<{ signal?: AbortSignal } | undefined>();
+  #knowledgeDispatcher: Agent | undefined;
   #refusal: PiMcpNamespaceCollisionError | null = null;
 
   constructor(options: {
     managed: LoadedMcpConfig['servers'];
     agentDir: string;
-    createDefaultTransport: McpTransportFactory;
+    createDefaultTransport: NativeTransportFactory;
     cwd: string;
     loadMcpConfig: PiMcpInternals['loadMcpConfig'];
     secrets: readonly string[];
@@ -138,6 +157,31 @@ export class OpenKitMcpGate {
     );
   }
 
+  /** Uses the same response budget for Pi's native call timer and HTTP wait. */
+  knowledgeToolTimeoutMs(server: string, tool: string): number | undefined {
+    if (server === OPENKIT_WORK_SERVER && this.#admitted.has(server) && isKnowledgeTool(tool))
+      return KNOWLEDGE_RESPONSE_WAIT_MS;
+  }
+
+  /** Extends only the POST response for the selected call and keeps both cancellation signals. */
+  #fetchWork(fetchRequest: NativeHttpFetch, input: string | URL, init?: RequestInit) {
+    const call = this.#knowledgeCall.getStore();
+    if (!call || init?.method !== 'POST') return fetchRequest(input, init);
+    this.#knowledgeDispatcher ??= new Agent({
+      headersTimeout: KNOWLEDGE_RESPONSE_WAIT_MS,
+      bodyTimeout: KNOWLEDGE_RESPONSE_WAIT_MS,
+    });
+    const signal =
+      call.signal && init.signal ? AbortSignal.any([call.signal, init.signal]) : call.signal;
+    const options: RequestInit = {
+      ...init,
+      ...(signal ? { signal } : {}),
+      // Fetch uses dispatch(), which Pi's pinned Undici and Node's bundled version both provide.
+      dispatcher: this.#knowledgeDispatcher as unknown as NonNullable<RequestInit['dispatcher']>,
+    };
+    return fetchRequest(input, options);
+  }
+
   /**
    * Refuses a latched catalog collision; otherwise builds Pi's default transport, redacts incoming messages, and tracks admitted server setup.
    *
@@ -152,12 +196,19 @@ export class OpenKitMcpGate {
     authProvider: Parameters<McpTransportFactory>[2]
   ): NativeTransport {
     if (this.#refusal) throw this.#refusal;
-    const transport = this.#createDefaultTransport(entry, cwd, authProvider);
     const admitted = this.#admitted.has(entry.name);
+    const managedWork = admitted && entry.name === OPENKIT_WORK_SERVER;
+    const fetchRequest = globalThis.fetch;
+    const transport = this.#createDefaultTransport(
+      entry,
+      cwd,
+      authProvider,
+      managedWork ? (input, init) => this.#fetchWork(fetchRequest, input, init) : undefined
+    );
     if (admitted && this.#phase.get(entry.name) !== 'ready') {
       this.#phase.set(entry.name, 'pending');
     }
-    this.#wrap(transport);
+    this.#wrap(transport, managedWork);
     return transport;
   }
 
@@ -189,7 +240,7 @@ export class OpenKitMcpGate {
     return [...servers].every((id) => this.#phase.get(id) === 'ready');
   }
 
-  #wrap(transport: NativeTransport): void {
+  #wrap(transport: NativeTransport, managedWork: boolean): void {
     const originalOnMessage = transport.onMessage.bind(transport);
     transport.onMessage = (listener) =>
       originalOnMessage((message) => {
@@ -197,9 +248,22 @@ export class OpenKitMcpGate {
         listener(redacted);
       });
     const originalSend = transport.send.bind(transport);
-    transport.send = async (message) => {
+    transport.send = async (message, options) => {
       try {
-        await originalSend(message);
+        if (!managedWork) await originalSend(message);
+        else if (
+          'id' in message &&
+          'method' in message &&
+          message.method === 'tools/call' &&
+          typeof message.params === 'object' &&
+          message.params !== null &&
+          'name' in message.params &&
+          isKnowledgeTool(message.params.name)
+        ) {
+          await this.#knowledgeCall.run(options ?? {}, originalSend, message, options);
+        } else {
+          await this.#knowledgeCall.run(undefined, originalSend, message);
+        }
       } catch (error) {
         sanitizeError(error, this.#secrets);
         throw error;

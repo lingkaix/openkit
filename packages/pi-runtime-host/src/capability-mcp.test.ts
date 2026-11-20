@@ -1,7 +1,63 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { OpenKitMcpGate, PiMcpNamespaceCollisionError } from './capability-mcp.ts';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  loadPiMcpInternals,
+  OpenKitMcpGate,
+  PiMcpNamespaceCollisionError,
+} from './capability-mcp.ts';
+
+it('extends only managed Knowledge HTTP calls and preserves their cancellation signal', async () => {
+  const piMcp = await loadPiMcpInternals();
+  const entry = {
+    name: 'openkit-work',
+    config: { url: 'http://127.0.0.1/mcp/openkit-work' },
+    scope: 'extension' as const,
+    source: 'OpenKit',
+  };
+  const gate = new OpenKitMcpGate({
+    managed: [entry],
+    agentDir: '/tmp/agent',
+    cwd: '/tmp/work',
+    secrets: [],
+    ...piMcp,
+  });
+  const fetchProbe = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+    const { id } = JSON.parse(String(init?.body));
+    return Response.json({ jsonrpc: '2.0', id, result: {} });
+  });
+  const transport = gate.createTransport(entry, '/tmp/work', undefined);
+  try {
+    await transport.start();
+    const ask = new AbortController();
+    const tell = new AbortController();
+    await Promise.all([
+      transport.send(
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'knowledge_ask' } },
+        { signal: ask.signal }
+      ),
+      transport.send(
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'knowledge_tell' } },
+        { signal: tell.signal }
+      ),
+      transport.send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'echo' } }),
+      transport.send({ jsonrpc: '2.0', id: 4, method: 'tools/list' }),
+    ]);
+    const request = (id: number) =>
+      fetchProbe.mock.calls.find(([, init]) => JSON.parse(String(init?.body)).id === id)?.[1];
+    expect(request(1)).toHaveProperty('dispatcher');
+    expect(request(2)).toHaveProperty('dispatcher');
+    expect(request(3)).not.toHaveProperty('dispatcher');
+    expect(request(4)).not.toHaveProperty('dispatcher');
+    ask.abort();
+    expect(request(1)?.signal?.aborted).toBe(true);
+    expect(request(2)?.signal?.aborted).toBe(false);
+    expect(request(3)?.signal?.aborted).toBe(false);
+  } finally {
+    await transport.close();
+    fetchProbe.mockRestore();
+  }
+});
 
 /** Exercises the native message hook and Pi's binary resource conversion together. */
 describe('OpenKit MCP binary resource redaction', () => {

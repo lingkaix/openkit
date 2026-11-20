@@ -4,6 +4,7 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
 
 /** One request the synthetic capability plane received. */
 export interface CapabilityRequest {
@@ -44,6 +45,8 @@ export interface SyntheticCapabilityOptions {
   tools?: readonly { name: string; description: string; inputSchema: Record<string, unknown> }[];
   /** Return the exact server, tool and argument as a distinguishable effect sentinel. */
   targetSentinel?: boolean;
+  /** Wait before replying to a named tool to exercise the native client's own deadline. */
+  toolDelayMs?: Readonly<Record<string, number>>;
   /** Append one logging notification on the GET stream whose data is the Authorization header. */
   logAuthorization?: boolean;
   /** Return the Authorization header as the `tools/call` text. */
@@ -200,7 +203,7 @@ export async function startSyntheticCapability(
         }
         return reply({ tools: options.tools ?? [echoTool] });
       }
-      case 'tools/call':
+      case 'tools/call': {
         if (plane.holdToolCall) {
           streams.add(res);
           res.on('close', () => {
@@ -213,6 +216,14 @@ export async function startSyntheticCapability(
           res.writeHead(400, { 'content-type': 'text/plain' });
           res.end(req.headers.authorization ?? '');
           return;
+        }
+        const responseDelay =
+          params.name === undefined ? undefined : options.toolDelayMs?.[params.name];
+        if (responseDelay !== undefined) {
+          const abort = new AbortController();
+          res.once('close', () => abort.abort());
+          await delay(responseDelay, undefined, { signal: abort.signal }).catch(() => undefined);
+          if (abort.signal.aborted) return;
         }
         return reply({
           content: [
@@ -236,6 +247,7 @@ export async function startSyntheticCapability(
           ],
           isError: false,
         });
+      }
       default:
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(

@@ -775,6 +775,7 @@ export class PiRuntimeHost {
             loadConfig: () =>
               gate.loadConfig(resourceLoader.getExtensions().runtime.mcpServers.list()),
             onConnectionState: (connection) => gate.connectionState(connection),
+            toolTimeoutMs: (server, tool) => gate.knowledgeToolTimeoutMs(server, tool),
           }),
           name: 'mcp',
           replaceable: false,
