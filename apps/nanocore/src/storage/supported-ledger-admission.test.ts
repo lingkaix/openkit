@@ -4,10 +4,11 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BootConfigError } from '../config/mode.js';
 import {
   createLightApp,
+  getLightAppForRead,
   type KernelCommandContext,
   upgradeLightAppFormat,
 } from '../generative-kernel/commands.js';
@@ -44,8 +45,13 @@ import {
   type StorageMigrationScope,
 } from './migrate.js';
 
-// G1: inspect actual ledger rows; known sparse history remains supported. Hashes are informational.
+// G1 admits the frozen journal by exact retained timestamps.
 const scopes = ['core', 'user', 'workspace', 'app'] as const;
+const retiredMigrationTimestamps: Partial<Record<StorageMigrationScope, number>> = {
+  user: 1792173777545, // 0001_thread_read_receipts
+  workspace: 1795024632000, // 0001_agent_session_current_thread
+  app: 1792147966006, // 0001_notebook_admission
+};
 const roots: string[] = [];
 const workspaceId = testEntityId('ws', 'supported-ledger');
 const userId = FIXTURE_LOCAL_USER_ID;
@@ -72,7 +78,7 @@ interface Fixture {
   appId?: string;
   context?: KernelCommandContext;
 }
-function journal(scope: StorageMigrationScope): { tag: string; when: number }[] {
+function journal(scope: StorageMigrationScope): { idx: number; tag: string; when: number }[] {
   return JSON.parse(
     readFileSync(new URL(`../../drizzle/${scope}/meta/_journal.json`, import.meta.url), 'utf8')
   ).entries;
@@ -124,23 +130,40 @@ async function fixture(scope: StorageMigrationScope): Promise<Fixture> {
   return { root, path, scope, workspaceId };
 }
 /** Faults only the journal of an already initialized real database. */
-function unsupported(f: Fixture, position: 'earlier' | 'interior' | 'future') {
+function unsupported(
+  f: Fixture,
+  position: 'earlier' | 'retired' | 'future',
+  mode: 'add-row' | 'replace-baseline' = 'add-row'
+) {
   const entries = journal(f.scope);
   const when =
     position === 'earlier'
       ? entries[0]!.when - 1
-      : position === 'interior'
-        ? entries[0]!.when + 1
+      : position === 'retired'
+        ? retiredMigrationTimestamps[f.scope]
         : entries.at(-1)!.when + 1;
+  expect(when).toBeTypeOf('number');
   expect(entries.some((entry) => entry.when === when)).toBe(false);
   const sqlite = new Database(f.path, { fileMustExist: true });
   try {
-    sqlite
-      .prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)')
-      .run('independent-unsupported-ledger-fixture', when);
+    if (mode === 'replace-baseline') {
+      expect(sqlite.prepare('SELECT created_at FROM __drizzle_migrations').pluck().all()).toEqual([
+        entries[0]!.when,
+      ]);
+      expect(
+        sqlite
+          .prepare('UPDATE __drizzle_migrations SET hash = ?, created_at = ? WHERE created_at = ?')
+          .run('independent-unsupported-ledger-fixture', when, entries[0]!.when).changes
+      ).toBe(1);
+    } else {
+      sqlite
+        .prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)')
+        .run('independent-unsupported-ledger-fixture', when);
+    }
   } finally {
     sqlite.close();
   }
+  return when;
 }
 /** Uses a raw readonly observer so refusal cannot be confused with the observer's own admission. */
 function retained(f: Fixture) {
@@ -232,13 +255,12 @@ afterEach(async () => {
 });
 
 describe.each(scopes)('G1 %s supported ledger', (scope) => {
-  // A single baseline has no interior interval.
   const positions =
-    scope === 'core'
+    retiredMigrationTimestamps[scope] === undefined
       ? (['earlier', 'future'] as const)
-      : (['earlier', 'interior', 'future'] as const);
+      : (['earlier', 'retired', 'future'] as const);
   it.each(positions)(
-    'refuses an unknown %s timestamp in raw apply before changing database authority',
+    'refuses a non-baseline %s timestamp in raw apply before changing database authority',
     async (position) => {
       const f = await fixture(scope);
       unsupported(f, position);
@@ -283,29 +305,17 @@ describe.each(scopes)('G1 %s supported ledger', (scope) => {
     expect(retained(f)).toEqual(before);
   });
 
-  it('admits current owner initialization without rewriting supported rows or filling User/App holes', async () => {
+  it('admits the single frozen baseline without rewriting the retained database', async () => {
     const f = await fixture(scope);
-    if (scope === 'user' || scope === 'app') {
-      const sqlite = new Database(f.path, { fileMustExist: true });
-      try {
-        const earlier = sqlite
-          .prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at LIMIT 1')
-          .get() as { created_at: number };
-        expect(
-          sqlite
-            .prepare('DELETE FROM __drizzle_migrations WHERE created_at=?')
-            .run(earlier.created_at).changes
-        ).toBe(1);
-      } finally {
-        sqlite.close();
-      }
-    }
+    const entries = journal(scope);
+    expect(entries).toEqual([expect.objectContaining({ idx: 0, tag: '0000_baseline' })]);
     const before = retained(f);
+    expect(before.ledger).toEqual([expect.objectContaining({ created_at: entries[0]!.when })]);
     const apply = new Database(f.path, { fileMustExist: true });
     try {
       applyNativeScopeMigrations(apply, scope);
       if (scope === 'user') expect(hasPendingUserMigrations(apply)).toBe(false);
-      if (scope === 'app') hasPendingAppMigrations(apply);
+      if (scope === 'app') expect(hasPendingAppMigrations(apply)).toBe(false);
     } finally {
       apply.close();
     }
@@ -402,27 +412,86 @@ it('G1 App snapshot/candidate readonly verifier refuses an unsupported App journ
   expectUnsupported(() => openAppDbReadOnly(f.path).close(), 'app');
   expect(retained(f)).toEqual(before);
 });
-it('G1 public App format upgrade refuses unknown history before its existing recovery snapshot or native effect', async () => {
+it.each([
+  ['earlier', 'add-row'],
+  ['retired', 'replace-baseline'],
+] as const)(
+  'G1 App format request refuses a non-baseline %s timestamp (%s) before recovery or native mutation',
+  async (position, mode) => {
+    const f = await fixture('app');
+    const unsupportedWhen = unsupported(f, position, mode);
+    const root = lightAppRoot(f.root, f.workspaceId, f.appId!);
+    const before = inventoryRegularFiles(root);
+    const original = retained(f);
+    const faultedRow = expect.objectContaining({
+      hash: 'independent-unsupported-ledger-fixture',
+      created_at: unsupportedWhen,
+    });
+    // The replacement leaves the shipped baseline pending if unsupported history is admitted.
+    expect(original.ledger).toEqual(
+      mode === 'replace-baseline'
+        ? [faultedRow]
+        : [faultedRow, expect.objectContaining({ created_at: journal('app')[0]!.when })]
+    );
+    const appKernel = vi.spyOn(getControlStoreWorkerClient(), 'appKernel');
+    try {
+      const upgrade = upgradeLightAppFormat(
+        { ...f.context!, requestId: randomUUID() },
+        f.appId!,
+        1
+      );
+      await expect(upgrade).rejects.toBeInstanceOf(BootConfigError);
+      await expect(upgrade).rejects.toMatchObject({ code: 'migration_unsupported_app' });
+      expect(appKernel).not.toHaveBeenCalled();
+    } finally {
+      appKernel.mockRestore();
+    }
+    await shutdownControlStoreWorkerClient();
+    expectRefusalInventoryUnchanged(before, inventoryRegularFiles(root), 'data.sqlite');
+    expect(retained(f)).toEqual(original);
+  }
+);
+it('G1 keeps retired App format 2 unavailable in the catalog and refuses a direct upgrade', async () => {
   const f = await fixture('app');
+  expect(await getLightAppForRead(f.context!, f.appId!)).toMatchObject({
+    appId: f.appId,
+    lifecycle: 'active',
+    kernelFormatVersion: 1,
+    appRevision: 1,
+  });
+  await shutdownControlStoreWorkerClient();
   const sqlite = new Database(f.path, { fileMustExist: true });
   try {
-    // A supported sparse ledger reaches the original hasPendingAppMigrations snapshot branch.
-    expect(
-      sqlite
-        .prepare('DELETE FROM __drizzle_migrations WHERE created_at=?')
-        .run(journal('app')[1]!.when).changes
-    ).toBe(1);
+    // Seed an old format marker that the current baseline would refuse to write.
+    sqlite.pragma('ignore_check_constraints = ON');
+    expect(sqlite.prepare('UPDATE app_metadata SET kernel_format_version = 2').run().changes).toBe(
+      1
+    );
   } finally {
     sqlite.close();
   }
-  unsupported(f, 'earlier');
   const root = lightAppRoot(f.root, f.workspaceId, f.appId!);
   const before = inventoryRegularFiles(root);
-  const upgrade = upgradeLightAppFormat({ ...f.context!, requestId: randomUUID() }, f.appId!, 1);
-  await expect(upgrade).rejects.toBeInstanceOf(BootConfigError);
-  await expect(upgrade).rejects.toMatchObject({ code: 'migration_unsupported_app' });
+  const original = retained(f);
+  const appKernel = vi.spyOn(getControlStoreWorkerClient(), 'appKernel');
+  try {
+    expect(await getLightAppForRead(f.context!, f.appId!)).toMatchObject({
+      appId: f.appId,
+      lifecycle: 'unavailable',
+      kernelFormatVersion: null,
+      appRevision: null,
+      schema: null,
+    });
+    await expect(
+      upgradeLightAppFormat({ ...f.context!, requestId: randomUUID() }, f.appId!, 1)
+    ).rejects.toMatchObject({ code: 'unavailable' });
+    expect(appKernel).not.toHaveBeenCalled();
+  } finally {
+    appKernel.mockRestore();
+  }
   await shutdownControlStoreWorkerClient();
   expectRefusalInventoryUnchanged(before, inventoryRegularFiles(root), 'data.sqlite');
+  expect(retained(f)).toEqual(original);
 });
 it.each(scopes)(
   'G1 preserves the existing %s missing-storage refusal without creating a replacement',

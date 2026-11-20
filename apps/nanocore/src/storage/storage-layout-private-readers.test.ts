@@ -547,22 +547,27 @@ it('closes public cold storage.layout-report User files without WAL or SHM after
 });
 
 /** Deliberate retained-format fixtures run after the actual native close, never through report admission. */
-it.each(['missing file', 'missing ledger', 'older known ledger', 'extra unknown ledger'] as const)(
+it.each(['missing file', 'missing ledger', 'retired ledger', 'extra unknown ledger'] as const)(
   'preserves original public layout projection for %s without source SQL or migration',
   async (variant) => {
     const f = await prepare();
-    let expected: string[] = [];
+    expect(f.migrations).toEqual(['user_0000_baseline']);
+    const expected = variant === 'extra unknown ledger' ? f.migrations : [];
+    // The predecessor User journal's 0001_thread_read_receipts timestamp.
+    const retiredWhen = 1792173777545;
     let expectedFacts: ReturnType<typeof facts> | undefined;
     if (variant === 'missing file') rmSync(f.path);
     else {
       const setup = new Database(f.path, { fileMustExist: true });
       try {
         if (variant === 'missing ledger') setup.exec('DROP TABLE __drizzle_migrations');
-        else if (variant === 'older known ledger')
-          setup.exec(
-            'DELETE FROM __drizzle_migrations WHERE created_at NOT IN (SELECT created_at FROM __drizzle_migrations ORDER BY created_at LIMIT 2)'
-          );
-        else {
+        else if (variant === 'retired ledger') {
+          expect(
+            setup
+              .prepare('UPDATE __drizzle_migrations SET hash=?, created_at=?')
+              .run('retired-user-read-receipts', retiredWhen).changes
+          ).toBe(1);
+        } else {
           const max = setup
             .prepare('SELECT MAX(created_at) FROM __drizzle_migrations')
             .pluck()
@@ -571,18 +576,16 @@ it.each(['missing file', 'missing ledger', 'older known ledger', 'extra unknown 
             .prepare('INSERT INTO __drizzle_migrations(hash,created_at) VALUES (?,?)')
             .run('independent-retained-unknown-row', max + 1);
         }
-        expected =
-          variant === 'missing ledger'
-            ? []
-            : variant === 'older known ledger'
-              ? f.migrations.slice(0, 2)
-              : f.migrations;
         expectedFacts = facts(setup);
       } finally {
         setup.close();
       }
     }
-    if (variant === 'older known ledger') expect(expectedFacts?.ledger).toHaveLength(2);
+    if (variant === 'retired ledger') {
+      expect(expectedFacts?.ledger).toEqual([
+        expect.objectContaining({ hash: 'retired-user-read-receipts', created_at: retiredWhen }),
+      ]);
+    }
     if (variant === 'missing ledger') expect(expectedFacts?.ledger).toBeNull();
     if (variant === 'extra unknown ledger')
       expect(expectedFacts?.ledger).toContainEqual(
@@ -631,6 +634,13 @@ it.each(['missing file', 'missing ledger', 'older known ledger', 'extra unknown 
     if (before) expect(readFileSync(f.path)).toEqual(before);
     expect(existsSync(`${f.path}-wal`)).toBe(false);
     expect(existsSync(`${f.path}-shm`)).toBe(false);
+    if (variant === 'retired ledger') {
+      expect(() => openUserReadDb(f.root, f.userId).sqlite.close()).toThrow(
+        expect.objectContaining({ code: 'migration_unsupported_user' })
+      );
+      expect(readFileSync(f.path)).toEqual(before);
+      expect(statSync(f.path).ino).toBe(inode);
+    }
   }
 );
 
