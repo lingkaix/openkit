@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { SteerTaskRequest, SteerTaskResponse } from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
@@ -7,11 +6,13 @@ import {
   ItemSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { publicOperationActor } from '../operation-contract.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
+import type { WorkInputRef } from '../storage/control-kernel-port.js';
 import {
   StoredTaskSteerDispositionV1ReaderSchema,
   type TaskSteerDisposition,
@@ -22,6 +23,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './idempotent-command.js';
+import { readWorkspaceInputItem } from './scheduler-dispatch-input.js';
 import { taskSteerCausation, taskSteerRefusal } from './task-steer-receipt.js';
 import type { TurnExecutor } from './types.js';
 
@@ -61,6 +63,11 @@ export async function steerTask(
   };
   const inputHash = commandInputHash(commandInput);
   const inputItemId = taskSteerInputItemId(input, actor.userId);
+  const inputRef: WorkInputRef = {
+    owner: { kind: 'workspace', workspaceId: input.workspaceId },
+    inputId: inputItemId,
+    digest: sha256Hex(input.input),
+  };
   const target = {
     workspaceId: input.workspaceId,
     threadId: input.threadId,
@@ -249,7 +256,7 @@ export async function steerTask(
       try {
         await turnExecutor.steerTurn(
           store,
-          { ...target, inputDigest: createHash('sha256').update(input.input).digest('hex') },
+          { ...target, inputDigest: inputRef.digest },
           {
             recheck,
             complete,
@@ -258,7 +265,7 @@ export async function steerTask(
               const timestamp = new Date().toISOString();
               const item = ItemSchema.parse({
                 id: inputItemId,
-                owner: { kind: 'workspace', workspaceId: input.workspaceId },
+                owner: inputRef.owner,
                 threadId: input.threadId,
                 turnId: input.turnId,
                 type: 'user-message',
@@ -273,6 +280,8 @@ export async function steerTask(
               await store.createItem(item);
               correlation = source;
               try {
+                if (!readWorkspaceInputItem(store, target, inputRef))
+                  throw failure('recovery_required', 'The original steer input is unavailable.');
                 const event = await store.persistTurnEvent(input.turnId, {
                   event: 'item.completed',
                   workspaceId: input.workspaceId,

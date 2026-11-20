@@ -3,10 +3,13 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
+import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { readWorkspaceInputItem } from '../runtime/scheduler-dispatch-input.js';
 import { steerTask, taskSteerInputItemId } from '../runtime/task-steer.js';
 import { readTaskSteerState } from '../runtime/task-steer-receipt.js';
 import type { TaskSteerControl, TaskSteerTarget } from '../runtime/types.js';
@@ -132,6 +135,74 @@ describe('Task steer command receipt and Item boundaries', () => {
     expect(await steerTask({ ...f.dependencies, store: cold }, f.input, f.context)).toEqual(result);
     expect(f.turnExecutor.steerTurn).toHaveBeenCalledTimes(1);
     expect(f.recheck).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses before contact if the committed original Item cannot be read at admission', async () => {
+    const f = await fixture();
+    // The real Workspace writer still commits the Item. Withdraw its read-back at this boundary.
+    vi.spyOn(f.store, 'getThreadItem').mockImplementationOnce(() => {
+      throw new StoreRecordNotFoundError('Original input is unavailable.');
+    });
+    const contact = vi.fn();
+    f.turnExecutor.steerTurn.mockImplementation(async (_store, _target, control) => {
+      await control.admit({ operationId: 'a'.repeat(64), executionId: 'original-execution' });
+      contact();
+      await control.complete({ disposition: 'accepted', reason: null });
+    });
+    const refusal = { code: 'recovery_required', status: 409 };
+    await expect(steerTask(f.dependencies, f.input, f.context)).rejects.toMatchObject(refusal);
+    expect(f.store.getTurnById(f.turn.id).status).toBe('running');
+    await expect(steerTask(f.dependencies, f.input, f.context)).rejects.toMatchObject(refusal);
+    expect(f.turnExecutor.steerTurn).toHaveBeenCalledOnce();
+    expect(contact).not.toHaveBeenCalled();
+    expect(
+      f.store.readThreadTimelineSnapshot(f.workspace.id, f.thread.id, (snapshot) =>
+        snapshot.item(taskSteerInputItemId(f.input, actor.id))
+      )
+    ).toMatchObject({
+      text: f.input.input,
+      steerDisposition: { disposition: 'refused', reason: 'recovery_required', refusal },
+    });
+  });
+
+  it('resolves equal text by original Item ID after restart and rejects the wrong scope or digest', async () => {
+    const f = await fixture();
+    const first = await steerTask(f.dependencies, f.input, f.context);
+    const second = await steerTask(
+      f.dependencies,
+      { ...f.input, requestId: randomUUID() },
+      f.context
+    );
+    expect(second.inputItemId).not.toBe(first.inputItemId);
+    await shutdownControlStoreWorkerClient();
+    const cold = createTestStore({ dataRoot: f.root });
+    const ref = {
+      owner: { kind: 'workspace', workspaceId: f.workspace.id },
+      inputId: first.inputItemId,
+      digest: sha256Hex(f.input.input),
+    } as const;
+    expect(readWorkspaceInputItem(cold, f.input, ref)).toMatchObject({
+      id: first.inputItemId,
+      text: f.input.input,
+    });
+    expect(
+      readWorkspaceInputItem(cold, f.input, { ...ref, inputId: second.inputItemId })
+    ).toMatchObject({
+      id: second.inputItemId,
+      text: f.input.input,
+    });
+    expect(
+      readWorkspaceInputItem(cold, { ...f.input, turnId: allocateEntityId('tu') }, ref)
+    ).toBeNull();
+    expect(
+      readWorkspaceInputItem(cold, f.input, { ...ref, digest: sha256Hex(f.input.input.trim()) })
+    ).toBeNull();
+    expect(
+      readWorkspaceInputItem(cold, f.input, { ...ref, inputId: allocateEntityId('it') })
+    ).toBeNull();
+    expect(
+      readWorkspaceInputItem(cold, { ...f.input, workspaceId: allocateEntityId('ws') }, ref)
+    ).toBeNull();
   });
 
   it('shares identical in-flight work, conflicts changed target/text, and refuses a different busy request before Item admission', async () => {
