@@ -1,6 +1,6 @@
 ---
 id: persistent-deployment-prerelease-update
-title: Update a persistent deployment to the published prerelease
+title: Update a persistent deployment to the published release
 persona: Operator updating a deployment that already has real work
 entrypoint: skill
 default_tool: openkit
@@ -14,11 +14,11 @@ contracts: docs/specs/20260910-app_update_delivery.md, docs/specs/20260829-relea
 
 Persona: An operator whose deployment already holds real work.
 
-Ask: Get this deployment ready to use on the published prerelease. Keep my existing work readable when the release carries it forward. If the operator has reset this pre-stable deployment, verify the release's data warning, our designated accounts' sign-in, and that I can save and read a new Workspace Material note.
+Ask: Get this deployment ready to use on the published release. Keep my existing work readable when the release carries it forward. If the operator has reset this pre-stable deployment, verify the release's data warning, our designated accounts' sign-in, and that I can save and read a new Workspace Material note.
 
 ## Starting World
 
-The persistent deployment initially runs an earlier published release and carries that release's real data. The published prerelease is the target. Carry-forward starts with that predecessor still installed. A disclosed pre-stable reset starts the Actor run after the authorized operator has completed reset setup and installed the target. This story does not use an exact-source update.
+The persistent deployment initially runs an earlier published release and carries that release's real data. The exact selected published release is the target. Direct stable uses its verified stable tag, source and App digest. A cycle that uses prereleases uses the selected published prerelease. The v0.2.0 fresh-root reinstall has its separate authorized procedure. Carry-forward starts with that predecessor still installed. A disclosed pre-stable reset starts the Actor run after the authorized operator has completed reset setup and installed the target. This story does not use an exact-source update.
 
 ## Setup
 
@@ -28,7 +28,7 @@ For a reset, the stage manager or operator completes the separately authorized s
 
 ## Outcome Predicates
 
-- Channel inside-out, tier required. Carry-forward only: the public update receipt succeeded for the published prerelease digest. A mocked receipt or operator report cannot replace it. This predicate is inapplicable to a disclosed pre-stable reset. The record is the helper receipt owned by `docs/specs/20260910-app_update_delivery.md`.
+- Channel inside-out, tier required. Carry-forward only: the public update receipt succeeded for the exact published App digest. A mocked receipt or operator report cannot replace it. This predicate is inapplicable to a disclosed pre-stable reset. The record is the helper receipt owned by `docs/specs/20260910-app_update_delivery.md`.
 - Channel inside-out, tier required. Carry-forward only: the succeeded helper receipt retains the previous and candidate image identities and records that the previous App was not restored. This predicate is inapplicable to a disclosed pre-stable reset; a reset supplies no previous-image recovery proof. The record is the helper receipt owned by `docs/specs/20260910-app_update_delivery.md`.
 - Channel inside-out, tier optional. When helper candidate verification fails, the failed receipt records whether the previous App was restored. The judge skips this predicate when no helper verification fails, including a reset without a helper receipt. The record is the failed receipt. `docs/specs/20260910-app_update_delivery.md` owns that receipt.
 - Channel inside-out, tier optional. When a failed helper receipt records a restoration, the authenticated diagnostics boot projection shows readiness with an empty blocking set, and the runtime-target read shows the NanoHost and deployment ready. The judge skips this predicate when no restoration is recorded. The records are the diagnostics boot projection and the runtime-target observation. `docs/specs/20260704-nanocore_bootstrap_readiness.md` owns that projection. `docs/specs/20260802-nanohost_runtime_and_transport.md` owns that observation.

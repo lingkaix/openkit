@@ -6,25 +6,23 @@ The owning contract is [`docs/specs/20260829-release_management.md`](../specs/20
 
 ## Current Release Posture
 
-The first formal release path starts at `v0.1.0-rc.1`.
+`v0.1.1` was the final release to use an RC before the 1.0 release cycle. It was publication-only. The next release is the direct stable `v0.2.0`, followed by an authorized fresh-root reinstall. Storage changes land on main before the release. Apply any urgent fix as the next new stable patch.
 
-[`v0.1.0`](https://github.com/lingkaix/openkit/releases/tag/v0.1.0) stable was published on 2026-11-20 at 02:38:02Z by promoting `v0.1.0-rc.14` (commit `016088e54`) unchanged, with no rebuild. The exact-product R001 NanoHost Worker readiness gate (#120) closed on arm64 and amd64 before promotion. Stable tags run the stable promotion workflow (`.github/workflows/release-promotion.yml`), which promotes a verified prerelease without rebuilding only under the exact repository variable `OPENKIT_STABLE_PROMOTION=<tag>@<sha>` ([Stable Promotion Notes](#stable-promotion-notes)); the release preflight refuses a stable tag without that exact value.
-
-The repository is public, and only `worker-common` is required to be anonymously public in GHCR.
-
-Do not change repository or package visibility as an implied part of preparation or publication.
+The repository is public, and only `worker-common` is required to be anonymously public in GHCR. Visibility changes need separate authorization.
 
 ### Stable Promotion Notes
 
-Select the reviewed notes from the prerelease being promoted. Set the release title to the stable tag and retain its explicit unresolved items and accepted limitations. Verify that the source commit, image digests, and asset bytes remain those of the selected prerelease. Do not rebuild assets or require a stable-notes file added by another source commit. Present the resulting notes with the existing stable-publication evidence for the reserved engineer gate.
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
+
+Use this procedure only for a release cycle that uses prereleases. Select the reviewed notes from the prerelease being promoted and retain its unresolved items. Verify exact source, image and asset identity. The reserved engineer gate covers the resulting stable notes and publication.
 
 ## Frozen Storage Release
 
-For v0.2.0, follow the [storage cutover gate](../specs/20260829-release_management.md#v020-storage-cutover). The prerelease deployment, story and promotion procedures in this cookbook describe the predecessor release process. Storage lands on main with green CI. v0.1.1 is publication-only. The hosts stay on their installed builds until the direct stable v0.2.0 reinstall. Main holds all releases until then. Any emergency fix for v0.1.1 starts on a branch from its tag.
+For the v0.2.0 reset, follow the [storage cutover gate](../specs/20260829-release_management.md#v020-storage-cutover). The prerelease deployment, story and promotion procedures in this cookbook describe the predecessor release process. Storage lands on main with green CI. v0.1.1 is publication-only. The hosts stay on their installed builds until the direct stable v0.2.0 reinstall. Main holds all releases until then. Any emergency fix for v0.1.1 starts on a branch from its tag.
 
 Before first reinstall, record both kernel fitness results, the NanoHost nonce file and transcript with restart read-back and release proof, the pinned external shape probes, current-authority restore/MOVE results, and a paired rollback rehearsal. Verify exact release provenance, image and archive digests. Record the fresh-root requirement and affected deployment scope. The in-platform helper refuses the 0.1.x to v0.2.0 transition.
 
-Use the [serial host procedure](persistent-live-acceptance.md#v020-storage-reinstall). Keep the predecessor cold archive and image together for rollback and keep production intake closed until dev, a1 and a2 all pass. After cutover, a service-only change uses the normal in-platform update path under the existing deployment eligibility and recovery checks when the four compared journals are unchanged. Verify normal readiness, configured NanoHost, and current credentials.
+Use the cold-archive and reinstall steps in the [serial host procedure](persistent-live-acceptance.md#v020-storage-reinstall). Keep the predecessor cold archive and image together for rollback and keep production intake closed until dev, a1 and a2 all pass. After cutover, a service-only change uses the normal in-platform update path under the existing deployment eligibility and recovery checks when the four compared journals are unchanged. Verify normal readiness, configured NanoHost, and current credentials.
 
 ## Release Bundle
 
@@ -41,103 +39,66 @@ Private workspace packages are not npm release assets, and their `package.json` 
 
 `test-env`, the internal dogfood image, and GitHub-generated source archives are not controlled product release assets.
 
-## Prepare The Release
+## Direct Stable Path
 
-1. Start from an up-to-date `main` and create a preparation branch.
+The [release specification](../specs/20260829-release_management.md#direct-stable-path) defines this path from v0.2.0.
 
-```bash
-export OPENKIT_RELEASE_TAG=v0.1.0-rc.1
-git switch main
-git pull --ff-only
-git switch -c "release/${OPENKIT_RELEASE_TAG}"
-```
+### Prepare The Release
 
-2. Create `docs/changes/<timestamp>-<version>_release/plan.md` and record one release-level header with the intended tag and controlled asset set, publication authorization and conditions, tested commit T and publishing commit P, classified non-product diff and comparison result, candidate CI proof, visibility posture, frozen checklist identity, and known-defect dispositions. Record the manual-gate decision and known limitations with their existing owners.
-
-3. Update user-facing notes and any accepted owner affected by the release contents. For the pre-release execution-authority replacement, record the separately authorized [stopped, fenced, fresh-root cutover](persistent-live-acceptance.md#pre-release-execution-authority-cutover); no execution-graph migration is supplied.
-
-Do not mass-update package versions.
-
-4. Run release preflight.
-
-```bash
-pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
-```
-
-Preflight validates lowercase tag syntax, portable Skill and NanoHost inputs, the schema-version-2 NanoHost capability profile, the accepted OpenShell pin, the release image catalog, smoke paths, the unique public worker base, and digest-pinned bases for every release image.
-
-5. Build the portable operations Skill from the commit that would be released and inspect it. For full NanoHost packaging, supply both native binary and Gateway archive inputs plus the common license inputs listed in the [scripts guide](../../scripts/README.md#release-inputs-and-verification).
-
-```bash
-pnpm release:package -- --tag "${OPENKIT_RELEASE_TAG}"
-(cd dist/release && sha256sum -c SHA256SUMS)
-tar -tzf "dist/release/openkit-ops-skill-${OPENKIT_RELEASE_TAG}.tar.gz"
-```
-
-The Skill packager uses `git archive`, and NanoHost packaging reads its checkout-owned files from the selected Git revision, so uncommitted files are intentionally excluded. The tag workflow obtains the NanoHost binary from native amd64 and arm64 build jobs and downloads the Gateway and source-license bytes from the pin-derived coordinates before invoking the same target-aware packager and verifier. The tag-only hosted qualification matrix consumes those exact packaged archives before either image or GitHub Release publication; it runs no service or Worker job and does not run on pull requests or workflow dispatch.
-
-After outer checksum verification, extract the NanoHost archive beside its original `.tar.gz` and run the bundled `./install.sh --check-host` on the selected Linux host. Retain its exact JSON result, including profile/product/archive/machine/observation digests, hard verdict, and separate resource recommendation. Checking and installation, including staging verification, require Python 3.8 or later with its standard library at `/usr/bin/python3`; the NanoHost service does not depend on it. Missing or unusable inspection yields one bounded `cannot-check` result and blocks installation; a completed mismatch yields `requirements-unmet`. `requirements-met` permits installation preflight and establishes no runtime qualification. The shared staging verifier keeps its host-check exemption. Fresh exact-product distribution qualification runs only in release and pre-release CI under the [engineer ruling](../decisions/20261005-first_release_lifecycle_and_verification_scope.md). Historical exact Docker or slirp identity passes do not qualify the current profile; runtime acceptance remains separate.
-
-6. Use successful authoritative exact-P CI. A local full gate is an optional diagnostic when it adds evidence.
-
-```bash
-pnpm verify:release
-```
-
-7. When useful for diagnosis, build and smoke release images locally. This is optional beside successful authoritative tag CI.
-
-```bash
-for image in $(node -e "const m=require('./containers/images.json'); console.log(m.images.filter((i)=>i.release).map((i)=>i.id).join(' '))"); do
-  scripts/docker/build-image.sh "${image}"
-  scripts/docker/smoke-image.sh "${image}"
-done
-```
-
-The tag workflow verifies candidate evidence for exact `linux/amd64` and `linux/arm64` registry digests before promoting their unchanged index. Candidate Worker-image smoke builds and executes on matching native standard hosted amd64 and arm64 runners, with separate BuildKit cache scopes.
-
-8. Run L4 Web e2e when the release decision requires that additional confidence. Before the tag, run deterministic CI only. After publication, run the bounded deployment update and qualification. Run stories 1 and 2 at release-cycle/change cadence. Run any other catalog story that the release cycle still needs. [Catalog Stories](../specs/20260829-release_management.md#catalog-stories) owns that rule. Follow [Post-Tag Catalog Stories](#post-tag-catalog-stories). Worker qualification is separate.
-
-```bash
-pnpm test:e2e:web
-```
-
-Real-provider, real-subscription, and real-worker gates remain explicit opt-ins and must not be added to automatic tag CI merely for a release.
-
-9. Commit the preparation, obtain normal review, merge it to `main`, and confirm the release commit is clean and contained in `origin/main`.
-
-Each new release tag must point to a commit that has not already been released because the immutable source-revision image tag is part of one release identity; a same-tag rerun continues to use the original commit.
-
-```bash
-git switch main
-git pull --ff-only
-git status --short
-git merge-base --is-ancestor HEAD origin/main
-pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
-```
-
-10. For the pre-release execution-authority replacement, complete the separately authorized [fresh-root cutover](persistent-live-acceptance.md#pre-release-execution-authority-cutover) before the tag when that cutover is still required. Before the tag, complete deterministic CI, candidate CI, and publication-path proof. The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Candidate CI builds and smokes the prerelease images once; the tag promotes the same digests. Stories run on those published bytes. Apply the [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) after the tag.
+Fetch main and match its current head to its exact successful complete CI batch. Record the head as P, the green run and the P cut time. Commit the reviewed stable notes and compatibility assessment in publishing commit C. Record P, C, the reviewed P-to-C diff, the intended tag, controlled asset set, visibility and known-defect dispositions. Land an ordinary notes-only C through the release-subject guard. That preparation needs no separate pre-merge gate. Give every fix its issue and close the issue when the fix lands.
 
 ### Candidate CI
 
-Use the complete main-push gate, or dispatch `gate=release-gate` or `gate=full`, on the exact commit you will tag. Each selection includes L4 Web e2e; express landing does not replace a release candidate's exact-head full CI. Retain its successful completed run and job evidence. A run on another commit does not establish this commit. Each complete L0-L2 shard and the NanoCore e2e tag job reuses only its own successful latest-attempt job in a completed same-workflow candidate run on the exact tagged commit, records the supporting run, and otherwise runs its tests as before.
+Use the complete main-push gate on C, or select `release-gate` or `full` on main at C. Each selection runs complete L0–L5 including L4 Web e2e, source and deterministic assertion preflight, native construction and exact-digest smoke, portable packaging, the full fresh-host NanoHost matrix, source and image security, registry admission, and the publication and attestation dry-run. Local preflight, packaging and smoke serve diagnosis. Keep the successful run and attempt. C is the binding for the manifest, candidate indexes, stable tag and any permitted registry refresh.
 
-L0-L2 now runs complete package coverage suites in parallel with separate static/build, native and root shards. Its aggregate retains the existing candidate job name and refuses any incomplete shard set. Each coverage shard compares collected file identities with its actual execution report and requires every selected file exactly once. The unchanged coverage thresholds and skip guard still decide success. Build caches are partitioned by runner architecture, shard, toolchain and lock inputs; tests still execute on each new P. Use `node scripts/ci-l0-l2.mjs --matrix` to inspect ownership. Use `node scripts/ci-l0-l2.mjs --run <id>` for one focused shard.
+Commit `release-notes/<tag>.md` and `release-notes/<tag>.manifest.json` in C. Native jobs push by digest and assemble an index under a candidate-only reference. Qualify each exact portable archive using the pin-derived Gateway and source-license inputs in the [scripts guide](../../scripts/README.md#release-inputs-and-verification). Fresh-host qualification retains the archive, profile and machine bindings, the hard host verdict and the resource recommendation. A `cannot-check` or `requirements-unmet` result refuses qualification. The contained verifier retains its host-check exemption. The host check and staging installer use Python 3.8 or later at `/usr/bin/python3`.
 
-Commit the reviewed `release-notes/<tag>.md` before selecting P. The sole pending unused prerelease notes input selects image construction, or dispatch `gate=release-gate` with `candidate_tag=<tag>` to choose it explicitly. Native platform jobs push only digest-addressed images and smoke those exact bytes; the index uses only a `candidate-` reference. Retain each image's attempt-bound index artifact. The tag refuses a missing artifact, wrong source/tag, changed P, failed smoke, incomplete platforms or changed publication inputs; it never rebuilds. Run a fresh candidate gate if evidence expires. Ordinary main CI needs no pending release input.
+For v0.2.0, retain the two exact-C fitness results from [Storage Cutover](../specs/20260829-release_management.md#v020-storage-cutover), the reviewed fresh-root assessment and the disposable paired-restore result before tagging. Capture each live recovery pair at that host’s cutover.
 
 ### Publication-Path Proof Before Tagging
 
-For each image publish/promotion, GitHub Release creation/upload, and published-release verification job, retain an earlier real tag run's successful execution plus the comparison showing that job and its implementation inputs unchanged since that run. Record that run, its successful jobs, and the comparison. The designation of a past run does not by itself prove a result.
+Inventory the exact source and six platform digests after registry admission. COORD checks the scoped register, sets `OPENKIT_SECURITY_FINDINGS` as a secret in the protected candidate environment and approves its waiting job. Retain its successful exact-C run, attempt and read-only registry observation.
 
-Rehearse a changed publication job before the real tag in a scratch repository under a different GitHub owner, with its own package coordinates so the real package names, tags and Latest pointers remain untouched. For prereleases, use the standing scratch grant only in the existing `notrucked/openkit` repository for scratch preparation commits, unused scratch tags, prereleases and package versions needed by the workflow. Do not create a new scratch owner or repository, write to `lingkaix/openkit`, change Latest or visibility, expand credentials, or publish stable under this grant. Effects outside that bound remain engineer-reserved; [the ruling](../decisions/20261015-standing_scratch_rehearsal_grant.md) replaces the per-rehearsal authorization question. Retain the real rehearsal result and changed-job comparison. An unchanged proved job needs no fresh rehearsal. A skipped job, missing result or conflicting proof leaves this obligation unproved.
+Obtain the engineer’s exact authorization for the stable tag, C and candidate attempt, and confirm unused immutable identities or the permitted retry. Keep both complete issue observations privately. Compare each against the same reviewed decision projection. Ignore unrelated label and comment timestamp changes. Refuse missing pages, new applicable blockers and changed reviewed dispositions. Rerun offline admission with the current evidence just before tagging.
 
-### Scheduling Worker Qualification
+Push the authorized tag on C. The tag refuses missing or stale candidate evidence and has no fallback or fresh L0–L3 runs. It checks identity and authority, signs under the stable tag, publishes the immutable candidate payload, then verifies exact signatures, attachments and all Latest aliases through independent readback. Preserve an existing publication. A permitted retry uses the original C, current candidate proof and matching immutable identities.
+
+### Rollout And Closeout
+
+Install the verified published release on a1 first. Run the golden path and exercise real use. Then deploy to dev. Deploy to a2 after a1 passes and dev is complete. The v0.2.0 storage reset alone proceeds dev → a1 → a2 so its first fresh-root boot occurs on dev. At each host’s cutover, stop writers and fence attempts before verifying the actually running predecessor and its matching cold archive. Follow the [serial reinstall procedure](persistent-live-acceptance.md#v020-storage-reinstall). A failed host check stops the dependent rollout. An S1 on a1 holds a2 and starts an immediate stable patch.
+
+Record the golden path, affected stories and Worker results against the verified published stable build. Include the stable tag, C, exact digest, host attribution, scope, verdict, classification, evidence alias and digest. Use the [catalog’s actor and judge rules](../specs/20260529-l6_story_acceptance.md) and the [Worker case procedures](#codex-pi-and-opencode-v2). Carry-forward includes the public receipt and retained-data checks. The v0.2.0 reset uses its separate authorization and host evidence.
+
+### Direct Stable Timing
+
+Measure elapsed wall time from the recorded P cut to stable publication. Record candidate start on C, inventory completion, COORD approval, candidate completion, tag push, independent verification and host acceptance separately. For v0.1.1, P was cut at 13:04Z before its batch turned green at 13:44:40Z. Stable publication was at 17:16:45Z, approximately 4 h 13 min after the cut. Independent verification completed at 17:22:04Z. Historical active lane-hours are unmeasured. Record active lane-hours and elapsed wall time separately across the same P-cut-to-publication interval on the first direct stable release.
+
+### Release Gate Ablation
+
+| Check | Failure prevented | Direct stable path |
+| --- | --- | --- |
+| Green main batch, reviewed exact source, complete candidate CI and native smoke | Untested source or missing platform shipped | Keep |
+| Exact source and image inventory with COORD secret check | Stale, missing or wrongly scoped security decisions | Keep once for the candidate |
+| Complete fresh issue observation and reviewed dispositions | An in-scope blocker or material disposition change slips through | Keep and compare decision fields |
+| Source preflight, predecessor evidence, asset assembly and native qualification | Invalid retention claim, wrong host build or incomplete bundle | Keep |
+| Read-only registry admission; live immutable digest and alias checks | Collision, partial identity or incorrect Latest | Keep |
+| Publication dry-run and subject validation | Candidate inputs fail only after the tag is pushed | Keep in exact candidate gate |
+| Tag signing, independent asset download, checksum and alias readback | Incorrect or incomplete published bytes or provenance | Keep |
+| Scratch publication and repeated inventory on different coordinates | Changes to the publication path fail at the production tag | Remove from 0.x after the candidate proof covers these inputs |
+| RC-to-stable promotion | Stable bytes differ from the qualified prerelease | Remove from 0.x. The stable tag publishes exact candidate bytes directly |
+| a1, dev and a2 deployment observations, with verified recovery where required | Bad stable build reaches production or leaves no recoverable predecessor | Keep |
+
+## Scheduling Worker Qualification
+
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
 
 Run the three runtime groups concurrently within the runtime owner's admitted capacity. Keep A to D sequential in each group's fresh Thread. Run all twelve cases after each deployment update. While DeepSeek stays disabled, check that a DeepSeek Worker selection is refused before any effect. Use the explicit target parameter in the [maintained kit](../../tests/README.md#release-round-acceptance-instrument). Worker-only qualification has no browser prerequisite. Retain every non-pass or unknown effect without automatic retry. L6 actor/judge rules remain separate.
 
 WP4's rc.5 measurements project six to eight minutes with four admitted concurrent slots and adequate resources. This estimate does not establish a live concurrent pass. Retain stage timestamps in the compact release record.
 
 ## Post-Tag Catalog Stories
+
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
 
 After the tag, follow the release cycle in [Catalog Stories](../specs/20260829-release_management.md#catalog-stories). The catalog stories are not a pre-tag gate, and a story run on an unpublished candidate is not release evidence. Run story 1 on the dedicated development machine from the public repository and published release assets. Keep any development checkout out of the Actor's installation flow. Use no disposable VM, and retain the installation as this machine's OpenKit deployment. Story 2 starts on the persistent deployment that carries an earlier published release's real data. Follow [Release Management's reset conditions](../specs/20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts) for a disclosed pre-stable reset. Use the [operator procedure](../../skills/openkit-ops/references/nanocore-operations.en.md#explicit-pre-stable-deployment-reset); the migration-free helper grant does not cover it. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, rerun, and the release cycle. This cookbook does not copy the catalog. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
 
@@ -147,7 +108,9 @@ Use public reads for the deciding product results and retain the returned ids an
 
 ## Worker Qualification
 
-Run the matrix below on the deployment updated mechanically to that published prerelease. It is not a story and not a pre-tag round. Record the published prerelease identity and, for each case, the App, Web, NanoHost, and Worker artifact identities, retained component attribution, protected configuration identities without secret values, and the approved deployment target. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, and rerun. The release record retains this evidence before stable promotion.
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
+
+Run the matrix below on the authorized staging deployment of the published build. This post-publication qualification has its own evidence. Record the published release identity and, for each case, the App, Web, NanoHost, and Worker artifact identities, retained component attribution, protected configuration identities without secret values, and the approved deployment target. The [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) owns pass, defect, and rerun. Retain this evidence in the release record before the dependent rollout or, for 1.0-class cycles, before stable promotion.
 
 ### Codex, Pi And OpenCode V2
 
@@ -164,6 +127,8 @@ Worker-produced public file evidence uses synchronous `work_artifact_submit` on 
 
 ## Record And Classify
 
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
+
 Use the [release owner's compact record](../specs/20260829-release_management.md#compact-release-record): one release-level header, one row per catalog story, and one row per Worker-qualification case.
 
 Codes: P pass, K known defect, E accepted external, N new defect, T environment or tool failure, I inconclusive. The kit regenerates verdicts from retained product records. Independently check each non-pass row and each row it cannot decide. A pass row needs no additional narrative review. Preserve story-owned independent proof, including the actor's deciding recomputation and any L6 judge. Stop a prerelease when the stories run on it and its qualification cases have the evidence the release owner requires, together with every other release obligation. Before a stable promotion, every catalog story has its pass for the release cycle under the release owner, together with every other release obligation.
@@ -175,6 +140,8 @@ Privately retain the run-window HTTP 502 and connection-reset counts, with expli
 A telemetry file in an L6 evidence bundle is diagnostic. Its absence is recorded separately from public product outcomes. A 502, a reset, or a Worker failure requires attribution and is not automatic permission to classify it as external. Missing required product evidence makes the run inconclusive. The release owner decides readiness. The bounded publication grant remains separate from deployment and Provider-workload authority.
 
 ## Publication Authorization
+
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
 
 A green gate does not authorize publication.
 
@@ -206,6 +173,8 @@ Copy the approved identity into `grant.baseline` from the separately approved ba
 Keep the existing `baseline.publicationInputs`, candidate, identities, triage, freshness, asset-set and prerelease/Latest evidence. The complete immutable-Git publication comparison still decides input equality. This schema does not grant a new scratch owner, stable publication or any publication effect.
 
 ## Publish
+
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
 
 After applicable publication authorization and mechanical admission:
 
@@ -241,6 +210,8 @@ gh run watch <run-id> --exit-status
 
 ## First worker-common Publication
 
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
+
 GitHub creates a new container package as private.
 
 The first `worker-common` publish therefore stops at the anonymous exact-digest gate until a repository administrator changes that package to public.
@@ -250,6 +221,8 @@ This one-time visibility change is an explicit external effect; record its autho
 The rerun proves and reuses the existing version and source-revision digest instead of rebuilding or overwriting it.
 
 ## Verify And Close
+
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
 
 The workflow's `Verify published release` job is the deciding automatic publication check.
 
@@ -265,6 +238,8 @@ Close the release change record only when the workflow is green, the GitHub Rele
 
 ### Pre-stable Data Root Baseline Qualification
 
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
+
 Before `v0.1.0`, follow [Release Management](../specs/20260829-release_management.md) and the accepted [single-baseline decision](../decisions/20261114-pre_release_sql_baselines.md). Qualify the exact current candidate with one fresh Core baseline and one fresh Workspace baseline; keep the independent User and App journals unchanged.
 
 Use the real native setup, Notebook, domain, backup and close owners. Check current schema and security constraints, real publication/readback, one Core and Workspace ledger row each, read-only connections, integrity and foreign keys, supported-ledger refusal, rollback and truthful physical/FULL acknowledgement. Preserve failed or incomplete observations rather than inferring qualification from source inspection.
@@ -273,6 +248,8 @@ Do not append a synthetic journal entry, construct a previous-RC corpus or run a
 
 ### Synthetic Stable Promotion Rehearsal
 
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
+
 Use only the coordinator's [bounded exception](../decisions/20261016-bounded_stable_promotion_rehearsal.md). Select one unused synthetic stable version `v0.0.N` and a prerelease in that version, then prepare and publish the prerelease in `notrucked/openkit` through the actual candidate, manifest and download-verification path. A synthetic reviewed assessment belongs only to that fixture. Retain the production repository's releases, tags, image identities and Latest observations before and after the rehearsal and prove equality.
 
 After the source prerelease and its exact-P tag run pass, push the one authorized unused synthetic stable tag on that same commit. Watch `release-promotion.yml` through verified publication. The workflow checks the source run's current attempt and required native/publication jobs, the source manifest and reviewed notes, all platform indexes and immutable tags, and all thirteen attachments before changing scratch pointers. It copies the same indexes and attachments without rebuilding or repacking. The stable title names the stable tag; attachment names and the manifest retain the source prerelease identity.
@@ -280,6 +257,8 @@ After the source prerelease and its exact-P tag run pass, push the one authorize
 Rerun the entire stable workflow once to prove complete immutable reuse. It must verify without image promotion or Release edits, and Latest must still identify that stable release. Run a separate no-write negative retry check against altered source or superseded-Latest observations and retain its refusal; do not move a live pointer to produce the negative case. A partial or unknown outcome stops for inspection. A rehearsal success authorizes no production stable release and closes no R001, story or Worker gate.
 
 ## Failure And Retry
+
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
 
 Never move, force-push, delete, or overwrite a published release tag or promoted image tag.
 
@@ -305,6 +284,8 @@ Do not split chunks or change the Vite warning threshold without a measured perf
 
 ## Generated Records And Manifest
 
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
+
 Before freezing P, generate a draft from accepted change descriptions and carried-forward issue dispositions, then review its meaning:
 
 ```bash
@@ -325,6 +306,8 @@ For a private closeout projection, supply `--header /example/private/header.json
 
 ## Automatic Deployment Boundary
 
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
+
 Apply [Bounded Test Deployment Update](../specs/20260829-release_management.md#bounded-test-deployment-update). `a1` is staging; `a2`, the earlier persistent test deployment, is now stable production and excluded from automation. Supply the target explicitly, retain separate component results, and prove selected existing Workspace content through public reads. App receipt authentication predicates alone do not establish that content continuity. The App procedure uses prepare, idle preflight, start once, and status of the known request ID. Unknown handoff results require inspection of that ID, never a new start.
 
 Use the external [component update command](../../scripts/host-worker-update/README.md#external-operator-command) for the bounded App→NanoHost→Worker sequence. It requires protected invocation inputs, an independent retained deployment binding and current grant, verified old and target NanoHost archives, and the qualified canonical systemd posture. Its concrete adapters invoke the existing component owners. The standalone App-only CLI in `release-update-app.mjs` remains disabled.
@@ -334,6 +317,8 @@ The App stage preserves the existing helper replacement and first-upgrade refusa
 Before the first workflow substitution, run `node scripts/release-tests.mjs --inventory-only`. Repeat this proof when suite-selection or command inputs change. Routine CI executes only the admitted coverage recipe. The initial WP5 local admission check collected equal inventories for all ten Vitest suites, totaling 9,340 cases, in about eight minutes; the post-WP2 rebase repeated the comparison with 9,351 equal cases; that local timing is not a CI timing guarantee.
 
 ## Planning Allowance
+
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
 
 | Step from frozen P | Projected duration | Basis and limitation |
 | --- | --- | --- |
@@ -349,9 +334,11 @@ Issue #193 is closed as superseded by the post-tag policy. Issue #225 (promote w
 
 ### Cadence Commands
 
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
+
 Use `node scripts/ci-premerge.mjs --repository <owner/repository> --branch <branch>` after pushing a reviewed branch. It dispatches the release gate and inspects its exact head. `--run <id>` inspects an existing run. Only an explicit `--merge` requests the ordinary fast-forward to main. Use that option only when main writes are authorized. A changed branch or main requires a new observation. This helper does not configure remote branch protection.
 
-Before selecting P, run `node scripts/release-prepare.mjs --repository <owner/repository> --tag <intended-prerelease> --previous-tag <previous-release> --previous-record <previous-snapshot-or-record> --baseline-sha <proved-publication-commit> --output <new-private-directory>`. It writes generated facts, the complete issue snapshot, a reconciliation delta and a two-section notes draft. The first import of a legacy Markdown record conservatively reports changed rows because that record contains no observed metadata. Review meanings, inclusion and known issues; commit the final notes before P selection. Use `--validate <record>` to reject nonexistent SHA references in an authored record. This command never creates release authorization or a tag.
+For a release cycle that uses prereleases, before selecting its publishing commit, run `node scripts/release-prepare.mjs --repository <owner/repository> --tag <intended-prerelease> --previous-tag <previous-release> --previous-record <previous-snapshot-or-record> --baseline-sha <proved-publication-commit> --output <new-private-directory>`. It writes generated facts, the complete issue snapshot, a reconciliation delta and a two-section notes draft. The first import of a legacy Markdown record conservatively reports changed rows because that record contains no observed metadata. Review meanings, inclusion and known issues; commit the final notes before P selection. Use `--validate <record>` to reject nonexistent SHA references in an authored record. This command never creates release authorization or a tag.
 
 For an authorized real prerelease, prepare the existing private offline-admission JSON, including its approved grant, exact review, evidence window, baseline run and issue dispositions. Set `triage.snapshotSha256` to the reviewed preparation snapshot hash. Run `node scripts/release-coordinate.mjs --input <private-authored-json> --output <new-private-directory>`. The command observes current facts and runs the same offline admission predicates. The complete issue snapshot must still match the reviewed hash. `--publish` additionally repeats the collection and admission, then creates and pushes only the exact eligible tag. This option is not authority to publish. The command refuses changed observations, unavailable evidence and implicit same-tag recovery; inspect an unknown push result before retrying. Keep all private bundles untracked. A scratch rehearsal still uses the existing separate bounded grant and must prove every changed publication path.
 
@@ -363,6 +350,8 @@ After the authorized development-machine deployment update, run `node scripts/re
 Use `node scripts/release-tests.mjs --node-inventory` to inspect the root and recursive script Node test files and their separate full-gate host owners. Both `test:unit` and the release root shard use this selection. The shard artifact records its file list; aggregate admission rejects missing or repeated files. Newly merged files such as the Worker-environment regression enter automatically. The five P29 Worker-update script tests each run once. Their native fixture requires Linux, the NanoHost Rust pin and its same-checkout live-inspection producer; the root lane fetches the locked Cargo inputs before the fixture compiles offline. Container-subject tests stay in their existing full host lane, and explicitly opted-in Python host fixtures remain separate. During the R2 CI hold, do not dispatch branch measurements. Resume after main is green and the branch includes the accepted fixes and pending coordinator seams; each measurement must name its exact new SHA.
 
 ### Hosted Scratch Fixture
+
+> Applies only to prerelease and 1.0-class cycles. Direct stable uses [Direct Stable Path](#direct-stable-path).
 
 Only the standing scratch grant for `notrucked/openkit` admits this fresh disposable Linux amd64 fixture. It replaces no real prerelease or deployment gate. Use an already published scratch prerelease P with a successful tag publication and public verification. Review and commit the control implementation C separately. Push C to the scratch-only branch `scratch/cadence-smoke/<full-C>`, register the workflow on scratch main if needed under the existing scratch-main grant, and dispatch `release-scratch-smoke.yml` on that exact branch with `control_sha=<C>`, `source_sha=<P>`, `tag=<scratch-prerelease>` and `publication_run=<successful-tag-run>`. The workflow rejects another repository, trigger, fork, source revision or control branch. Do not dispatch it from a mutable generic branch. All actions are pinned, and no fixture build or cache is used.
 
