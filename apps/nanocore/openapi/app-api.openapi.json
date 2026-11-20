@@ -174353,6 +174353,33 @@
                   ],
                   "additionalProperties": false
                 }
+              },
+              "nanoHostTurnCapacity": {
+                "type": "object",
+                "properties": {
+                  "desired": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "effective": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "desired",
+                  "effective"
+                ],
+                "additionalProperties": false
               }
             },
             "required": [
@@ -183278,5 +183305,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:5560adc662ef1d8ddccbf47d4a71b2313bf6edaec4386e2eaf6362b5568788e6"
+  "x-openkit-source-digest": "sha256:923b55047686a013ade5f1af83e8a3865034071550c69c19eba16f77fbb9aaf5"
 }

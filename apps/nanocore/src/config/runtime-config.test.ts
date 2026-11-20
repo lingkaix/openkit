@@ -967,7 +967,7 @@ describe('runtime config loading and reload planning', () => {
       { name: 'removal', previous: initialHost, next: undefined },
     ];
 
-    it('applies a capacity-only change without requiring restart', async () => {
+    it('reports immediate, resident-bound and uncertain capacity changes without requiring restart', async () => {
       const dataRoot = createDataRoot();
       try {
         writeConfiguredServer(
@@ -975,7 +975,12 @@ describe('runtime config loading and reload planning', () => {
           'openai/gpt-5.1',
           `, "nanohost": ${JSON.stringify(initialHost)}`
         );
-        const manager = createRuntimeConfigManager({ dataRoot });
+        let resident: number | null = 20;
+        const manager = createRuntimeConfigManager({
+          dataRoot,
+          readNanoHostResidentTurnLimit: () => resident,
+        });
+        const capacity = 'nanohost.maxActiveTurnsPerSandbox';
         const next = { ...initialHost, maxActiveTurnsPerSandbox: 8 };
         writeConfiguredServer(dataRoot, 'openai/gpt-5.1', `, "nanohost": ${JSON.stringify(next)}`);
 
@@ -985,6 +990,101 @@ describe('runtime config loading and reload planning', () => {
         expect(response.plan.requiresRestart).toEqual([]);
         expect(manager.status().pendingRestart).toEqual([]);
         expect(manager.current().openKitConfig.nanohost).toEqual(next);
+        expect(response.plan.applied).toContainEqual(expect.objectContaining({ path: capacity }));
+        expect(manager.status().nanoHostTurnCapacity).toEqual({ desired: 8, effective: 8 });
+
+        const writeLimit = (maxActiveTurnsPerSandbox: number) =>
+          writeConfiguredServer(
+            dataRoot,
+            'openai/gpt-5.1',
+            `, "nanohost": ${JSON.stringify({ ...initialHost, maxActiveTurnsPerSandbox })}`
+          );
+        writeLimit(12);
+        const attainable = await manager.reload({ mode: 'strict' });
+        expect(attainable.plan.applied).toContainEqual(expect.objectContaining({ path: capacity }));
+        expect(manager.status().nanoHostTurnCapacity).toEqual({
+          desired: 12,
+          effective: 12,
+        });
+
+        resident = 8;
+        writeLimit(16);
+        const change = expect.objectContaining({
+          path: capacity,
+          summary: expect.stringContaining('The effective bound is 8.'),
+        });
+        const preview = await manager.reload({ mode: 'safe', dryRun: true });
+        expect(preview.plan.deferred).toContainEqual(change);
+        expect(manager.status().nanoHostTurnCapacity).toEqual({ desired: 12, effective: 8 });
+        const deferred = await manager.reload({ mode: 'safe' });
+        expect(deferred.plan.deferred).toContainEqual(change);
+        expect(deferred.plan.requiresRestart).toEqual([]);
+        expect(manager.status().nanoHostTurnCapacity).toEqual({ desired: 16, effective: 8 });
+        resident = 16;
+        expect(manager.status().nanoHostTurnCapacity).toEqual({ desired: 16, effective: 16 });
+
+        resident = null;
+        writeLimit(20);
+        const unavailable = await manager.reload({ mode: 'safe' });
+        expect(unavailable.plan.deferred).toContainEqual(
+          expect.objectContaining({
+            path: capacity,
+            summary: expect.stringContaining('The resident bound is unavailable.'),
+          })
+        );
+        expect(manager.status().nanoHostTurnCapacity).toEqual({ desired: 20, effective: null });
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('defers an increase when its transport change fences the comparable resident', async () => {
+      const dataRoot = createDataRoot();
+      try {
+        const previous = { ...initialHost, maxActiveTurnsPerSandbox: 2 };
+        const next = {
+          ...previous,
+          credentialRef: 'fixture-successor',
+          maxActiveTurnsPerSandbox: 4,
+        };
+        writeConfiguredServer(
+          dataRoot,
+          'openai/gpt-5.1',
+          `, "nanohost": ${JSON.stringify(previous)}`
+        );
+        const manager = createRuntimeConfigManager({
+          dataRoot,
+          readNanoHostResidentTurnLimit: () => 8,
+        });
+        let fenceEffects = 0;
+        const isFenced = manager.bindNanoHostTransportFence(async () => {
+          fenceEffects++;
+        });
+        writeConfiguredServer(dataRoot, 'openai/gpt-5.1', `, "nanohost": ${JSON.stringify(next)}`);
+
+        const preview = await manager.reload({ mode: 'safe', dryRun: true });
+        const capacity = expect.objectContaining({
+          path: 'nanohost.maxActiveTurnsPerSandbox',
+          summary: expect.stringContaining('The resident bound is unavailable.'),
+        });
+        expect(preview.plan.deferred).toEqual([capacity]);
+        expect(manager.status().nanoHostTurnCapacity).toEqual({ desired: 2, effective: 2 });
+        expect(isFenced()).toBe(false);
+        expect(fenceEffects).toBe(0);
+
+        const applied = await manager.reload({ mode: 'safe' });
+        expect(applied.status).toBe('applied');
+        expect(applied.plan.applied).not.toContainEqual(capacity);
+        expect(applied.plan.deferred).toEqual([capacity]);
+        expect(applied.plan.requiresRestart).toContainEqual(
+          expect.objectContaining({ path: 'nanohost.transport' })
+        );
+        expect(manager.status().nanoHostTurnCapacity).toEqual({ desired: 4, effective: null });
+        expect(manager.current().openKitConfig.nanohost?.credentialRef).toBe(
+          previous.credentialRef
+        );
+        expect(isFenced()).toBe(true);
+        expect(fenceEffects).toBe(1);
       } finally {
         rmSync(dataRoot, { recursive: true, force: true });
       }

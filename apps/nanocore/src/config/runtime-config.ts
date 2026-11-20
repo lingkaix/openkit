@@ -8,7 +8,7 @@ import type {
   RuntimeConfigReloadRequest,
   RuntimeConfigReloadResponse,
   RuntimeConfigReloadSummarySchema,
-  RuntimeConfigStatus,
+  SetupDiagnosticsResponse,
 } from '@openkit/app-api-schemas';
 import {
   BLOCKED_DELEGATED_REFRESH_STRATEGIES,
@@ -32,7 +32,10 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
-import type { CaptureCoverageBinding } from '@openkit/worker-protocol';
+import {
+  type CaptureCoverageBinding,
+  HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
+} from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import { refuseScope } from '../bootstrap/readiness.js';
@@ -250,6 +253,8 @@ interface RuntimeConfigManagerOptions {
   checkListenerTlsChange?: (() => Promise<boolean>) | undefined;
   /** Optional initial snapshot for tests or already-loaded startup state. */
   initialSnapshot?: RuntimeConfigSnapshot;
+  /** Reports the current resident's exact comparable aggregate bound, when available. */
+  readNanoHostResidentTurnLimit?: (() => number | null) | undefined;
   /** Live API-key presence, inspected without resolving Vault material. */
   providerCredentialConfigured?: ProviderCredentialConfigured | undefined;
   /** Live subscription owner reused at initial load and candidate reload. */
@@ -307,6 +312,12 @@ export interface RuntimeConfigManager {
   bindNanoHostTransportFence(fence: () => Promise<void>): () => boolean;
   /** Adds current process restart reasons to a candidate or failed plan for reporting. */
   reportCurrentRestart(plan: RuntimeConfigReloadPlan): RuntimeConfigReloadPlan;
+  /** Adds the capacity effect implied by a validated candidate and the current resident. */
+  reportCandidateCapacity(
+    plan: RuntimeConfigReloadPlan,
+    previous: RuntimeConfigSnapshot,
+    next: RuntimeConfigSnapshot
+  ): RuntimeConfigReloadPlan;
   /** Acknowledges this manager's actual installed Policy on the canonical native Core opening. */
   bindNativePolicyPublication(coreDb: CoreDb): Promise<void>;
   /** Publishes a committed Workspace creation or name edit without activating other saved inputs. */
@@ -328,7 +339,7 @@ export interface RuntimeConfigManager {
     input: RuntimeConfigReloadRequest
   ): RuntimeConfigReloadResponse | Promise<RuntimeConfigReloadResponse>;
   /** Returns redacted runtime config status. */
-  status(): RuntimeConfigStatus;
+  status(): SetupDiagnosticsResponse['runtimeConfig'];
 }
 
 /** OpenKitConfig sibling fields whose process-bound identity takes effect only after restart. */
@@ -828,20 +839,28 @@ export function createRuntimeConfigManager(
       let nextVersion = current.version + 1;
       const respond = (
         status: RuntimeConfigReloadResponse['status'],
-        plan: RuntimeConfigReloadPlan
+        plan: RuntimeConfigReloadPlan,
+        capacityChange?: { previous: RuntimeConfigSnapshot; next: RuntimeConfigSnapshot }
       ) => {
         const fence =
-          !input.dryRun &&
-          !nanoHostTransportFenced &&
-          plan.requiresRestart.some((entry) => entry.path.startsWith('nanohost.'))
+          !input.dryRun && !nanoHostTransportFenced && hasNanoHostRestartChange(plan)
             ? fenceNanoHostTransport
             : undefined;
         // Latch before native readiness I/O. A failed acknowledgement must leave admission closed.
         if (fence) nanoHostTransportFenced = true;
+        const residentTurnLimit = readResidentTurnLimit();
+        const responsePlan = capacityChange
+          ? reportCandidateCapacity(
+              plan,
+              capacityChange.previous,
+              capacityChange.next,
+              residentTurnLimit
+            )
+          : plan;
         const response = {
           status,
-          runtimeConfig: createRuntimeConfigStatus(),
-          plan: reportCurrentRestart(plan),
+          runtimeConfig: createRuntimeConfigStatus(residentTurnLimit),
+          plan: reportCurrentRestart(responsePlan),
         };
         return fence ? fence().then(() => response) : response;
       };
@@ -865,6 +884,7 @@ export function createRuntimeConfigManager(
         nextVersion = current.version + 1;
         try {
           if (installation) throw new Error('Runtime Policy publication is still pending.');
+          const previous = current;
           const { snapshot, plan: authoredPlan } = prepareReloadCandidate(
             requireDataRoot(options.dataRoot),
             input.mode
@@ -906,7 +926,7 @@ export function createRuntimeConfigManager(
               'dry-run'
             );
 
-            return respond('dry-run', plan);
+            return respond('dry-run', plan, { previous, next: snapshot });
           }
 
           const ready = installSnapshot(snapshot, undefined, () => {
@@ -920,7 +940,7 @@ export function createRuntimeConfigManager(
               current.version,
               'applied'
             );
-            return respond('applied', plan);
+            return respond('applied', plan, { previous, next: current });
           };
           return ready instanceof Promise ? ready.then(complete, failed) : complete();
         } catch (error) {
@@ -934,6 +954,7 @@ export function createRuntimeConfigManager(
       return () => nanoHostTransportFenced;
     },
     reportCurrentRestart,
+    reportCandidateCapacity,
     status: createRuntimeConfigStatus,
   };
 
@@ -956,16 +977,80 @@ export function createRuntimeConfigManager(
     return { ...plan, requiresRestart: currentRestartReasons(plan.requiresRestart) };
   }
 
+  /** A fresh startup difference would fence the resident that currently supplies the live bound. */
+  function hasNanoHostRestartChange(plan: RuntimeConfigReloadPlan): boolean {
+    return plan.requiresRestart.some((entry) => entry.path.startsWith('nanohost.'));
+  }
+
+  /** Reads the live aggregate ceiling only while the process can admit through the resident. */
+  function readResidentTurnLimit(): number | null {
+    return nanoHostTransportFenced ? null : (options.readNanoHostResidentTurnLimit?.() ?? null);
+  }
+
+  /** Combines the observed resident bound with the supplied admission setting. */
+  function observeNanoHostTurnCapacity(desired: number, resident: number | null) {
+    return { desired, effective: resident === null ? null : Math.min(desired, resident) };
+  }
+
+  /** Describes an immediate lower setting or a resident-bound increase. */
+  function reportCandidateCapacity(
+    plan: RuntimeConfigReloadPlan,
+    previous: RuntimeConfigSnapshot,
+    next: RuntimeConfigSnapshot,
+    residentTurnLimit = readResidentTurnLimit()
+  ): RuntimeConfigReloadPlan {
+    const before = configuredNanoHostTurnLimit(previous);
+    const desired = configuredNanoHostTurnLimit(next);
+    if (before === undefined || desired === undefined || before === desired) return plan;
+
+    const { effective } = observeNanoHostTurnCapacity(
+      desired,
+      hasNanoHostRestartChange(plan) ? null : residentTurnLimit
+    );
+    const summary =
+      effective === null
+        ? `The configured NanoHost active Turn limit is ${desired}. The resident bound is unavailable.`
+        : `The configured NanoHost active Turn limit is ${desired}. The effective bound is ${effective}.`;
+    if (desired < before || effective === desired) {
+      return {
+        ...plan,
+        applied: [
+          ...plan.applied,
+          change('nanohost.maxActiveTurnsPerSandbox', 'hot-swappable', 'applied', summary),
+        ],
+      };
+    }
+    return {
+      ...plan,
+      deferred: [
+        ...plan.deferred,
+        change('nanohost.maxActiveTurnsPerSandbox', 'hot-swappable', 'deferred', summary),
+      ],
+    };
+  }
+
   /** Creates status from the active snapshot, reload outcomes, and current restart reasons. */
-  function createRuntimeConfigStatus(): RuntimeConfigStatus {
+  function createRuntimeConfigStatus(
+    residentTurnLimit = readResidentTurnLimit()
+  ): SetupDiagnosticsResponse['runtimeConfig'] {
+    const desired = configuredNanoHostTurnLimit(current);
     return {
       currentVersion: current.version,
       loadedAt: current.loadedAt,
       lastReload,
       lastFailedReload,
       pendingRestart: currentRestartReasons(pendingRestart),
+      ...(desired === undefined
+        ? {}
+        : { nanoHostTurnCapacity: observeNanoHostTurnCapacity(desired, residentTurnLimit) }),
     };
   }
+}
+
+/** Returns the admission owner's configured default only when NanoHost is enabled. */
+function configuredNanoHostTurnLimit(snapshot: RuntimeConfigSnapshot): number | undefined {
+  const host = snapshot.openKitConfig.nanohost;
+  return host ? (host.maxActiveTurnsPerSandbox ?? HARNESS_DEFAULT_MAX_ACTIVE_TURNS) : undefined;
 }
 
 /** Rejects a catalog edit that removes the last context source for a still-listed model; new unknown models keep their warning. */

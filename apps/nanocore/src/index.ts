@@ -659,11 +659,17 @@ const providerCredentialConfigured = createProviderCredentialConfigured({
   coreDb,
   fallback: resolveEnvSecretRef,
 });
+const bootNanoHostIdentity = runtimeConfigSnapshot.openKitConfig.nanohost?.identityId;
 const runtimeConfigManager = createRuntimeConfigManager({
   captureCoverage: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
   checkListenerTlsChange,
   dataRoot,
   initialSnapshot: runtimeConfigSnapshot,
+  readNanoHostResidentTurnLimit: () =>
+    bootNanoHostIdentity &&
+    nanohostTransportSessionAuthority.authoritativeGeneration(bootNanoHostIdentity) !== null
+      ? (workerLifecycleRuntime?.readNanoHostResidentTurnLimit() ?? null)
+      : null,
   subscriptionAccounts: providerSubscriptionAccountManager,
   providerCredentialConfigured,
 });

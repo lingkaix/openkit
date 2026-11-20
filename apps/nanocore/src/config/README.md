@@ -73,6 +73,8 @@ The default Provider file template allocates a canonical `vault` UUIDv7 candidat
 
 NanoHost bind, identity, deployment, rendezvous and credential references are restart-required. Dry-run reports startup differences without changing transport authority. A real safe or strict reload that observes a changed startup field permanently fences the predecessor and rejects new NanoHost admission until App restart, including after a later file revert; strict rejection still preserves the loaded snapshot. Safe reload preserves the prior complete NanoHost stanza across addition or removal, and preserves changed startup children for an existing stanza. A capacity-only change keeps its existing live behavior. This rule does not rebind a listener, rotate a Token or restart a Runtime Epoch.
 
+The NanoHost capacity plan reports a decrease or an attainable increase as applied. An increase above the resident bound is deferred. Setup diagnostics show the desired limit and reads the current resident on each request. A null effective value means the runtime has no comparable resident observation.
+
 Runtime status, validation and reload plans show the current `nanohost.transport` restart reason for the lifetime of the fence. The reason persists after a file revert or an unacknowledged native readiness update. Strict reload can still apply a live-only candidate while this reason is present.
 
 Authored Server, Workspace and Provider files require `schemaVersion: 1`. Native file boundaries check the shared retained-format header before decoding. The absent Server file still yields empty resolved settings without writing a file; logical Provider registry values omit the authored-file header. Fresh templates write v1 explicitly, and unmarked retained files are refused.

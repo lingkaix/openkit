@@ -517,10 +517,19 @@ export class RuntimeConfigFileService {
     const tempRoot = this.createOverlayDataRoot(input);
 
     try {
-      const { snapshot, plan } = this.runtimeConfigManager.prepareReloadCandidate(
+      const { snapshot, plan: authoredPlan } = this.runtimeConfigManager.prepareReloadCandidate(
         tempRoot,
         input.mode
       );
+      const plan =
+        authoredPlan.rejected.length > 0 ||
+        (input.mode === 'strict' && authoredPlan.requiresRestart.length > 0)
+          ? authoredPlan
+          : this.runtimeConfigManager.reportCandidateCapacity(
+              authoredPlan,
+              this.runtimeConfigManager.current(),
+              snapshot
+            );
       const runtimeDiagnostics = snapshot.diagnostics.map((diagnostic) =>
         runtimeDiagnosticToFileDiagnostic(diagnostic)
       );

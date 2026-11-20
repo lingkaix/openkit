@@ -437,6 +437,8 @@ export interface ConfiguredWorkerLifecycleRuntime {
     readonly status: 'cancelled' | 'completed' | 'failed' | 'interrupted';
     readonly turn: ReturnType<FsStore['getTurnById']>;
   }>;
+  /** Reads the comparable bound of the current process-owned resident, when known. */
+  readonly readNanoHostResidentTurnLimit: () => number | null;
   /** Sole production runtime target family. */
   readonly runtimeTargetKind: 'nanohost';
   /** Restores read-only access to one exact durable backend session. */
@@ -641,6 +643,7 @@ function createNanoHostWorkerLifecycleRuntime(
       backend.acceptHarnessResult(result, settlement),
     failNanoHostHarnessDelivery: (command, failure) =>
       backend.failHarnessDelivery(command, failure),
+    readNanoHostResidentTurnLimit: () => backend.readResidentTurnLimit(),
     runtimeTargetKind: 'nanohost',
     reconcileAcceptedFinalStatus: async (session) => {
       if (turnExecutor instanceof SimulatedTurnExecutor) {
@@ -953,6 +956,7 @@ interface NanoHostSharedSandbox {
   providerComparisonValues: Record<string, string> | null;
   /** Live-instance deletion proof shared with sibling closeout; never restored or set on uncertainty. */
   writerCleanupProved: boolean;
+  readonly maxActiveTurns: number;
   readonly imageDigest: string;
   readonly originPhysicalEpoch: string;
   readonly runtimeTargetId: string;
@@ -1114,6 +1118,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!Number.isSafeInteger(capacity) || capacity < 1)
       throw new Error('NanoHost active-Turn capacity is invalid.');
     return capacity;
+  }
+
+  /** Projects only one usable local Sandbox and a comparable pinned Harness bound. */
+  public readResidentTurnLimit(): number | null {
+    if (this.sharedSandboxes.size !== 1 || this.livePartialMaterializations.size > 0) return null;
+    const sandbox = this.sharedSandboxes.values().next().value;
+    if (!sandbox?.bridgeOpen || sandbox.writerCleanupProved) return null;
+    const harnesses = [...this.sharedHarnesses.values()].filter(
+      (entry) => entry.sandbox === sandbox
+    );
+    if (harnesses.length !== 1) return null;
+    return Math.min(sandbox.maxActiveTurns, harnesses[0]!.maxActiveTurns);
   }
 
   /** Binds dispatched Turn route tokens and adds Vault values only to private wire bytes. */
@@ -2016,6 +2032,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 sandbox_binding_ref AS sandboxBindingRef,
                 sandbox_integration_binding_ref AS sandboxIntegrationBindingRef,
                 image_digest AS imageDigest,
+                max_active_turns AS maxActiveTurns,
                 origin_physical_epoch AS originPhysicalEpoch,
                 lifecycle_state AS lifecycleState,
                 health_state AS healthState,
@@ -2029,6 +2046,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           readonly drainState: string;
           readonly healthState: string;
           readonly imageDigest: string;
+          readonly maxActiveTurns: number;
           readonly lifecycleState: string;
           readonly originPhysicalEpoch: string;
           readonly runtimeTargetId: string;
@@ -2055,6 +2073,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       providerComparisonValues: null,
       writerCleanupProved: false,
       imageDigest: row.imageDigest,
+      maxActiveTurns: row.maxActiveTurns,
       originPhysicalEpoch: row.originPhysicalEpoch,
       runtimeTargetId: row.runtimeTargetId,
       sandboxBindingRef: row.sandboxBindingRef,
@@ -2099,6 +2118,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 s.runtime_target_id AS runtimeTargetId,
                 s.sandbox_binding_ref AS sandboxBindingRef,
                 s.image_digest AS imageDigest,
+                s.max_active_turns AS sandboxMaxActiveTurns,
                 s.origin_physical_epoch AS originPhysicalEpoch,
                 s.sandbox_integration_binding_ref AS sandboxIntegrationBindingRef,
                 s.lifecycle_state AS sandboxLifecycleState,
@@ -2139,6 +2159,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           readonly sandboxLifecycleState: string;
           readonly sandboxIntegrationBindingRef: string;
           readonly sandboxRuntimeId: string;
+          readonly sandboxMaxActiveTurns: number;
         }
       | undefined;
     if (!row) {
@@ -2166,6 +2187,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       providerComparisonValues: null,
       writerCleanupProved: false,
       imageDigest: row.imageDigest,
+      maxActiveTurns: row.sandboxMaxActiveTurns,
       originPhysicalEpoch: row.originPhysicalEpoch,
       runtimeTargetId: row.runtimeTargetId,
       sandboxBindingRef: row.sandboxBindingRef,
@@ -4679,6 +4701,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         providerComparisonValues: {},
         writerCleanupProved: false,
         imageDigest,
+        maxActiveTurns: this.configuredActiveTurnCapacity(),
         originPhysicalEpoch,
         runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
         sandboxBindingRef:
@@ -4700,7 +4723,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         .digest('hex')
         .slice(0, 24);
       sharedHarness = {
-        maxActiveTurns: this.configuredActiveTurnCapacity(),
+        maxActiveTurns: this.sharedSandboxes.has(sandboxCompatibilityKey)
+          ? this.configuredActiveTurnCapacity()
+          : sharedSandbox.maxActiveTurns,
         adapterId,
         adapterVersion,
         bindings: new Map(),

@@ -1,4 +1,4 @@
-import type { RuntimeConfigStatus, SetupDiagnosticsResponse } from '@openkit/app-api-schemas';
+import type { SetupDiagnosticsResponse } from '@openkit/app-api-schemas';
 import type { GatewayConfig } from '@openkit/config-schema';
 import type { AgentManifest } from '../agents/manifest.js';
 import { type AgentReadinessStatus, computeReadiness } from '../agents/readiness.js';
@@ -40,7 +40,7 @@ interface CreateSetupDiagnosticsInput {
   /** Agent manifests available for setup and readiness checks. */
   agentManifests: AgentManifest[];
   /** Runtime config reload status. */
-  runtimeConfig: RuntimeConfigStatus;
+  runtimeConfig: SetupDiagnosticsResponse['runtimeConfig'];
 }
 
 /**

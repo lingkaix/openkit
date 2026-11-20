@@ -1,3 +1,7 @@
+import {
+  RuntimeConfigStatusSchema,
+  SetupDiagnosticsResponseSchema,
+} from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
 import { ProviderRegistry } from '../providers/registry.js';
@@ -33,6 +37,7 @@ describe('createSetupDiagnostics', () => {
         lastReload: null,
         loadedAt: '2026-01-01T00:00:00.000Z',
         pendingRestart: [],
+        nanoHostTurnCapacity: { desired: 4, effective: null },
         staleSessions: [],
       },
     });
@@ -52,6 +57,9 @@ describe('createSetupDiagnostics', () => {
       status: 'ready',
     });
     expect(diagnostics.server.dataRoot).toBe('configured');
+    const status = SetupDiagnosticsResponseSchema.parse(diagnostics).runtimeConfig;
+    expect(status.nanoHostTurnCapacity).toEqual({ desired: 4, effective: null });
+    expect(RuntimeConfigStatusSchema.parse(status)).not.toHaveProperty('nanoHostTurnCapacity');
     expect(JSON.stringify(diagnostics)).not.toContain('/tmp/openkit-test');
     expect(JSON.stringify(diagnostics)).not.toContain('sk-secret');
   });
