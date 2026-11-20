@@ -705,54 +705,37 @@ describe('E7 actual Administration entry classification', () => {
       const { prepareSecurityThread, selectSecurityThread } = await import(
         '../security/threads.js'
       );
-      const f = await fixture({ seedInvestigation: kind === 'registered' });
+      const f = await fixture();
       const trigger = new SecurityTriggerStore(f.coreDb);
-      await trigger.enable(f.actor);
-      await trigger.stop(f.actor);
-      const alarm = (await trigger.readAlarms()).find(
-        (row) => row.recipientUserId === f.actor.userId
-      );
-      expect(
-        alarm,
-        'The original N1 stop must produce a real pending recipient alarm.'
-      ).toBeDefined();
-      if (!alarm) throw new Error('Required original pending security alarm is unavailable.');
-      const destination = await prepareSecurityThread({
-        coreDb: f.coreDb,
-        store: f.store,
-        requestId: alarm.requestId,
-      });
-      expect(destination.recipientUserId).toBe(f.actor.userId);
-      expect(destination.workspaceId).toBe(f.workspaceId);
-      const registered = f.store.getThread(destination.workspaceId, destination.threadId);
-      let threadId = destination.threadId;
+      await expect(trigger.enable(f.actor)).rejects.toMatchObject({ code: 'forbidden' });
+      await expect(trigger.stop(f.actor)).rejects.toMatchObject({ code: 'forbidden' });
+      expect(await trigger.readAlarms()).toEqual([]);
+      await expect(
+        prepareSecurityThread({
+          coreDb: f.coreDb,
+          store: f.store,
+          requestId: 'request',
+        })
+      ).rejects.toMatchObject({ code: 'forbidden' });
+      let threadId = f.thread.id;
       if (kind === 'lookalike') {
         const ordinary = await f.store.createThread(
           f.workspaceId,
-          registered.name,
+          f.thread.name,
           undefined,
           'administration',
           { visibility: 'private', privateOwnerUserId: f.actor.userId }
         );
         threadId = ordinary.id;
-        expect(
-          await selectSecurityThread({
-            coreDb: f.coreDb,
-            store: f.store,
-            workspaceId: f.workspaceId,
-            threadId,
-          })
-        ).toBeNull();
-      } else {
-        expect(
-          await selectSecurityThread({
-            coreDb: f.coreDb,
-            store: f.store,
-            workspaceId: f.workspaceId,
-            threadId,
-          })
-        ).toMatchObject(destination);
       }
+      expect(
+        await selectSecurityThread({
+          coreDb: f.coreDb,
+          store: f.store,
+          workspaceId: f.workspaceId,
+          threadId,
+        })
+      ).toBeNull();
       const requestId = randomUUID();
       const [path, init] = operationRequest(
         'administration.conversation-submit',
@@ -773,7 +756,7 @@ describe('E7 actual Administration entry classification', () => {
         expect(body.outcome).toBe('answered');
         const turn = f.store.getTurn(f.workspaceId, threadId, body.turn.id);
         expect(turn).toMatchObject({
-          agentId: kind === 'registered' ? 'security-investigation' : 'assistant',
+          agentId: 'assistant',
           triggerActor: { kind: 'user', id: f.actor.userId },
           status: 'completed',
         });
@@ -821,21 +804,19 @@ it('E8 keeps person-only report preparation outside the actual Administration mo
   const { publishSecurityAlarm } = await import('../security/publication.js');
   const f = await fixture();
   const trigger = new SecurityTriggerStore(f.coreDb);
-  await trigger.enable(f.actor);
-  await trigger.stop(f.actor);
-  const alarm = (await trigger.readAlarms()).find((row) => row.recipientUserId === f.actor.userId);
-  expect(alarm).toBeDefined();
-  if (!alarm) throw new Error('Required original N1 alarm unavailable.');
-  const source = await publishSecurityAlarm({
-    coreDb: f.coreDb,
-    store: f.store,
-    requestId: alarm.requestId,
-  });
-  expect(source.status).toBe('published');
-  if (source.status !== 'published') throw new Error('Required actual N3 publication unavailable.');
-  const before = f.store.listArtifacts(source.publication.workspaceId);
+  await expect(trigger.enable(f.actor)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(trigger.stop(f.actor)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(await trigger.readAlarms()).toEqual([]);
+  await expect(
+    publishSecurityAlarm({
+      coreDb: f.coreDb,
+      store: f.store,
+      requestId: 'request',
+    })
+  ).rejects.toMatchObject({ code: 'forbidden' });
+  const before = f.store.listArtifacts(f.workspaceId);
   const threadIds = f.store
-    .listThreads(source.publication.workspaceId)
+    .listThreads(f.workspaceId)
     .map((thread) => thread.id)
     .sort();
   const [path, init] = operationRequest(
@@ -846,7 +827,7 @@ it('E8 keeps person-only report preparation outside the actual Administration mo
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         requestId: randomUUID(),
-        threadId: source.publication.threadId,
+        threadId: f.thread.id,
         input: 'Read the report. Do not start work or publish anything.',
       }),
     }
@@ -870,8 +851,8 @@ it('E8 keeps person-only report preparation outside the actual Administration mo
           name: 'administration_report-prepare',
           arguments: JSON.stringify({
             requestId: randomUUID(),
-            threadId: source.publication.threadId,
-            sourceRequestId: alarm.requestId,
+            threadId: f.thread.id,
+            sourceRequestId: randomUUID(),
             route: 'managed-issue',
             description: 'Publish without a person.',
           }),
@@ -882,10 +863,10 @@ it('E8 keeps person-only report preparation outside the actual Administration mo
     expect(response.status).toBe(200);
     const body = (await response.json()) as SubmitAdministrationConversationResponse;
     expect(body.outcome).not.toBe('task-handoff');
-    expect(f.store.listArtifacts(source.publication.workspaceId)).toEqual(before);
+    expect(f.store.listArtifacts(f.workspaceId)).toEqual(before);
     expect(
       f.store
-        .listThreads(source.publication.workspaceId)
+        .listThreads(f.workspaceId)
         .map((thread) => thread.id)
         .sort()
     ).toEqual(threadIds);

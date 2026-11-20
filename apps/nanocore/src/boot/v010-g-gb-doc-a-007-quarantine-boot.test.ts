@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { type ChildProcess, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { SECURITY_TRIGGER_OWNER } from '../storage/security-trigger-port.js';
 import { recordWorkspaceOwnerMembership } from '../storage/workspace-owner-records.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from '../test-support/store.js';
@@ -132,6 +133,33 @@ describe('GB-DOC-A-007 boot quarantine', () => {
     expect(diagnostics.body).toMatchObject({ boot: { acceptingProductWork: true } });
     expect(JSON.stringify(diagnostics.body)).not.toContain('storage.scope-quarantined');
     expect(JSON.stringify(diagnostics.body)).not.toContain(`workspace:${healthyId}`);
+  }, 120_000);
+
+  it('recovers through boot with the security trigger file absent and no trigger effect', async () => {
+    const dataRoot = createRoot();
+    const [workspaceId] = await seedWorkspaces(dataRoot, ['Healthy Workspace']);
+    const triggerFile = join(dataRoot, SECURITY_TRIGGER_OWNER.databasePath);
+    expect(existsSync(triggerFile)).toBe(false);
+    const server = await startServer(dataRoot);
+
+    expect(server.output()).toContain('App server is running');
+    expect(server.output()).not.toMatch(/NanoCore boot failed/);
+    const diagnostics = await operation(server.baseUrl, 'diagnostics.app', {});
+    expect(diagnostics.status).toBe(200);
+    expect(diagnostics.body).toMatchObject({ boot: { acceptingProductWork: true } });
+    expect(JSON.stringify(diagnostics.body)).not.toMatch(
+      /scheduler\.(attempt_recovery_failed|checkpoint_recovery_required)/
+    );
+    expect(server.output()).not.toMatch(
+      /scheduler\.(recovery_stage_failed|attempt_maintenance_failed)/
+    );
+    const threads = await operation(server.baseUrl, 'thread.list', { workspaceId });
+    expect(threads.status).toBe(200);
+    expect(threads.body).toMatchObject({ items: [] });
+    const artifacts = await operation(server.baseUrl, 'artifact.list', { workspaceId });
+    expect(artifacts.status).toBe(200);
+    expect(artifacts.body).toMatchObject({ items: [] });
+    expect(existsSync(triggerFile)).toBe(false);
   }, 120_000);
 });
 

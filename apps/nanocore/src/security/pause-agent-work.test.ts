@@ -11,7 +11,6 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { SecurityTriggerStore } from './trigger.js';
 
 it('persists administrator pause/unpause, loads it at boot, raises R1, and keeps reads/configuration available', async () => {
   const root = mkdtempSync(join(tmpdir(), 'persistent-agent-pause-'));
@@ -34,7 +33,6 @@ it('persists administrator pause/unpause, loads it at boot, raises R1, and keeps
   const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Pause admission');
   const manager = createRuntimeConfigManager({ dataRoot: root });
   const app = createApp({ dataRoot: root, coreDb, store, runtimeConfigManager: manager });
-  const trigger = new SecurityTriggerStore(coreDb);
   const invoke = (id: string, body: unknown) =>
     app.request(`/api/app/operations/${id}`, {
       method: 'POST',
@@ -47,7 +45,6 @@ it('persists administrator pause/unpause, loads it at boot, raises R1, and keeps
       body: JSON.stringify(body),
     });
   try {
-    await trigger.enable({ kind: 'local', userId: FIXTURE_LOCAL_USER_ID });
     for (const paused of [true, false]) {
       const read = await (await invoke('runtime.file-read', { id: 'server.jsonc' })).json();
       const response = await invoke('runtime.file-update', {
@@ -90,20 +87,6 @@ it('persists administrator pause/unpause, loads it at boot, raises R1, and keeps
         }
         expect(store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toEqual([]);
       }
-      await trigger.detectAudit();
-      const detected = (await trigger.readDetections()).events.filter(
-        (event) => event.action === 'server.config.update'
-      );
-      expect(detected).toHaveLength(paused ? 1 : 2);
-      expect(
-        detected.every(
-          (event) =>
-            event.status === 'detected' &&
-            event.rule === 'R1' &&
-            event.notify === 'immediate' &&
-            event.missingFields.length === 0
-        )
-      ).toBe(true);
     }
   } finally {
     await shutdownControlStoreWorkerClient();

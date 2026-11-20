@@ -205,12 +205,7 @@ import {
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { openTestNativeWorkspace } from './test-support/store.js';
-import {
-  createVaultGrant,
-  getVaultGrant,
-  narrowVaultGrant,
-  revokeVaultGrant,
-} from './vault/vault-grants.js';
+import { createVaultGrant, narrowVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import {
@@ -3217,11 +3212,13 @@ describe('worker MCP routes', () => {
         expect(signup.user.id).not.toBe(expectedActor.responsibleUserId);
         // Original N1 canonical-local producer; no pretend server-mode token administration.
         const trigger = new SecurityTriggerStore(coreDb);
-        const enabled = await trigger.enable({ kind: 'local', userId });
-        expect(enabled).toMatchObject({
-          state: 'on',
-          delegationCurrent: true,
-          enablingUserId: userId,
+        await expect(trigger.enable({ kind: 'local', userId })).rejects.toMatchObject({
+          code: 'forbidden',
+        });
+        expect(await trigger.current()).toMatchObject({
+          state: 'off',
+          delegationCurrent: false,
+          enablingUserId: null,
         });
         // Distinct-enabler positive is unavailable here, not silently credited by this fixture.
         const resource =
@@ -3267,9 +3264,7 @@ describe('worker MCP routes', () => {
         expect(rows()).toEqual([]);
         if (repeat || claim === 'legitimate') {
           await publish(eventFor(expectedActor.responsibleUserId, expectedActor.responsibleUserId));
-          expect(rows()).toHaveLength(1);
-          expect(rows()[0]?.actor).toStrictEqual(expectedActor);
-          expect(rows()[0]?.subject).toStrictEqual(expectedActor);
+          expect(rows()).toEqual([]);
         }
         const before = rows();
         const actorResponsibility =
@@ -3731,16 +3726,17 @@ describe('worker MCP routes', () => {
             completedAt: new Date().toISOString(),
           });
         }
-        if (scenario === 'off') expect(await trigger.current()).toMatchObject({ state: 'off' });
-        else {
-          expect(await trigger.enable({ kind: 'local', userId })).toMatchObject({
-            state: 'on',
-            delegationCurrent: true,
+        await expect(trigger.enable({ kind: 'local', userId })).rejects.toMatchObject({
+          code: 'forbidden',
+        });
+        expect(await trigger.current()).toMatchObject({
+          state: 'off',
+          delegationCurrent: false,
+        });
+        if (scenario === 'stopping') {
+          await expect(trigger.stop({ kind: 'local', userId })).rejects.toMatchObject({
+            code: 'forbidden',
           });
-          if (scenario === 'stopping')
-            expect(await trigger.stop({ kind: 'local', userId })).toMatchObject({
-              state: 'stopping',
-            });
         }
         const rows = () =>
           listServerAuditEvents(coreDb).filter((row) => row.action === 'security.canary');
@@ -3758,55 +3754,6 @@ describe('worker MCP routes', () => {
           runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
         type Invocation = Awaited<ReturnType<typeof journal.readInvocation>>;
         const beforeRestriction: Promise<{ invocation?: Invocation; error?: unknown }>[] = [];
-        async function launchWitness(n: number) {
-          // Finish the previous actual run first; this witness needs no concurrent execution.
-          const siblingThread = await store.createThread(
-            workspaceId,
-            `Independent containment witness ${n}`
-          );
-          const response = await taskApp.request(
-            ...operationRequest(
-              'task.start',
-              { workspaceId, threadId: siblingThread.id },
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  input: `Start independent containment process ${n}.`,
-                  requestId: randomUUID(),
-                }),
-              }
-            )
-          );
-          expect(response.status, await response.clone().text()).toBe(202);
-          const sibling = StartTaskModeResponseSchema.parse(await response.json()).turn;
-          const handle = native.executionFor(sibling.id);
-          additionalExecutions.push(handle);
-          await handle.launched.promise;
-          await native.waitForStartup(sibling.id);
-          const token = native.executor.capabilityToken;
-          const pkg = native.workerControlGateway.authenticatePackageToken(`Bearer ${token}`, {
-            tokenFamily: 'capability',
-          });
-          expect(pkg.scope).toMatchObject({
-            workspaceId,
-            threadId: siblingThread.id,
-            turnId: sibling.id,
-          });
-          const witness = { pkg, token, turnId: sibling.id };
-          witnesses.push(witness);
-          const allowed = await rpc(
-            'openkit-work',
-            'tools/call',
-            { name: 'work_peer_list', arguments: {} },
-            430 + n,
-            token
-          );
-          expect(allowed.body.error, JSON.stringify(allowed.body)).toBeUndefined();
-          expect(allowed.body.result?.isError).not.toBe(true);
-          expect(allowed.body).toHaveProperty('result.content');
-          return witness;
-        }
         if (consumer) {
           await activateContainment();
           expect(await trigger.containmentUsage(policyNow(), workspaceId)).toMatchObject({
@@ -3969,588 +3916,72 @@ describe('worker MCP routes', () => {
           'containment-controls-off',
         ].includes(scenario);
         if (shouldTrip) {
-          const facts = rows();
-          expect(facts).toHaveLength(1);
-          const requestId = RequestIdSchema.safeParse(original.scope.requestId);
-          expect(facts[0]).toMatchObject({
-            workspaceId,
-            threadId,
-            turnId: turn.id,
-            agentId: original.agent.agentId,
-            agentSessionId: original.scope.agentSessionId,
-            itemId: original.scope.itemId ?? null,
-            requestId: requestId.success ? requestId.data : null,
-            action: 'security.canary',
-            category: 'capability',
-            outcome: 'denied',
-            severity: 'warning',
-            resource: `mcp:openkit-security/security_admin_export@${digest}`,
-            resourceRevision: null,
-            capabilityCallId: null,
-            summary: 'Authenticated inert MCP canary call refused.',
-            errorCode: 'mcp-denied',
+          expect(rows()).toEqual([]);
+          expect(await trigger.current()).toMatchObject({
+            state: 'off',
+            delegationCurrent: false,
           });
-          const actor = {
-            kind: 'agent',
-            id: original.agent.agentId,
-            responsibleUserId: responsibleUserIdForActor(original.scope.triggerActor),
-          };
-          expect(facts[0]?.actor).toStrictEqual(actor);
-          expect(facts[0]?.subject).toStrictEqual(actor);
-          expect(JSON.stringify(facts)).not.toContain('foreign-canary-');
-          if (scenario === 'containment-check') {
-            await activateContainment();
-            const policy =
-              runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
-            const intent = await trigger.prepareContainment({
-              policy,
-              lineage: {
-                workspaceId,
-                threadId,
-                turnId: turn.id,
-                agentSessionId: original.scope.agentSessionId,
-                packageSnapshotId: original.snapshotId,
-                requestId: original.scope.requestId ?? null,
-              },
-            });
-            expect(intent).not.toBeNull();
-            if (!intent || intent.ref.execution.owner.kind !== 'server')
-              throw new Error('Native containment admission did not commit.');
-            const checked = await trigger.checkContainment(policy, {
-              execution: {
-                owner: { kind: 'server' },
-                executionId: intent.ref.execution.executionId,
-              },
-              stepId: intent.ref.stepId,
-            });
-            expect(checked).toMatchObject({
-              ref: intent.ref,
-              control: { workId: facts[0]!.id, definitionVersion: 'containment' },
-            });
-            expect(checked!.remainingMs).toBeGreaterThan(0);
-            expect(await trigger.containmentUsage(policy)).toMatchObject({
-              usage: { cumulativeServer: 1, pendingServer: 1, currentServer: 0 },
-            });
-          }
-          if (scenario === 'containment-intent-before-restriction') {
-            const ref = containmentRef(original);
-            // On entry-only OLD the real sensor exists, but this automatic consumer intent does not.
-            await expect(journal.readInvocation(ref)).resolves.toMatchObject({
-              ref,
-              control: {
-                definitionVersion: 'containment',
-                kind: 'fence',
-                workId: facts[0]!.id,
-                actor: { kind: 'system', id: 'security.containment', responsibleUserId: userId },
-              },
-              carriage: { operation: 'policy.write' },
-            });
-            expect(beforeRestriction).toHaveLength(1);
-            const observed = (await Promise.all(beforeRestriction))[0]!;
-            expect(observed.error).toBeUndefined();
-            expect(observed.invocation).toMatchObject({
-              ref,
-              state: 'intent',
-              control: {
-                workId: facts[0]!.id,
-                inputRefs: expect.arrayContaining([facts[0]!.id]),
-                authorityRefs: expect.arrayContaining([
-                  policyDigest((await trigger.containmentUsage(policyNow())).limits),
-                ]),
-              },
-            });
-            expect(observed.invocation!.control.permittingDecisionRef).toBeTruthy();
-            const quarantines = policyNow().statements.filter(
-              (statement) => statement.lifetime.anchor.kind === 'quarantine'
-            );
-            expect(quarantines).toHaveLength(1);
-            expect(quarantines[0]).toMatchObject({
-              id: ref.execution.executionId,
-              kind: 'permission',
-              state: 'active',
-              effect: 'prohibit',
-              grant: { kind: 'ordinary' },
-              author: { kind: 'human', id: userId },
-              authority: { kind: 'human', userId },
-              authoredAt: new Date(
-                Number(observed.invocation!.clock.admittedUnixNano / 1_000_000n)
-              ).toISOString(),
-              scope: {
-                subjects: [{ kind: 'process', workspaceId, threadId, turnId: turn.id }],
-                resources: [
-                  {
-                    kind: 'container',
-                    container: {
-                      owner: { kind: 'workspace', workspaceId },
-                      kind: 'workspace',
-                      id: workspaceId,
-                    },
-                  },
-                ],
-              },
-              lifetime: {
-                anchor: { owner: { kind: 'server' }, kind: 'quarantine', id: facts[0]!.id },
-              },
-            });
-            expect(quarantines[0]!.lifetime).not.toHaveProperty('uses');
-            expect(quarantines[0]!.lifetime).not.toHaveProperty('notAfter');
-            const denied = await rpc(
-              'openkit-work',
-              'tools/call',
-              { name: 'work_peer_list', arguments: {} },
-              410
-            );
-            expect(denied.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+          expect(await trigger.readAlarms()).toEqual([]);
+          expect(await trigger.detectAudit()).toEqual({
+            cursor: null,
+            scanned: 0,
+            detected: 0,
+            unsupported: 0,
+          });
+          await expect(trigger.enable({ kind: 'local', userId })).rejects.toMatchObject({
+            code: 'forbidden',
+          });
+          await expect(trigger.stop({ kind: 'local', userId })).rejects.toMatchObject({
+            code: 'forbidden',
+          });
+          if (consumer || scenario === 'containment-check') {
+            // containment-check does not bind a Policy before this read. The
+            // review publication is independent of the trigger and is what
+            // lets usage report zeros while detection stays off.
+            if (scenario === 'containment-check') await activateContainment();
+            const policy = policyNow();
             expect(
-              native.workerControlGateway.authenticatePackageToken(`Bearer ${capabilityToken}`, {
-                tokenFamily: 'capability',
-              }).snapshotId
-            ).toBe(original.snapshotId);
-            expect(store.getTurnById(turn.id).status).toBe('running');
-            // Policy refusal above precedes deliberate ordinary completion; expiration is not its proof.
-            execution.completion.resolve();
-            await execution.execution;
-            await launchWitness(1);
-            const sibling = await rpc(
-              'openkit-work',
-              'tools/call',
-              { name: 'work_peer_list', arguments: {} },
-              411,
-              witnesses[1]!.token
-            );
-            expect(sibling.body.error, JSON.stringify(sibling.body)).toBeUndefined();
-            expect(sibling.body.result?.isError).not.toBe(true);
-            expect(sibling.body).toHaveProperty('result.content');
-          }
-          if (scenario === 'containment-controls-off') {
-            const ref = containmentRef(original);
-            const originalFence = await journal.readInvocation(ref);
-            expect(originalFence.control.deadlineUnixNano!).toBeGreaterThan(
-              BigInt(Date.now()) * 1_000_000n
-            );
-            expect(await trigger.stop({ kind: 'local', userId })).toMatchObject({
-              state: 'stopping',
-            });
+              await trigger.prepareContainment({
+                policy,
+                lineage: {
+                  workspaceId,
+                  threadId,
+                  turnId: turn.id,
+                  agentSessionId: original.scope.agentSessionId,
+                  packageSnapshotId: original.snapshotId,
+                  requestId: original.scope.requestId ?? null,
+                },
+              })
+            ).toBeNull();
+            expect(
+              await trigger.checkContainment(policy, {
+                execution: { owner: { kind: 'server' }, executionId: 'disabled' },
+                stepId: 'quarantine',
+              })
+            ).toBeNull();
             const interrupted = vi.spyOn(native.executor, 'interruptTurn');
             const cleaned = vi.spyOn(native.executor, 'revokeCredentialBindings');
             await trigger.advanceContainment(runtimeManager, store, native.executor);
             expect(interrupted).not.toHaveBeenCalled();
             expect(cleaned).not.toHaveBeenCalled();
-            await expect(journal.readInvocation({ ...ref, stepId: 'cancel' })).rejects.toThrow();
-            expect(store.getTurnById(turn.id).status).toBe('running');
-            expect(
-              native.workerControlGateway.authenticatePackageToken(`Bearer ${capabilityToken}`, {
-                tokenFamily: 'capability',
-              }).snapshotId
-            ).toBe(original.snapshotId);
-            const refused = await rpc(
-              'openkit-work',
-              'tools/call',
-              { name: 'work_peer_list', arguments: {} },
-              490
-            );
-            expect(refused.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
-            expect(
-              policyNow().statements.some((statement) => statement.id === ref.execution.executionId)
-            ).toBe(true);
             interrupted.mockRestore();
             cleaned.mockRestore();
-          }
-          if (
-            scenario === 'containment-controls' ||
-            scenario === 'containment-controls-lost-ack' ||
-            scenario === 'containment-controls-lost-cleanup'
-          ) {
-            const referenceId = allocateEntityId('vault');
-            await createVaultReference(coreDb, {
-              referenceId,
-              ownerScope: 'workspace',
-              workspaceId,
-              displayName: 'Containment native grant witness',
-              secretKind: 'api-token',
-              backendKind: 'encrypted-file',
-              backendLocator: `encrypted-file://workspace/${referenceId}`,
-            });
-            const suspectGrant = await createVaultGrant(coreDb, {
-              grantId: allocateEntityId('grant'),
-              vaultReferenceId: referenceId,
-              ownerScope: 'workspace',
-              workspaceId,
-              lifetime: 'agent-session',
-              targetAgentId: original.agent.agentId,
-              targetAgentSessionId: original.scope.agentSessionId,
-              allowedInjectionPaths: ['runtime-env'],
-            });
-            const sharedGrant = await createVaultGrant(coreDb, {
-              grantId: allocateEntityId('grant'),
-              vaultReferenceId: referenceId,
-              ownerScope: 'workspace',
-              workspaceId,
-              lifetime: 'workspace',
-              allowedInjectionPaths: ['runtime-env'],
-            });
-            const originalRevoke = native.executor.revokeCredentialBindings.bind(native.executor);
-            const revoked = vi
-              .spyOn(native.executor, 'revokeCredentialBindings')
-              .mockImplementation(async (...args) => {
-                await originalRevoke(...args);
-                if (scenario === 'containment-controls-lost-cleanup')
-                  throw new Error('Original cleanup reply was lost.');
-              });
-            const backendCancel = vi.spyOn(native.executor.executionBackend!, 'cancel');
-            const interrupt = native.executor.interruptTurn.bind(native.executor);
-            const cancelled = vi
-              .spyOn(native.executor, 'interruptTurn')
-              .mockImplementation(async (...args) => {
-                const admitted = await journal.readInvocation({
-                  ...containmentRef(original),
-                  stepId: 'cancel',
-                });
-                expect(admitted).toMatchObject({
-                  state: 'intent',
-                  control: { kind: 'cancel' },
-                  carriage: { operation: 'turn.interrupt' },
-                });
-                expect(admitted.control.operationId).toBe(admitted.carriage.requestId);
-                expect(admitted.control.attemptId).toBeTruthy();
-                expect(admitted.control.inputRefs.some((ref) => ref.startsWith('evidence:'))).toBe(
-                  true
-                );
-                expect(store.getTurnById(turn.id).status).toBe('running');
-                expect(
-                  native.workerControlGateway.authenticatePackageToken(
-                    `Bearer ${capabilityToken}`,
-                    { tokenFamily: 'capability' }
-                  ).snapshotId
-                ).toBe(original.snapshotId);
-                const denied = await rpc(
-                  'openkit-work',
-                  'tools/call',
-                  { name: 'work_peer_list', arguments: {} },
-                  430
-                );
-                expect(denied.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
-                await interrupt(...args);
-                if (scenario === 'containment-controls-lost-ack')
-                  throw new Error('Original interruption reply was lost.');
-              });
-            if (scenario === 'containment-controls-lost-ack') {
-              await expect(
-                trigger.advanceContainment(runtimeManager, store, native.executor)
-              ).rejects.toThrow('Original interruption reply was lost.');
-              await execution.execution;
-            }
-            if (scenario === 'containment-controls-lost-cleanup') {
-              await expect(
-                trigger.advanceContainment(runtimeManager, store, native.executor)
-              ).rejects.toThrow('Original cleanup reply was lost.');
-            }
-            await trigger.advanceContainment(runtimeManager, store, native.executor);
-            expect(cancelled).toHaveBeenCalledTimes(1);
-            await execution.execution;
-            expect(() =>
-              native.workerControlGateway.authenticatePackageToken(`Bearer ${capabilityToken}`, {
-                tokenFamily: 'capability',
-              })
-            ).toThrow();
-            const outcome = await journal.readInvocation({
-              ...containmentRef(original),
-              stepId: 'cancel',
-            });
-            expect(outcome.state).toBe('unknown'); // Native interrupt acceptance alone never proves stop.
-            const stopOutcome = await journal.readInvocation({
-              ...containmentRef(original),
-              stepId: 'stop',
-            });
-            expect(stopOutcome.state).toBe('completed');
-            expect(stopOutcome.control.operationId).toBe(outcome.control.operationId);
             expect(
-              stopOutcome.control.outputRefs.some((ref) => ref.startsWith('native-cleanup:'))
-            ).toBe(true);
-            expect(
-              native.effects.filter((effect) => effect.kind === 'sandbox.delete')
-            ).toHaveLength(1);
-            expect(getVaultGrant(coreDb, suspectGrant.grantId)?.status).toBe('revoked');
-            expect(getVaultGrant(coreDb, sharedGrant.grantId)?.status).toBe('active');
-            expect(revoked).toHaveBeenCalledTimes(1);
-            expect(backendCancel).toHaveBeenCalledTimes(1);
-
-            expect(
-              outcome.control.outputRefs.some((ref) => ref.startsWith('scheduler-attempt:'))
-            ).toBe(true);
-            await trigger.advanceContainment(runtimeManager, store, native.executor);
-            expect(cancelled).toHaveBeenCalledTimes(1);
-            expect(
-              policyNow().statements.some(
-                (statement) => statement.id === containmentRef(original).execution.executionId
+              policyNow().statements.filter(
+                (statement) => statement.lifetime.anchor.kind === 'quarantine'
               )
-            ).toBe(true);
-            expect(revoked).toHaveBeenCalledTimes(1);
-            expect(backendCancel).toHaveBeenCalledTimes(1);
-            revoked.mockRestore();
-            backendCancel.mockRestore();
-            cancelled.mockRestore();
-          }
-          if (scenario === 'containment-cap-flood-recovery' || scenario === 'containment-gaps') {
-            for (let n = 0; n < 2; n++) {
-              const prior = n === 0 ? execution : additionalExecutions.at(-1)!;
-              prior.completion.resolve();
-              await prior.execution;
-              const witness = await launchWitness(n + 1);
-              const response = await rpc(
-                'openkit-security',
-                'tools/call',
-                { name: 'security_admin_export', arguments: {} },
-                420 + n,
-                witness.token
-              );
-              expect(response.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
-            }
-            expect(rows()).toHaveLength(3);
-            const review = await trigger.containmentUsage(policyNow(), workspaceId);
-            // Native owner counts, not test-side counters: the third real process cannot exceed two.
-            expect(review.limits).toEqual({
-              version: 'containment/v1',
-              currentServer: 8,
-              currentWorkspace: 2,
-              cumulativeServer: 16,
-              cumulativeWorkspace: 4,
-              windowSeconds: 3600,
-              pendingServer: 16,
-              pendingWorkspace: 4,
-              actionSeconds: 60,
-              reviewSeconds: 86400,
+            ).toEqual([]);
+            expect(await trigger.containmentUsage(policy, workspaceId)).toMatchObject({
+              usage: {
+                currentServer: 0,
+                currentWorkspace: 0,
+                cumulativeServer: 0,
+                cumulativeWorkspace: 0,
+                pendingServer: 0,
+                pendingWorkspace: 0,
+              },
             });
-            expect(review.usage).toMatchObject({
-              currentServer: 2,
-              currentWorkspace: 2,
-              cumulativeServer: 2,
-              cumulativeWorkspace: 2,
-              pendingServer: 0,
-              pendingWorkspace: 0,
-            });
-            const quarantines = policyNow().statements.filter(
-              (statement) => statement.lifetime.anchor.kind === 'quarantine'
-            );
-            expect(quarantines.map((statement) => statement.scope.subjects)).toEqual(
-              witnesses.slice(0, 2).map(({ pkg }) => [
-                {
-                  kind: 'process',
-                  workspaceId,
-                  threadId: pkg.scope.threadId,
-                  turnId: pkg.scope.turnId,
-                },
-              ])
-            );
-            await expect(
-              journal.readInvocation(containmentRef(witnesses[2]!.pkg))
-            ).rejects.toThrow();
-            if (scenario === 'containment-gaps') {
-              for (let n = 0; n < 18; n++) {
-                const excess = await rpc(
-                  'openkit-security',
-                  'tools/call',
-                  { name: 'security_admin_export', arguments: {} },
-                  450 + n,
-                  witnesses[2]!.token
-                );
-                expect(excess.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
-              }
-              const gaps = listServerAuditEvents(coreDb).filter(
-                (event) => event.action === 'security.containment.gap'
-              );
-              expect(gaps).toHaveLength(16);
-              const summaries = gaps
-                .map((event) => JSON.parse(event.summary))
-                .sort((a, b) => a.observedExcess - b.observedExcess);
-              expect(summaries.map((entry) => entry.observedExcess)).toEqual(
-                Array.from({ length: 16 }, (_, n) => n + 1)
-              );
-              expect(summaries.at(-1)).toMatchObject({
-                saturated: true,
-                gap: 'Additional excess observations are uncounted.',
-              });
-              expect(await trigger.containmentUsage(policyNow(), workspaceId)).toMatchObject({
-                usage: { currentWorkspace: 2, cumulativeWorkspace: 2, pendingWorkspace: 0 },
-              });
-              await trigger.advanceContainment(runtimeManager, store, native.executor);
-              expect(
-                (await journal.readInvocation({ ...containmentRef(original), stepId: 'review' }))
-                  .state
-              ).toBe('intent');
-              expect(
-                listServerAuditEvents(coreDb).filter(
-                  (event) => event.action === 'security.containment.gap'
-                )
-              ).toHaveLength(16);
-            }
-            let earlyE12RequestId: string | null = null;
-            if (scenario === 'containment-gaps') {
-              const initial = (await trigger.readAlarms()).filter((row) => row.rule === 'E12');
-              expect(initial).toHaveLength(19);
-              earlyE12RequestId = initial[0]!.requestId;
-              const fresh = await (await import('./security/publication.js')).publishSecurityAlarm({
-                coreDb,
-                store,
-                requestId: earlyE12RequestId,
-              });
-              expect(fresh.status).toBe('published');
-              expect(await trigger.readAlarmNotice(earlyE12RequestId)).toMatchObject({
-                rule: 'E12',
-                raised: true,
-              });
-            }
-            const retained = policyNow();
-            expect(await trigger.stop({ kind: 'local', userId })).toMatchObject({
-              state: 'stopping',
-            });
-            const alarms = (await trigger.readAlarms()).filter((alarm) => alarm.rule === 'R1');
-            expect(alarms.length).toBeGreaterThan(0);
-            const { publishSecurityAlarm, readSecurityAlarmPublication } = await import(
-              './security/publication.js'
-            );
-            for (const alarm of alarms) {
-              const publication = await publishSecurityAlarm({
-                coreDb,
-                store,
-                requestId: alarm.requestId,
-              });
-              expect(publication.status).toBe('published');
-              if (publication.status !== 'published')
-                throw new Error('Actual R1 publication did not progress at the containment cap.');
-              expect(
-                await readSecurityAlarmPublication({
-                  coreDb,
-                  store,
-                  requestId: alarm.requestId,
-                  workspaceId: publication.publication.workspaceId,
-                  threadId: publication.publication.threadId,
-                })
-              ).not.toBeNull();
-            }
-            expect(
-              (await trigger.readAlarms())
-                .filter((alarm) => alarm.rule === 'R1')
-                .every((alarm) => alarm.raised)
-            ).toBe(true);
-            expect(await trigger.current()).toMatchObject({ state: 'off' });
-            if (scenario === 'containment-gaps') {
-              const remaining = (await trigger.readAlarms()).filter((row) => row.rule === 'E12');
-              expect(remaining).toHaveLength(18);
-              const owed = [(await trigger.readAlarmNotice(earlyE12RequestId!))!, ...remaining];
-              expect(owed).toHaveLength(19); // Three native run sensors plus sixteen saturated gap originals.
-              expect(new Set(owed.map((row) => row.requestId)).size).toBe(19);
-              expect(
-                owed.every((row) => row.recipientUserId === userId && row.key[0] === 'event')
-              ).toBe(true);
-              const progress = await trigger.readDetectionProgress();
-              expect(progress.assessed).toBe(19);
-              const { drainSecurityNotices } = await import('./security/publication.js');
-              for (let pass = 0; pass < 3; pass++) await drainSecurityNotices({ coreDb, store });
-              const blocked = (await trigger.readAlarms()).filter((row) => row.rule === 'E12');
-              expect(blocked).toHaveLength(4); // Original Pending bound is kept; no notice is falsely marked raised.
-              for (const row of blocked)
-                expect(await trigger.readAlarmNotice(row.requestId)).toBeNull();
-              const { createChannelServices } = await import('./channel-services.js');
-              const channels = createChannelServices({
-                coreDb,
-                store,
-                mode: 'local',
-                openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
-                invokePending: async () => {
-                  throw new Error('A fixed notice cannot invoke a decision.');
-                },
-              });
-              const acknowledged = new Set<string>();
-              const published = [];
-              for (const row of owed) {
-                const notice = await trigger.readAlarmNotice(row.requestId);
-                if (notice && published.length < 4) published.push(notice);
-              }
-              for (const firstNotice of published) {
-                const answer = await taskApp.request(
-                  ...operationRequest(
-                    'question.answer',
-                    {
-                      workspaceId: firstNotice.attention.source.workspaceId,
-                      threadId: firstNotice.attention.source.threadId,
-                    },
-                    {
-                      method: 'POST',
-                      headers: { 'content-type': 'application/json' },
-                      body: JSON.stringify({
-                        requestId: randomUUID(),
-                        workspaceId: firstNotice.attention.source.workspaceId,
-                        threadId: firstNotice.attention.source.threadId,
-                        userInputRequestId: firstNotice.requestId,
-                        answers: { acknowledgement: ['Reviewed'] },
-                      }),
-                    }
-                  )
-                );
-                expect(answer.status, await answer.clone().text()).toBe(200);
-                expect(channels.eligible(firstNotice.attention)).toBe(false);
-                expect(channels.readableDelivery(firstNotice.attention)).toBe(true);
-                acknowledged.add(firstNotice.requestId);
-                expect(policyNow()).toEqual(retained);
-              }
-              await drainSecurityNotices({ coreDb, store });
-              expect((await trigger.readAlarms()).filter((row) => row.rule === 'E12')).toEqual([]);
-
-              for (const row of owed) {
-                const notice = await trigger.readAlarmNotice(row.requestId);
-                expect(notice).toMatchObject({
-                  rule: 'E12',
-                  raised: true,
-                  recipientUserId: userId,
-                });
-                expect(notice!.attention.source.kind).toBe('security-notice');
-                expect(channels.eligible(notice!.attention)).toBe(!acknowledged.has(row.requestId));
-                const delivered = await readSecurityAlarmPublication({
-                  coreDb,
-                  store,
-                  requestId: row.requestId,
-                  workspaceId: notice!.attention.source.workspaceId,
-                  threadId: notice!.attention.source.threadId,
-                });
-                expect(delivered).toMatchObject({ rule: 'E12', key: row.key });
-                const report = store.getArtifactVersion(
-                  delivered!.workspaceId,
-                  delivered!.artifactId,
-                  1
-                );
-                expect(report.artifact.content).toMatchObject({ format: 'markdown' });
-                if (report.artifact.content.format === 'markdown') {
-                  expect(report.artifact.content.body).toContain(row.key[1]);
-                  expect(report.artifact.content.body).toContain(
-                    'Acknowledgement never releases quarantine'
-                  );
-                }
-              }
-              expect(await trigger.current()).toMatchObject({ state: 'off' });
-              expect(policyNow()).toEqual(retained);
-            }
-            expect(await trigger.enable({ kind: 'local', userId })).toMatchObject({
-              state: 'on',
-              delegationCurrent: true,
-            });
-            expect(policyNow()).toEqual(retained);
-            if (scenario === 'containment-gaps') {
-              // The ordinary E6 scan catches up to directly acknowledged sources without duplication.
-              for (let page = 0; page < 8; page++) {
-                const scan = await trigger.detectAudit({ limit: 128 });
-                if (scan.scanned === 0) break;
-              }
-              expect(
-                (await trigger.readDetections({ limit: 128 })).events.filter(
-                  (row) => row.rule === 'E12'
-                )
-              ).toHaveLength(19);
-              expect((await trigger.readAlarms()).filter((row) => row.rule === 'E12')).toEqual([]);
-            }
-            expect(await trigger.containmentUsage(policyNow(), workspaceId)).toMatchObject({
-              usage: { currentWorkspace: 2, cumulativeWorkspace: 2, pendingWorkspace: 0 },
-            });
+            expect(policyNow()).toEqual(policy);
           }
           if (scenario === 'repeat') {
             for (const id of [204, 203]) {
@@ -4561,7 +3992,7 @@ describe('worker MCP routes', () => {
                 id
               );
               expect(again.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
-              expect(rows()).toStrictEqual(facts);
+              expect(rows()).toEqual([]);
             }
           }
         } else expect(rows()).toEqual([]);

@@ -369,22 +369,23 @@ describe('Discord native family', () => {
         f.db.sqlite.pragma('query_only = ON');
       }
       const trigger = new SecurityTriggerStore(f.db);
-      await trigger.enable(actor);
-      const received = (await trigger.readAudit()).events.filter((event) =>
-        event.action.startsWith('channel.pairing.')
-      );
-      expect(received.map((event) => event.action)).toEqual([
-        'channel.pairing.bind',
-        'channel.pairing.unbind',
-      ]);
-      await trigger.detectAudit();
-      const detections = (await trigger.readDetections()).events.filter((event) =>
-        event.action.startsWith('channel.pairing.')
-      );
-      expect(detections.map((event) => ({ rule: event.rule, notify: event.notify }))).toEqual([
-        { rule: administrator ? 'R1' : 'R1d', notify: administrator ? 'immediate' : 'daily' },
-        { rule: administrator ? 'R1' : 'R1d', notify: administrator ? 'immediate' : 'daily' },
-      ]);
+      await expect(trigger.enable(actor)).rejects.toMatchObject({ code: 'forbidden' });
+      expect(
+        (await trigger.readAudit()).events.filter((event) =>
+          event.action.startsWith('channel.pairing.')
+        )
+      ).toEqual([]);
+      expect(await trigger.detectAudit()).toEqual({
+        cursor: null,
+        scanned: 0,
+        detected: 0,
+        unsupported: 0,
+      });
+      expect(
+        (await trigger.readDetections()).events.filter((event) =>
+          event.action.startsWith('channel.pairing.')
+        )
+      ).toEqual([]);
     }
   );
 

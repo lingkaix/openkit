@@ -3,7 +3,7 @@ import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqli
 import type { SecurityItemKey } from '../../security/identifiers.js';
 import type { SecurityAuditAction, SecurityAuditMissingField } from '../security-trigger-codecs.js';
 
-/** One closed Server trigger; the physical Core home is its only owner. */
+/** One closed Server trigger. v0.2.0 keeps this schema and does not open the service file. */
 export const securityTriggerState = sqliteTable('security_trigger_state', {
   singleton: integer('singleton').primaryKey(),
   schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
@@ -70,7 +70,7 @@ export const securityTriggerAuditAssessments = sqliteTable(
   ]
 );
 
-/** Original E4 recipient notice and its atomic original Attention publication link. */
+/** Original E4 recipient notice. `command_receipt` is reserved and unset at v0.2.0. */
 export const securityTriggerOutbox = sqliteTable(
   'security_trigger_outbox',
   {
@@ -87,7 +87,7 @@ export const securityTriggerOutbox = sqliteTable(
     }).notNull(),
     occurrenceN: integer('occurrence_n').notNull(),
     raised: integer('raised', { mode: 'boolean' }).notNull().default(false),
-    attentionId: text('attention_id'),
+    commandReceipt: text('command_receipt'),
     createdAt: text('created_at').notNull(),
   },
   (t) => [

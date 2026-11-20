@@ -42,7 +42,6 @@ import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { SecurityTriggerStore } from './trigger.js';
 
 // H/C5: ordinary selected Vault delivery must have a real Identity issuer first.
 // No Token/Automation row, delivery result, journal or receipt is manufactured here.
@@ -136,10 +135,6 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
       runtimeConfigManager: manager,
       policyInterception: interception,
       vaultUnlockState: vault,
-    });
-    expect(await new SecurityTriggerStore(coreDb).enable({ kind: 'local', userId })).toMatchObject({
-      state: 'on',
-      delegationCurrent: true,
     });
     const before = new Set(listOpenKitAccessTokenRecords(coreDb).map((record) => record.tokenId));
     const started = await app.request(
@@ -264,19 +259,13 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
       )
     );
     expect(refused.status).toBe(401);
+    const refusedBody = await refused.clone().text();
+    expect(refusedBody.includes(material), 'Plaintext escaped into the bearer refusal.').toBe(
+      false
+    );
+    // v0.2.0 reports the trigger disabled, so this refusal does not append a sensor Audit.
     const source = runFacts().filter((event) => !priorFacts.some((prior) => prior.id === event.id));
-    expect(source).toHaveLength(1);
-    expect(source[0]).toMatchObject({
-      workspaceId: DEMO_WORKSPACE_ID,
-      threadId: DEMO_THREAD_ID,
-      turnId: turn.id,
-      agentSessionId,
-      outcome: 'denied',
-    });
-    expect(
-      JSON.stringify(source).includes(material),
-      'Plaintext escaped into the native sensor.'
-    ).toBe(false);
+    expect(source).toEqual([]);
     execution.completion.resolve();
     await execution.execution;
     expect(await verifyOpenKitAccessTokenRecord(coreDb, material)).toBeNull();

@@ -124,12 +124,10 @@ describe('sign-in security boundaries', () => {
     ]);
     expect((await f.signIn(1, '192.0.2.100')).status).toBe(401);
     const trigger = new SecurityTriggerStore(f.db);
-    await trigger.enable({ kind: 'local', userId: f.userId });
-    expect(
-      (await trigger.readAudit()).events.filter(
-        (event) => event.action === 'auth.failure-threshold'
-      )
-    ).toHaveLength(1);
+    await expect(trigger.enable({ kind: 'local', userId: f.userId })).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+    expect(await trigger.readAudit()).toEqual({ events: [], next: null });
   });
 
   it.each([false, true])(

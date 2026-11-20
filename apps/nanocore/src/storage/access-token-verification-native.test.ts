@@ -225,12 +225,10 @@ describe('human Token verification through the native Core owner', () => {
           expiresAt: EXPIRES_AT,
         });
         const trigger = new SecurityTriggerStore(f.coreDb);
-        await trigger.enable({ kind: 'local', userId: f.ownerUserId });
-        expect(
-          (await trigger.readAudit()).events.filter(
-            (event) => event.action === 'auth.revoked-credential-presented'
-          )
-        ).toHaveLength(1);
+        await expect(
+          trigger.enable({ kind: 'local', userId: f.ownerUserId })
+        ).rejects.toMatchObject({ code: 'forbidden' });
+        expect(await trigger.readAudit()).toEqual({ events: [], next: null });
       } else expect(events).toHaveLength(0);
       expect(f.coreDb.sqlite.inTransaction).toBe(false);
     }
