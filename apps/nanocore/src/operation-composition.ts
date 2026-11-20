@@ -61,11 +61,8 @@ import {
   checkResourcePolicyOperationIntent,
   createResourcePolicyOperationImplementations,
 } from './policy/resource-policy-operations.js';
-import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
-import type {
-  ProviderCredentialConfigured,
-  ProviderCredentialUseContext,
-} from './providers/registry.js';
+import type { RegistryGatewayProviderResolver } from './providers/llm-config.js';
+import type { ProviderCredentialConfigured } from './providers/registry.js';
 import { createEnvironmentOperationImplementations } from './runtime/environment-operation-implementations.js';
 import type { GoalOwnerServices } from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
@@ -176,12 +173,8 @@ export interface OperationInvocationDependencies {
   /** Existing app-owned process-local Vault backend unlock state. */
   readonly vaultUnlockState?: VaultUnlockState;
   readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
-  /** Existing Gateway provider resolver. The credential-use context is the third argument. */
-  readonly resolveGatewayProvider?: (
-    providerId: string,
-    model: string,
-    context?: ProviderCredentialUseContext
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  /** Existing Gateway provider resolver. Uses the registry of the admitted logical route. */
+  readonly resolveGatewayProvider?: RegistryGatewayProviderResolver;
   /** Presence check shared with logical-model routes. Transcription resolves the secret later. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   /** Subscription supply checker shared with logical-model routes. */

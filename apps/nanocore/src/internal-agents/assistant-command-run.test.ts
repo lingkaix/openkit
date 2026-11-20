@@ -23,6 +23,7 @@ import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { ModelCaptureError, withTurnModelCapture } from '../llm/model-capture.js';
 import type { OpenAICompatibleResponsesResponse } from '../llm/openai-compatible-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import * as retrievalKnowledge from '../retrieval-knowledge-adapter.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -50,6 +51,8 @@ import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import type { AgentMessage, AgentTool } from './internal-agent-loop.js';
 import { readInternalContextEvidence } from './internal-context-evidence.js';
 import * as profileResolver from './profile-resolver.js';
+
+const fixtureGatewayRegistry = new ProviderRegistry([]);
 
 const SKILL_READER_ID = allocateEntityId('usr');
 const roots: string[] = [];
@@ -226,7 +229,10 @@ async function fixture(selected = true, description?: string, history = false) {
   const createResponses = vi.fn<Dispatch>().mockResolvedValue(response());
   const gateway: RunInput['gateway'] = {
     logicalModel,
-    resolveLogicalModel: () => logicalModel,
+    resolveLogicalModelSupply: () => ({
+      logicalModel: logicalModel,
+      registry: fixtureGatewayRegistry,
+    }),
     dispatcher: { createResponses },
     resolveGatewayProvider: () =>
       ({
@@ -381,7 +387,10 @@ async function publishedFixture(
     gateway: {
       ...f.input.gateway,
       logicalModel: model,
-      resolveLogicalModel: vi.fn(() => model),
+      resolveLogicalModelSupply: vi.fn(() => ({
+        logicalModel: model,
+        registry: fixtureGatewayRegistry,
+      })),
       resolveGatewayProvider: () =>
         ({
           id: 'provider',
@@ -521,7 +530,7 @@ describe('published answer on the internal Agent Gateway', () => {
       worker,
     ])
       expect(read).not.toHaveBeenCalled();
-    expect(published.input.gateway.resolveLogicalModel).toHaveBeenCalledExactlyOnceWith(
+    expect(published.input.gateway.resolveLogicalModelSupply).toHaveBeenCalledExactlyOnceWith(
       'reports-model'
     );
     expect(
@@ -589,7 +598,10 @@ describe('published answer on the internal Agent Gateway', () => {
         gateway: {
           ...input.gateway,
           logicalModel: model,
-          resolveLogicalModel: () => model,
+          resolveLogicalModelSupply: () => ({
+            logicalModel: model,
+            registry: fixtureGatewayRegistry,
+          }),
           dispatcher: new LLMGatewayProviderDispatcher({}),
           resolveGatewayProvider: () => ({
             id: 'provider',
@@ -955,7 +967,10 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
         gateway: {
           ...f.input.gateway,
           logicalModel: boundedModel,
-          resolveLogicalModel: () => boundedModel,
+          resolveLogicalModelSupply: () => ({
+            logicalModel: boundedModel,
+            registry: fixtureGatewayRegistry,
+          }),
         },
       });
       if (revokeOverview) {

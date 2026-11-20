@@ -33,8 +33,14 @@ import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
 } from './capability/usage-ledger.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+  type RuntimeConfigManager,
+} from './config/runtime-config.js';
 import { createInternalAgentGatewayProvider } from './internal-agents/gateway-provider.js';
 import { FsStore } from './lib/store.js';
+import { GatewayAttemptFailure } from './llm/gateway-execution.js';
 import { type ResolvedLogicalModel, resolveLogicalModel } from './llm/logical-models.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
@@ -73,6 +79,8 @@ import { createNativeTaskAdmissionFixture } from './test-support/native-task-adm
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+
+const fixtureGatewayRegistry = new ProviderRegistry([]);
 
 interface WorkerInferenceDispatchCall {
   /** Dispatcher context derived by the route. */
@@ -420,6 +428,7 @@ async function createWorkerInferenceRouteFixture(
     readonly admittedLogicalModel?: ResolvedLogicalModel;
     readonly gatewayConfig?: GatewayConfig;
     readonly providerRegistry?: ProviderRegistry;
+    readonly runtimeConfigManager?: RuntimeConfigManager;
   } = {}
 ): Promise<WorkerInferenceRouteFixture> {
   const providerProfileId =
@@ -648,6 +657,9 @@ async function createWorkerInferenceRouteFixture(
         : {}),
       mode: 'server',
       openKitConfig: {},
+      ...(options.runtimeConfigManager
+        ? { runtimeConfigManager: options.runtimeConfigManager }
+        : {}),
       // Successful fake dispatch still requires configured supply under the Gateway owner.
       providerCredentialResolver: (ref) =>
         !options.missingApiKey && ref === 'test:worker-api-key' ? 'synthetic-worker-key' : null,
@@ -3181,7 +3193,10 @@ describe('slice 3c Worker native effort and immutable package', () => {
         },
         logicalModel,
         reasoningEffort: profile.reasoningEffort,
-        resolveLogicalModel: () => logicalModel,
+        resolveLogicalModelSupply: () => ({
+          logicalModel: logicalModel,
+          registry: fixtureGatewayRegistry,
+        }),
         resolveGatewayProvider: () => workerCall.provider,
         dispatcher: f.dispatcher,
         promptCacheScope: { sessionId: 'internal-parity' },
@@ -3314,6 +3329,95 @@ it('Worker inference skips missing API-key supply without a Provider callback', 
 });
 
 describe('Worker Turn admitted limits', () => {
+  it('keeps a held Worker call on its admitted registry and applies current supply to the next call', async () => {
+    const primaryId = 'fixture-primary';
+    const fallbackId = 'fixture-fallback';
+    const oldEndpoint = 'https://old-worker.example.test/v1';
+    const newEndpoint = 'https://new-worker.example.test/v1';
+    const registryFor = (baseUrl: string) =>
+      new ProviderRegistry(
+        [primaryId, fallbackId].map((id) => ({
+          id,
+          baseUrl: id === fallbackId ? baseUrl : 'https://primary-worker.example.test/v1',
+          displayName: id,
+          kind: 'local',
+          vendor: 'openrouter',
+          models: [WORKER_PROVIDER_MODEL],
+          modelMetadata: {
+            [WORKER_PROVIDER_MODEL]: {
+              limit: { context: 200_000, output: 8_000 },
+              modalities: { input: ['text'], output: ['text'] },
+            },
+          },
+        }))
+      );
+    const gatewayConfig: GatewayConfig = {
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: WORKER_LOGICAL_MODEL_ID,
+      requiredFeatures: [],
+      logicalModels: [
+        {
+          id: WORKER_LOGICAL_MODEL_ID,
+          displayName: 'Worker reasoning',
+          routing: { autoFailover: true },
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+          routes: [primaryId, fallbackId].map((id) => ({
+            id,
+            providerProfileId: id,
+            providerModel: WORKER_PROVIDER_MODEL,
+          })),
+        },
+      ],
+    };
+    const providerRegistry = registryFor(oldEndpoint);
+    const initial = createInMemoryRuntimeConfigSnapshot({ gatewayConfig, providerRegistry });
+    const manager = createRuntimeConfigManager({ dataRoot: null, initialSnapshot: initial });
+    const current = vi.spyOn(manager, 'current');
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      persistedTurn: true,
+      admittedLogicalModel: resolveLogicalModel(
+        gatewayConfig,
+        providerRegistry,
+        WORKER_LOGICAL_MODEL_ID
+      )!,
+      runtimeConfigManager: manager,
+    });
+    const captured = structuredClone(fixture.environmentPackage);
+    expect(captured.llm.routes[0]?.modelParameters).toMatchObject({
+      contextWindow: 200_000,
+      maxOutputTokens: 8_000,
+    });
+
+    const replacement = createInMemoryRuntimeConfigSnapshot({
+      ...initial,
+      version: initial.version + 1,
+      providerRegistry: registryFor(newEndpoint),
+    });
+    const originalDispatch = fixture.dispatcher.createResponses.bind(fixture.dispatcher);
+    vi.spyOn(fixture.dispatcher, 'createResponses').mockImplementation(async (...args) => {
+      const [provider, , context] = args;
+      if (provider.id !== primaryId) return originalDispatch(...args);
+      fixture.dispatcher.observeSource(context ?? {});
+      current.mockReturnValue(replacement);
+      throw new GatewayAttemptFailure({ kind: 'auth_rejected', settled: true });
+    });
+
+    const request = () =>
+      postWorkerResponses(fixture, { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID });
+    expect((await request()).status).toBe(200);
+    expect((await request()).status).toBe(200);
+    expect(fixture.dispatcher.responseCalls.map(({ provider }) => provider.baseUrl)).toEqual([
+      oldEndpoint,
+      newEndpoint,
+    ]);
+    expect(fixture.environmentPackage).toEqual(captured);
+    expect(readWorkerInferenceCapabilityCalls(fixture).map(({ status }) => status)).toEqual([
+      'succeeded',
+      'succeeded',
+    ]);
+  });
+
   for (const endpoint of ['responses', 'chat/completions'] as const) {
     it.each(['new smaller primary', 'all members shrunk', 'absent modelParameters'] as const)(
       `${endpoint}: %s`,

@@ -56,9 +56,8 @@ export function createComposerOperationImplementations(
       }
       const resolveChain = () =>
         resolveTranscriptionRoute(
-          dependencies.runtimeConfigManager?.current()?.gatewayConfig ?? snapshot.gatewayConfig,
-          dependencies.runtimeConfigManager?.current()?.providerRegistry ??
-            snapshot.providerRegistry,
+          snapshot.gatewayConfig,
+          snapshot.providerRegistry,
           dependencies.providerSubscriptionAccountManager,
           dependencies.providerCredentialConfigured,
           false
@@ -99,7 +98,7 @@ export function createComposerOperationImplementations(
           signal: callerSignal,
           selections: async () => {
             await context.recheckAdmission?.();
-            assertSnapshot(snapshot, dependencies);
+            assertTranscriptionAvailable(dependencies);
             const chain = requireTranscriptionChain(resolveChain());
             const selections = planLogicalModel(chain, [], () => true);
             for (const selection of selections) {
@@ -125,10 +124,11 @@ export function createComposerOperationImplementations(
                 actor: context.actorRef,
                 consumerWorkspaceId: input.workspaceId,
                 capabilityCallId: call.id,
-              }
+              },
+              snapshot.providerRegistry
             );
             await context.recheckAdmission?.();
-            assertSnapshot(snapshot, dependencies);
+            assertTranscriptionAvailable(dependencies);
             const current = requireTranscriptionChain(resolveChain());
             const still = current.routes.find((route) => sameMember(route, member));
             if (!still?.available) {
@@ -270,18 +270,15 @@ function requireTranscriptionChain(
   return route;
 }
 
-function assertSnapshot(
-  snapshot: { version: number; contentHash: string },
+/** Rechecks the live Gateway switch while every attempt uses the admitted route and registry. */
+function assertTranscriptionAvailable(
   dependencies: Pick<OperationInvocationDependencies, 'runtimeConfigManager'>
 ): void {
-  const current = dependencies.runtimeConfigManager?.current();
-  if (
-    !current ||
-    current.version !== snapshot.version ||
-    current.contentHash !== snapshot.contentHash
-  ) {
+  const gateway = dependencies.runtimeConfigManager?.current().gatewayConfig;
+  if (!gateway)
     throw new OperationError('transcription_unavailable', 'Transcription is unavailable.', 503);
-  }
+  if (!gateway.enabled)
+    throw new OperationError('gateway_disabled', 'Transcription route is unavailable.', 403);
 }
 
 function sameMember(left: ResolvedLogicalModelRoute, right: ResolvedLogicalModelRoute): boolean {

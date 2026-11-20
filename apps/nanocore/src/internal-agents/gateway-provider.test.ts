@@ -25,6 +25,7 @@ import {
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import { resolveProviderProfileToLLMConfig } from '../providers/llm-config.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { createVaultProviderCredentialResolver } from '../providers/vault-credential-resolver.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -96,6 +97,8 @@ import {
   runInternalAgentLoop,
 } from './internal-agent-loop.js';
 import { internalContextFailure } from './rolling-context.js';
+
+const fixtureGatewayRegistry = new ProviderRegistry([]);
 
 const logicalModel: ResolvedLogicalModel = {
   id: 'assistant',
@@ -169,7 +172,10 @@ describe('internal Agent Gateway provider', () => {
       const provider = createInternalAgentGatewayProvider({
         capture,
         logicalModel,
-        resolveLogicalModel: () => logicalModel,
+        resolveLogicalModelSupply: () => ({
+          logicalModel: logicalModel,
+          registry: fixtureGatewayRegistry,
+        }),
         dispatcher: { createResponses },
         resolveGatewayProvider,
         promptCacheScope: {
@@ -267,7 +273,10 @@ describe('internal Agent Gateway provider', () => {
       const provider = createInternalAgentGatewayProvider({
         capture,
         logicalModel: model,
-        resolveLogicalModel: () => model,
+        resolveLogicalModelSupply: () => ({
+          logicalModel: model,
+          registry: fixtureGatewayRegistry,
+        }),
         dispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: new PiAiGatewayClient({ models }),
         }),
@@ -407,7 +416,10 @@ describe('internal Agent Gateway provider', () => {
         capture: await captureBinding(),
         logicalModel: model,
         reasoningEffort: profile.reasoningEffort,
-        resolveLogicalModel: () => model,
+        resolveLogicalModelSupply: () => ({
+          logicalModel: model,
+          registry: fixtureGatewayRegistry,
+        }),
         dispatcher,
         resolveGatewayProvider: () => config,
         promptCacheScope: { sessionId: 'internal' },
@@ -454,7 +466,10 @@ describe('internal Agent Gateway provider', () => {
     const provider = createInternalAgentGatewayProvider({
       capture,
       logicalModel,
-      resolveLogicalModel: () => logicalModel,
+      resolveLogicalModelSupply: () => ({
+        logicalModel: logicalModel,
+        registry: fixtureGatewayRegistry,
+      }),
       dispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
       }),
@@ -519,7 +534,10 @@ describe('internal Agent Gateway provider', () => {
         { ...logicalModel.routes[0]!, id: 'backup', providerProfileId: 'backup' },
       ],
     };
+    const replacementRegistry = new ProviderRegistry([]);
+    let currentRegistry = fixtureGatewayRegistry;
     const createResponses = vi.fn(async (_provider, _input, context) => {
+      currentRegistry = replacementRegistry;
       context.transport.onProviderHandoff();
       throw new GatewayAttemptFailure({
         kind: 'auth_rejected',
@@ -527,24 +545,27 @@ describe('internal Agent Gateway provider', () => {
         status: 401,
       });
     });
-    const resolveGatewayProvider = vi.fn((id: string) => {
-      if (id === 'backup')
-        throw new OpenAICompatibleProviderError({
-          message: 'exception-canary',
-          code: 'provider_not_configured',
-          status: 503,
-        });
-      return {
-        id,
-        models: ['model'],
-        gatewayCapabilities: {},
-        modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
-      } as never;
-    });
+    const resolveGatewayProvider = vi.fn(
+      (id: string, _model: string, _context: unknown, registry: ProviderRegistry) => {
+        expect(registry).toBe(fixtureGatewayRegistry);
+        if (id === 'backup')
+          throw new OpenAICompatibleProviderError({
+            message: 'exception-canary',
+            code: 'provider_not_configured',
+            status: 503,
+          });
+        return {
+          id,
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
+        } as never;
+      }
+    );
     const provider = createInternalAgentGatewayProvider({
       capture,
       logicalModel: model,
-      resolveLogicalModel: () => model,
+      resolveLogicalModelSupply: () => ({ logicalModel: model, registry: currentRegistry }),
       dispatcher: { createResponses },
       resolveGatewayProvider,
       promptCacheScope: {
@@ -558,6 +579,7 @@ describe('internal Agent Gateway provider', () => {
       cause: 'provider_unavailable',
     });
     expect(resolveGatewayProvider.mock.calls.map(([id]) => id)).toEqual(['provider', 'backup']);
+    expect(currentRegistry).toBe(replacementRegistry);
     expect(createResponses).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(log.mock.calls[0]![0]))).toEqual({
@@ -601,7 +623,10 @@ describe('internal Agent Gateway provider', () => {
     const provider = createInternalAgentGatewayProvider({
       capture,
       logicalModel: selectedModel,
-      resolveLogicalModel: () => selectedModel,
+      resolveLogicalModelSupply: () => ({
+        logicalModel: selectedModel,
+        registry: fixtureGatewayRegistry,
+      }),
       dispatcher: {
         // Recreate the original required-sampling admission through the real stock serializer.
         createResponses: (provider, input, context) =>
@@ -722,8 +747,8 @@ describe('internal Agent Gateway provider', () => {
     const provider = createInternalAgentGatewayProvider({
       capture,
       logicalModel: { ...logicalModel, autoFailover: false },
-      resolveLogicalModel() {
-        return this.logicalModel;
+      resolveLogicalModelSupply() {
+        return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
       },
       dispatcher: {
         createResponses: async (_provider, _input, context) => {
@@ -832,8 +857,8 @@ describe('internal Agent Gateway provider', () => {
             { ...logicalModel.routes[0]!, id: 'backup', providerProfileId: 'backup' },
           ],
         },
-        resolveLogicalModel() {
-          return this.logicalModel;
+        resolveLogicalModelSupply() {
+          return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
         },
         dispatcher: { createResponses },
         resolveGatewayProvider: (id) =>
@@ -898,7 +923,7 @@ describe('internal Agent Gateway provider', () => {
     const provider = createInternalAgentGatewayProvider({
       capture,
       logicalModel,
-      resolveLogicalModel: () => null,
+      resolveLogicalModelSupply: () => null,
       dispatcher: { createResponses },
       resolveGatewayProvider,
       promptCacheScope: {
@@ -966,8 +991,8 @@ describe('internal Agent Gateway provider', () => {
     });
     const onDispatch = vi.fn();
     const provider = createInternalAgentGatewayProvider({
-      resolveLogicalModel(): ResolvedLogicalModel {
-        return this.logicalModel;
+      resolveLogicalModelSupply() {
+        return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
       },
       logicalModel,
       dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
@@ -1133,7 +1158,10 @@ describe('internal Agent Gateway provider', () => {
     const provider = createInternalAgentGatewayProvider({
       capture: await captureBinding(),
       logicalModel,
-      resolveLogicalModel: () => logicalModel,
+      resolveLogicalModelSupply: () => ({
+        logicalModel: logicalModel,
+        registry: fixtureGatewayRegistry,
+      }),
       dispatcher: { createResponses },
       resolveGatewayProvider: () =>
         ({
@@ -1232,7 +1260,10 @@ describe('internal Agent Gateway provider', () => {
       const provider = createInternalAgentGatewayProvider({
         capture: await captureBinding(),
         logicalModel,
-        resolveLogicalModel: () => logicalModel,
+        resolveLogicalModelSupply: () => ({
+          logicalModel: logicalModel,
+          registry: fixtureGatewayRegistry,
+        }),
         dispatcher: { createResponses },
         resolveGatewayProvider: () =>
           ({
@@ -1285,7 +1316,10 @@ describe('internal Agent Gateway provider', () => {
     const provider = createInternalAgentGatewayProvider({
       capture: await captureBinding(),
       logicalModel,
-      resolveLogicalModel: () => logicalModel,
+      resolveLogicalModelSupply: () => ({
+        logicalModel: logicalModel,
+        registry: fixtureGatewayRegistry,
+      }),
       dispatcher: { createResponses },
       resolveGatewayProvider: () =>
         ({
@@ -1366,7 +1400,10 @@ describe('internal Agent Gateway provider', () => {
     const provider = createInternalAgentGatewayProvider({
       capture: await captureBinding(),
       logicalModel,
-      resolveLogicalModel: () => logicalModel,
+      resolveLogicalModelSupply: () => ({
+        logicalModel: logicalModel,
+        registry: fixtureGatewayRegistry,
+      }),
       dispatcher: { createResponses },
       resolveGatewayProvider,
       promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
@@ -1424,7 +1461,10 @@ describe('internal Agent Gateway provider', () => {
             const provider = createInternalAgentGatewayProvider({
               capture: admitted,
               logicalModel: googleLogicalModel,
-              resolveLogicalModel: () => googleLogicalModel,
+              resolveLogicalModelSupply: () => ({
+                logicalModel: googleLogicalModel,
+                registry: fixtureGatewayRegistry,
+              }),
               dispatcher: new LLMGatewayProviderDispatcher({
                 piAiClient: new PiAiGatewayClient({ models }),
               }),
@@ -1538,8 +1578,8 @@ describe('internal Agent Gateway provider', () => {
         async (admitted) => {
           admittedDb = admitted.workspaceDb;
           const provider = createInternalAgentGatewayProvider({
-            resolveLogicalModel(): ResolvedLogicalModel {
-              return this.logicalModel;
+            resolveLogicalModelSupply() {
+              return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
             },
             ...providerOptions,
             capture: admitted,
@@ -1641,8 +1681,8 @@ describe('internal Agent Gateway provider', () => {
     pairModels.checkAuth = async () => ({}) as never;
     faux.setResponses([fauxAssistantMessage('Codex admitted.')]);
     const provider = createInternalAgentGatewayProvider({
-      resolveLogicalModel(): ResolvedLogicalModel {
-        return this.logicalModel;
+      resolveLogicalModelSupply() {
+        return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
       },
       logicalModel: {
         ...logicalModel,
@@ -1743,7 +1783,10 @@ describe('internal Agent Gateway provider', () => {
         ],
       });
     const provider = createInternalAgentGatewayProvider({
-      resolveLogicalModel: () => logicalModel,
+      resolveLogicalModelSupply: () => ({
+        logicalModel: logicalModel,
+        registry: fixtureGatewayRegistry,
+      }),
       logicalModel,
       dispatcher: { createResponses },
       resolveGatewayProvider: () =>
@@ -1853,8 +1896,8 @@ describe('internal role shares Gateway planning and replay rules', () => {
             };
           });
           const provider = createInternalAgentGatewayProvider({
-            resolveLogicalModel(): ResolvedLogicalModel {
-              return this.logicalModel;
+            resolveLogicalModelSupply() {
+              return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
             },
             logicalModel: model,
             capture,
@@ -1899,8 +1942,8 @@ describe('internal role shares Gateway planning and replay rules', () => {
   it('skips a member unable to satisfy the run-pinned tool capability without dispatch', async () => {
     const calls: string[] = [];
     const provider = createInternalAgentGatewayProvider({
-      resolveLogicalModel(): ResolvedLogicalModel {
-        return this.logicalModel;
+      resolveLogicalModelSupply() {
+        return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
       },
       logicalModel: {
         ...logicalModel,
@@ -1951,8 +1994,8 @@ describe('internal role shares Gateway planning and replay rules', () => {
     }));
     const onDispatch = vi.fn();
     const provider = createInternalAgentGatewayProvider({
-      resolveLogicalModel(): ResolvedLogicalModel {
-        return this.logicalModel;
+      resolveLogicalModelSupply() {
+        return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
       },
       logicalModel: {
         ...logicalModel,
@@ -2016,8 +2059,8 @@ describe('Round 2 internal-role exhaustion cause', () => {
         throw config.id === 'primary' ? primaryFailure : finalFailure;
       });
       const provider = createInternalAgentGatewayProvider({
-        resolveLogicalModel(): ResolvedLogicalModel {
-          return this.logicalModel;
+        resolveLogicalModelSupply() {
+          return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
         },
         logicalModel: {
           ...logicalModel,
@@ -2078,8 +2121,8 @@ describe('slice 1d internal logical call', () => {
     const createResponses = vi.fn();
     const resolveGatewayProvider = vi.fn();
     const provider = createInternalAgentGatewayProvider({
-      resolveLogicalModel(): ResolvedLogicalModel {
-        return this.logicalModel;
+      resolveLogicalModelSupply() {
+        return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
       },
       capture,
       logicalModel: {
@@ -2167,7 +2210,10 @@ describe('slice 1d round 2 internal lifecycle', () => {
           const provider = createInternalAgentGatewayProvider({
             capture: admitted,
             logicalModel,
-            resolveLogicalModel: () => logicalModel,
+            resolveLogicalModelSupply: () => ({
+              logicalModel: logicalModel,
+              registry: fixtureGatewayRegistry,
+            }),
             dispatcher: new LLMGatewayProviderDispatcher({
               piAiClient: new PiAiGatewayClient({ models }),
             }),
@@ -2282,8 +2328,8 @@ describe('slice 1d round 2 internal lifecycle', () => {
         };
       });
       const provider = createInternalAgentGatewayProvider({
-        resolveLogicalModel(): ResolvedLogicalModel {
-          return this.logicalModel;
+        resolveLogicalModelSupply() {
+          return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
         },
         capture,
         logicalModel,
@@ -2360,8 +2406,8 @@ describe('slice 1d round 2 internal lifecycle', () => {
       };
     });
     const provider = createInternalAgentGatewayProvider({
-      resolveLogicalModel(): ResolvedLogicalModel {
-        return this.logicalModel;
+      resolveLogicalModelSupply() {
+        return { logicalModel: this.logicalModel, registry: fixtureGatewayRegistry };
       },
       capture,
       logicalModel: {
@@ -2423,7 +2469,10 @@ describe('internal rolling context Gateway boundary', () => {
     limit: { context?: number; output?: number } = { context: 64_000, output: 8_000 }
   ) {
     const createResponses = vi.fn().mockResolvedValue(completeResponse);
-    const resolveLogicalModel = vi.fn(current);
+    const resolveLogicalModel = vi.fn(() => ({
+      logicalModel: current(),
+      registry: fixtureGatewayRegistry,
+    }));
     const resolveGatewayProvider = vi.fn(() => ({
       id: 'provider',
       models: ['model'],
@@ -2433,7 +2482,7 @@ describe('internal rolling context Gateway boundary', () => {
     const provider = createInternalAgentGatewayProvider({
       capture: await captureBinding(),
       logicalModel: admitted,
-      resolveLogicalModel,
+      resolveLogicalModelSupply: resolveLogicalModel,
       dispatcher: { createResponses },
       resolveGatewayProvider: resolveGatewayProvider as never,
       promptCacheScope: {
@@ -2786,7 +2835,10 @@ describe('command audit lineage at the internal Gateway seam', () => {
     const options = {
       capture,
       logicalModel,
-      resolveLogicalModel: () => logicalModel,
+      resolveLogicalModelSupply: () => ({
+        logicalModel: logicalModel,
+        registry: fixtureGatewayRegistry,
+      }),
       dispatcher: { createResponses },
       resolveGatewayProvider: () =>
         ({
@@ -3121,7 +3173,10 @@ it('joins real final credential authority before stock HTTP and refuses a replac
   const provider = createInternalAgentGatewayProvider({
     capture,
     logicalModel: selectedModel,
-    resolveLogicalModel: () => selectedModel,
+    resolveLogicalModelSupply: () => ({
+      logicalModel: selectedModel,
+      registry: fixtureGatewayRegistry,
+    }),
     dispatcher,
     resolveGatewayProvider: resolve,
     promptCacheScope: { sessionId: 'gateway-authority-synthetic-session' },

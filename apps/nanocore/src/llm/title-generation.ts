@@ -6,6 +6,7 @@ import type { OpenKitConfig } from '../config/openkit-config.js';
 import { admitModelRequest } from '../context/model-request-admission.js';
 import type { FsStore } from '../lib/store.js';
 import { trackLocalTitleAbort } from '../local-ai/title-abort.js';
+import type { RegistryGatewayProviderResolver } from '../providers/llm-config.js';
 import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
@@ -65,7 +66,7 @@ export interface TitleGenerationRuntime {
   };
   repositoryWorkspaceDb(workspaceId: string): WorkspaceDb;
   dispatcher: Pick<LLMGatewayProviderDispatcher, 'createChatCompletion'>;
-  resolveGatewayProvider: Parameters<typeof dispatchLogicalModel>[0]['resolveGatewayProvider'];
+  resolveGatewayProvider: RegistryGatewayProviderResolver;
   providerSubscriptionAccountManager?: NonNullable<
     Parameters<typeof dispatchLogicalModel>[0]['providerSubscriptionAccountManager']
   >;
@@ -137,8 +138,10 @@ export function scheduleThreadTitle(input: FreshThreadTitle): void {
  */
 export async function generateThreadTitle(input: FreshThreadTitle): Promise<void> {
   const runtime = input.runtime ?? bound;
-  if (!runtime || runtime.runtimeConfig().openKitConfig?.security?.pauseAgentWork) return;
-  const logicalModelId = runtime.runtimeConfig().gatewayConfig.titleLogicalModelId;
+  if (!runtime) return;
+  const snapshot = runtime.runtimeConfig();
+  if (snapshot.openKitConfig?.security?.pauseAgentWork) return;
+  const logicalModelId = snapshot.gatewayConfig.titleLogicalModelId;
   if (!logicalModelId) return;
   const capped = titleSource(input.sourceText);
   const messages = [
@@ -158,7 +161,6 @@ export async function generateThreadTitle(input: FreshThreadTitle): Promise<void
     await finishCapabilityCall({ workspaceDb, callId, status });
   };
   try {
-    const snapshot = runtime.runtimeConfig();
     const logicalModel = resolveLogicalModel(
       snapshot.gatewayConfig,
       snapshot.providerRegistry,
@@ -187,7 +189,8 @@ export async function generateThreadTitle(input: FreshThreadTitle): Promise<void
       ledger: { workspaceDb, call },
       logicalModel,
       signal,
-      resolveGatewayProvider: runtime.resolveGatewayProvider,
+      resolveGatewayProvider: (id, model, context) =>
+        runtime.resolveGatewayProvider(id, model, context, snapshot.providerRegistry),
       ...(runtime.providerSubscriptionAccountManager
         ? { providerSubscriptionAccountManager: runtime.providerSubscriptionAccountManager }
         : {}),

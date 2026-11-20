@@ -41,7 +41,10 @@ import {
 } from '../context/model-request-admission.js';
 import type { FsStore } from '../lib/store.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
-import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import type {
+  RegistryGatewayProviderResolver,
+  ResolvedLLMProviderConfig,
+} from '../providers/llm-config.js';
 import type {
   ProviderCredentialConfigured,
   ProviderCredentialUseContext,
@@ -80,10 +83,11 @@ export { LogicalModelRoutesExhaustedError } from './gateway-execution.js';
 
 import { parseUsage } from './gateway-usage.js';
 import {
+  type LogicalModelSupply,
   type ResolvedLogicalModel,
   resolveEffectiveModelMetadata,
-  resolveLogicalModel,
   resolveLogicalModelCatalog,
+  resolveLogicalModelSupply,
   resolveProviderModelDiagnostic,
 } from './logical-models.js';
 import type { ModelCaptureContext } from './model-capture.js';
@@ -1864,11 +1868,7 @@ export function registerWorkerInferenceRoutes({
   /** Live API-key presence without Vault material resolution. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   /** Resolves a private Provider route selected by the current Gateway config. */
-  readonly resolveGatewayProvider: (
-    providerId: string,
-    model: string,
-    context?: ProviderCredentialUseContext
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  readonly resolveGatewayProvider: RegistryGatewayProviderResolver;
   /** Returns the current hot-reloadable Gateway configuration snapshot. */
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Worker token and durable lease authority. */
@@ -1984,18 +1984,16 @@ export function registerWorkerInferenceRoutes({
         assertExposureAvailable();
       };
       assertAuthority();
-      let logicalModel: ResolvedLogicalModel | null = null;
+      let admittedRoute: LogicalModelSupply | null = null;
       try {
-        const snapshot = runtimeConfig();
-        logicalModel = resolveLogicalModel(
-          snapshot.gatewayConfig,
-          snapshot.providerRegistry,
+        admittedRoute = resolveLogicalModelSupply(
+          runtimeConfig(),
           route.model,
           providerSubscriptionAccountManager,
           providerCredentialConfigured
         );
       } catch {
-        logicalModel = null;
+        admittedRoute = null;
       }
       const scope = environmentPackage.scope;
       const rawKey = JSON.stringify([scope.workspaceId, scope.threadId, scope.turnId]);
@@ -2275,13 +2273,14 @@ export function registerWorkerInferenceRoutes({
             'admission'
           );
         }
-        if (!logicalModel) {
+        if (!admittedRoute) {
           throw new WorkerInferenceRouteError(
             'worker_inference_provider_unavailable',
             'Worker inference provider is unavailable.',
             503
           );
         }
+        const { logicalModel, registry } = admittedRoute;
         const requestedEffort =
           endpoint === 'chat_completions'
             ? (input as z.infer<typeof GatewayChatCompletionRequestSchema>).reasoning_effort
@@ -2309,7 +2308,8 @@ export function registerWorkerInferenceRoutes({
             : {}),
           requiredCapabilities: endpoint === 'responses' ? ['responses'] : ['chat-completions'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-          resolveGatewayProvider,
+          resolveGatewayProvider: (id, model, context) =>
+            resolveGatewayProvider(id, model, context, registry),
           signal: rawSignal,
           onAttemptStart: (context) => {
             correlation = context;
@@ -3255,11 +3255,7 @@ export function registerLlmGatewayRoutes({
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Live API-key presence without Vault material resolution. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
-  readonly resolveGatewayProvider: (
-    providerId: string,
-    model: string,
-    context?: ProviderCredentialUseContext
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  readonly resolveGatewayProvider: RegistryGatewayProviderResolver;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }): void {
   /**
@@ -3336,20 +3332,15 @@ export function registerLlmGatewayRoutes({
     }
   }
 
-  function requireLogicalModel(logicalModelId: string): {
-    logicalModel: ResolvedLogicalModel;
-    snapshot: RuntimeConfigSnapshot;
-  } {
+  function requireLogicalModel(logicalModelId: string): LogicalModelSupply {
     try {
-      const snapshot = runtimeConfig();
-      const logicalModel = resolveLogicalModel(
-        snapshot.gatewayConfig,
-        snapshot.providerRegistry,
+      const supply = resolveLogicalModelSupply(
+        runtimeConfig(),
         logicalModelId,
         providerSubscriptionAccountManager,
         providerCredentialConfigured
       );
-      if (logicalModel) return { logicalModel, snapshot };
+      if (supply) return supply;
     } catch {
       throw new OpenAICompatibleProviderError({
         code: 'gateway_not_configured',
@@ -3364,18 +3355,6 @@ export function registerLlmGatewayRoutes({
       status: 400,
       type: 'invalid_request_error',
     });
-  }
-
-  /** Rechecks the existing loaded configuration without treating account availability as config. */
-  function assertGatewayConfigurationCurrent(admitted: RuntimeConfigSnapshot): void {
-    const current = runtimeConfig();
-    if (current.version !== admitted.version || current.contentHash !== admitted.contentHash)
-      throw new OpenAICompatibleProviderError({
-        code: 'gateway_not_configured',
-        message: 'Gateway logical model configuration changed.',
-        status: 503,
-        type: 'provider_error',
-      });
   }
 
   app.get('/v1/models', async (c) => {
@@ -3466,7 +3445,7 @@ export function registerLlmGatewayRoutes({
 
       const assertAuthority = () =>
         assertPublicAuthority(c, authorityActor, (input as { metadata?: unknown }).metadata);
-      const { logicalModel, snapshot: admittedConfiguration } = requireLogicalModel(input.model);
+      const { logicalModel, registry } = requireLogicalModel(input.model);
 
       const request = {
         ...input,
@@ -3495,7 +3474,6 @@ export function registerLlmGatewayRoutes({
           route: '/v1/chat/completions',
         });
         assertAuthority();
-        assertGatewayConfigurationCurrent(admittedConfiguration);
         const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),
@@ -3507,7 +3485,8 @@ export function registerLlmGatewayRoutes({
           logicalModel,
           requiredCapabilities: ['chat-completions'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-          resolveGatewayProvider,
+          resolveGatewayProvider: (id, model, context) =>
+            resolveGatewayProvider(id, model, context, registry),
           signal: c.req.raw.signal,
           attempt: async ({
             provider,
@@ -3658,7 +3637,7 @@ export function registerLlmGatewayRoutes({
 
       const assertAuthority = () =>
         assertPublicAuthority(c, authorityActor, (input as { metadata?: unknown }).metadata);
-      const { logicalModel, snapshot: admittedConfiguration } = requireLogicalModel(input.model);
+      const { logicalModel, registry } = requireLogicalModel(input.model);
 
       const request = {
         ...input,
@@ -3684,7 +3663,6 @@ export function registerLlmGatewayRoutes({
           route: '/v1/responses',
         });
         assertAuthority();
-        assertGatewayConfigurationCurrent(admittedConfiguration);
         const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),
@@ -3698,7 +3676,8 @@ export function registerLlmGatewayRoutes({
           logicalModel,
           requiredCapabilities: ['responses'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-          resolveGatewayProvider,
+          resolveGatewayProvider: (id, model, context) =>
+            resolveGatewayProvider(id, model, context, registry),
           signal: c.req.raw.signal,
           attempt: async ({
             provider,

@@ -52,6 +52,8 @@ Requested sampling retains only fields supplied at the dispatcher-to-Pi boundary
 
 The pi-ai consumption loops yield to the event loop after each admitted semantic observation callback commits. Buffered text and Tool deltas therefore allow Worker heartbeats and other requests to run between observations, including native Responses text whose public frames wait for completion. Required metadata and per-line fsync remain unchanged; this scheduling boundary does not batch or drop observations or make an individual synchronous filesystem operation asynchronous. The capture-off buffered-stream regression in `model-capture.test.ts` checks both public formats using real observation writes and an independently scheduled callback.
 
+Each Gateway call captures the Provider registry with its logical route. Retry and failover keep that registry while the effect owner rechecks current credentials and caller authority. A new call captures the current snapshot. Internal roles retain their admitted Tier limits and Worker inference retains its AEP bounds.
+
 ## Verification
 
 Run the focused Gateway, dispatcher, upstream client, provider-subscription, usage, mapping, and prompt-cache tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).

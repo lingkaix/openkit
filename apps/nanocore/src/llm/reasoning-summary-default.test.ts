@@ -40,6 +40,8 @@ import { withTurnModelCapture } from './model-capture.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 
+const fixtureGatewayRegistry = new ProviderRegistry([]);
+
 const WORKER_LOGICAL_MODEL_ID = 'worker-reasoning';
 const WORKER_PROVIDER_ID = 'agent-openai';
 const WORKER_PROVIDER_MODEL = 'gpt-5.4';
@@ -183,7 +185,7 @@ async function internalCapturedSummary(reasoning: boolean): Promise<unknown> {
     const provider = createInternalAgentGatewayProvider({
       capture: admitted,
       logicalModel: model,
-      resolveLogicalModel: () => model,
+      resolveLogicalModelSupply: () => ({ logicalModel: model, registry: fixtureGatewayRegistry }),
       dispatcher,
       resolveGatewayProvider: () => config,
       promptCacheScope: { sessionId: 'internal' },

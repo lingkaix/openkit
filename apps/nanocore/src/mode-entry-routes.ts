@@ -89,7 +89,7 @@ import {
 import { LogicalModelRoutesExhaustedError } from './llm/gateway-routes.js';
 import {
   type ResolvedLogicalModel,
-  resolveLogicalModel,
+  resolveLogicalModelSupply,
   resolveTranscriptionRoute,
 } from './llm/logical-models.js';
 import { ModelCaptureError, withTurnModelCapture } from './llm/model-capture.js';
@@ -103,7 +103,7 @@ import {
 } from './operation-composition.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from './operation-error.js';
 import { PolicyInterception } from './policy/interception.js';
-import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
+import type { RegistryGatewayProviderResolver } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
 import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import { RetrievalServiceError } from './retrieval-service.js';
@@ -2673,10 +2673,7 @@ export function createConversationService({
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   readonly supportedRequiredFeatures?: readonly string[];
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  readonly resolveGatewayProvider: (
-    providerId: string,
-    model: string
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  readonly resolveGatewayProvider: RegistryGatewayProviderResolver;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly startModeWorkerTurn: (input: {
@@ -4512,16 +4509,13 @@ export function createConversationService({
               ...(selection.profile?.reasoningEffort === undefined
                 ? {}
                 : { reasoningEffort: selection.profile.reasoningEffort }),
-              resolveLogicalModel: (logicalModelId) => {
-                const current = runtimeConfig();
-                return resolveLogicalModel(
-                  current.gatewayConfig,
-                  current.providerRegistry,
+              resolveLogicalModelSupply: (logicalModelId) =>
+                resolveLogicalModelSupply(
+                  runtimeConfig(),
                   logicalModelId,
                   providerSubscriptionAccountManager,
                   providerCredentialConfigured
-                );
-              },
+                ),
               dispatcher: llmGatewayDispatcher,
               resolveGatewayProvider,
               ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
@@ -5559,16 +5553,13 @@ export function createConversationService({
                 ...(selection.profile?.reasoningEffort === undefined
                   ? {}
                   : { reasoningEffort: selection.profile.reasoningEffort }),
-                resolveLogicalModel: (logicalModelId) => {
-                  const current = runtimeConfig();
-                  return resolveLogicalModel(
-                    current.gatewayConfig,
-                    current.providerRegistry,
+                resolveLogicalModelSupply: (logicalModelId) =>
+                  resolveLogicalModelSupply(
+                    runtimeConfig(),
                     logicalModelId,
                     providerSubscriptionAccountManager,
                     providerCredentialConfigured
-                  );
-                },
+                  ),
                 dispatcher: llmGatewayDispatcher,
                 resolveGatewayProvider,
                 ...(providerSubscriptionAccountManager
