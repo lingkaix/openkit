@@ -703,6 +703,79 @@ describe('worker control routes', () => {
     }
   });
 
+  it('renews liveness for a higher ordinary heartbeat when the intervening sequence never arrived', async () => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-heartbeat-gap-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const fixture = await createWorkerControlRouteFixture([], coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: fixture.lineage.workspaceId,
+      ownerUserId: LOCAL_USER_ID,
+    });
+    const binding = await createDurableWorkerControlLease(
+      coreDb,
+      fixture.environmentPackage,
+      fixture.lineage,
+      'ordinary_sequence_gap'
+    );
+    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const registration = registerDurableWorkerControlSession(
+      gateway,
+      fixture.environmentPackage,
+      binding
+    );
+    const app = createApp({
+      coreDb,
+      mode: 'server',
+      store: fixture.store,
+      workerControlGateway: gateway,
+    });
+    const sendHeartbeat = (sequence: number) =>
+      app.request('/api/worker-control/heartbeat', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${registration.token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(
+          sequence === 0
+            ? heartbeatEnvelope(
+                fixture.lineage,
+                sequence,
+                'starting',
+                null,
+                createHash('sha256').update('fixture-process-key').digest('base64url')
+              )
+            : heartbeatEnvelope(fixture.lineage, sequence, 'running')
+        ),
+      });
+    const attempt = () =>
+      requireNanoHostExecutionAttempt(
+        coreDb,
+        testEntityId('attempt', 'lease_ordinary_sequence_gap')
+      );
+
+    expect((await sendHeartbeat(0)).status).toBe(200);
+    expect((await sendHeartbeat(1)).status).toBe(200);
+    const before = attempt();
+    expect(before.lastWorkerSequence).toBe(1);
+
+    const renewed = await sendHeartbeat(3);
+    expect(renewed.status).toBe(200);
+    expect(await renewed.json()).toMatchObject({ accepted: true, nextExpectedSequence: 4 });
+    const after = attempt();
+    expect(after.lastWorkerSequence).toBe(3);
+    expect(Date.parse(after.heartbeatDeadline)).toBeGreaterThan(
+      Date.parse(before.heartbeatDeadline)
+    );
+
+    const stale = await sendHeartbeat(2);
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ code: 'worker_control_sequence_stale' });
+    expect(attempt().heartbeatDeadline).toBe(after.heartbeatDeadline);
+  });
+
   it('strips descriptive heartbeat, final-status and refresh additions before gateway admission', async () => {
     const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
     workerControlCoreFixtures.push(coreDb);

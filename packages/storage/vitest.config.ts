@@ -1,8 +1,10 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
+import { secondaryFixtureGroup } from './test-support/secondary-group.ts';
 
 export default defineConfig({
   test: {
+    env: { OPENKIT_TEST_STORAGE_SECONDARY_GID: secondaryFixtureGroup() },
     // Keep Vitest 4 mock-history semantics (Vitest 5 clears before every test); suites assert history across tests.
     clearMocks: false,
     globalSetup: [

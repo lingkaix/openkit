@@ -1331,6 +1331,7 @@ pub struct EpochCoordinator {
     /// Ended local startup observation; never a readiness or delivery witness.
     startup_context: opentelemetry::trace::SpanContext,
     run_root: PathBuf,
+    epoch_root: PathBuf,
     file_staging_root: PathBuf,
     bridge: Option<OpenSandboxBridge>,
     route_projection: OuterRouteProjection,
@@ -2302,6 +2303,7 @@ impl EpochCoordinator {
             physical_epoch,
             startup_context,
             run_root: plan.run_root().to_path_buf(),
+            epoch_root: plan.epoch_root().to_path_buf(),
             file_staging_root: plan.epoch_root().join("file-transfer"),
             bridge: None,
             route_projection: OuterRouteProjection::new(),
@@ -2413,6 +2415,7 @@ impl EpochCoordinator {
                 physical_epoch: "a".repeat(64),
                 startup_context: opentelemetry::trace::SpanContext::empty_context(),
                 run_root: root.join("epoch"),
+                epoch_root: root.to_path_buf(),
                 file_staging_root: root.join("file-transfer"),
                 bridge: None,
                 route_projection: OuterRouteProjection::new(),
@@ -2427,6 +2430,12 @@ impl EpochCoordinator {
             },
             worktree,
         )
+    }
+
+    /// Substitutes the image backend command in an isolated fixture.
+    #[cfg(test)]
+    pub(crate) fn fixture_image_probe(&mut self, program: PathBuf) {
+        self.image_backend.program = program;
     }
 
     /// Substitutes only the Gateway endpoint; all create and cleanup owners remain real.
@@ -2449,6 +2458,15 @@ impl EpochCoordinator {
             self.monitor.inspection.clone(),
         );
         reports
+    }
+
+    /// Installs the real Harness liveness check for a fixture-owned response and route.
+    #[cfg(test)]
+    pub(crate) fn fixture_watch_harness(
+        &self,
+        bootstrap: &WorkerBootstrapMonitor,
+    ) -> Result<(), EpochFault> {
+        self.monitor.watch_harness(bootstrap)
     }
 
     /// Injects a fault through the real monitor's report-before-fence path.
@@ -3047,8 +3065,9 @@ impl EpochCoordinator {
                 &registries,
             )
             .map_err(|_| "image.acquire rejected")?;
+            // Registry blobs and the finished archive share disposable epoch state storage.
             let staging = self
-                .run_root
+                .epoch_root
                 .join("acquisitions")
                 .join(format!("{:x}", Sha256::digest(request_id.as_bytes())));
             tokio::task::block_in_place(|| {

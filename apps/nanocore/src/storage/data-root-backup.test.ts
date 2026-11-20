@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  accessSync,
   chmodSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,10 +13,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import {
@@ -30,6 +32,12 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
+  observeSyncPublication,
+  publicationSyncFailure,
+  runDataRootPublicationAttempt,
+  setOwnerOnlyDefaultAcl,
+} from '../test-support/sync-publication.js';
+import {
   bindThreadMaterial,
   createWorkspaceMaterial,
   saveWorkspaceMaterialRevision,
@@ -37,6 +45,7 @@ import {
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
+  assertBackupMatchesPredecessor,
   assertExternalColdBackupDestination,
   copyColdDataRoot,
   DATA_ROOT_BACKUP_MANIFEST_FILE,
@@ -51,7 +60,179 @@ import { applyMigrations, applyScopedMigrations } from './migrate.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';
 
+vi.mock('node:fs', async (load) => {
+  const { publicationFileSystem } = await import('../test-support/sync-publication.js');
+  return publicationFileSystem(await load<typeof import('node:fs')>());
+});
+
+/** Creates just enough bytes to exercise the hot, cold and restore publication boundaries. */
+function backupPublicationFixture() {
+  const parent = mkdtempSync(join(tmpdir(), 'openkit-backup-publication-'));
+  onTestFinished(() => rmSync(parent, { recursive: true, force: true }));
+  const dataRoot = join(parent, 'data');
+  const backupRoot = join(parent, 'external', 'backup');
+  const relativeFile = join('files', 'captured.txt');
+  mkdirSync(join(dataRoot, 'files'), { recursive: true });
+  writeFileSync(join(dataRoot, relativeFile), 'captured bytes\n');
+  return {
+    parent,
+    dataRoot,
+    backupRoot,
+    relativeFile,
+    input: {
+      dataRoot,
+      backupRoot,
+      backupId: testEntityId('drb', 'durable_backup'),
+      sourceDeploymentId: testEntityId('dep', 'durable_backup'),
+      startedAt: timestamp,
+      completedAt: timestamp,
+    },
+  };
+}
+
+/** Keeps both publication modes on their real copy and manifest entry points. */
+async function captureBackup(
+  mode: 'hot' | 'cold',
+  input: ReturnType<typeof backupPublicationFixture>['input']
+) {
+  if (mode === 'hot') return writeHotDataRootBackup(input);
+  const copiedManifestMode = copyColdDataRoot(input);
+  return writeColdDataRootBackupManifest(input, copiedManifestMode);
+}
+
 describe('data-root backup manifest', () => {
+  describe.each(['cold', 'hot'] as const)('%s backup durability', (mode) => {
+    describe('round two capture', () => {
+      it('uses the inherited owner-only default ACL when creating the manifest', async (context) => {
+        const { backupRoot, input } = backupPublicationFixture();
+        const backupParent = dirname(backupRoot);
+        mkdirSync(backupParent);
+        setOwnerOnlyDefaultAcl(backupParent, context);
+        const priorUmask = process.umask(0o022);
+        try {
+          await captureBackup(mode, input);
+          expect(statSync(join(backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE)).mode & 0o777).toBe(
+            0o600
+          );
+        } finally {
+          process.umask(priorUmask);
+        }
+      });
+
+      it('leaves a failed capture of a restored root unverifiable under its prior ID', async () => {
+        const { parent, backupRoot, relativeFile, input } = backupPublicationFixture();
+        const nestedManifestName = join('files', DATA_ROOT_BACKUP_MANIFEST_FILE);
+        writeFileSync(join(input.dataRoot, nestedManifestName), 'retained payload\n');
+        const sourceManifest = await captureBackup('cold', input);
+        const restoredRoot = join(parent, 'restored');
+        await restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
+        const retainedManifest = join(restoredRoot, DATA_ROOT_BACKUP_MANIFEST_FILE);
+        chmodSync(retainedManifest, 0o640);
+        expect(verifyDataRootBackupManifest({ backupRoot: restoredRoot }).manifest.id).toBe(
+          sourceManifest.manifest.id
+        );
+        const next = {
+          ...input,
+          dataRoot: restoredRoot,
+          backupRoot: join(parent, 'failed-backup'),
+          backupId: testEntityId('drb', 'durable_restored_backup'),
+        };
+        const failedPath = join(next.backupRoot, relativeFile);
+        observeSyncPublication((path) => path === failedPath);
+
+        await expect(captureBackup(mode, next)).rejects.toBe(publicationSyncFailure);
+
+        expect(() => verifyDataRootBackupManifest({ backupRoot: next.backupRoot })).toThrow(
+          expect.objectContaining({ code: 'ENOENT' })
+        );
+        expect(existsSync(join(next.backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE))).toBe(false);
+        const retryRoot = join(parent, 'durable-backup');
+        const retried = await captureBackup(mode, { ...next, backupRoot: retryRoot });
+        expect(retried.manifest.id).toBe(next.backupId);
+        expect(readFileSync(join(retryRoot, nestedManifestName), 'utf8')).toBe(
+          'retained payload\n'
+        );
+        assertBackupMatchesPredecessor(retried, inventoryRegularFiles(restoredRoot));
+        expect(statSync(join(retryRoot, DATA_ROOT_BACKUP_MANIFEST_FILE)).mode & 0o777).toBe(0o640);
+      });
+    });
+
+    it('commits the captured tree, publishes the manifest, then commits both directory entries', async () => {
+      const { parent, backupRoot, relativeFile, input } = backupPublicationFixture();
+      const backupParent = dirname(backupRoot);
+      const capturedFile = join(backupRoot, relativeFile);
+      const manifest = join(backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE);
+      const events = observeSyncPublication();
+
+      const backup = await captureBackup(mode, input);
+
+      const renameAt = events.findIndex(
+        (event) => event.kind === 'rename' && event.path === manifest
+      );
+      expect(renameAt).toBeGreaterThan(0);
+      const rename = events[renameAt];
+      if (rename?.kind !== 'rename') throw new Error('Missing manifest rename.');
+      const syncs = events.slice(0, renameAt).filter((event) => event.kind === 'sync');
+      const paths = syncs.map((event) => event.path);
+      expect(paths).toEqual(
+        expect.arrayContaining([capturedFile, dirname(capturedFile), backupRoot, rename.from])
+      );
+      expect(paths.indexOf(capturedFile)).toBeLessThan(paths.indexOf(dirname(capturedFile)));
+      expect(paths.indexOf(dirname(capturedFile))).toBeLessThan(paths.indexOf(backupRoot));
+      expect(paths.indexOf(backupRoot)).toBeLessThan(paths.indexOf(rename.from));
+      expect(paths).toContain(parent);
+      expect(events.slice(renameAt + 1)).toEqual([
+        { kind: 'sync', path: backupRoot },
+        { kind: 'sync', path: backupParent },
+      ]);
+      expect(backup.checkedFiles).toEqual([relativeFile]);
+    });
+
+    it('withholds manifest publication and success if captured file sync fails', async () => {
+      const { dataRoot, backupRoot, relativeFile, input } = backupPublicationFixture();
+      observeSyncPublication((path) => path === join(backupRoot, relativeFile));
+
+      await expect(captureBackup(mode, input)).rejects.toBe(publicationSyncFailure);
+
+      expect(existsSync(join(backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE))).toBe(false);
+      expect(readFileSync(join(dataRoot, relativeFile), 'utf8')).toBe('captured bytes\n');
+    });
+
+    it('withholds success if the external parent sync fails after manifest publication', async () => {
+      const { backupRoot, input } = backupPublicationFixture();
+      const manifest = join(backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE);
+      observeSyncPublication((path) => path === dirname(backupRoot) && existsSync(manifest));
+
+      await expect(captureBackup(mode, input)).rejects.toBe(publicationSyncFailure);
+
+      expect(verifyDataRootBackupManifest({ backupRoot }).manifest.id).toBe(input.backupId);
+    });
+  });
+
+  it('honors write access to a 0444 manifest and preserves replacement mode bits in round two', () => {
+    const { backupRoot, input } = backupPublicationFixture();
+    copyColdDataRoot(input);
+    const original = writeColdDataRootBackupManifest(input);
+    const manifestPath = join(backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE);
+    const next = { ...input, backupId: testEntityId('drb', 'durable_replacement_backup') };
+    chmodSync(manifestPath, 0o444);
+
+    if (process.getuid?.() === 0) {
+      accessSync(manifestPath, constants.W_OK);
+      expect(writeColdDataRootBackupManifest(next).manifest.id).toBe(next.backupId);
+      expect(statSync(manifestPath).mode & 0o777).toBe(0o444);
+    } else {
+      expect(() => writeColdDataRootBackupManifest(next)).toThrow(
+        expect.objectContaining({ code: 'EACCES' })
+      );
+      expect(verifyDataRootBackupManifest({ backupRoot }).manifest.id).toBe(original.manifest.id);
+    }
+
+    chmodSync(manifestPath, 0o640);
+    expect(writeColdDataRootBackupManifest(next).manifest.id).toBe(next.backupId);
+    expect(statSync(manifestPath).mode & 0o777).toBe(0o640);
+  });
+
   describe.each(['cold', 'hot'] as const)('%s writer identifier admission', (mode) => {
     it.each([
       { field: 'backupId', value: 'backup_invalid', name: 'malformed backup' },
@@ -589,6 +770,196 @@ describe('data-root backup manifest', () => {
       '{"layoutVersion":1}\n'
     );
     expect(existsSync(join(dataRoot, DATA_ROOT_BACKUP_MANIFEST_FILE))).toBe(true);
+  });
+
+  describe('stopped restore durability', () => {
+    function restorePublicationFixture() {
+      const { parent, backupRoot, dataRoot, relativeFile, input } = backupPublicationFixture();
+      copyColdDataRoot(input);
+      writeColdDataRootBackupManifest(input);
+      writeFileSync(join(dataRoot, 'previous.txt'), 'previous bytes\n');
+      const stagingRoot = join(parent, 'separate-staging', 'candidate');
+      return {
+        targetParent: parent,
+        stagingParent: dirname(stagingRoot),
+        previousRoot: `${dataRoot}.restore-previous`,
+        relativeFile,
+        input: { backupRoot, dataRoot, stagingRoot },
+      };
+    }
+
+    it('completes round three stopped restore under a search-only ancestor', async () => {
+      const { input, targetParent, relativeFile } = restorePublicationFixture();
+      const ancestor = join(targetParent, 'search-only');
+      const dataRoot = join(ancestor, 'existing-parent', 'existing-target');
+      mkdirSync(dataRoot, { recursive: true });
+      writeFileSync(join(dataRoot, 'previous.txt'), 'previous bytes\n');
+      chmodSync(ancestor, 0o111);
+      try {
+        const events = observeSyncPublication();
+
+        await restoreDataRootBackup({ backupRoot: input.backupRoot, dataRoot });
+
+        expect(readFileSync(join(dataRoot, relativeFile), 'utf8')).toBe('captured bytes\n');
+        expect(existsSync(`${dataRoot}.restore-previous`)).toBe(false);
+        if (process.getuid?.() !== 0) {
+          expect(events.some((event) => event.kind === 'sync' && event.path === ancestor)).toBe(
+            false
+          );
+        }
+      } finally {
+        chmodSync(ancestor, 0o700);
+      }
+    });
+
+    it('refuses a round four stopped restore retry until the existing ancestor sync succeeds', () => {
+      const { input, targetParent, relativeFile } = restorePublicationFixture();
+      const firstAncestor = join(targetParent, 'first');
+      const dataRoot = join(firstAncestor, 'second', 'data');
+      const args = { backupRoot: input.backupRoot, dataRoot };
+
+      for (const attempt of [1, 2]) {
+        const result = runDataRootPublicationAttempt({ ...args, faultParent: targetParent });
+        expect(result.status, `Attempt ${attempt}. ${result.stderr}`).toBe(1);
+        expect(result.stderr.trim()).toBe('EIO');
+        expect(existsSync(firstAncestor)).toBe(true);
+        expect(existsSync(dataRoot)).toBe(false);
+      }
+
+      const result = runDataRootPublicationAttempt(args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ restored: true });
+      expect(readFileSync(join(dataRoot, relativeFile), 'utf8')).toBe('captured bytes\n');
+    });
+
+    describe('round two restore', () => {
+      it.each(['default staging', 'distinct staging'] as const)(
+        'stops %s before publication if the existing ancestor sync fails',
+        async (mode) => {
+          const { input, targetParent } = restorePublicationFixture();
+          const existingAncestor = join(targetParent, 'existing');
+          mkdirSync(existingAncestor);
+          const newParent = join(existingAncestor, 'one', 'two');
+          const dataRoot = mode === 'default staging' ? join(newParent, 'data') : input.dataRoot;
+          const args =
+            mode === 'default staging'
+              ? { backupRoot: input.backupRoot, dataRoot }
+              : { ...input, stagingRoot: join(newParent, 'staging') };
+          const events = observeSyncPublication((path) => path === existingAncestor);
+
+          await expect(restoreDataRootBackup(args)).rejects.toBe(publicationSyncFailure);
+
+          expect(events.some((event) => event.kind === 'rename')).toBe(false);
+          if (mode === 'default staging') expect(existsSync(dataRoot)).toBe(false);
+          else
+            expect(readFileSync(join(dataRoot, 'previous.txt'), 'utf8')).toBe('previous bytes\n');
+          expect(existsSync(`${dataRoot}.restore-previous`)).toBe(false);
+        }
+      );
+
+      it('commits predecessor removal before reporting success', async () => {
+        const { input, previousRoot, targetParent } = restorePublicationFixture();
+        const events = observeSyncPublication();
+
+        await restoreDataRootBackup(input);
+
+        const removalAt = events.findIndex(
+          (event) => event.kind === 'remove' && event.path === previousRoot
+        );
+        expect(removalAt).toBeGreaterThan(0);
+        expect(events.slice(removalAt + 1)).toEqual([{ kind: 'sync', path: targetParent }]);
+      });
+
+      it('withholds success when the predecessor removal sync is uncertain', async () => {
+        const { input, previousRoot, relativeFile, targetParent } = restorePublicationFixture();
+        const events = observeSyncPublication(
+          (path) =>
+            path === targetParent &&
+            events.some((event) => event.kind === 'remove' && event.path === previousRoot)
+        );
+
+        await expect(restoreDataRootBackup(input)).rejects.toBe(publicationSyncFailure);
+
+        expect(readFileSync(join(input.dataRoot, relativeFile), 'utf8')).toBe('captured bytes\n');
+        expect(
+          verifyDataRootBackupManifest({ backupRoot: input.backupRoot }).checkedFiles
+        ).toContain(relativeFile);
+      });
+    });
+
+    it('commits the staged tree before moving the predecessor and both parents before cleanup', async () => {
+      const { input, previousRoot, relativeFile, stagingParent, targetParent } =
+        restorePublicationFixture();
+      const events = observeSyncPublication();
+
+      await restoreDataRootBackup(input);
+
+      const stagedFile = join(input.stagingRoot, relativeFile);
+      const paths = [
+        stagedFile,
+        input.stagingRoot,
+        previousRoot,
+        input.dataRoot,
+        targetParent,
+        stagingParent,
+      ];
+      expect(events.filter((event) => paths.includes(event.path))).toEqual([
+        { kind: 'sync', path: targetParent },
+        { kind: 'remove', path: input.stagingRoot },
+        { kind: 'sync', path: stagedFile },
+        { kind: 'sync', path: input.stagingRoot },
+        { kind: 'sync', path: stagingParent },
+        { kind: 'rename', from: input.dataRoot, path: previousRoot },
+        { kind: 'sync', path: targetParent },
+        { kind: 'rename', from: input.stagingRoot, path: input.dataRoot },
+        { kind: 'sync', path: targetParent },
+        { kind: 'sync', path: stagingParent },
+        { kind: 'remove', path: previousRoot },
+        { kind: 'sync', path: targetParent },
+      ]);
+      expect(readFileSync(join(input.dataRoot, relativeFile), 'utf8')).toBe('captured bytes\n');
+      expect(existsSync(previousRoot)).toBe(false);
+    });
+
+    it('keeps the target at its original path if staging sync fails', async () => {
+      const { input, previousRoot, relativeFile } = restorePublicationFixture();
+      const events = observeSyncPublication(
+        (path) => path === join(input.stagingRoot, relativeFile)
+      );
+
+      await expect(restoreDataRootBackup(input)).rejects.toBe(publicationSyncFailure);
+
+      expect(events.some((event) => event.kind === 'rename')).toBe(false);
+      expect(readFileSync(join(input.dataRoot, 'previous.txt'), 'utf8')).toBe('previous bytes\n');
+      expect(existsSync(previousRoot)).toBe(false);
+    });
+
+    it.each(['predecessor', 'destination', 'staging source'] as const)(
+      'keeps both trees on an uncertain %s parent sync',
+      async (boundary) => {
+        const { input, previousRoot, relativeFile, stagingParent, targetParent } =
+          restorePublicationFixture();
+        const events = observeSyncPublication((path) => {
+          if (boundary === 'staging source') {
+            return (
+              path === stagingParent &&
+              events.some((event) => event.kind === 'rename' && event.path === input.dataRoot)
+            );
+          }
+          if (path !== targetParent || !existsSync(previousRoot)) return false;
+          return existsSync(input.dataRoot) === (boundary === 'destination');
+        });
+
+        await expect(restoreDataRootBackup(input)).rejects.toBe(publicationSyncFailure);
+
+        const candidate = boundary === 'predecessor' ? input.stagingRoot : input.dataRoot;
+        expect(readFileSync(join(candidate, relativeFile), 'utf8')).toBe('captured bytes\n');
+        expect(readFileSync(join(previousRoot, 'previous.txt'), 'utf8')).toBe('previous bytes\n');
+        await expect(restoreDataRootBackup(input)).rejects.toThrow(/recovery is required/i);
+        expect(readFileSync(join(candidate, relativeFile), 'utf8')).toBe('captured bytes\n');
+        expect(readFileSync(join(previousRoot, 'previous.txt'), 'utf8')).toBe('previous bytes\n');
+      }
+    );
   });
 
   it('rejects restore from a backup that does not verify', async () => {

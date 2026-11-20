@@ -7,6 +7,7 @@ import {
   cpSync,
   existsSync,
   fchmodSync,
+  fchownSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -20,6 +21,7 @@ import {
   renameSync,
   rmdirSync,
   rmSync,
+  type Stats,
   statSync,
   utimesSync,
   writeFileSync,
@@ -1217,12 +1219,12 @@ export async function writePrivateTreeMetadata(
 }
 
 /**
- * Verifies that one canonical path is a regular file rather than a link.
+ * Returns metadata for one canonical regular file.
  *
  * @param path Canonical file path.
  * @throws Error when the path is a symbolic link or not a regular file.
  */
-export function assertCanonicalRegularFile(path: string): void {
+export function assertCanonicalRegularFile(path: string): Stats {
   const metadata = lstatSync(path);
 
   if (metadata.isSymbolicLink()) {
@@ -1231,6 +1233,7 @@ export function assertCanonicalRegularFile(path: string): void {
   if (!metadata.isFile()) {
     throw new Error(`Canonical path must be a regular file: ${path}.`);
   }
+  return metadata;
 }
 
 /**
@@ -1250,35 +1253,65 @@ export function assertCanonicalDirectory(path: string): void {
   }
 }
 
+type CanonicalDirectorySync = 'acknowledge-existing' | 'created-entries' | 'retry-creation';
+
 /**
  * Creates a canonical directory and any missing parents without an existing redirect.
  *
  * @param path Canonical directory path beneath the caller's validated boundary.
  * @param mode Creation permissions, subject to the process umask.
+ * @param sync Whether to acknowledge an existing entry and allow a search-only parent on retry.
  * @throws Error when the existing or created path is not a real directory.
  */
-export function ensureCanonicalDirectory(path: string, mode = 0o700): void {
+export function ensureCanonicalDirectory(
+  path: string,
+  mode = 0o700,
+  sync: CanonicalDirectorySync = 'acknowledge-existing'
+): void {
   const metadata = lstatSync(path, { throwIfNoEntry: false });
 
   if (metadata) {
     assertCanonicalDirectory(path);
-    syncCanonicalDirectory(dirname(path));
+    // A visible parent can remain after its creation was not durably acknowledged.
+    if (sync !== 'created-entries') {
+      syncCanonicalDirectory(dirname(path), undefined, sync === 'retry-creation');
+    }
     return;
   }
 
-  // A visible parent can remain after its creation was not durably acknowledged.
-  ensureCanonicalDirectory(dirname(path), mode);
-  assertCanonicalDirectory(dirname(path));
-  mkdirSync(path, { mode });
-  assertCanonicalDirectory(path);
-  syncCanonicalDirectory(dirname(path));
+  ensureCanonicalDirectory(dirname(path), mode, sync);
+  const createDirectory = () => {
+    mkdirSync(path, { mode });
+    assertCanonicalDirectory(path);
+  };
+  const parent = dirname(path);
+  if (sync !== 'acknowledge-existing') {
+    // Prove the parent can be opened before making an entry that would need its sync.
+    syncCanonicalDirectory(parent, createDirectory);
+  } else {
+    assertCanonicalDirectory(parent);
+    createDirectory();
+    syncCanonicalDirectory(parent);
+  }
 }
 
 /** Synchronizes a verified directory entry before acknowledging publication. */
-export function syncCanonicalDirectory(path: string): void {
+export function syncCanonicalDirectory(
+  path: string,
+  createEntry?: () => void,
+  allowUnreadable = false
+): void {
   assertCanonicalDirectory(path);
-  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let descriptor: number;
   try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (allowUnreadable && !createEntry && (code === 'EACCES' || code === 'EPERM')) return;
+    throw error;
+  }
+  try {
+    createEntry?.();
     fsyncSync(descriptor);
   } finally {
     closeSync(descriptor);
@@ -1289,8 +1322,11 @@ export function syncCanonicalDirectory(path: string): void {
  * @internal Removes a caller-admitted retained path and acknowledges its canonical parent.
  * Retention authority stays with the caller; failed synchronization preserves the native error and removal residue.
  */
-export function removeCanonicalTreeSync(path: string): void {
-  ensureCanonicalDirectory(dirname(path), 0o777);
+export function removeCanonicalTreeSync(
+  path: string,
+  sync: CanonicalDirectorySync = 'acknowledge-existing'
+): void {
+  ensureCanonicalDirectory(dirname(path), 0o777, sync);
   rmSync(path, { force: true, recursive: true });
   syncCanonicalDirectory(dirname(path));
 }
@@ -2484,6 +2520,26 @@ export async function materializeWorkspaceBackupInventory(
   }
 }
 
+/** @internal Native creation permissions, with an optional exact mode from an omitted copy. */
+export interface NativeFilePermissions {
+  readonly copiedMode?: number | undefined;
+}
+
+/** Holds an atomic publication descriptor through a write or a non-truncating access check. */
+function withPublicationDescriptor(
+  path: string,
+  flags: number,
+  mode?: number,
+  write?: (descriptor: number) => void
+): void {
+  const descriptor = openSync(path, flags, mode);
+  try {
+    write?.(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 /** @internal Publishes complete caller-admitted bytes with the original atomic writer lifetime. */
 export function writeCanonicalFileAtomic(
   path: string,
@@ -2496,7 +2552,7 @@ export function writeCanonicalFileAtomic(
         release(): void;
       }
     | undefined,
-  mode: number | undefined,
+  permissions: number | NativeFilePermissions | undefined,
   publication: 'replace' | 'create'
 ): void {
   const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
@@ -2504,23 +2560,43 @@ export function writeCanonicalFileAtomic(
   let attemptedOpen = false;
   let temporaryOwned = false;
   try {
-    ensureCanonicalDirectory(dirname(path), 0o777);
-    if (lstatSync(path, { throwIfNoEntry: false })) assertCanonicalRegularFile(path);
+    const native = typeof permissions === 'object';
+    ensureCanonicalDirectory(
+      dirname(path),
+      0o777,
+      native ? 'created-entries' : 'acknowledge-existing'
+    );
+    let mode = native ? permissions.copiedMode : permissions;
+    let owner: Pick<Stats, 'uid' | 'gid'> | undefined;
+    const exists = lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+    const writeFlags = constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+    if (exists) {
+      const metadata = assertCanonicalRegularFile(path);
+      if (native) {
+        // Check the original inode's permissions without truncating the retained bytes.
+        withPublicationDescriptor(path, writeFlags);
+        mode = metadata.mode & 0o7777;
+        if (publication === 'replace') owner = metadata;
+      }
+    }
     attemptedOpen = true;
-    const descriptor = openSync(
+    withPublicationDescriptor(
       temporaryPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      mode ?? 0o600
+      owner ? 0o600 : (mode ?? (native ? 0o666 : 0o600)),
+      (descriptor) => {
+        temporaryOwned = true;
+        writeFileSync(descriptor, content);
+        reservation?.recordWritten(byteLength);
+        if (owner) fchownSync(descriptor, owner.uid, owner.gid);
+        if (mode !== undefined) {
+          fchmodSync(descriptor, mode);
+          // An omitted prior manifest must admit writes as its copied inode would have.
+          if (native && !exists) withPublicationDescriptor(temporaryPath, writeFlags);
+        }
+        fsyncSync(descriptor);
+      }
     );
-    temporaryOwned = true;
-    try {
-      writeFileSync(descriptor, content);
-      reservation?.recordWritten(byteLength);
-      if (mode !== undefined) fchmodSync(descriptor, mode);
-      fsyncSync(descriptor);
-    } finally {
-      closeSync(descriptor);
-    }
     if (publication === 'create') {
       linkSync(temporaryPath, path);
       rmSync(temporaryPath);

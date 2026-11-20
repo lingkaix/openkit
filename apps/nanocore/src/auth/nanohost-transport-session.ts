@@ -79,7 +79,7 @@ export interface NanoHostTransportSessionAuthority {
    * @param physicalConnection Native connection identity observed closed by the server.
    * @returns Closed and promoted generation facts.
    */
-  /** Fences and joins existing bound sessions before their physical listener and writer close. */
+  /** Fences and destroys bound sessions, then joins durable close publication before writer shutdown. */
   closeAllPhysicalConnections(): Promise<void>;
 
   closePhysicalConnection(
@@ -374,7 +374,9 @@ export function createNanoHostTransportSessionAuthority(): NanoHostTransportSess
       const outcomes = await Promise.allSettled(
         [...sessions.values()].map(async (record) => {
           try {
-            await closeAndPublish(record.physicalConnection);
+            // Fence and close the socket before awaiting durable publication.
+            // In-flight Harness polls see a transport close and can retry.
+            return closeAndPublish(record.physicalConnection);
           } finally {
             (record.physicalConnection as { destroy(): void }).destroy();
           }

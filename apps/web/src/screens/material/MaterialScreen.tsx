@@ -1,5 +1,5 @@
 import { ApiCallError } from '@openkit/core-client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import { useSurfaceParams } from '../../app/route-params';
@@ -141,6 +141,29 @@ function NewMaterialForm({
   );
 }
 
+/** Revisions this editor has saved since the detail read last matched its latest accept. */
+interface OwnRevisionRecord {
+  revisionIds: Array<string | null>;
+  latestAcceptedRevisionId: string;
+}
+
+/**
+ * Classifies a detail read against revisions this editor has saved.
+ * An older saved id, including a null base this editor saved from, is a stale read.
+ * The latest id has caught up. A null head this editor did not save from stays unread.
+ * Any other id is foreign.
+ */
+function classifyOwnDetailRead(
+  record: OwnRevisionRecord | null,
+  currentRevisionId: string | null
+): 'none' | 'latest' | 'older' | 'foreign' {
+  if (!record) return 'none';
+  if (currentRevisionId === record.latestAcceptedRevisionId) return 'latest';
+  if (record.revisionIds.includes(currentRevisionId)) return 'older';
+  if (currentRevisionId === null) return 'none';
+  return 'foreign';
+}
+
 /**
  * Renders one Material's authoritative identity, editor baseline, and revision views.
  *
@@ -166,6 +189,11 @@ function MaterialDetail({
   const [conflict, setConflict] = useState(false);
   const [editorDirty, setEditorDirty] = useState(false);
   const [rangeApplyBusy, setRangeApplyBusy] = useState(false);
+  const [saveInFlight, setSaveInFlight] = useState(false);
+  const [ownRevisions, setOwnRevisions] = useState<OwnRevisionRecord | null>(null);
+  const heldRevisionId = useRef<string | null>(null);
+  const heldContent = useRef<string | undefined>(undefined);
+  const saveBaseRevisionId = useRef<string | null>(null);
   const record = material.data?.material;
   const currentRevisionId = record?.currentRevisionId ?? null;
   const selectedRevisionId = openedRevisionId ?? currentRevisionId;
@@ -173,6 +201,34 @@ function MaterialDetail({
   const currentRevision = useWorkspaceMaterialRevision(workspaceId, materialId, currentRevisionId);
   const selectedRevision = openedRevisionId ? revision.data?.revision : undefined;
   const currentContent = currentRevision.data?.revision.content;
+  // A dirty editor keeps the revision it started from. A clean editor follows the server head.
+  if (!editorDirty) {
+    heldRevisionId.current = currentRevisionId;
+    heldContent.current = currentContent;
+  }
+  // A detail read still showing an older revision this editor saved is stale. Keep the
+  // latest accept until the read shows that revision, or adopt a foreign head when clean.
+  const detailRead = classifyOwnDetailRead(ownRevisions, currentRevisionId);
+  if (ownRevisions) saveBaseRevisionId.current = ownRevisions.latestAcceptedRevisionId;
+  if (detailRead === 'latest' || (detailRead === 'foreign' && !editorDirty)) {
+    if (detailRead === 'foreign') saveBaseRevisionId.current = currentRevisionId;
+    setOwnRevisions(null);
+  } else if (!editorDirty && !ownRevisions) {
+    saveBaseRevisionId.current = currentRevisionId;
+  }
+  const draftBaseRevisionId = ownRevisions
+    ? ownRevisions.latestAcceptedRevisionId
+    : editorDirty
+      ? saveBaseRevisionId.current
+      : currentRevisionId;
+  saveBaseRevisionId.current = draftBaseRevisionId;
+  const revisionHeld =
+    editorDirty &&
+    !saveInFlight &&
+    detailRead !== 'older' &&
+    currentRevisionId !== draftBaseRevisionId;
+  const editorRevisionId = editorDirty ? heldRevisionId.current : currentRevisionId;
+  const editorContent = editorDirty ? heldContent.current : currentContent;
   const revisionItems = revisions.data?.revisions ?? [];
   const compareBeforeId =
     selectedRevisionId === currentRevisionId
@@ -193,18 +249,31 @@ function MaterialDetail({
   /** Saves the exact editor draft only while the live connection permits mutation. */
   const saveDraft = async (content: string) => {
     if (disconnected) throw new Error('Material save is unavailable while disconnected.');
+    const baseRevisionId = saveBaseRevisionId.current;
     setConflict(false);
+    setSaveInFlight(true);
     try {
-      await save.mutateAsync({
-        expectedRevisionId: record.currentRevisionId,
+      const saved = await save.mutateAsync({
+        expectedRevisionId: baseRevisionId,
         contentDigest: await sha256Content(content),
         content,
+      });
+      setOwnRevisions((existing) => {
+        const revisionIds = [...(existing?.revisionIds ?? [])];
+        const remember = (revisionId: string | null) => {
+          if (!revisionIds.includes(revisionId)) revisionIds.push(revisionId);
+        };
+        remember(baseRevisionId);
+        remember(saved.revisionId);
+        return { revisionIds, latestAcceptedRevisionId: saved.revisionId };
       });
     } catch (error) {
       if (error instanceof ApiCallError && error.status === 409 && error.code === 'conflict') {
         setConflict(true);
       }
       throw error;
+    } finally {
+      setSaveInFlight(false);
     }
   };
 
@@ -221,7 +290,7 @@ function MaterialDetail({
             {record.sensitivity}
           </span>
         </div>
-        {conflict ? (
+        {conflict || revisionHeld ? (
           <div className="mt-4">
             <ErrorBanner message="This material changed since you opened it. Keep the draft and save again after reviewing the current revision." />
           </div>
@@ -243,17 +312,20 @@ function MaterialDetail({
           </div>
         ) : null}
         <div className="mt-5">
-          {currentContent !== undefined || currentRevisionId === null ? (
+          {editorContent !== undefined || editorRevisionId === null ? (
             <fieldset
               disabled={
-                disconnected || rangeApplyBusy || material.isError || currentRevision.isError
+                disconnected ||
+                rangeApplyBusy ||
+                material.isError ||
+                (currentRevision.isError && !revisionHeld)
               }
             >
               <MaterialEditor
-                key={currentRevisionId ?? 'empty'}
+                key={editorRevisionId ?? 'empty'}
                 label={record.title}
                 kind={record.kind}
-                initialValue={currentContent ?? ''}
+                initialValue={editorContent ?? ''}
                 onSave={saveDraft}
                 onDirtyChange={setEditorDirty}
               />
@@ -406,7 +478,24 @@ export function MaterialScreen() {
   const { failed, checking } = useConnection();
   const disconnected = failed || checking;
   const [showNew, setShowNew] = useState(false);
-  const selectedMaterialId = routeMaterialId ?? materials.data?.[0]?.materialId ?? null;
+  const [pinnedMaterialId, setPinnedMaterialId] = useState<string | null>(null);
+  const listedForSelection = materials.data;
+  // An id-less route keeps the open row when a refresh reorders the list.
+  let implicitMaterialId: string | null = null;
+  if (!routeMaterialId) {
+    if (listedForSelection) {
+      const pinnedStillListed =
+        pinnedMaterialId !== null &&
+        listedForSelection.some((item) => item.materialId === pinnedMaterialId);
+      implicitMaterialId = pinnedStillListed
+        ? pinnedMaterialId
+        : (listedForSelection[0]?.materialId ?? null);
+      if (implicitMaterialId !== pinnedMaterialId) setPinnedMaterialId(implicitMaterialId);
+    } else {
+      implicitMaterialId = pinnedMaterialId;
+    }
+  }
+  const selectedMaterialId = routeMaterialId ?? implicitMaterialId;
 
   if (!workspaces.isSuccess) {
     return (
@@ -507,31 +596,10 @@ function MaterialSurfaceBody({
   onCancel: () => void;
 }) {
   if (!workspaceId) return <EmptyState icon="file" title="Choose a Workspace first" />;
-  if (routeMaterialId && !materials) {
-    return (
-      <>
-        <section aria-label="Material editor" className="min-w-0">
-          <MaterialDetail
-            workspaceId={workspaceId}
-            materialId={routeMaterialId}
-            threadId={threadId}
-            disconnected={disconnected}
-          />
-        </section>
-        {materialsLoading ? (
-          <Skeleton lines={5} />
-        ) : (
-          <ErrorBanner message="Couldn't load Workspace Materials." onRetry={onRetryMaterials} />
-        )}
-      </>
-    );
-  }
-  if (materialsLoading && !materials) return <Skeleton lines={5} />;
-  if (!materials) {
-    return <ErrorBanner message="Couldn't load Workspace Materials." onRetry={onRetryMaterials} />;
-  }
 
-  const listedMaterials = materials;
+  const listedMaterials = materials ?? [];
+  // The open Material id, never the list row object. A late list must not change this key.
+  const editorMaterialId = routeMaterialId ?? (materials ? selectedMaterialId : null);
   const newMaterialForm = showNew ? (
     <NewMaterialForm
       isPending={create.isPending}
@@ -549,7 +617,11 @@ function MaterialSurfaceBody({
     />
   ) : null;
 
-  if (listedMaterials.length === 0 && !routeMaterialId) {
+  if (!editorMaterialId && materialsLoading && !materials) return <Skeleton lines={5} />;
+  if (!editorMaterialId && !materials) {
+    return <ErrorBanner message="Couldn't load Workspace Materials." onRetry={onRetryMaterials} />;
+  }
+  if (!editorMaterialId) {
     return (
       <>
         {newMaterialForm ?? (
@@ -574,68 +646,72 @@ function MaterialSurfaceBody({
     );
   }
 
-  if (listedMaterials.length === 0 && routeMaterialId) {
-    return (
-      <>
-        {newMaterialForm}
-        <section aria-label="Material editor" className="min-w-0">
+  const showCatalog = listedMaterials.length > 0;
+  return (
+    <>
+      {newMaterialForm}
+      {/* The editor stays the second child so replacing the list slot does not remount it. */}
+      <div
+        className={
+          showCatalog ? 'grid min-h-0 gap-6 lg:grid-cols-[220px_minmax(0,1fr)]' : 'flex flex-col'
+        }
+      >
+        <div>
+          {showCatalog ? (
+            <Card>
+              <Eyebrow>Workspace Materials</Eyebrow>
+              <div className="mt-3 flex max-h-72 flex-col gap-1 overflow-y-auto">
+                {listedMaterials.map((material) => (
+                  <Button
+                    key={material.materialId}
+                    size="sm"
+                    variant={material.materialId === selectedMaterialId ? 'outline' : 'quiet'}
+                    aria-pressed={material.materialId === selectedMaterialId}
+                    className="justify-start rounded-ok text-left"
+                    onPress={() => onSelect(material.materialId)}
+                  >
+                    <span className="truncate">{material.title}</span>
+                  </Button>
+                ))}
+              </div>
+            </Card>
+          ) : !materials ? (
+            materialsLoading ? (
+              <Skeleton lines={5} />
+            ) : (
+              <ErrorBanner
+                message="Couldn't load Workspace Materials."
+                onRetry={onRetryMaterials}
+              />
+            )
+          ) : materialsError ? (
+            <ErrorBanner
+              message="The Material list could not be refreshed."
+              onRetry={onRetryMaterials}
+            />
+          ) : null}
+        </div>
+        <section
+          aria-label="Material editor"
+          className={showCatalog ? 'min-w-0' : 'order-first min-w-0'}
+        >
           <MaterialDetail
+            key={editorMaterialId}
             workspaceId={workspaceId}
-            materialId={routeMaterialId}
+            materialId={editorMaterialId}
             threadId={threadId}
             disconnected={disconnected}
           />
         </section>
-        {materialsError ? (
-          <ErrorBanner
-            message="The Material list could not be refreshed."
-            onRetry={onRetryMaterials}
-          />
-        ) : null}
-      </>
-    );
-  }
-
-  return (
-    <>
-      {newMaterialForm}
-      <div className="grid min-h-0 gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <Card>
-          <Eyebrow>Workspace Materials</Eyebrow>
-          <div className="mt-3 flex max-h-72 flex-col gap-1 overflow-y-auto">
-            {listedMaterials.map((material) => (
-              <Button
-                key={material.materialId}
-                size="sm"
-                variant={material.materialId === selectedMaterialId ? 'outline' : 'quiet'}
-                aria-pressed={material.materialId === selectedMaterialId}
-                className="justify-start rounded-ok text-left"
-                onPress={() => onSelect(material.materialId)}
-              >
-                <span className="truncate">{material.title}</span>
-              </Button>
-            ))}
-          </div>
-        </Card>
-        <section aria-label="Material editor" className="min-w-0">
-          {selectedMaterialId ? (
-            <MaterialDetail
-              key={selectedMaterialId}
-              workspaceId={workspaceId}
-              materialId={selectedMaterialId}
-              threadId={threadId}
-              disconnected={disconnected}
-            />
-          ) : null}
-        </section>
       </div>
-      {materialsError ? (
+      {showCatalog && materialsError ? (
         <ErrorBanner
           message="The Material list could not be refreshed."
           onRetry={onRetryMaterials}
         />
       ) : null}
-      {routeMaterialId &&
+      {showCatalog &&
+      routeMaterialId &&
       !listedMaterials.some((material) => material.materialId === routeMaterialId) ? (
         <p className="text-xs text-fg-muted">
           The named Material is not in the current list; its server record is shown if available.

@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use oci_client::client::{ClientConfig, ClientProtocol};
+use oci_client::errors::OciDistributionError;
 use oci_client::manifest::{
     IMAGE_MANIFEST_LIST_MEDIA_TYPE, IMAGE_MANIFEST_MEDIA_TYPE, OCI_IMAGE_INDEX_MEDIA_TYPE,
     OCI_IMAGE_MEDIA_TYPE, OciImageManifest, OciManifest,
@@ -81,6 +82,74 @@ impl AcquisitionTrigger {
     }
 }
 
+/// Host-local stages in which an image filesystem error can occur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImageIoStage {
+    Staging,
+    BlobOpen,
+    BlobWrite,
+    BlobSync,
+    BlobRename,
+    Archive,
+    Cleanup,
+    StoreRead,
+    StoreAdmit,
+    Other,
+}
+
+impl ImageIoStage {
+    fn journal_label(self) -> &'static str {
+        match self {
+            Self::Staging => "staging",
+            Self::BlobOpen => "blob_open",
+            Self::BlobWrite => "blob_write",
+            Self::BlobSync => "blob_sync",
+            Self::BlobRename => "blob_rename",
+            Self::Archive => "archive",
+            Self::Cleanup => "cleanup",
+            Self::StoreRead => "store_read",
+            Self::StoreAdmit => "store_admit",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Filesystem error facts retained without an error message, path, or source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageIoFailure {
+    stage: ImageIoStage,
+    kind: io::ErrorKind,
+}
+
+impl ImageIoFailure {
+    pub(crate) fn new(stage: ImageIoStage, kind: io::ErrorKind) -> Self {
+        Self { stage, kind }
+    }
+
+    fn at_stage(self, stage: ImageIoStage) -> Self {
+        Self { stage, ..self }
+    }
+
+    fn journal_kind(self) -> &'static str {
+        match self.kind {
+            io::ErrorKind::StorageFull => "storage_full",
+            io::ErrorKind::QuotaExceeded => "quota_exceeded",
+            io::ErrorKind::CrossesDevices => "crosses_devices",
+            io::ErrorKind::FileTooLarge => "file_too_large",
+            io::ErrorKind::PermissionDenied => "permission_denied",
+            io::ErrorKind::ReadOnlyFilesystem => "read_only_filesystem",
+            io::ErrorKind::NotFound => "not_found",
+            io::ErrorKind::AlreadyExists => "already_exists",
+            io::ErrorKind::Interrupted => "interrupted",
+            io::ErrorKind::WouldBlock => "would_block",
+            io::ErrorKind::TimedOut => "timed_out",
+            io::ErrorKind::UnexpectedEof => "unexpected_eof",
+            io::ErrorKind::WriteZero => "write_zero",
+            _ => "other",
+        }
+    }
+}
+
 /// Fail-closed acquisition and build error classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcquisitionError {
@@ -99,7 +168,7 @@ pub enum AcquisitionError {
     /// An OCI result is malformed, oversized, over-layered, or unverifiable.
     InvalidOciResult,
     /// A private filesystem operation failed.
-    Io,
+    Io(ImageIoFailure),
     /// The manifest content type is outside the closed image and index set.
     UnsupportedManifest,
     /// An image index has no descriptor for the requested host platform.
@@ -117,7 +186,9 @@ impl AcquisitionError {
             Self::UnauthorizedTrigger
             | Self::InvalidRegistryReference
             | Self::InvalidBuildDefinition => "image.acquire rejected",
-            Self::UnsupportedBuildCapability | Self::Backend | Self::Io => "image.acquire failed",
+            Self::UnsupportedBuildCapability | Self::Backend | Self::Io(_) => {
+                "image.acquire failed"
+            }
             Self::DigestMismatch => "image.acquire digest mismatch",
             Self::InvalidOciResult => "image.acquire invalid OCI result",
             Self::UnsupportedManifest => "unsupported manifest media type",
@@ -126,14 +197,27 @@ impl AcquisitionError {
         }
     }
 
+    fn io_at(stage: ImageIoStage, error: io::Error) -> Self {
+        Self::Io(ImageIoFailure::new(stage, error.kind()))
+    }
+
+    fn at_io_stage(self, stage: ImageIoStage) -> Self {
+        match self {
+            Self::Io(error) => Self::Io(error.at_stage(stage)),
+            other => other,
+        }
+    }
+
     /// Reports safe host-local evidence and preserves the existing effect failure reason.
     ///
     /// Diagnostic output cannot change the result if the journal writer fails.
     pub(crate) fn report_effect_failure(self, journal: &mut impl Write) -> &'static str {
-        if self == Self::Io {
+        if let Self::Io(error) = self {
             let _ = writeln!(
                 journal,
-                "nanohost_image_acquisition_failed cause=filesystem_io"
+                "nanohost_image_acquisition_failed cause=filesystem_io stage={} kind={}",
+                error.stage.journal_label(),
+                error.journal_kind()
             );
         }
         self.static_reason()
@@ -141,8 +225,8 @@ impl AcquisitionError {
 }
 
 impl From<io::Error> for AcquisitionError {
-    fn from(_: io::Error) -> Self {
-        Self::Io
+    fn from(error: io::Error) -> Self {
+        Self::io_at(ImageIoStage::Other, error)
     }
 }
 
@@ -150,7 +234,9 @@ impl From<io::Error> for AcquisitionError {
 fn retained_store_read(error: StoreError) -> Result<(), AcquisitionError> {
     match error {
         StoreError::Missing | StoreError::Corrupt => Ok(()),
-        StoreError::Io => Err(AcquisitionError::Io),
+        StoreError::Io(error) => Err(AcquisitionError::Io(
+            error.at_stage(ImageIoStage::StoreRead),
+        )),
         _ => Err(AcquisitionError::InvalidOciResult),
     }
 }
@@ -158,7 +244,7 @@ fn retained_store_read(error: StoreError) -> Result<(), AcquisitionError> {
 /// Preserves filesystem I/O from store admission instead of an OCI classification.
 fn acquisition_error_for_store(error: StoreError) -> AcquisitionError {
     match error {
-        StoreError::Io => AcquisitionError::Io,
+        StoreError::Io(error) => AcquisitionError::Io(error.at_stage(ImageIoStage::StoreAdmit)),
         _ => AcquisitionError::InvalidOciResult,
     }
 }
@@ -400,7 +486,7 @@ impl RegistryAcquisition {
         let cleanup_result = match fs::remove_dir_all(staging_root) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(_) => Err(AcquisitionError::Io),
+            Err(error) => Err(AcquisitionError::io_at(ImageIoStage::Cleanup, error)),
         };
         let staged = staged?;
         let digest = match staged {
@@ -494,7 +580,9 @@ impl RegistryAcquisition {
             Ok(mut retained) => {
                 let verified = match verify_oci_archive(&mut retained, Some(&selected.digest)) {
                     Ok(verified) => verified,
-                    Err(AcquisitionError::Io) => return Err(AcquisitionError::Io),
+                    Err(error @ AcquisitionError::Io(_)) => {
+                        return Err(error.at_io_stage(ImageIoStage::StoreRead));
+                    }
                     Err(_) => return Err(AcquisitionError::InvalidOciResult),
                 };
                 let manifest_name = format!("blobs/sha256/{}", digest_hex(&selected.digest)?);
@@ -556,8 +644,8 @@ impl RegistryAcquisition {
     ) -> Result<File, AcquisitionError> {
         self.verify_content(raw_manifest)?;
         let manifest = parse_image_manifest(raw_manifest)?;
-        let descriptor_sizes =
-            prepare_registry_layout(self, raw_manifest, &manifest, staging_root)?;
+        let descriptor_sizes = prepare_registry_layout(self, raw_manifest, &manifest, staging_root)
+            .map_err(|error| error.at_io_stage(ImageIoStage::Staging))?;
         let mut downloaded = BTreeSet::new();
         for descriptor in std::iter::once(&manifest.config).chain(manifest.layers.iter()) {
             if !downloaded.insert(descriptor.digest.clone()) {
@@ -575,37 +663,50 @@ impl RegistryAcquisition {
                 .create_new(true)
                 .write(true)
                 .mode(0o600)
-                .open(&partial_path)?;
+                .open(&partial_path)
+                .map_err(|error| AcquisitionError::io_at(ImageIoStage::BlobOpen, error))?;
             let mut writer = BoundedBlobWriter::new(tokio::fs::File::from_std(file), declared_size);
-            #[cfg(test)]
-            {
-                use tokio::io::AsyncWriteExt;
-                if fixture_active() {
-                    let bytes = fixture_blob(&descriptor.digest, declared_size)?;
-                    writer.write_all(&bytes).await?;
-                } else {
-                    client
-                        .ok_or(AcquisitionError::Backend)?
-                        .pull_blob(&self.reference, descriptor, &mut writer)
-                        .await
-                        .map_err(|_| AcquisitionError::Backend)?;
-                }
-            }
-            #[cfg(not(test))]
-            {
-                client
-                    .ok_or(AcquisitionError::Backend)?
-                    .pull_blob(&self.reference, descriptor, &mut writer)
-                    .await
-                    .map_err(|_| AcquisitionError::Backend)?;
-            }
+            self.pull_registry_blob(client, descriptor, &mut writer)
+                .await?;
             writer.sync_all().await?;
             if writer.written() != declared_size {
                 return Err(AcquisitionError::InvalidOciResult);
             }
-            fs::rename(partial_path, final_path)?;
+            fs::rename(partial_path, final_path)
+                .map_err(|error| AcquisitionError::io_at(ImageIoStage::BlobRename, error))?;
         }
         archive_registry_layout(staging_root, &self.digest, &descriptor_sizes)
+            .map_err(|error| error.at_io_stage(ImageIoStage::Archive))
+    }
+
+    /// Transfers one size-bounded blob and preserves local writer failures.
+    async fn pull_registry_blob(
+        &self,
+        client: Option<&Client>,
+        descriptor: &oci_client::manifest::OciDescriptor,
+        writer: &mut BoundedBlobWriter,
+    ) -> Result<(), AcquisitionError> {
+        #[cfg(test)]
+        if fixture_active() {
+            use tokio::io::AsyncWriteExt;
+            let bytes = fixture_blob(&descriptor.digest, writer.limit)?;
+            return writer
+                .write_all(&bytes)
+                .await
+                .map_err(|error| AcquisitionError::io_at(ImageIoStage::BlobWrite, error));
+        }
+
+        client
+            .ok_or(AcquisitionError::Backend)?
+            .pull_blob(&self.reference, descriptor, &mut *writer)
+            .await
+            .map_err(|error| match error {
+                // The client wraps local writer errors here. HTTP body failures are RequestError.
+                OciDistributionError::IoError(error) if !writer.limit_exceeded => {
+                    AcquisitionError::io_at(ImageIoStage::BlobWrite, error)
+                }
+                _ => AcquisitionError::Backend,
+            })
     }
 }
 
@@ -1149,6 +1250,7 @@ struct BoundedBlobWriter {
     file: tokio::fs::File,
     written: u64,
     limit: u64,
+    limit_exceeded: bool,
 }
 
 impl BoundedBlobWriter {
@@ -1158,6 +1260,7 @@ impl BoundedBlobWriter {
             file,
             written: 0,
             limit,
+            limit_exceeded: false,
         }
     }
 
@@ -1168,7 +1271,10 @@ impl BoundedBlobWriter {
 
     /// Flushes blob bytes and metadata to stable storage.
     async fn sync_all(&self) -> Result<(), AcquisitionError> {
-        self.file.sync_all().await.map_err(Into::into)
+        self.file
+            .sync_all()
+            .await
+            .map_err(|error| AcquisitionError::io_at(ImageIoStage::BlobSync, error))
     }
 }
 
@@ -1181,6 +1287,7 @@ impl AsyncWrite for BoundedBlobWriter {
     ) -> Poll<io::Result<usize>> {
         let remaining = self.limit.saturating_sub(self.written);
         if remaining == 0 && !buffer.is_empty() {
+            self.limit_exceeded = true;
             return Poll::Ready(Err(io::Error::other(
                 "registry blob exceeded descriptor size",
             )));
@@ -1501,7 +1608,7 @@ impl BuildPlan {
             match fs::remove_dir_all(&self.build_root) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(_) => return Err(AcquisitionError::Io),
+                Err(error) => return Err(AcquisitionError::io_at(ImageIoStage::Cleanup, error)),
             }
         }
         result
@@ -3006,7 +3113,7 @@ fn read_archive_exact<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<(), 
         if error.kind() == io::ErrorKind::UnexpectedEof {
             AcquisitionError::InvalidOciResult
         } else {
-            AcquisitionError::Io
+            AcquisitionError::from(error)
         }
     })
 }
@@ -4973,7 +5080,7 @@ mod tests {
         };
         assert!(matches!(
             super::verify_oci_archive_before(&mut slow, Some(&digest), deadline),
-            Err(AcquisitionError::Io)
+            Err(AcquisitionError::Io(_))
         ));
 
         let mut slow_names = SlowReader {
@@ -4985,7 +5092,7 @@ mod tests {
                 &mut slow_names,
                 Instant::now() + Duration::from_millis(1),
             ),
-            Err(AcquisitionError::Io)
+            Err(AcquisitionError::Io(_))
         ));
     }
 
@@ -5421,6 +5528,93 @@ mod tests {
             .expect("admitted manifest");
     }
 
+    /// The cold Reference path fits on disk even when its runtime mount cannot hold the archive.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires an isolated mount namespace with tmpfs mount capability"]
+    async fn registry_reference_uses_state_storage_with_constrained_runtime_tmpfs() {
+        let _registry_guard = REGISTRY_TEST_LOCK.lock().await;
+        let root = test_root("constrained-runtime");
+        let _root_cleanup = remove_test_root(root.clone());
+        let run_root = root.join("epoch");
+        fs::create_dir_all(&run_root).unwrap();
+        let mountpoint = std::ffi::CString::new(run_root.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: the mountpoint is a fresh test-owned directory and the arguments are C strings.
+        let result = unsafe {
+            libc::mount(
+                c"tmpfs".as_ptr(),
+                mountpoint.as_ptr(),
+                c"tmpfs".as_ptr(),
+                libc::MS_NODEV | libc::MS_NOSUID | libc::MS_NOEXEC,
+                c"size=96k,mode=0700".as_ptr().cast(),
+            )
+        };
+        assert_eq!(
+            result,
+            0,
+            "mount private tmpfs: {}",
+            io::Error::last_os_error()
+        );
+        struct MountGuard(std::ffi::CString);
+        impl Drop for MountGuard {
+            fn drop(&mut self) {
+                // SAFETY: the guard owns this one test mount and never unmounts its parent.
+                unsafe { libc::umount2(self.0.as_ptr(), libc::MNT_DETACH) };
+            }
+        }
+        let _mount_cleanup = MountGuard(mountpoint);
+
+        let (os, architecture) = host_oci_platform().unwrap();
+        let config = format!(r#"{{"architecture":"{architecture}","os":"{os}"}}"#).into_bytes();
+        let config_digest = digest(&config);
+        let layer = vec![0x55; 64 * 1024];
+        let layer_digest = digest(&layer);
+        let manifest = raw_image_manifest(
+            "application/vnd.oci.image.manifest.v1+json",
+            &config_digest,
+            config.len(),
+            &layer_digest,
+            layer.len(),
+        );
+        let manifest_digest = digest(&manifest);
+        let _fixture_cleanup = clear_fixture_on_drop();
+        install_registry_fixture(
+            BTreeMap::from([(manifest_digest.clone(), manifest)]),
+            BTreeMap::from([(config_digest, config), (layer_digest, layer)]),
+        );
+        let (mut coordinator, _) =
+            crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root);
+        let image_probe = root.join("image-probe");
+        fs::write(
+            &image_probe,
+            format!("#!/bin/sh\nprintf '%s\\n' '{manifest_digest}'\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&image_probe, fs::Permissions::from_mode(0o700)).unwrap();
+        coordinator.fixture_image_probe(image_probe);
+        let reference = format!("ghcr.io/openkit/worker@{manifest_digest}");
+        let acquired = coordinator
+            .acquire_image("controlled-tmpfs-reference", &reference)
+            .expect("cold Reference under constrained runtime tmpfs");
+        assert_eq!(acquired.resulting_digest(), manifest_digest);
+
+        let store = ImageStore::open(root.join("images"), run_root.clone(), &[]).unwrap();
+        store
+            .read_verified(&manifest_digest)
+            .expect("admitted exact manifest");
+        assert!(!run_root.join("acquisitions").exists());
+        let state_scratch = root.join("acquisitions");
+        assert_eq!(
+            fs::metadata(&state_scratch).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::read_dir(state_scratch).unwrap().count(),
+            0,
+            "remove only the request scratch"
+        );
+    }
+
     /// Distinguishes a real staging filesystem failure without exposing its path or changing the wire result.
     #[cfg(target_os = "linux")]
     #[tokio::test]
@@ -5456,7 +5650,7 @@ mod tests {
             .acquire(&staging, &store, 1)
             .await
             .expect_err("filesystem must refuse the overlong staging leaf");
-        assert_eq!(error, AcquisitionError::Io);
+        assert!(matches!(error, AcquisitionError::Io(_)));
         assert!(matches!(
             store.read_verified(&bytes.selected_digest),
             Err(StoreError::Missing)
@@ -5468,7 +5662,7 @@ mod tests {
         );
         assert_eq!(
             String::from_utf8(journal).unwrap(),
-            "nanohost_image_acquisition_failed cause=filesystem_io\n"
+            "nanohost_image_acquisition_failed cause=filesystem_io stage=staging kind=other\n"
         );
         let mut unavailable = Cursor::new(&mut [][..]);
         assert_eq!(
@@ -5482,26 +5676,26 @@ mod tests {
         assert_eq!(retained_store_read(StoreError::Missing), Ok(()));
         assert_eq!(retained_store_read(StoreError::Corrupt), Ok(()));
         assert_eq!(
-            retained_store_read(StoreError::Io),
-            Err(AcquisitionError::Io)
-        );
-        assert_eq!(
             retained_store_read(StoreError::InvalidMetadata),
             Err(AcquisitionError::InvalidOciResult)
         );
-        assert_eq!(
-            acquisition_error_for_store(StoreError::Io),
-            AcquisitionError::Io
-        );
-        let mut journal = Vec::new();
-        assert_eq!(
-            AcquisitionError::Io.report_effect_failure(&mut journal),
-            "image.acquire failed"
-        );
-        assert_eq!(
-            String::from_utf8(journal).unwrap(),
-            "nanohost_image_acquisition_failed cause=filesystem_io\n"
-        );
+        let full = StoreError::from(io::Error::from_raw_os_error(libc::ENOSPC));
+        for (error, stage) in [
+            (retained_store_read(full).unwrap_err(), "store_read"),
+            (acquisition_error_for_store(full), "store_admit"),
+        ] {
+            let mut journal = Vec::new();
+            assert_eq!(
+                error.report_effect_failure(&mut journal),
+                "image.acquire failed"
+            );
+            assert_eq!(
+                String::from_utf8(journal).unwrap(),
+                format!(
+                    "nanohost_image_acquisition_failed cause=filesystem_io stage={stage} kind=storage_full\n"
+                )
+            );
+        }
     }
 
     /// A corrupt retained archive is discarded by the store and fetched again.
@@ -5586,15 +5780,15 @@ mod tests {
             0o700
         );
         fs::write(staging.join("canary"), b"owned existing bytes").unwrap();
-        assert_eq!(
+        assert!(matches!(
             super::write_image_layout(
                 &staging,
                 &bytes.selected_digest,
                 &bytes.selected_manifest,
                 &manifest
             ),
-            Err(AcquisitionError::Io),
-        );
+            Err(AcquisitionError::Io(_)),
+        ));
         assert_eq!(
             fs::read(staging.join("canary")).unwrap(),
             b"owned existing bytes"

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { isRecord } from '@openkit/protocol';
 import {
   type CaptureCoverageBinding,
@@ -62,6 +63,21 @@ export function runtimeToolName(value: unknown): string | undefined {
     ? value
     : undefined;
 }
+
+/** Decodes only JSON strings and containers, since other scalars cannot add decoded fields. */
+function parseNestedJson(text: string): string | object | undefined {
+  const first = text.trimStart()[0];
+  if (first !== '"' && first !== '[' && first !== '{') return undefined;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'string' || (parsed !== null && typeof parsed === 'object')
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Decodes JSON string values for admission only; retained source bytes are never transformed. */
 function decodedContentStrings(
   text: string,
@@ -74,29 +90,18 @@ function decodedContentStrings(
     const { value, path } = pending.pop()!;
     if (typeof value === 'string') {
       inspect?.(value);
-      try {
-        const parsed: unknown = JSON.parse(value);
-        if (typeof parsed === 'string' || (parsed !== null && typeof parsed === 'object'))
-          pending.push({ value: parsed, path });
-        else {
-          strings.push(value);
-          logical?.(path, value);
-        }
-      } catch {
-        strings.push(value);
-        logical?.(path, value);
-        // File buffers can contain adjacent JSONL units rather than one JSON document.
-        // Inspect complete values for safety only; the original file bytes remain unchanged.
-        if (value.includes('\n')) {
-          for (const line of value.split('\n').reverse()) {
-            try {
-              const parsed: unknown = JSON.parse(line);
-              if (typeof parsed === 'string' || (parsed !== null && typeof parsed === 'object'))
-                pending.push({ value: parsed, path });
-            } catch {
-              // Torn or non-JSON lines still participate in the literal byte check above.
-            }
-          }
+      const parsed = parseNestedJson(value);
+      if (parsed !== undefined) {
+        pending.push({ value: parsed, path });
+        continue;
+      }
+      strings.push(value);
+      logical?.(path, value);
+      // File buffers can hold adjacent JSONL objects. Inspect each complete value for safety.
+      if (value.includes('\n')) {
+        for (const line of value.split('\n').reverse()) {
+          const parsedLine = parseNestedJson(line);
+          if (parsedLine !== undefined) pending.push({ value: parsedLine, path });
         }
       }
     } else if (Array.isArray(value)) {
@@ -118,6 +123,7 @@ function decodedContentStrings(
 }
 /** Decodes only valid JSON escapes for admission; malformed backslashes stay literal. */
 function decodeJsonEscapes(value: string): string {
+  if (!value.includes('\\')) return value;
   return value.replace(
     /\\u([0-9a-fA-F]{4})|\\(["\\/bfnrt])/g,
     (_match, unicode: string | undefined, escaped: string) =>
@@ -870,7 +876,9 @@ export class NativeRuntimeCapture {
     source: NativeCaptureSource,
     final = false
   ): Promise<boolean> {
-    if (this.blocked.has(sourceRef)) return false;
+    // A buffered native stream can otherwise run admission in back-to-back microtasks.
+    await nextEventLoopTurn();
+    if (this.abandoned || this.blocked.has(sourceRef)) return false;
     const related = this.pending.filter((entry) => entry.sourceRef === sourceRef);
     const units = [...new Set(related.map((entry) => entry.unit))];
     if (final) {
@@ -978,6 +986,7 @@ export class NativeRuntimeCapture {
     return this.enqueue(async () => {
       const source = this.sources.get(sourceRef);
       if (source) await this.admit(sourceRef, source, true);
+      if (this.abandoned) return;
       const prefix = this.pending.filter((entry) => entry.sourceRef === sourceRef);
       this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
       for (const entry of prefix) await this.publish(entry, false);

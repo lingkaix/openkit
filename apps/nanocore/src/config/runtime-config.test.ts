@@ -1466,7 +1466,7 @@ describe('runtime config loading and reload planning', () => {
       'poolside/laguna-xs-2.1:free',
       'cohere/north-mini-code:free',
     ]);
-    expect(snapshot.providerRegistry.get('xai')?.models).toEqual(['grok-4.3']);
+    expect(snapshot.providerRegistry.get('xai')?.models).toEqual(['grok-4.7']);
     expect(snapshot.providerRegistry.get('google')?.models).toEqual(['gemini-3.8-flash']);
   });
 

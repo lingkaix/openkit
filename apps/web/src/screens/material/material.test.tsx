@@ -11,7 +11,7 @@ import { AppRoutes } from '../../app/routes';
 import { SURFACES } from '../../app/surfaces';
 import type { ArtifactReview } from '../goal/data';
 import { useWorkspaceStore } from '../workspace-store';
-import { useSaveWorkspaceMaterialRevision } from './data';
+import { materialKeys, useSaveWorkspaceMaterialRevision } from './data';
 import { ProposalReview } from './ProposalReview';
 
 const WORKSPACE_ID = 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55';
@@ -207,7 +207,7 @@ function renderMaterial(
   client: CoreClient,
   materialId: string | null = MATERIAL_ID,
   initialPath = materialPath(materialId)
-): void {
+): QueryClient {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
@@ -217,6 +217,7 @@ function renderMaterial(
     </QueryClientProvider>
   );
   render(wrapper(<AppRoutes />));
+  return queryClient;
 }
 
 beforeEach(() => {
@@ -565,6 +566,502 @@ describe('Workspace Material Plane 1 S11', () => {
       revisionId: REVISION_2.revisionId,
     });
     expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
+  });
+
+  it('keeps a dirty draft when a held material.list response arrives', async () => {
+    const user = userEvent.setup();
+    const pendingList = createDeferred<{ materials: (typeof MATERIAL)[] }>();
+    const listWorkspaceMaterials = vi.fn().mockReturnValue(pendingList.promise);
+    const client = makeClient({
+      operations: { 'material.list': listWorkspaceMaterials },
+    });
+    renderMaterial(client);
+
+    const editor = await screen.findByRole('textbox', { name: 'Release notes' });
+    expect(editor).toHaveValue(REVISION_2.content);
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    await user.type(editor, 'Keep this draft.');
+    const draft = `${REVISION_2.content}Keep this draft.`;
+    expect(editor).toHaveValue(draft);
+    expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+
+    await act(async () => {
+      pendingList.resolve({ materials: [{ ...MATERIAL }] });
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Release notes', pressed: true })
+      ).toBeInTheDocument()
+    );
+
+    expect(screen.getByRole('textbox', { name: 'Release notes' })).toBe(editor);
+    expect(editor).toHaveValue(draft);
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
+  });
+
+  it('keeps a dirty draft when a newer saved revision arrives', async () => {
+    const user = userEvent.setup();
+    const nextRevisionId = 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d1';
+    const nextRevision = {
+      ...REVISION_2,
+      revisionId: nextRevisionId,
+      parentRevisionId: REVISION_2.revisionId,
+      content: '# Release notes\nServer replaced this.\n',
+      contentDigest: `sha256:${'c'.repeat(64)}`,
+    };
+    let material = MATERIAL;
+    const client = makeClient({
+      operations: {
+        'material.read': vi.fn(async () => ({ material })),
+        'material.revision-read': vi.fn(async ({ revisionId }: { revisionId: string }) => ({
+          revision:
+            revisionId === nextRevision.revisionId
+              ? nextRevision
+              : revisionId === REVISION_1.revisionId
+                ? REVISION_1
+                : REVISION_2,
+        })),
+      },
+    });
+    const queryClient = renderMaterial(client);
+    const editor = await screen.findByRole('textbox', { name: 'Release notes' });
+    await user.type(editor, 'Keep this draft.');
+    const draft = `${REVISION_2.content}Keep this draft.`;
+    expect(editor).toHaveValue(draft);
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+
+    material = { ...MATERIAL, currentRevisionId: nextRevisionId };
+    await act(async () => {
+      await queryClient.invalidateQueries({
+        queryKey: materialKeys.material(WORKSPACE_ID, MATERIAL_ID),
+      });
+    });
+
+    expect(await screen.findByText(/changed since you opened it/i)).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Release notes' })).toBe(editor);
+    expect(editor).toHaveValue(draft);
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
+    expect(editor).not.toHaveValue(nextRevision.content);
+  });
+
+  it('sends the opened revision when saving a dirty draft over a newer head', async () => {
+    const user = userEvent.setup();
+    const nextRevisionId = 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d1';
+    const nextRevision = {
+      ...REVISION_2,
+      revisionId: nextRevisionId,
+      parentRevisionId: REVISION_2.revisionId,
+      content: '# Release notes\nServer replaced this.\n',
+      contentDigest: `sha256:${'c'.repeat(64)}`,
+    };
+    let material = MATERIAL;
+    const saveWorkspaceMaterialRevision = vi.fn(
+      async (input: { expectedRevisionId: string | null; content: string }) => {
+        if (input.expectedRevisionId !== material.currentRevisionId) {
+          throw new ApiCallError(409, 'Mutation rejected.', { code: 'conflict' });
+        }
+        material = {
+          ...material,
+          currentRevisionId: 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80ee',
+        };
+        return { materialId: MATERIAL_ID, revisionId: material.currentRevisionId };
+      }
+    );
+    const client = makeClient({
+      operations: {
+        'material.read': vi.fn(async () => ({ material })),
+        'material.revision-read': vi.fn(async ({ revisionId }: { revisionId: string }) => ({
+          revision:
+            revisionId === nextRevision.revisionId
+              ? nextRevision
+              : revisionId === REVISION_1.revisionId
+                ? REVISION_1
+                : REVISION_2,
+        })),
+        'material.revision-save': saveWorkspaceMaterialRevision,
+      },
+    });
+    const queryClient = renderMaterial(client);
+    const editor = await screen.findByRole('textbox', { name: 'Release notes' });
+    await user.type(editor, 'Keep this draft.');
+    const draft = `${REVISION_2.content}Keep this draft.`;
+    expect(editor).toHaveValue(draft);
+
+    material = { ...MATERIAL, currentRevisionId: nextRevisionId };
+    await act(async () => {
+      await queryClient.invalidateQueries({
+        queryKey: materialKeys.material(WORKSPACE_ID, MATERIAL_ID),
+      });
+    });
+    expect(await screen.findByText(/changed since you opened it/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(saveWorkspaceMaterialRevision).toHaveBeenCalled());
+    expect(saveWorkspaceMaterialRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
+        materialId: MATERIAL_ID,
+        expectedRevisionId: REVISION_2.revisionId,
+        content: draft,
+      })
+    );
+    expect(material.currentRevisionId).toBe(nextRevisionId);
+    expect(screen.getByRole('textbox', { name: 'Release notes' })).toBe(editor);
+    expect(editor).toHaveValue(draft);
+    expect(editor).not.toHaveValue(nextRevision.content);
+    expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
+  });
+
+  it('advances the draft base after a successful save without a self-conflict banner', async () => {
+    const user = userEvent.setup();
+    const acceptedId = 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d4';
+    const pendingSave = createDeferred<{ materialId: string; revisionId: string }>();
+    let material = MATERIAL;
+    let saveCalls = 0;
+    const saveWorkspaceMaterialRevision = vi.fn(
+      async (input: { expectedRevisionId: string | null; content: string }) => {
+        const headAtRequest = material.currentRevisionId;
+        saveCalls += 1;
+        if (saveCalls === 1) await pendingSave.promise;
+        if (input.expectedRevisionId !== headAtRequest) {
+          throw new ApiCallError(409, 'Mutation rejected.', { code: 'conflict' });
+        }
+        return {
+          materialId: MATERIAL_ID,
+          revisionId: saveCalls === 1 ? acceptedId : 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d5',
+        };
+      }
+    );
+    const client = makeClient({
+      operations: {
+        'material.read': vi.fn(async () => ({ material })),
+        'material.revision-read': vi.fn(async ({ revisionId }: { revisionId: string }) => ({
+          revision:
+            revisionId === acceptedId
+              ? {
+                  ...REVISION_2,
+                  revisionId: acceptedId,
+                  parentRevisionId: REVISION_2.revisionId,
+                  content: '# Release notes\nShip this.\n',
+                }
+              : revisionId === REVISION_1.revisionId
+                ? REVISION_1
+                : REVISION_2,
+        })),
+        'material.revision-save': saveWorkspaceMaterialRevision,
+      },
+    });
+    renderMaterial(client);
+    const editor = await screen.findByRole('textbox', { name: 'Release notes' });
+    await user.type(editor, 'Ship this.\n');
+    const submitted = `${REVISION_2.content}Ship this.\n`;
+    expect(editor).toHaveValue(submitted);
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Saving')).toBeInTheDocument();
+    await user.type(editor, 'Later.\n');
+    const withLater = `${submitted}Later.\n`;
+    expect(editor).toHaveValue(withLater);
+
+    material = { ...MATERIAL, currentRevisionId: acceptedId };
+    await act(async () => {
+      pendingSave.resolve({ materialId: MATERIAL_ID, revisionId: acceptedId });
+    });
+    await waitFor(() => expect(screen.getByText('Unsaved')).toBeInTheDocument());
+    expect(screen.queryByText(/changed since you opened it/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Release notes' })).toBe(editor);
+    expect(editor).toHaveValue(withLater);
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(saveWorkspaceMaterialRevision).toHaveBeenCalledTimes(2));
+    expect(saveWorkspaceMaterialRevision).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
+        materialId: MATERIAL_ID,
+        expectedRevisionId: acceptedId,
+        content: withLater,
+      })
+    );
+  });
+
+  it.each([false, true])(
+    'keeps the accepted base when typing resumes after Saved while detail is pending (release before next save: %s)',
+    async (releaseBeforeSave) => {
+      const user = userEvent.setup();
+      const firstAcceptedId = 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d4';
+      const secondAcceptedId = 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d5';
+      const staleDetail = createDeferred<{ material: typeof MATERIAL }>();
+      const revisionsById = new Map(
+        [REVISION_1, REVISION_2].map((revision) => [revision.revisionId, revision])
+      );
+      let head = REVISION_2.revisionId;
+      const read = vi.fn(async () =>
+        head === firstAcceptedId
+          ? staleDetail.promise
+          : { material: { ...MATERIAL, currentRevisionId: head } }
+      );
+      const readRevision = vi.fn(async ({ revisionId }: { revisionId: string }) => ({
+        revision: revisionsById.get(revisionId),
+      }));
+      const save = vi.fn(async (input: { expectedRevisionId: string; content: string }) => {
+        if (input.expectedRevisionId !== head) {
+          throw new ApiCallError(409, 'Base changed.', { code: 'conflict' });
+        }
+        const revisionId = head === REVISION_2.revisionId ? firstAcceptedId : secondAcceptedId;
+        revisionsById.set(revisionId, {
+          ...REVISION_2,
+          revisionId,
+          parentRevisionId: head,
+          content: input.content,
+        });
+        head = revisionId;
+        return { materialId: MATERIAL_ID, revisionId };
+      });
+      renderMaterial(
+        makeClient({
+          operations: {
+            'material.read': read,
+            'material.revision-read': readRevision,
+            'material.revision-save': save,
+          },
+        })
+      );
+      const editor = await screen.findByRole('textbox', { name: 'Release notes' });
+      const saveButton = screen.getByRole('button', { name: 'Save' });
+      await user.type(editor, 'First save.');
+      await user.click(saveButton);
+      await screen.findByText('Saved');
+      expect(head).toBe(firstAcceptedId);
+      expect(read.mock.calls.length).toBeGreaterThan(1);
+      expect(editor).toHaveValue(`${REVISION_2.content}First save.`);
+      await user.type(editor, ' Second draft.');
+      expect(screen.getByText('Unsaved')).toBeInTheDocument();
+      if (releaseBeforeSave) {
+        await act(async () => {
+          staleDetail.resolve({
+            material: { ...MATERIAL, currentRevisionId: firstAcceptedId },
+          });
+        });
+        await waitFor(() =>
+          expect(readRevision).toHaveBeenCalledWith(
+            expect.objectContaining({ revisionId: firstAcceptedId })
+          )
+        );
+      }
+      const bannerBeforeSecondSave = Boolean(screen.queryByText(/changed since you opened it/i));
+      await user.click(saveButton);
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+      expect({
+        expectedRevisionId: save.mock.calls[1]?.[0].expectedRevisionId,
+        bannerBeforeSecondSave,
+        serverHead: head,
+      }).toEqual({
+        expectedRevisionId: firstAcceptedId,
+        bannerBeforeSecondSave: false,
+        serverHead: secondAcceptedId,
+      });
+    }
+  );
+
+  it.each([false, true])(
+    'keeps the accepted base across two saves while the detail remains at the original head (type during second save: %s)',
+    async (typeDuringSecond) => {
+      const user = userEvent.setup();
+      const ids = [
+        'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d4',
+        'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d5',
+        'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80d6',
+      ];
+      const pendingDetail = createDeferred<{ material: typeof MATERIAL }>();
+      const secondGate = createDeferred<void>();
+      const revisionsById = new Map(
+        [REVISION_1, REVISION_2].map((revision) => [revision.revisionId, revision])
+      );
+      let head = REVISION_2.revisionId;
+      const read = vi.fn(async () =>
+        head === REVISION_2.revisionId ? { material: MATERIAL } : pendingDetail.promise
+      );
+      let accepted = 0;
+      const save = vi.fn(async (input: { expectedRevisionId: string; content: string }) => {
+        if (accepted === 1) await secondGate.promise;
+        if (input.expectedRevisionId !== head) {
+          throw new ApiCallError(409, 'Base changed.', { code: 'conflict' });
+        }
+        const revisionId = ids[accepted++];
+        if (!revisionId) throw new Error('Missing accepted revision id');
+        revisionsById.set(revisionId, {
+          ...REVISION_2,
+          revisionId,
+          parentRevisionId: head,
+          content: input.content,
+        });
+        head = revisionId;
+        return { materialId: MATERIAL_ID, revisionId };
+      });
+      renderMaterial(
+        makeClient({
+          operations: {
+            'material.read': read,
+            'material.revision-read': vi.fn(async ({ revisionId }: { revisionId: string }) => ({
+              revision: revisionsById.get(revisionId),
+            })),
+            'material.revision-save': save,
+          },
+        })
+      );
+
+      const editor = await screen.findByRole('textbox', { name: 'Release notes' });
+      const saveButton = screen.getByRole('button', { name: 'Save' });
+      await user.type(editor, 'First save.');
+      await user.click(saveButton);
+      await screen.findByText('Saved');
+      expect(head).toBe(ids[0]);
+      expect(read.mock.calls.length).toBeGreaterThan(1);
+
+      await user.type(editor, ' Second save.');
+      await user.click(saveButton);
+      await screen.findByText('Saving');
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+      expect(save.mock.calls[1]?.[0].expectedRevisionId).toBe(ids[0]);
+      if (typeDuringSecond) await user.type(editor, ' Third draft.');
+      await act(async () => secondGate.resolve());
+      expect(head).toBe(ids[1]);
+      await screen.findByText(typeDuringSecond ? 'Unsaved' : 'Saved');
+
+      if (!typeDuringSecond) await user.type(editor, ' Third draft.');
+      expect(editor).toHaveValue(`${REVISION_2.content}First save. Second save. Third draft.`);
+      expect(screen.getByRole('textbox', { name: 'Release notes' })).toBe(editor);
+      const bannerBeforeThirdSave = Boolean(screen.queryByText(/changed since you opened it/i));
+
+      await user.click(saveButton);
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(3));
+      expect({
+        expectedRevisionId: save.mock.calls[2]?.[0].expectedRevisionId,
+        bannerBeforeThirdSave,
+        serverHead: head,
+      }).toEqual({
+        expectedRevisionId: ids[1],
+        bannerBeforeThirdSave: false,
+        serverHead: ids[2],
+      });
+    }
+  );
+
+  it('does not show self-conflict after the first save from a null head', async () => {
+    const user = userEvent.setup();
+    const ownB = 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80b1';
+    const ownC = 'mrev_00000000-0000-7d6b-9c3a-1a2dc21c80b2';
+    const empty = { ...MATERIAL, currentRevisionId: null };
+    const revisionsById = new Map<
+      string,
+      Omit<typeof REVISION_2, 'parentRevisionId'> & { parentRevisionId: string | null }
+    >();
+    const pendingDetail = createDeferred<{ material: typeof empty }>();
+    let head: string | null = null;
+    let holdDetail = false;
+    let saveGate: ReturnType<typeof createDeferred<void>> | null = null;
+    const read = vi.fn(async () =>
+      holdDetail ? pendingDetail.promise : { material: { ...empty, currentRevisionId: head } }
+    );
+    const save = vi.fn(async (input: { expectedRevisionId: string | null; content: string }) => {
+      if (saveGate) {
+        const request = saveGate;
+        saveGate = null;
+        await request.promise;
+      }
+      if (input.expectedRevisionId !== head) {
+        throw new ApiCallError(409, 'Base changed.', { code: 'conflict' });
+      }
+      const revisionId = head === null ? ownB : ownC;
+      revisionsById.set(revisionId, {
+        ...REVISION_2,
+        revisionId,
+        parentRevisionId: input.expectedRevisionId,
+        content: input.content,
+      });
+      head = revisionId;
+      return { materialId: MATERIAL_ID, revisionId };
+    });
+    renderMaterial(
+      makeClient({
+        operations: {
+          'material.list': vi.fn(async () => ({
+            materials: [{ ...empty, currentRevisionId: head }],
+          })),
+          'material.read': read,
+          'material.revision-list': vi.fn().mockResolvedValue({ revisions: [] }),
+          'material.revision-read': vi.fn(async ({ revisionId }: { revisionId: string }) => ({
+            revision: revisionsById.get(revisionId),
+          })),
+          'material.revision-save': save,
+        },
+      })
+    );
+
+    const editor = await screen.findByRole('textbox', { name: 'Release notes' });
+    expect(editor).toHaveValue('');
+    holdDetail = true;
+    const pendingSave = createDeferred<void>();
+    saveGate = pendingSave;
+    await user.type(editor, 'First revision.');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saving');
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]?.[0].expectedRevisionId).toBeNull();
+    await user.type(editor, ' Later typing.');
+    await act(async () => pendingSave.resolve());
+    await screen.findByText('Unsaved');
+    expect(head).toBe(ownB);
+    expect(editor).toHaveValue('First revision. Later typing.');
+    const bannerAfterFirstSave = Boolean(screen.queryByText(/changed since you opened it/i));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    expect({
+      bannerAfterFirstSave,
+      secondExpectedRevisionId: save.mock.calls[1]?.[0].expectedRevisionId,
+      head,
+    }).toEqual({
+      bannerAfterFirstSave: false,
+      secondExpectedRevisionId: ownB,
+      head: ownC,
+    });
+  });
+
+  it('keeps the current Material when a list refresh puts another row first', async () => {
+    const otherId = 'mat_00000000-0000-72a5-8964-fa2b62341db0';
+    const other = { ...MATERIAL, materialId: otherId, title: 'Launch checklist' };
+    let rows = [MATERIAL];
+    const client = makeClient({
+      operations: {
+        'material.list': vi.fn(async () => ({ materials: rows })),
+        'material.read': vi.fn(async ({ materialId }: { materialId: string }) => ({
+          material: materialId === otherId ? other : MATERIAL,
+        })),
+      },
+    });
+    const queryClient = renderMaterial(client, null);
+    const editor = await screen.findByRole('textbox', { name: 'Release notes' });
+    expect(
+      screen.getByRole('button', { name: 'Release notes', pressed: true })
+    ).toBeInTheDocument();
+
+    rows = [other, MATERIAL];
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: materialKeys.list(WORKSPACE_ID) });
+    });
+
+    expect(await screen.findByRole('button', { name: 'Launch checklist' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Release notes', pressed: true })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Launch checklist', pressed: false })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Release notes' })).toBe(editor);
+    expect(screen.queryByRole('textbox', { name: 'Launch checklist' })).not.toBeInTheDocument();
   });
 
   it('keeps edits local until one stable revision save with the exact expected base', async () => {

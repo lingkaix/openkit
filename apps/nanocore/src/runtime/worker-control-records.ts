@@ -803,7 +803,9 @@ export async function waitForWorkerControlFinalStatus(
       lease.workerDeadline !== null &&
       lease.workerDeadline > new Date().toISOString();
     if (lease.phase !== 'open' && !cancelled) {
-      throw new Error(`Worker lease became ${lease.phase} before durable final status.`);
+      const cause =
+        lease.terminalCause === 'native-liveness-expired' ? ' (native-liveness-expired)' : '';
+      throw new Error(`Worker lease became ${lease.phase} before durable final status${cause}.`);
     }
     if (lease.deadline === null || lease.deadline <= new Date().toISOString()) {
       throw new Error('Worker lease expired before durable final status.');

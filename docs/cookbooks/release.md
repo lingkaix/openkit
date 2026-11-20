@@ -8,9 +8,7 @@ The owning contract is [`docs/specs/20260829-release_management.md`](../specs/20
 
 The first formal release path starts at `v0.1.0-rc.1`.
 
-The tag workflow currently rejects stable tags because the exact-product R001 NanoHost runtime gate remains open; both controlled NanoHost targets are implemented with hosted distribution qualification wired into release and pre-release CI.
-
-Do not change the release preflight CLI's prerelease-only default until an accepted owner closes that stable-release blocker.
+[`v0.1.0`](https://github.com/lingkaix/openkit/releases/tag/v0.1.0) stable was published on 2026-11-20 at 02:38:02Z by promoting `v0.1.0-rc.14` (commit `016088e54`) unchanged, with no rebuild. The exact-product R001 NanoHost Worker readiness gate (#120) closed on arm64 and amd64 before promotion. Stable tags run the stable promotion workflow (`.github/workflows/release-promotion.yml`), which promotes a verified prerelease without rebuilding only under the exact repository variable `OPENKIT_STABLE_PROMOTION=<tag>@<sha>` ([Stable Promotion Notes](#stable-promotion-notes)); the release preflight refuses a stable tag without that exact value.
 
 The repository is public, and only `worker-common` is required to be anonymously public in GHCR.
 
@@ -339,7 +337,7 @@ Before the first workflow substitution, run `node scripts/release-tests.mjs --in
 
 [The ruling](../decisions/20261014-release_cadence.md#reason) links the measured CI runs. Retain actual stage timestamps on the first eligible release. Concurrency preserves twelve submitted Turns per release and changes no Provider-consumption budget.
 
-Issue #193 is closed as superseded by the post-tag policy. Issues #240 and #225 are required before the first stable release. Follow the release owner's [corrected priorities](../specs/20260829-release_management.md#implementation-gaps); this builder performs no GitHub issue mutation.
+Issue #193 is closed as superseded by the post-tag policy. Issue #225 (promote without rebuild) is closed, and issue #240 (doctor Skill compatibility and App-update availability) is open and was deferred to 0.1.x by the release disposition. Follow the release owner's [corrected priorities](../specs/20260829-release_management.md#implementation-gaps); this builder performs no GitHub issue mutation.
 
 ### Cadence Commands
 

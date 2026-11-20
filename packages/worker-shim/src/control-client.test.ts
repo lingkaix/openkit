@@ -50,6 +50,8 @@ function createFetchFixture(
   return { fetch, requests };
 }
 
+const heartbeatAck = { accepted: true, diagnostics: [], schemaVersion: 2 } as const;
+
 /** One artifact notice used where a test needs an ordinary non-heartbeat request. */
 const notice = {
   artifact: { path: '/openkit/artifacts/report.md', title: 'Worker report' },
@@ -85,7 +87,7 @@ describe('WorkerControlClient', () => {
 
   it('contains throwing recorder callbacks without changing heartbeat transport outcomes', async () => {
     const fixture = createFetchFixture([
-      { body: { accepted: true } },
+      { body: heartbeatAck },
       { ok: false, status: 403, body: { code: 'worker_control_lease_not_live' } },
     ]);
     const recordLifecycleFact = vi.fn(() => {
@@ -98,9 +100,7 @@ describe('WorkerControlClient', () => {
       fetch: fixture.fetch,
       recordLifecycleFact,
     });
-    await expect(client.recordHeartbeat({ status: 'starting' })).resolves.toEqual({
-      accepted: true,
-    });
+    await expect(client.recordHeartbeat({ status: 'starting' })).resolves.toEqual(heartbeatAck);
     await expect(client.recordHeartbeat({ status: 'running' })).rejects.toMatchObject({
       code: 'worker_control_lease_not_live',
     });
@@ -110,7 +110,7 @@ describe('WorkerControlClient', () => {
 
   it('sends heartbeat and artifact notices with sandbox bearer lineage', async () => {
     const { fetch, requests } = createFetchFixture([
-      { body: { heartbeat: { status: 'running' } } },
+      { body: heartbeatAck },
       { body: { artifact: { artifactId: 'worker-artifact-1' } } },
     ]);
     const client = new WorkerControlClient({
@@ -480,7 +480,7 @@ describe('WorkerControlClient', () => {
       token: 'control-fixture',
       fetch: async (url, init) => {
         if (url.endsWith('/heartbeat')) {
-          return { ok: true, status: 200, text: async () => '{}' };
+          return { ok: true, status: 200, text: async () => JSON.stringify(heartbeatAck) };
         }
         attempts.push(init.body);
         return {
@@ -545,7 +545,7 @@ describe('WorkerControlClient', () => {
           if (body.sequence !== 0) {
             reconnected = true;
           }
-          return { ok: true, status: 200, text: async () => '{}' };
+          return { ok: true, status: 200, text: async () => JSON.stringify(heartbeatAck) };
         }
         noticeAttempts += 1;
         if (noticeAttempts <= 2) {
@@ -610,6 +610,47 @@ describe('WorkerControlClient', () => {
     ).toBe(processKeyHash);
   });
 
+  it('keeps exact restart recovery available after the ordinary heartbeat window', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const { fetch, requests } = createFetchFixture([
+      { body: heartbeatAck },
+      { body: heartbeatAck },
+      { ok: false, status: 503, body: { code: 'worker_control_unavailable' } },
+      { ok: false, status: 503, body: { code: 'worker_control_reconnect_required' } },
+      { body: heartbeatAck },
+      { body: heartbeatAck },
+    ]);
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      fetch: async (path, init) => {
+        const response = await fetch(path, init);
+        if (requests.length === 3) now = 31_000;
+        return response;
+      },
+      lineage,
+      token: 'token_control_1',
+    });
+    try {
+      await client.recordHeartbeat({ status: 'starting' });
+      client.enablePostLaunchRecovery();
+      await client.recordHeartbeat({ status: 'running' });
+      await client.recordHeartbeat({ status: 'running' });
+      await client.recordHeartbeat({ status: 'running' });
+      expect(requests.map(({ body }) => body)).toMatchObject([
+        { sequence: 0 },
+        { sequence: 1 },
+        { sequence: 2 },
+        { sequence: 2 },
+        { sequence: 2, reconnectKey: expect.any(String) },
+        { sequence: 3 },
+      ]);
+      expect(requests[2]?.body).toEqual(requests[3]?.body);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('serializes reconnect proof behind an in-flight lease heartbeat without reusing its sequence', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -647,7 +688,7 @@ describe('WorkerControlClient', () => {
             }
             expect(body.sequence).toBe(acceptedSequences.length);
             acceptedSequences.push(body.sequence);
-            return { ok: true, status: 200, text: async () => '{}' };
+            return { ok: true, status: 200, text: async () => JSON.stringify(heartbeatAck) };
           } finally {
             activeHeartbeats -= 1;
           }
@@ -687,7 +728,7 @@ describe('WorkerControlClient', () => {
       release();
       await Promise.allSettled([heartbeat, event]);
     }
-    await expect(heartbeat).resolves.toEqual({});
+    await expect(heartbeat).resolves.toEqual(heartbeatAck);
     await expect(event).resolves.toMatchObject({ accepted: true });
     expect(acceptedSequences).toEqual([0, 1]);
     expect(reconnectAttempts).toBe(1);
@@ -703,7 +744,7 @@ describe('WorkerControlClient', () => {
         const path = url;
         const body = JSON.parse(init.body) as Record<string, unknown>;
         if (path.endsWith('/heartbeat') && body.sequence === 0) {
-          return { ok: true, status: 200, text: async () => '{}' };
+          return { ok: true, status: 200, text: async () => JSON.stringify(heartbeatAck) };
         }
         if (path.endsWith('/heartbeat') && body.reconnectKey) {
           reconnectAttempts += 1;
@@ -715,7 +756,7 @@ describe('WorkerControlClient', () => {
             };
           }
           reconnected = true;
-          return { ok: true, status: 200, text: async () => '{}' };
+          return { ok: true, status: 200, text: async () => JSON.stringify(heartbeatAck) };
         }
         if (!reconnected) {
           return {
@@ -731,7 +772,8 @@ describe('WorkerControlClient', () => {
         return {
           ok: true,
           status: 200,
-          text: async () => JSON.stringify(path.endsWith('/artifacts') ? { accepted: true } : {}),
+          text: async () =>
+            JSON.stringify(path.endsWith('/artifacts') ? { accepted: true } : heartbeatAck),
         };
       },
       lineage,
@@ -745,7 +787,7 @@ describe('WorkerControlClient', () => {
         client.recordHeartbeat({ status: 'running' }),
         client.recordArtifactNotice(notice),
       ])
-    ).resolves.toEqual([{}, { accepted: true }]);
+    ).resolves.toEqual([heartbeatAck, { accepted: true }]);
     expect(reconnectAttempts).toBe(1);
   });
 
@@ -796,7 +838,7 @@ describe('WorkerControlClient', () => {
           firstStarted();
           await firstGate;
         }
-        return { ok: true, status: 200, text: async () => '{"accepted":true}' };
+        return { ok: true, status: 200, text: async () => JSON.stringify(heartbeatAck) };
       },
       lineage,
       token: 'token_control_1',
@@ -811,11 +853,9 @@ describe('WorkerControlClient', () => {
     secondController.abort(abortReason);
     releaseFirst();
 
-    await expect(first).resolves.toEqual({ accepted: true });
+    await expect(first).resolves.toEqual(heartbeatAck);
     await expect(second).rejects.toBe(abortReason);
-    await expect(client.recordHeartbeat({ status: 'completed' })).resolves.toEqual({
-      accepted: true,
-    });
+    await expect(client.recordHeartbeat({ status: 'completed' })).resolves.toEqual(heartbeatAck);
     expect(sequences).toEqual([0, 1]);
   });
 

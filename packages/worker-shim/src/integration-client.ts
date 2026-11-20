@@ -172,7 +172,27 @@ export class SandboxIntegrationClient {
         throw new TypeError('Worker-control fetch cannot call a private Harness route.');
       }
       const response = await this.request(path, init);
-      return collectBoundedResponse(response, WORKER_CONTROL_MAX_BYTES, 'Worker-control');
+      init.signal?.throwIfAborted();
+      const read = async () => {
+        const collected = await collectBoundedResponse(
+          response,
+          WORKER_CONTROL_MAX_BYTES,
+          'Worker-control'
+        );
+        init.signal?.throwIfAborted();
+        return collected.text();
+      };
+      if (path === '/worker-control/heartbeat') {
+        // Core sends the final status after the heartbeat decision. Bound and validate the body independently.
+        let body: Promise<string> | undefined;
+        return {
+          ok: response.ok,
+          status: response.status,
+          text: () => (body ??= read()),
+        };
+      }
+      const text = await read();
+      return { ok: response.ok, status: response.status, text: async () => text };
     };
     nativeServer.on('request', (request, response) => {
       void this.handleNativeRoute(request, response).catch(() => response.destroy());

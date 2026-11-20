@@ -1,6 +1,7 @@
 import { WorkspaceFreezeRefusalSchema } from '@openkit/app-api-schemas';
 import { MetaResponseSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { z } from 'zod';
+import { fetchWithCaptureRetry, type JsonRequestInit } from './capture-retry.js';
 import { ApiCallError, ProtocolValidationError } from './errors.js';
 import { type FetchLike, parseJsonResponse } from './http.js';
 
@@ -84,22 +85,17 @@ export interface ClientTransportOptions {
   signal?: AbortSignal;
 }
 
-/** Waits only behind a definite admission refusal; cancellation never authorizes a resend. */
-async function waitForCaptureRetry(milliseconds: number, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted();
-  await new Promise<void>((resolve, reject) => {
-    const finish = () => {
-      signal.removeEventListener('abort', abort);
-      resolve();
-    };
-    const timer = setTimeout(finish, milliseconds);
-    const abort = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', abort);
-      reject(signal.reason);
-    };
-    signal.addEventListener('abort', abort, { once: true });
-  });
+/** Uses the shared App API schema to prove a typed pre-effect capture refusal. */
+async function confirmCaptureRefusal(response: Response): Promise<boolean> {
+  let refusal: unknown;
+  try {
+    await parseJsonResponse(response, z.never());
+  } catch (error) {
+    refusal = error;
+  }
+  if (!(refusal instanceof ApiCallError) || refusal.code !== 'workspace_frozen') return false;
+  const parsed = WorkspaceFreezeRefusalSchema.safeParse(refusal.details);
+  return parsed.success && parsed.data.retryable && parsed.data.operation === 'capture';
 }
 
 /** Creates the shared HTTP transport used by sub-clients. */
@@ -138,7 +134,7 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
   /** Replays only complete JSON requests that the authorized server gate definitely refused. */
   const fetchJsonRequest = async (
     path: string,
-    init: RequestInit,
+    init: JsonRequestInit,
     requestOptions?: ClientRequestOptions
   ): Promise<Response> => {
     const signal = AbortSignal.any([
@@ -147,51 +143,11 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
         (value): value is AbortSignal => value !== undefined
       ),
     ]);
-    const headers = new Headers(init.headers);
-    const deadline = performance.now() + 20_000;
-    let retried = false;
-    for (;;) {
-      signal.throwIfAborted();
-      const remaining = deadline - performance.now();
-      // A timeout after resend is an unknown response, not the prior definite refusal.
-      const attemptSignal = retried
-        ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.ceil(remaining)))])
-        : signal;
-      const response = await fetcher(url(path), {
-        ...init,
-        headers: new Headers(headers),
-        signal: attemptSignal,
-      });
-      const context = response.headers.get('x-openkit-retry-context');
-      if (
-        response.status !== 409 ||
-        response.headers.get('Retry-After') !== '1' ||
-        !context ||
-        !/^[a-f0-9]{64}$/.test(context) ||
-        (headers.has('x-openkit-retry-context') &&
-          headers.get('x-openkit-retry-context') !== context)
-      )
-        return response;
-      let refusal: unknown;
-      try {
-        await parseJsonResponse(response.clone(), z.never());
-      } catch (error) {
-        refusal = error;
-      }
-      if (!(refusal instanceof ApiCallError) || refusal.code !== 'workspace_frozen')
-        return response;
-      const parsed = WorkspaceFreezeRefusalSchema.safeParse(refusal.details);
-      if (!parsed.success || !parsed.data.retryable || parsed.data.operation !== 'capture')
-        return response;
-      signal.throwIfAborted();
-      const wait = Math.min(1_000, deadline - performance.now());
-      if (wait <= 0) return response;
-      await waitForCaptureRetry(wait, signal);
-      if (performance.now() >= deadline) return response;
-      headers.set('x-openkit-retry-context', context);
-      await response.body?.cancel();
-      retried = true;
-    }
+    return fetchWithCaptureRetry(url(path), init, {
+      fetch: fetcher,
+      signal,
+      confirmRefusal: confirmCaptureRefusal,
+    });
   };
 
   const getJson: ClientTransport['getJson'] = async (path, schema, requestOptions) => {

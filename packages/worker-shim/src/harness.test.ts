@@ -2,6 +2,7 @@ const TEST_WORKER_RELEASE_IDENTITY = { sourceCommit: 'a'.repeat(40), releaseTag:
 
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import {
   chmodSync,
   existsSync,
@@ -13,6 +14,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createBridgeServer, type ServerHttp2Stream } from 'node:http2';
+import { type AddressInfo, connect, createServer as createListener } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -35,10 +39,11 @@ import type {
   WorkerResidentTurnInput,
 } from './adapter-registry.js';
 import { deepseekResidentAdapter } from './adapters/deepseek.js';
+import * as controlClient from './control-client.js';
 import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
 import { runWorkerHarness, WorkerHarness } from './harness.js';
-import type {
-  CredentialHelperTurnBinding,
+import {
+  type CredentialHelperTurnBinding,
   SandboxIntegrationClient,
 } from './integration-client.js';
 import { NativeStartupAdmission } from './native-startup.js';
@@ -2921,6 +2926,434 @@ describe('Worker Harness resident AgentSessions', () => {
     }
   );
 
+  it.each([
+    'late-replay',
+    'lost-next',
+    'bounded-response',
+    'reordered-ack',
+    'forwarding-restored',
+    'finite-bodies',
+    'late-refusal',
+    'exact-next-reconnect',
+    'negative-envelope',
+    'malformed-json',
+    ...[500, 3_000, 6_000, 9_000].flatMap((ackDelay) =>
+      [20_000, 24_000, 26_000, 27_000, 27_500, 28_000].map(
+        (recovery) => `sweep:${ackDelay}:${recovery}` as const
+      )
+    ),
+  ] as const)(
+    'keeps the lease through %s while tools and slow inference use the bridge',
+    async (fault) => {
+      const [, ackDelay, recovery] = fault.split(':').map(Number);
+      const sweep =
+        ackDelay !== undefined && recovery !== undefined ? { ackDelay, recovery } : null;
+      const sweepSends: number[] = [];
+      const lostAges: number[] = [];
+      let launchAt = 0;
+      let sweepLaunchSendAt: number | undefined;
+      const wall = [
+        'bounded-response',
+        'forwarding-restored',
+        'finite-bodies',
+        'late-refusal',
+      ].includes(fault);
+      const clock = wall ? null : controlSchedulingTime();
+      const listener = createListener();
+      const wire = new SandboxIntegrationClient(listener, createHttpServer());
+      const bridge = createBridgeServer();
+      const integration = fakeIntegration();
+      const f = harnessFixture({ integration });
+      const live = observation();
+      const agentSessionId = 'as_00000000-0000-75b0-a387-3019b80ed6d1';
+      const turnId = 'tu_00000000-0000-7e49-8268-e35715b55d0c';
+      const tokens = f.startBody(agentSessionId, turnId);
+      const controlToken = tokens.workerControlToken;
+      const inferenceToken = tokens.inferenceToken;
+      const capabilityToken = tokens.capabilityToken;
+      const accepted: Array<{ sequence: number; at: number }> = [];
+      const expired: number[] = [];
+      const incoming: number[] = [];
+      const readAcks: number[] = [];
+      const tools: number[] = [];
+      const heartbeatStreams = new Set<ServerHttp2Stream>();
+      let peakHeartbeatStreams = 0;
+      const inferences: ServerHttp2Stream[] = [];
+      let deadline = Infinity;
+      let newest = -1;
+      let adopted = false;
+      const proofs: number[] = [];
+      const openedAt = performance.now();
+      const held = new Map<ServerHttp2Stream, () => void>();
+      const resetAges: number[] = [];
+      let stopping = false;
+      const reconnect = fault === 'exact-next-reconnect';
+      const badAck = fault === 'negative-envelope' || fault === 'malformed-json';
+      const finishAfter = (stream: ServerHttp2Stream, ms: number, finish: () => void) => {
+        const startedAt = performance.now();
+        if (stopping || ms === 0) {
+          if (!stream.closed && !stream.destroyed) finish();
+          return;
+        }
+        const deliver = () => {
+          held.delete(stream);
+          clearTimeout(timer);
+          if (!stream.closed && !stream.destroyed) finish();
+        };
+        const timer = setTimeout(deliver, ms);
+        held.set(stream, deliver);
+        stream.once('close', () => {
+          if (!held.delete(stream)) return;
+          clearTimeout(timer);
+          resetAges.push(performance.now() - startedAt);
+        });
+      };
+      const send = (stream: ServerHttp2Stream, status: number, body: object) => {
+        stream.respond({ ':status': status });
+        stream.end(JSON.stringify(body));
+      };
+      let socket: ReturnType<typeof connect> | undefined;
+
+      bridge.on('stream', (stream, headers) => {
+        stream.on('error', () => undefined);
+        if (headers[':path'] === '/worker-control/heartbeat') {
+          heartbeatStreams.add(stream);
+          stream.once('close', () => heartbeatStreams.delete(stream));
+          peakHeartbeatStreams = Math.max(
+            peakHeartbeatStreams,
+            [...heartbeatStreams].filter((active) => !active.closed).length
+          );
+        }
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stream.once('end', () => {
+          if (headers[':path'] === '/inference/v1/responses') {
+            stream.respond({ ':status': 200, 'content-type': 'text/event-stream' });
+            stream.write('data: {"delta":"partial"}\n\n');
+            inferences.push(stream);
+            return;
+          }
+          if (headers[':path'] === '/capabilities/mcp/tool') {
+            tools.push(JSON.parse(Buffer.concat(chunks).toString()).step);
+          }
+          const ack = { accepted: true, diagnostics: [], schemaVersion: 2 };
+          if (headers[':path'] !== '/worker-control/heartbeat') {
+            stream.respond({ ':status': 200 });
+            stream.end(JSON.stringify(ack));
+            return;
+          }
+          const { sequence, reconnectKey } = WorkerControlHeartbeatRequestSchema.parse(
+            JSON.parse(Buffer.concat(chunks).toString())
+          );
+          const initialTwo = sequence === 2 && !incoming.includes(2);
+          incoming.push(sequence);
+          if (sweep && sequence > 1) {
+            const sentAt = performance.now();
+            const elapsed = sentAt - launchAt;
+            sweepSends.push(elapsed);
+            // Keep the reviewer’s lost requests open until their own I/O deadline.
+            if (elapsed < sweep.recovery) {
+              stream.once('close', () => lostAges.push(performance.now() - sentAt));
+              return;
+            }
+          }
+          if (reconnect && performance.now() >= 6_250 && !adopted) {
+            if (!reconnectKey) {
+              send(stream, 503, { code: 'worker_control_reconnect_required' });
+              return;
+            }
+            proofs.push(sequence);
+            if (sequence !== newest + 1) {
+              send(stream, 409, { code: 'worker_control_sequence_stale' });
+              return;
+            }
+            adopted = true;
+          }
+          if (reconnect && sequence >= 3 && !adopted) {
+            finishAfter(stream, 2_100, () =>
+              send(stream, 503, { code: 'worker_control_unavailable' })
+            );
+            return;
+          }
+          const refuse = () => send(stream, 403, { code: 'worker_control_lease_not_live' });
+          if (fault === 'late-refusal' && sequence >= 2) {
+            finishAfter(stream, 3_500, refuse);
+            return;
+          }
+          if (fault === 'reordered-ack' && sequence >= 3) {
+            refuse();
+            return;
+          }
+          if (badAck && sequence >= 3) {
+            stream.respond({ ':status': 403 });
+            finishAfter(stream, 900, () => stream.end('{"code":"worker_control_lease_not_live"}'));
+            return;
+          }
+          if (
+            fault === 'lost-next' &&
+            sequence === 2 &&
+            incoming.filter((value) => value === 2).length <= 2
+          )
+            return;
+
+          const decide = () => {
+            if (performance.now() >= deadline) {
+              expired.push(sequence);
+              refuse();
+              return;
+            }
+            const replay = accepted.some((point) => point.sequence === sequence);
+            if (sequence < newest && !replay) {
+              send(stream, 409, { code: 'worker_control_sequence_stale' });
+              return;
+            }
+            if (!replay) {
+              newest = sequence;
+              // The sweep models immediate launch acceptance at the shim send. The sampled
+              // clock can advance while the socket delivers that request to this listener.
+              const at =
+                sequence === 1 ? (sweepLaunchSendAt ?? performance.now()) : performance.now();
+              if (sequence === 1) launchAt = at;
+              deadline = at + 30_000;
+              accepted.push({ sequence, at });
+            }
+            const envelope = { ...ack, nextExpectedSequence: newest + 1 };
+            if (reconnect && sequence === 2) {
+              finishAfter(stream, 3_500, () => send(stream, 200, envelope));
+              return;
+            }
+            stream.respond({ ':status': 200 });
+            const body = JSON.stringify(envelope);
+            if (badAck && sequence === 2) {
+              finishAfter(stream, 1_300, () =>
+                stream.end(
+                  fault === 'malformed-json'
+                    ? '---'
+                    : JSON.stringify({
+                        ...envelope,
+                        accepted: false,
+                        nextExpectedSequence: sequence,
+                      })
+                )
+              );
+              return;
+            }
+            if (fault === 'finite-bodies' && sequence >= 2) {
+              finishAfter(stream, initialTwo ? 12_000 : 3_500, () => stream.end(body));
+              return;
+            }
+            if (sequence === 1) {
+              if (sweep) {
+                const remaining = Math.max(0, launchAt + sweep.ackDelay - performance.now());
+                finishAfter(stream, remaining, () => stream.end(body));
+                return;
+              }
+              if (fault === 'bounded-response' || fault === 'reordered-ack') {
+                const after = fault === 'reordered-ack' ? 1_500 : replay ? 9_600 : 10_100;
+                finishAfter(stream, after, () => stream.end(body));
+                return;
+              }
+              if (fault === 'late-replay' || fault === 'lost-next') {
+                if (!replay) {
+                  stream.write(body.slice(0, 12));
+                  return;
+                }
+                // Every replay keeps the original lease deadline.
+                const after =
+                  fault === 'late-replay' ? Math.max(0, deadline - performance.now() - 500) : 4_000;
+                finishAfter(stream, after, () => stream.end(body));
+                return;
+              }
+            }
+            stream.end(body);
+          };
+          const forwardDelay =
+            fault === 'forwarding-restored' &&
+            sequence >= 2 &&
+            performance.now() - openedAt < 35_000
+              ? initialTwo
+                ? 12_000
+                : 3_500
+              : 0;
+          finishAfter(stream, forwardDelay, decide);
+        });
+      });
+      listener.on('connection', (peer) => wire.accept(peer));
+      vi.spyOn(integration.client, 'workerControlFetch').mockImplementation(async (path, init) => {
+        if (
+          sweep &&
+          sweepLaunchSendAt === undefined &&
+          path.endsWith('/heartbeat') &&
+          JSON.parse(init.body).sequence === 1
+        ) {
+          sweepLaunchSendAt = performance.now();
+        }
+        const result = await wire.workerControlFetch(path, init);
+        if (path.endsWith('/events/append') && init.body.includes('turn.started')) live.resolve();
+        if (!path.endsWith('/heartbeat') || result.status !== 200) return result;
+        return {
+          ...result,
+          text: async () => {
+            const body = await result.text();
+            readAcks.push(JSON.parse(init.body).sequence);
+            return body;
+          },
+        };
+      });
+      const step = async (index: number) => {
+        const tool = await wire.request('/capabilities/mcp/tool', {
+          body: JSON.stringify({ step: index }),
+          headers: { authorization: `Bearer ${capabilityToken}` },
+          method: 'POST',
+        });
+        expect(tool.status).toBe(200);
+        for await (const _chunk of tool.body) {
+          // Consume the completed tool response before starting the next inference.
+        }
+        const inference = await wire.request('/inference/v1/responses', {
+          headers: { authorization: `Bearer ${inferenceToken}` },
+          method: 'POST',
+        });
+        return (async () => {
+          let result = '';
+          for await (const chunk of inference.body) result += chunk.toString();
+          return result;
+        })();
+      };
+      const advance = async (ms: number) => {
+        if (!clock) return delay(ms);
+        for (let elapsed = 0; elapsed < ms; elapsed += 50) await clock.advance(50);
+      };
+      f.fake.script.push({ kind: 'hold' });
+      try {
+        listener.listen(0, '127.0.0.1');
+        await once(listener, 'listening');
+        socket = connect((listener.address() as AddressInfo).port, '127.0.0.1');
+        bridge.emit('connection', socket);
+        await wire.ready;
+        wire.registerSessionLoopback(agentSessionId, {
+          capabilityCredential: credential('capability'),
+          inferenceCredential: credential('inference'),
+        });
+        wire.bindTurnRouteTokens(agentSessionId, { capabilityToken, controlToken, inferenceToken });
+        await f.open(agentSessionId);
+        await f.start(agentSessionId, turnId);
+        await live.promise;
+
+        const runStep = async (index: number, ms: number) => {
+          const pending = step(index);
+          await expect.poll(() => inferences.length, { interval: 10 }).toBe(index);
+          await advance(ms);
+          inferences[index - 1]?.end('data: [DONE]\n\n');
+          await expect(pending).resolves.toContain('[DONE]');
+        };
+        if (sweep) {
+          for (let index = 1; index <= 3; index += 1) await runStep(index, 13_000);
+        } else if (fault === 'reordered-ack') {
+          await runStep(1, 1_500);
+          await runStep(2, 1_150);
+          await runStep(3, 1_000);
+        } else if (
+          ['forwarding-restored', 'finite-bodies', 'late-refusal'].includes(fault) ||
+          reconnect ||
+          badAck
+        ) {
+          const stepMs =
+            fault === 'finite-bodies'
+              ? 110_000
+              : fault === 'forwarding-restored'
+                ? 15_000
+                : fault === 'late-refusal'
+                  ? 4_000
+                  : 5_000;
+          for (let stepIndex = 1; stepIndex <= 3; stepIndex += 1) await runStep(stepIndex, stepMs);
+        } else {
+          await runStep(1, 12_000);
+          await runStep(2, 12_000);
+          await runStep(3, fault === 'bounded-response' ? 24_000 : 15_000);
+        }
+
+        const nativeFailure = () => {
+          const records = readFileSync(join(f.capturePath(turnId), 'events.jsonl'), 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line).event);
+          return records.find((event) => event.type === 'turn.failed')?.data.diagnostics?.native;
+        };
+        const terminalFailure = fault === 'reordered-ack' || fault === 'late-refusal' || badAck;
+        if (sweep) {
+          const firstRenewal = accepted.find(({ sequence }) => sequence > 1);
+          const gap = firstRenewal ? firstRenewal.at - launchAt : null;
+          const survived = gap !== null && gap < 30_000 && !nativeFailure() && expired.length === 0;
+          console.info(
+            'Heartbeat recovery sweep',
+            JSON.stringify({ ...sweep, gap, survived, sweepSends })
+          );
+          expect(tools).toEqual([1, 2, 3]);
+          expect(peakHeartbeatStreams).toBeLessThanOrEqual(2);
+          expect(lostAges.length).toBeGreaterThan(0);
+          // Socket arrival may occur one 50 ms clock step after the shim starts its timer.
+          expect(lostAges.every((age) => age >= 9_950)).toBe(true);
+          expect(survived).toBe(true);
+        } else if (terminalFailure) {
+          const expectedFailure =
+            fault === 'negative-envelope'
+              ? 'worker_control_not_accepted'
+              : fault === 'malformed-json'
+                ? 'worker_control_invalid_response'
+                : 'worker_control_lease_not_live';
+          await expect.poll(nativeFailure).toContain(expectedFailure);
+          if (fault === 'reordered-ack') {
+            expect(readAcks).toEqual([0, 2, 1]);
+            expect(nativeFailure()).toMatch(/lastSent=3@\S+ lastAck=2@/);
+          }
+        } else {
+          expect(nativeFailure()).toBeUndefined();
+          const launch = accepted.find(({ sequence }) => sequence === 1)!;
+          const firstRenewal = accepted.find(({ sequence }) => sequence > 1);
+          expect(firstRenewal, `lease refusals ${expired}`).toBeDefined();
+          const gap = firstRenewal!.at - launch.at;
+          expect(gap).toBeLessThan(fault === 'bounded-response' ? 24_000 : 30_000);
+          if (fault === 'bounded-response')
+            console.info(`Bounded response renewal gap: ${Math.round(gap)} ms`);
+          if (fault === 'forwarding-restored' || fault === 'finite-bodies') {
+            expect(deadline).toBeGreaterThan(performance.now());
+            expect(readAcks.at(-1)).toBeGreaterThan(2);
+            expect(resetAges).toHaveLength(1);
+            expect(resetAges[0]).toBeGreaterThan(9_500);
+            console.info(
+              `${fault}: gap ${Math.round(gap)} ms, latest ACK ${readAcks.at(-1)}, exchange deadline ${Math.round(resetAges[0]!)} ms`
+            );
+          }
+          if (reconnect) {
+            expect(adopted).toBe(true);
+            expect(proofs).toEqual([3]);
+            expect(readAcks.at(-1)).toBeGreaterThan(3);
+          }
+          expect(expired).toEqual([]);
+        }
+        expect(tools).toEqual([1, 2, 3]);
+        expect(peakHeartbeatStreams).toBeLessThanOrEqual(2);
+      } finally {
+        // Settle the remaining fixture exchanges so the ordinary terminal join can finish.
+        stopping = true;
+        for (const release of [...held.values()]) release();
+        if (clock) await clock.advance(50);
+        clock?.restore();
+        try {
+          f.fake.residents[0]?.finish();
+        } catch {
+          /* The failed Turn may already have stopped. */
+        }
+        await f.settle(agentSessionId);
+        await wire.close();
+        socket?.destroy();
+        bridge.close();
+      }
+    },
+    390_000
+  );
+
   it('keeps lease heartbeats independent of an unanswered event through timeout and retry during quiet native work', async () => {
     const clock = controlSchedulingTime();
     const integration = fakeIntegration();
@@ -3092,7 +3525,7 @@ describe('Worker Harness resident AgentSessions', () => {
     ]);
   });
 
-  it('stops lease heartbeats when authority is rejected during Integration drain', async () => {
+  it('stops lease heartbeats and retains their last send and ACK when authority is lost during drain', async () => {
     const clock = controlSchedulingTime();
     const integration = fakeIntegration();
     const fetch = integration.client.workerControlFetch;
@@ -3148,8 +3581,18 @@ describe('Worker Harness resident AgentSessions', () => {
         .map((line) => JSON.parse(line));
       expect(events.at(-1).event).toMatchObject({
         type: 'turn.failed',
-        data: { status: 'failed' },
+        data: {
+          status: 'failed',
+          diagnostics: {
+            native: expect.stringMatching(
+              /Heartbeat lastSent=2@\d{4}-\d{2}-\d{2}T\S+Z lastAck=1@\d{4}-\d{2}-\d{2}T\S+Z\./
+            ),
+          },
+        },
       });
+      expect(
+        events.slice(0, -1).every((record) => !JSON.stringify(record).includes('lastSent='))
+      ).toBe(true);
     } finally {
       release.resolve();
       clock.restore();
@@ -3293,10 +3736,29 @@ describe('Worker Harness resident AgentSessions', () => {
       const heartbeatSpy = vi
         .spyOn(WorkerControlClient.prototype, 'recordHeartbeat')
         .mockImplementation(async function (this: WorkerControlClient, input, signal) {
-          const joining =
-            kind !== 'final-status' && ++heartbeatCalls === (kind === 'readiness' ? 1 : 3);
+          const joining = kind === 'readiness';
           try {
             return await recordHeartbeat.call(this, input, signal);
+          } finally {
+            if (joining) {
+              requestAborted.resolve();
+              await releaseJoin.promise;
+              requestSettled = true;
+            }
+          }
+        });
+      const heartbeatTick = WorkerControlClient.prototype[controlClient.workerHeartbeatTick];
+      const tickSpy = vi
+        .spyOn(WorkerControlClient.prototype, controlClient.workerHeartbeatTick)
+        .mockImplementation(async function (
+          this: WorkerControlClient,
+          signal,
+          stopScheduling,
+          onSend
+        ) {
+          const joining = kind === 'heartbeat' && ++heartbeatCalls === 2;
+          try {
+            return await heartbeatTick.call(this, signal, stopScheduling, onSend);
           } finally {
             if (joining) {
               requestAborted.resolve();
@@ -3406,6 +3868,7 @@ describe('Worker Harness resident AgentSessions', () => {
         await cleared.promise;
         await start;
         heartbeatSpy.mockRestore();
+        tickSpy.mockRestore();
         finalSpy.mockRestore();
         terminalSpy.mockRestore();
         clock.restore();

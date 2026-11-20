@@ -75,7 +75,7 @@
         {
           "id": "smart-grok-backup",
           "providerProfileId": "xai",
-          "providerModel": "grok-4.3"
+          "providerModel": "grok-4.7"
         }
       ]
     },

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import {
   type WorkerCanonicalEventRecord,
   WorkerObservationDataEmissionSchema,
@@ -627,6 +628,39 @@ it('RET E REVIEW R1 refuses a decoded credential split across valid ACP native u
       )
     )
     .toBe(true);
+});
+
+it('services the event loop during a burst of native capture and preserves the captured bytes', async () => {
+  const retained: Uint8Array[] = [];
+  const capture = new NativeRuntimeCapture({
+    packageSnapshotId: 'pi-stream-package',
+    captureCoverage: { scope: 'task', value: 'on' },
+    nativeLogMaxBytes: 16 * 1024 * 1024,
+    credentialValues: ['example-session-credential'],
+    emit: async (_record, body) => {
+      if (body) retained.push(body);
+    },
+  });
+  const source = { harness: 'pi', format: 'pi-sdk-event-json', runtimeOriginRef: null };
+  const frames = Array.from({ length: 80 }, (_, index) =>
+    Buffer.from(
+      JSON.stringify({
+        type: 'message_update',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: `Checking ledger row ${index}.\nThe totals agree.` }],
+        },
+      })
+    )
+  );
+  const burst = Promise.all(frames.map((frame) => capture.write('pi-channel', frame, source)));
+  const callback = nextEventLoopTurn('event-loop');
+  const first = await Promise.race([burst.then(() => 'capture'), callback]);
+  await burst;
+  await capture.finish();
+
+  expect(first).toBe('event-loop');
+  expect(Buffer.concat(retained)).toEqual(Buffer.concat(frames));
 });
 
 // RET Native Transcripts And Runtime Logs: arbitrary log bytes and non-JSON escapes survive unchanged.

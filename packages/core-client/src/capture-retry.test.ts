@@ -135,6 +135,31 @@ it('ends a held capture retry at twenty seconds with the last definite refusal',
   expect(fetcher).toHaveBeenCalledTimes(settledCalls);
 });
 
+it('propagates body cancellation failure before a resend', async () => {
+  const refused = frozen();
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(refused)
+    .mockResolvedValueOnce(Response.json({ accepted: true }));
+  const observed = transport(fetcher)
+    .postJson('/command', {}, z.unknown())
+    .then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error })
+    );
+  await vi.advanceTimersByTimeAsync(0);
+  const reader = refused.body!.getReader();
+  try {
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const result = await observed;
+    expect(result).toHaveProperty('error', expect.any(TypeError));
+    expect(result).toMatchObject({ error: { code: 'ERR_INVALID_STATE' } });
+  } finally {
+    reader.releaseLock();
+  }
+});
+
 it('cancels a waiting request before another command attempt', async () => {
   const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => frozen());
   const abort = new AbortController();

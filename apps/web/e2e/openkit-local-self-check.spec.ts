@@ -761,8 +761,12 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       .locator('dd')
   ).toHaveText('Unknown / none / not available');
 
-  const materialEditor = page.getByLabel('Release Material');
+  const editorRegion = page.getByRole('region', { name: 'Material editor' });
+  const materialEditor = editorRegion.getByRole('textbox', { name: 'Release Material' });
+  const save = editorRegion.getByRole('button', { name: /^Save$/ });
+  await expect(materialEditor).toHaveValue(revisionOneContent);
   await materialEditor.fill(revisionTwoContent);
+  await expect(save).toBeEnabled();
   const saveResponse = page.waitForResponse((response) => {
     if (
       response.request().method() !== 'POST' ||
@@ -775,7 +779,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       input.materialId === primary.materialId
     );
   });
-  await page.getByRole('button', { name: /^Save$/ }).click();
+  await save.click();
   const revisionTwoSave = await saveResponse;
   expect(
     revisionTwoSave.ok(),

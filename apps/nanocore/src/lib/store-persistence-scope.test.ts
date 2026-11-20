@@ -421,7 +421,7 @@ const trace = vi.hoisted(() => ({
   beforeRename: undefined as ((from: string, to: string) => void) | undefined,
   descriptors: new Map<number, string>(),
   events: [] as Array<{
-    op: 'write' | 'sync' | 'rename';
+    op: 'create' | 'write' | 'sync' | 'rename' | 'remove';
     path: string;
     from?: string;
     directory?: boolean;
@@ -433,6 +433,22 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
+    mkdirSync: ((...args: Parameters<typeof actual.mkdirSync>) => {
+      const created = actual.mkdirSync(...args);
+      const options = args[1];
+      // A recursive mkdir on an existing template directory creates nothing.
+      if (created !== undefined || typeof options !== 'object' || !options?.recursive)
+        trace.events.push({ op: 'create', path: String(args[0]) });
+      return created;
+    }) as typeof actual.mkdirSync,
+    rmSync: ((...args: Parameters<typeof actual.rmSync>) => {
+      trace.events.push({ op: 'remove', path: String(args[0]) });
+      return actual.rmSync(...args);
+    }) as typeof actual.rmSync,
+    unlinkSync: ((...args: Parameters<typeof actual.unlinkSync>) => {
+      trace.events.push({ op: 'remove', path: String(args[0]) });
+      return actual.unlinkSync(...args);
+    }) as typeof actual.unlinkSync,
     writeFileSync: ((...args: Parameters<typeof actual.writeFileSync>) => {
       const path =
         typeof args[0] === 'number'
@@ -1208,8 +1224,15 @@ describe('native Workspace absence classification', () => {
           : [];
       const retainedBytes = retainedFiles();
       const entries = readdirSync(f.dataRoot, { recursive: true }).sort();
+      const establishedDirectories = [f.dataRoot, dirname(f.dataRoot)];
+      for (const path of establishedDirectories) expect(lstatSync(path).isDirectory()).toBe(true);
       trace.events.length = 0;
       const reopened = new FsStore({ dataRoot: f.dataRoot });
+      expect(trace.events).toEqual(
+        establishedDirectories.map((path) => ({ op: 'sync', path, directory: true }))
+      );
+      expect(readdirSync(f.dataRoot, { recursive: true }).sort()).toEqual(entries);
+      trace.events.length = 0;
       expect(reopened.getWorkspace(healthy.id)).toEqual(healthyBefore);
       expect(reopened.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
       for (const reader of [reopened, f.store]) {

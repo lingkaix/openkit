@@ -24,10 +24,16 @@ import {
   readRetainedV1,
   WorkOwnerSchema,
 } from '@openkit/protocol';
-import { ensureLayoutDirectory, readLayoutDirectory } from '@openkit/storage';
+import {
+  ensureCanonicalDirectory,
+  ensureLayoutDirectory,
+  readLayoutDirectory,
+  syncCanonicalDirectory,
+} from '@openkit/storage';
 
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
+import { writeFileAtomic } from './canonical-write-capacity.js';
 
 /** A supported foreign record owner violates the shared boundary, not only local record semantics. */
 export class WorkOwnershipViolationError extends Error {
@@ -224,6 +230,8 @@ export interface WorkspaceLayoutPaths {
  */
 export function ensureLayout(root: string): FsLayoutPaths {
   const paths = ensureLayoutDirectories(root);
+  // A visible marker may remain after a failed publication acknowledgement.
+  syncCanonicalDirectory(paths.server);
   verifyNoLegacyOwnershipViolations(root);
   verifyCanonicalDatabaseOwnership(root);
   verifyCanonicalRecordEnvelopeSupport(root);
@@ -265,8 +273,7 @@ export function ensureLayoutDirectories(root: string): FsLayoutPaths {
     logs: resolveDataRootPath(root, 'logs'),
   };
 
-  ensureLayoutDirectory(paths.root, true);
-  ensureLayoutDirectory(paths.server);
+  ensureCanonicalDirectory(paths.server, 0o777, 'retry-creation');
   ensureDataRootLayoutMarker(root);
 
   for (const path of Object.values(paths).filter(
@@ -291,6 +298,8 @@ export function ensureConfigTemplateSurface(root: string): void {
   const providersRoot = join(configRoot, 'providers');
   const agentsRoot = join(configRoot, 'agents');
 
+  // Config setup can run before the marker writer and create its Data Root ancestors.
+  ensureCanonicalDirectory(resolve(root), 0o777, 'retry-creation');
   for (const path of [configRoot, providersRoot, agentsRoot]) {
     mkdirSync(path, { recursive: true });
   }
@@ -511,11 +520,7 @@ function ensureDataRootLayoutMarker(root: string): void {
   const markerPath = dataRootLayoutMarkerPath(root);
 
   if (!existsSync(markerPath)) {
-    writeJson(markerPath, {
-      schemaVersion: 1,
-      layoutVersion: DATA_ROOT_LAYOUT_VERSION,
-      deploymentId: createDataRootDeploymentId(),
-    });
+    writeBootLayoutMarker(markerPath);
     return;
   }
 
@@ -530,15 +535,21 @@ function ensureDataRootLayoutMarker(root: string): void {
     rawMarker.layoutVersion === DATA_ROOT_LAYOUT_VERSION &&
     !('deploymentId' in rawMarker)
   ) {
-    writeJson(markerPath, {
-      schemaVersion: 1,
-      layoutVersion: DATA_ROOT_LAYOUT_VERSION,
-      deploymentId: createDataRootDeploymentId(),
-    });
+    writeBootLayoutMarker(markerPath);
     return;
   }
 
   readDataRootLayoutMarker(root);
+}
+
+/** Commits the new deployment marker with native create or replacement permissions. */
+function writeBootLayoutMarker(markerPath: string): void {
+  const marker: DataRootLayoutMarker = {
+    schemaVersion: 1,
+    layoutVersion: DATA_ROOT_LAYOUT_VERSION,
+    deploymentId: createDataRootDeploymentId(),
+  };
+  writeFileAtomic(markerPath, `${JSON.stringify(marker, null, 2)}\n`, {});
 }
 
 /**

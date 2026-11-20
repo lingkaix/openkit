@@ -54,7 +54,7 @@ describe('shipped tier templates', () => {
     expect(catalog.map((model) => model.routes.map((route) => route.providerModel))).toEqual([
       ['poolside/laguna-s-2.1:free', 'poolside/laguna-xs-2.1:free', 'cohere/north-mini-code:free'],
       ['gpt-6-luna', 'gemini-3.8-flash'],
-      ['gpt-6.1-sol', 'claude-sonnet-5-5', 'grok-4.3'],
+      ['gpt-6.1-sol', 'claude-sonnet-5-5', 'grok-4.7'],
       ['gpt-6-astra', 'claude-opus-5-5'],
     ]);
     const contracts = [
@@ -71,7 +71,7 @@ describe('shipped tier templates', () => {
         reasoning: true,
       },
       {
-        contextWindow: 1_000_000,
+        contextWindow: 500_000,
         maxOutputTokens: 30_000,
         inputModalities: ['text', 'image', 'pdf'],
         reasoning: true,
