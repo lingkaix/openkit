@@ -282,6 +282,14 @@ describe('deployment model extension catalog', () => {
       const edited = structuredClone(catalog);
       delete (edited.providers.openai.models['future-model'].limit as { context?: number }).context;
       writeFileSync(path, JSON.stringify(edited));
+      const files = new RuntimeConfigFileService({
+        dataRoot: root,
+        workspaceIds: [],
+        userId: 'usr_00000000-0000-7000-8000-000000000002',
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: manager.status,
+      });
+      expect(files.validate({ files: [], mode }).valid).toBe(false);
       expect(await manager.reload({ mode, dryRun: false })).toMatchObject({ status: 'failed' });
       expect(manager.current()).toBe(active);
       expect(manager.status().pendingRestart).toEqual([]);
