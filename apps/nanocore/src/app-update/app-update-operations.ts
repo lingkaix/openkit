@@ -1,6 +1,6 @@
 import type { APP_UPDATE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 
-import { prepareServerAuditEvent } from '../audit-events.js';
+import { hasAppUpdateStartHandoff, prepareServerAuditEvent } from '../audit-events.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
@@ -147,7 +147,20 @@ export function createAppUpdateOperationImplementations(input: {
     },
     'app-update.status': async (input, context) => {
       requireHuman(context);
-      return status(await invoke({ op: 'status', requestId: input.requestId }));
+      const result = await invoke({ op: 'status', requestId: input.requestId });
+      if (
+        !result.ok &&
+        result.code === 'app_update_not_found' &&
+        coreDb &&
+        hasAppUpdateStartHandoff(coreDb, input.requestId)
+      ) {
+        throw new OperationError(
+          'app_update_recovery_required',
+          'A previous App-update start returned a receipt for this ID. Inspect the missing receipt before taking further action.',
+          409
+        );
+      }
+      return status(result);
     },
   } satisfies FamilyImplementations<typeof APP_UPDATE_OPERATION_DEFINITIONS>;
 }

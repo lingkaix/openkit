@@ -284,11 +284,9 @@ def main(
     try:
         apply_id, config_path = _parse_argv(argv)
         command = read_command(stdin, now) if apply_id is None else None
-        config = load_config(
-            config_path,
-            require_compatibility=command is None or command["op"] != "status",
-        )
-        helper = AppUpdateHelper(config, effects, now)
+        status_only = command is not None and command["op"] == "status"
+        config = load_config(config_path, require_compatibility=not status_only)
+        helper = AppUpdateHelper(config, effects, now, initialize_receipts=not status_only)
         if apply_id is not None:
             result = helper.apply(apply_id)
         else:
@@ -587,11 +585,15 @@ def _require_compatibility(value: Any) -> Dict[str, Any]:
 class AppUpdateHelper:
     """Filesystem receipts plus mocked-or-real host effects."""
 
-    def __init__(self, config: Mapping[str, Any], effects: Any, now: Callable[[], float]) -> None:
+    def __init__(
+        self, config: Mapping[str, Any], effects: Any, now: Callable[[], float], *, initialize_receipts: bool = True
+    ) -> None:
         self.config = dict(config)
         self.effects = effects
         self.now = now
-        os.makedirs(self.config["receiptDir"], mode=0o700, exist_ok=True)
+        # A status probe must observe a missing receipt store, not initialize it.
+        if initialize_receipts:
+            os.makedirs(self.config["receiptDir"], mode=0o700, exist_ok=True)
 
     def handle(self, command: Mapping[str, Any]) -> Dict[str, Any]:
         op = command["op"]
@@ -831,7 +833,7 @@ class AppUpdateHelper:
         return project_status(receipt)
 
     def status(self, request_id: str) -> Dict[str, Any]:
-        receipt = self._load_receipt(request_id, missing_code="app_update_recovery_required")
+        receipt = self._load_receipt(request_id, missing_code="app_update_not_found")
         receipt = self._maybe_mark_unknown(receipt)
         return project_status(receipt)
 
@@ -2096,11 +2098,20 @@ class AppUpdateHelper:
         return names
 
     def _load_receipt(self, request_id: str, missing_code: str) -> Dict[str, Any]:
-        path = os.path.join(self.config["receiptDir"], "%s.json" % request_id)
+        directory = self.config["receiptDir"]
+        path = os.path.join(directory, "%s.json" % request_id)
         try:
             metadata = os.lstat(path)
-        except OSError as error:
+        except FileNotFoundError as error:
+            if missing_code == "app_update_not_found":
+                try:
+                    with os.scandir(directory):
+                        pass
+                except OSError as directory_error:
+                    raise HelperError("app_update_recovery_required", "App-update receipt directory is unavailable.") from directory_error
             raise HelperError(missing_code, "App-update receipt is missing.") from error
+        except OSError as error:
+            raise HelperError("app_update_recovery_required", "App-update receipt could not be inspected.") from error
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise HelperError("app_update_recovery_required", "App-update receipt is not a regular file.")
         if metadata.st_size > RECEIPT_LIMIT_BYTES:

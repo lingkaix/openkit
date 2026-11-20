@@ -31,15 +31,19 @@ const PREPARE_BODY = {
  * Creates an in-process helper that pins receipts without host effects.
  *
  * @param now Clock used for prepare expiry.
+ * @param createRequestId Allocator for the host receipt ID.
  * @returns Host transport.
  */
-function createMemoryTransport(now: () => number = Date.now): AppUpdateHostTransport {
+function createMemoryTransport(
+  now: () => number = Date.now,
+  createRequestId: () => string = randomUUID
+): AppUpdateHostTransport {
   const receipts = new Map<string, AppUpdateStatusResponse>();
 
   return {
     async invoke(command: AppUpdateHostCommand): Promise<AppUpdateHostResult> {
       if (command.op === 'prepare') {
-        const requestId = randomUUID();
+        const requestId = createRequestId();
         const status: AppUpdateStatusResponse = {
           helperSha256: 'c'.repeat(64),
           preparedHelperSha256: 'c'.repeat(64),
@@ -386,14 +390,22 @@ describe('app-update routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-app-update-audit-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const inner = createMemoryTransport();
+    const inner = createMemoryTransport(Date.now, () => 'aB123456-cDeF-4123-8aBc-Def012345678');
     let releaseStart: (() => void) | undefined;
+    let receiptsMissing = false;
     const transport: AppUpdateHostTransport = {
       async invoke(command) {
         if (command.op === 'start') {
           await new Promise<void>((resolve) => {
             releaseStart = resolve;
           });
+        }
+        if (command.op === 'status' && receiptsMissing) {
+          return {
+            ok: false,
+            code: 'app_update_not_found',
+            message: 'App-update receipt is missing.',
+          };
         }
         return inner.invoke(command);
       },
@@ -456,6 +468,29 @@ describe('app-update routes', () => {
         requestId: review.requestId,
         summary: 'App-update start host handoff returned a receipt.',
       });
+
+      receiptsMissing = true;
+      for (const [requestId, responseStatus, code] of [
+        [review.requestId, 409, 'app_update_recovery_required'],
+        [review.requestId.toLowerCase(), 409, 'app_update_recovery_required'],
+        [review.requestId.toUpperCase(), 409, 'app_update_recovery_required'],
+        [randomUUID(), 404, 'app_update_not_found'],
+      ] as const) {
+        const status = await app.request(
+          ...operationRequest(
+            'app-update.status',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ requestId }),
+            }
+          )
+        );
+        expect(status.status).toBe(responseStatus);
+        await expect(status.json()).resolves.toMatchObject({ code });
+      }
+      expect(listServerAuditEvents(coreDb)).toHaveLength(2);
     } finally {
       coreDb.sqlite.close();
     }
