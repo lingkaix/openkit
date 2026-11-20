@@ -393,11 +393,21 @@ it('closes the actually mounted remote MCP discovery resource without revoking i
     expect(response.status).toBe(200);
     const value = await response.json();
     expect(value.error).toBeUndefined();
-    expect(value.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
+    // The exposure toggle opens the same surface, including native tools, on every admitted request.
+    const names = value.result.tools.map((tool: { name: string }) => tool.name).sort();
+    expect(names).toEqual([
+      'catalog_skill-content-read',
+      'material_create',
       'openkit_call',
       'openkit_describe',
       'openkit_guide',
+      'openkit_read',
       'openkit_search',
+      'task_start',
+      'thread_list',
+      'thread_read',
+      'turn_read',
+      'workspace_list',
     ]);
   };
   await open();

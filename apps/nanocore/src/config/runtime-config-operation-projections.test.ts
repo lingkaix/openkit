@@ -16,6 +16,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { remoteMcpInvocation } from '../test-support/remote-mcp-invocation.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { closeRevokedCredentialBindings } from '../vault/vault-operation-implementations.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -289,7 +290,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'openkit_call', arguments: { operation: id, input } },
+          params: remoteMcpInvocation(id, input),
         }),
       });
       expect(mcp.status, id).toBe(200);
@@ -343,7 +344,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'openkit_call', arguments: { operation: id, input } },
+          params: remoteMcpInvocation(id, input),
         }),
       });
       expect(mcp.status).toBe(200);

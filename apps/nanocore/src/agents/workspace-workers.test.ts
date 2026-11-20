@@ -890,7 +890,7 @@ it('admits current administrators to foreign private Threads under the accepted 
         id: 1,
         method: 'tools/call',
         params: {
-          name: 'openkit_call',
+          name: 'openkit_read',
           arguments: {
             operation: 'worker.list',
             input: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },

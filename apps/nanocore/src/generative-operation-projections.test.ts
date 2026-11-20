@@ -16,6 +16,7 @@ import { createApp, createLoopbackAppFetch } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { remoteMcpInvocation } from './test-support/remote-mcp-invocation.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const appId = '00000000-0000-4000-a000-000000000001';
@@ -465,7 +466,7 @@ it('preserves publication, JSON resources, refresh and conditional action receip
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
-        params: { name: 'openkit_call', arguments: { operation, input } },
+        params: remoteMcpInvocation(operation, input),
       }),
     });
     expect(response.status).toBe(200);
