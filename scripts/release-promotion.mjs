@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { verifyOperationsSkillArchive } from './package-release-assets.mjs';
-import { resolveImageDigest } from './release-image-state.mjs';
+import { resolveAnonymousImageDigest, resolveImageDigest } from './release-image-state.mjs';
 import { readReleaseNotesInput } from './release-notes.mjs';
 import {
   compatibleTransitionFacts,
@@ -473,10 +473,9 @@ async function main() {
     verify: true,
   });
   verifyArchives(process.cwd(), downloaded, sourceTag);
-  run('docker', ['logout', 'ghcr.io']);
   const common = plan.images.find((i) => i.id === 'worker-common');
   requireFact(
-    resolveImageDigest(`${common.image}@${common.digest}`) === common.digest,
+    resolveAnonymousImageDigest(`${common.image}@${common.digest}`) === common.digest,
     'anonymous worker-common digest'
   );
   writeFileSync(

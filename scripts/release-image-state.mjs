@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
@@ -61,12 +64,24 @@ export function resolveImageDigest(reference, inspect = inspectWithDocker) {
   throw new Error(`Unable to inspect ${reference}: ${output || `exit ${result.status}`}`);
 }
 
+/** Resolves a public reference without discarding credentials needed by later checks. */
+export function resolveAnonymousImageDigest(reference) {
+  const dockerConfig = mkdtempSync(join(tmpdir(), 'openkit-anonymous-registry-'));
+  try {
+    return resolveImageDigest(reference, (ref) =>
+      inspectWithDocker(ref, { ...process.env, DOCKER_CONFIG: dockerConfig })
+    );
+  } finally {
+    rmSync(dockerConfig, { recursive: true, force: true });
+  }
+}
+
 /** Runs the immutable registry inspection command for one image reference. */
-function inspectWithDocker(reference) {
+function inspectWithDocker(reference, env) {
   return spawnSync(
     'docker',
     ['buildx', 'imagetools', 'inspect', reference, '--format', '{{.Manifest.Digest}}'],
-    { encoding: 'utf8' }
+    { encoding: 'utf8', env }
   );
 }
 
