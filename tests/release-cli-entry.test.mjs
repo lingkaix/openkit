@@ -11,9 +11,13 @@ const workflow = parse(readFileSync(join(process.cwd(), '.github', 'workflows', 
 /** Script invocations that only a tag push runs; workflow_dispatch gates never execute them. */
 function tagPushInvocations() {
   const invocations = new Set();
-  for (const job of Object.values(workflow.jobs)) {
+  for (const [id, job] of Object.entries(workflow.jobs)) {
     const condition = String(job.if ?? '');
-    if (!condition.includes('refs/tags/') || condition.includes('workflow_dispatch')) continue;
+    if (
+      id !== 'smoke-app-native' &&
+      (!condition.includes('refs/tags/') || condition.includes('workflow_dispatch'))
+    )
+      continue;
     for (const step of job.steps ?? []) {
       for (const match of String(step.run ?? '').matchAll(
         /\bnode[ \t]+((?:\.\.\/)*scripts\/[\w.-]+\.mjs)(?:[ \t]+([a-z][a-z-]*)\b)?/gu
@@ -34,6 +38,8 @@ test('every tag-push publication CLI evaluates its module graph and refuses miss
     'release-app-native.mjs record': ['record', `${missing}.json`],
     'release-app-native.mjs smoke': ['smoke', `${missing}.json`, 'linux/amd64', missing],
     'release-candidate.mjs fetch': ['fetch', '--directory', missing],
+    'release-direct.mjs fetch': ['fetch', 'v0.2.0', missing],
+    'release-direct.mjs publish': ['publish', 'v0.2.0', missing, missing],
     'release-sbom.mjs release': [
       'release',
       ...['--records', missing, '--assets', missing, '--repository', 'example/openkit'],

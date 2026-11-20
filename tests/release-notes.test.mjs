@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { createReleaseNotes } from '../scripts/release-notes.mjs';
 
 const script = join(process.cwd(), 'scripts', 'release-notes.mjs');
 const tag = 'v0.0.0-scratch.1';
@@ -185,6 +186,26 @@ test('release notes generation dates the prerelease gates and includes the commi
   assert.match(notes, /R001 remains open\./);
   assert.match(notes, new RegExp(`sha256:${'b'.repeat(64)}`));
   assert.match(notes, new RegExp(`sha256:${'c'.repeat(64)}`));
+});
+
+test('notes alone make no claim that stable Worker readiness is closed', (t) => {
+  const repoRoot = fixtureRoot();
+  const stable = 'v0.2.0';
+  t.after(() => rmSync(repoRoot, { recursive: true, force: true }));
+  mkdirSync(join(repoRoot, 'release-notes'));
+  writeFileSync(join(repoRoot, 'release-notes', `${stable}.md`), validInput);
+  const recordsDir = writeRecords(repoRoot, 'false');
+  const notes = createReleaseNotes({
+    repoRoot,
+    recordsDir,
+    tag: stable,
+    checksum: 'a'.repeat(64),
+    visibility: 'public',
+    sha: 'd'.repeat(40),
+    runUrl: 'https://github.com/example/openkit/actions/runs/1',
+  });
+  assert.match(notes, /requires exact-product Worker readiness evidence \(R001\)/u);
+  assert.doesNotMatch(notes, /R001.*\bclosed\b/u);
 });
 
 /**

@@ -3,7 +3,7 @@
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createReleaseManifest } from './release-record.mjs';
+import { validateReleaseManifest } from './release-record.mjs';
 import { canonical, noSecrets, once, save, sha } from './release-safety.mjs';
 
 const predicates = [
@@ -66,18 +66,11 @@ export function validateUpdate(target, p, deployment) {
   noSecrets(p);
   const m = p.manifest;
   requireFact(m?.schemaVersion === 1, 'unknown release manifest core');
-  createReleaseManifest({
-    repository: m.repository,
-    tag: m.tag,
-    sha: m.sourceCommit,
-    images: m.images.map((i) => ({
-      ...i,
-      prerelease: true,
-      tags: [m.tag, m.tag.slice(1), `sha-${m.sourceCommit.slice(0, 12)}`],
-    })),
-    checksums: m.assets.map((a) => `${a.sha256}  ${a.name}`).join('\n'),
-    assertions: m.assertions,
-  });
+  validateReleaseManifest(m);
+  requireFact(
+    m.assertions.recovery !== 'fresh-root-paired-restore',
+    'fresh Data Root installation and paired predecessor recovery required'
+  );
   requireFact(
     !m.assertions.forwardMigration,
     'forward migration requires the separate manual backup and update procedure'

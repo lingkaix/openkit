@@ -15,6 +15,7 @@ import { parseArgs } from 'node:util';
 import { createReleaseNotes, parseReleaseNotesInput } from './release-notes.mjs';
 import {
   admittedTransitionFacts,
+  isDirectStableTag,
   parseVersionTag,
   readReleaseAssessment,
 } from './release-preflight.mjs';
@@ -34,9 +35,10 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
   } catch {
     fail('source identity');
   }
+  const prerelease = version.includes('-');
   if (
     !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/u.test(repository ?? '') ||
-    !version.includes('-') ||
+    (!prerelease && !isDirectStableTag(tag)) ||
     !/^[a-f0-9]{40}$/u.test(sha ?? '')
   )
     fail('source identity');
@@ -50,10 +52,10 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
         ids.has(record.id) ||
         !/^ghcr\.io\/[a-z0-9._/-]+$/u.test(record.image ?? '') ||
         !SHA256.test(record.digest ?? '') ||
-        record.prerelease !== true ||
+        record.prerelease !== prerelease ||
         !Array.isArray(record.tags) ||
-        ![tag, tag.slice(1), `sha-${sha.slice(0, 12)}`].every((t) =>
-          record.tags.some((v) => v === t || v === `${record.image}:${t}`)
+        ![tag, tag.slice(1), `sha-${sha.slice(0, 12)}`, ...(!prerelease ? ['latest'] : [])].every(
+          (t) => record.tags.some((v) => v === t || v === `${record.image}:${t}`)
         )
       )
         fail('image/source binding');
@@ -143,6 +145,32 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
   };
 }
 
+/** Revalidate a distributed manifest through the same closed projection as publication. */
+export function validateReleaseManifest(manifest) {
+  if (
+    manifest?.schemaVersion !== 1 ||
+    !Array.isArray(manifest.images) ||
+    !Array.isArray(manifest.assets)
+  )
+    throw Error('Release Management: manifest core refused');
+  const { tag, repository, sourceCommit: sha, assertions } = manifest;
+  const prerelease = parseVersionTag(tag).includes('-');
+  const tags = [
+    tag,
+    tag.slice(1),
+    `sha-${String(sha ?? '').slice(0, 12)}`,
+    ...(!prerelease ? ['latest'] : []),
+  ];
+  return createReleaseManifest({
+    repository,
+    tag,
+    sha,
+    assertions,
+    images: manifest.images.map((image) => ({ ...image, prerelease, tags })),
+    checksums: manifest.assets.map(({ name, sha256 }) => `${sha256}  ${name}`).join('\n'),
+  });
+}
+
 /** Produce or independently compare the controlled manifest and its non-circular checksum entry. */
 export function publicationManifest({
   repoRoot,
@@ -209,7 +237,7 @@ export function readPublishedManifest({
   sha,
   repository,
 }) {
-  parseVersionTag(sourceTag);
+  const prerelease = parseVersionTag(sourceTag).includes('-');
   if (!/^[a-f0-9]{40}$/u.test(sha)) throw Error('Published source commit required');
   const manifest = JSON.parse(
     readFileSync(join(assetsDir, `openkit-release-${sourceTag}.json`), 'utf8')
@@ -230,8 +258,13 @@ export function readPublishedManifest({
       join(recordsDir, `${image.id}.json`),
       JSON.stringify({
         ...image,
-        prerelease: true,
-        tags: [sourceTag, sourceTag.slice(1), `sha-${sha.slice(0, 12)}`],
+        prerelease,
+        tags: [
+          sourceTag,
+          sourceTag.slice(1),
+          `sha-${sha.slice(0, 12)}`,
+          ...(!prerelease ? ['latest'] : []),
+        ],
       }),
       { flag: 'wx' }
     );

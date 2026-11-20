@@ -4,7 +4,13 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseVersionTag } from './release-preflight.mjs';
+import {
+  directStableGrant,
+  isDirectStableTag,
+  parseVersionTag,
+  readReleaseAssessment,
+  validateCandidateQualification,
+} from './release-preflight.mjs';
 import { canonical, sha } from './release-safety.mjs';
 
 export const registryJob = 'Prerelease registry admission';
@@ -20,6 +26,19 @@ export const candidateJobs = [
   'Smoke worker-common (linux/arm64)',
   'Smoke worker-runtimes (linux/amd64)',
   'Smoke worker-runtimes (linux/arm64)',
+];
+export const directCandidateJobs = [
+  'Direct stable publication proof',
+  registryJob,
+  'Release preflight',
+  'Build NanoHost natively on amd64',
+  'Build NanoHost natively on arm64',
+  'Package portable release assets',
+  'Qualify NanoHost on amd64',
+  'Qualify NanoHost on arm64',
+  'Read app candidate',
+  'Smoke App native (linux/amd64)',
+  'Smoke App native (linux/arm64)',
 ];
 export const publicationJobs = [
   'Publish app image',
@@ -469,8 +488,14 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     );
   }
   // The admission and attestation gates decide what publishers accept; bind their instructions.
-  for (const name of ['release-security', 'attest-release-images'])
+  for (const name of [
+    'release-security',
+    'attest-release-images',
+    'candidate-publication',
+    'direct-release-admission',
+  ])
     if (blocks.has(name)) publicationJobIds.push(name);
+  if (blocks.has('direct-release-admission')) publicationJobIds.push('release-preflight');
   const movedJobs = [
     'candidate-plan',
     'candidate-images',
@@ -611,7 +636,9 @@ function successfulJobs(run, names) {
 export function checkPublication(e, { now = new Date(), repoRoot = process.cwd() } = {}) {
   requireFact(e && typeof e === 'object', 'evidence');
   const g = e.grant;
-  requireFact(grantCoversPrerelease(e.tag, g?.firstTag), 'covered prerelease tag');
+  const direct = isDirectStableTag(e.tag);
+  const approved = direct ? directStableGrant(e.tag, e.sha, g?.exactGrant) : undefined;
+  if (!direct) requireFact(grantCoversPrerelease(e.tag, g?.firstTag), 'covered prerelease tag');
   requireFact(commit.test(e.sha ?? ''), 'exact P');
   requireFact(
     g?.reference &&
@@ -623,13 +650,17 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
   );
   requireFact(hash.test(e.assetSet ?? '') && e.assetSet === g.assetSet, 'approved asset set');
   const actual = publicationInputsAt(repoRoot, e.sha);
-  const baselineInputs = publicationInputsAt(repoRoot, e.baseline?.sha);
+  const baselineInputs = direct ? undefined : publicationInputsAt(repoRoot, e.baseline?.sha);
   requireFact(
-    actual.sha256 === baselineInputs.sha256 &&
-      e.publicationInputs === actual.sha256 &&
-      g.publicationInputs === baselineInputs.sha256 &&
-      e.baseline.publicationInputs === baselineInputs.sha256,
-    'actual repository publication inputs differ from approved baseline'
+    e.publicationInputs === actual.sha256 &&
+      (direct
+        ? g.publicationInputs === actual.sha256
+        : actual.sha256 === baselineInputs.sha256 &&
+          g.publicationInputs === baselineInputs.sha256 &&
+          e.baseline.publicationInputs === baselineInputs.sha256),
+    direct
+      ? 'actual repository publication inputs differ from exact grant'
+      : 'actual repository publication inputs differ from approved baseline'
   );
   const start = Date.parse(e.observedAt),
     end = Date.parse(e.validUntil);
@@ -645,6 +676,10 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
   const c = e.candidate;
   requireFact(
     c?.sha === e.sha &&
+      (!direct ||
+        (c.runId === approved.runId &&
+          c.attempt === approved.attempt &&
+          c.ref === 'refs/heads/main')) &&
       Number.isSafeInteger(c.attempt) &&
       c.attempt > 0 &&
       ((c.event === 'push' &&
@@ -653,64 +688,83 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
         (c.event === 'workflow_dispatch' && ['release-gate', 'full'].includes(c.gate))) &&
       successfulJobs(c, [
         ...candidateJobs,
+        ...(direct ? directCandidateJobs : []),
         ...(actual.candidateImageIds ?? []).map((id) => `Candidate index (${id})`),
       ]),
     'successful exact-P candidate run and jobs'
   );
-  let baselineVersion;
-  try {
-    baselineVersion = parseVersionTag(e.baseline?.tag ?? '');
-  } catch {
-    baselineVersion = undefined;
+  if (direct) {
+    const proof = e.directProof;
+    requireFact(
+      proof?.repository === e.repository &&
+        proof.sha === e.sha &&
+        proof.tag === e.tag &&
+        proof.runId === c.runId &&
+        proof.attempt === c.attempt &&
+        proof.inputs === actual.sha256 &&
+        hash.test(proof.checksums ?? '') &&
+        now.getTime() < Date.parse(proof.validUntil),
+      'current direct stable publication proof'
+    );
+    const assessment =
+      e.tag === 'v0.2.0' ? readReleaseAssessment(repoRoot, e.tag, e.sha) : undefined;
+    validateCandidateQualification(proof.qualification, { tag: e.tag, source: e.sha, assessment });
+  } else {
+    let baselineVersion;
+    try {
+      baselineVersion = parseVersionTag(e.baseline?.tag ?? '');
+    } catch {
+      baselineVersion = undefined;
+    }
+    const baselineJobNames = actual.jobs['smoke-app-native']
+      ? [
+          ...publicationJobs,
+          'Read app candidate',
+          'Smoke App native (linux/amd64)',
+          'Smoke App native (linux/arm64)',
+        ]
+      : publicationJobs;
+    requireFact(
+      baselineVersion &&
+        e.baseline.publicationInputs === e.publicationInputs &&
+        successfulJobs(e.baseline, baselineJobNames),
+      'successful real-tag unchanged-publication baseline'
+    );
+    const baseline = e.baseline,
+      approvedBaseline = g.baseline;
+    const baselineIdentityFields = ['repository', 'tag', 'sha', 'workflow', 'runId', 'attempt'];
+    requireFact(
+      approvedBaseline &&
+        typeof approvedBaseline === 'object' &&
+        !Array.isArray(approvedBaseline) &&
+        Object.keys(approvedBaseline).length === baselineIdentityFields.length + 1 &&
+        Object.hasOwn(approvedBaseline, 'kind') &&
+        ((approvedBaseline.kind === 'production-tag' &&
+          approvedBaseline.repository === e.repository) ||
+          (approvedBaseline.kind === 'scratch-rehearsal' &&
+            approvedBaseline.repository === 'notrucked/openkit' &&
+            baselineVersion.includes('-'))) &&
+        approvedBaseline.workflow === '.github/workflows/ci.yml' &&
+        baselineIdentityFields.every(
+          (field) =>
+            Object.hasOwn(approvedBaseline, field) && baseline[field] === approvedBaseline[field]
+        ) &&
+        baseline.event === 'push' &&
+        baseline.ref === `refs/tags/${baseline.tag}` &&
+        baseline.resolvedTagSha === baseline.sha &&
+        Number.isSafeInteger(baseline.attempt) &&
+        baseline.attempt > 0 &&
+        baseline.jobs
+          .filter((job) => baselineJobNames.includes(job.name))
+          .every(
+            (job) =>
+              job.runId === baseline.runId &&
+              job.attempt === baseline.attempt &&
+              job.sha === baseline.sha
+          ),
+      'approved publication baseline identity and tag-push provenance'
+    );
   }
-  const baselineJobNames = actual.jobs['smoke-app-native']
-    ? [
-        ...publicationJobs,
-        'Read app candidate',
-        'Smoke App native (linux/amd64)',
-        'Smoke App native (linux/arm64)',
-      ]
-    : publicationJobs;
-  requireFact(
-    baselineVersion &&
-      e.baseline.publicationInputs === e.publicationInputs &&
-      successfulJobs(e.baseline, baselineJobNames),
-    'successful real-tag unchanged-publication baseline'
-  );
-  const baseline = e.baseline,
-    approvedBaseline = g.baseline;
-  const baselineIdentityFields = ['repository', 'tag', 'sha', 'workflow', 'runId', 'attempt'];
-  requireFact(
-    approvedBaseline &&
-      typeof approvedBaseline === 'object' &&
-      !Array.isArray(approvedBaseline) &&
-      Object.keys(approvedBaseline).length === baselineIdentityFields.length + 1 &&
-      Object.hasOwn(approvedBaseline, 'kind') &&
-      ((approvedBaseline.kind === 'production-tag' &&
-        approvedBaseline.repository === e.repository) ||
-        (approvedBaseline.kind === 'scratch-rehearsal' &&
-          approvedBaseline.repository === 'notrucked/openkit' &&
-          baselineVersion.includes('-'))) &&
-      approvedBaseline.workflow === '.github/workflows/ci.yml' &&
-      baselineIdentityFields.every(
-        (field) =>
-          Object.hasOwn(approvedBaseline, field) && baseline[field] === approvedBaseline[field]
-      ) &&
-      baseline.event === 'push' &&
-      baseline.ref === `refs/tags/${baseline.tag}` &&
-      baseline.resolvedTagSha === baseline.sha &&
-      Number.isSafeInteger(baseline.attempt) &&
-      baseline.attempt > 0 &&
-      baseline.jobs
-        .filter((job) => baselineJobNames.includes(job.name))
-        .every(
-          (job) =>
-            job.runId === baseline.runId &&
-            job.attempt === baseline.attempt &&
-            job.sha === baseline.sha
-        ),
-    'approved publication baseline identity and tag-push provenance'
-  );
   if (actual.candidateImageIds?.length) {
     const r = e.registry;
     requireFact(
@@ -770,7 +824,7 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
     );
     requireFact(
       !(issue.applicable && issue.state === 'open' && issue.blocker),
-      `open prerelease blocker #${issue.number}`
+      `open ${direct ? 'release' : 'prerelease'} blocker #${issue.number}`
     );
     if (issue.applicable && issue.state === 'open')
       requireFact(
@@ -779,8 +833,10 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
       );
   }
   requireFact(
-    e.flags?.prerelease === true && e.flags.githubLatest === false && e.flags.ghcrLatest === false,
-    'prerelease flags and unchanged Latest'
+    e.flags?.prerelease === !direct &&
+      e.flags.githubLatest === direct &&
+      e.flags.ghcrLatest === direct,
+    direct ? 'stable flags and Latest' : 'prerelease flags and unchanged Latest'
   );
   return {
     tag: e.tag,
@@ -789,8 +845,9 @@ export function checkPublication(e, { now = new Date(), repoRoot = process.cwd()
     status: 'eligible',
     publicationProof: {
       candidate: actual,
-      baseline: baselineInputs,
-      baselineCommit: e.baseline.sha,
+      ...(direct
+        ? { scope: e.directProof }
+        : { baseline: baselineInputs, baselineCommit: e.baseline.sha }),
     },
     observedAt: e.observedAt,
   };

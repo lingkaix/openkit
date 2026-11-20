@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parseVersionTag } from './lib/release-version.mjs';
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const NOT_FOUND =
@@ -85,6 +86,36 @@ function inspectWithDocker(reference, env) {
   );
 }
 
+/** Use identical release alias intent in the digest-only dry run and the authorized tag job. */
+export function publishImageArgs({ image, digest, tag, sha, dryRun = false }) {
+  const version = parseVersionTag(tag);
+  if (
+    !/^ghcr\.io\/[a-z0-9._/-]+$/u.test(image ?? '') ||
+    !DIGEST.test(digest ?? '') ||
+    !/^[a-f0-9]{40}$/u.test(sha ?? '')
+  )
+    throw Error('Exact release image identity required');
+  const tags = [tag, version, `sha-${sha.slice(0, 12)}`];
+  if (!version.includes('-')) tags.push('latest');
+  return [
+    'buildx',
+    'imagetools',
+    'create',
+    ...(dryRun ? ['--dry-run'] : []),
+    ...tags.flatMap((value) => ['--tag', `${image}:${value}`]),
+    `${image}@${digest}`,
+  ];
+}
+
+/** Both stable publishers reuse a complete existing identity only at the admitted digest. */
+export function selectedAdmittedDigest(digest, { present, existing }) {
+  if (!DIGEST.test(digest) || !['true', 'false'].includes(present))
+    throw Error('Invalid admitted image identity');
+  if (present === 'true' && existing !== digest)
+    throw Error('Immutable identity changed after security admission');
+  return { digest, reused: present };
+}
+
 /**
  * Parses registry-state CLI flags.
  *
@@ -108,6 +139,36 @@ function parseArgs(argv) {
 /** Runs the release image-state inspection CLI. */
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args['publish-digest']) {
+    const tag = process.env.GITHUB_REF_NAME;
+    if (
+      process.env.GITHUB_ACTIONS !== 'true' ||
+      process.env.GITHUB_EVENT_NAME !== 'push' ||
+      process.env.GITHUB_REF !== `refs/tags/${tag}` ||
+      !['publish-app-image', 'publish-container-images'].includes(process.env.GITHUB_JOB)
+    )
+      throw Error('Release image writes require an authorized tag publisher');
+    const result = spawnSync(
+      'docker',
+      publishImageArgs({
+        image: process.env.IMAGE,
+        digest: args['publish-digest'],
+        tag,
+        sha: process.env.GITHUB_SHA,
+      }),
+      { stdio: 'inherit', timeout: 180000 }
+    );
+    if (result.error || result.status !== 0) throw Error('Immutable image publication failed');
+    return;
+  }
+  if (args.admitted) {
+    const { digest, reused } = selectedAdmittedDigest(readFileSync(args.admitted, 'utf8').trim(), {
+      present: process.env.PRESENT,
+      existing: process.env.EXISTING_DIGEST,
+    });
+    console.log(`digest=${digest}\nreused=${reused}`);
+    return;
+  }
   const state = inspectReleaseImageState({
     latestTag: String(args['latest-tag'] ?? ''),
     shaTag: String(args['sha-tag'] ?? ''),
@@ -119,7 +180,7 @@ function main() {
   process.stdout.write(`latest_before=${state.latestBefore}\n`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     main();
   } catch (error) {

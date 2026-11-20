@@ -3,7 +3,8 @@ name: Stable promotion
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v[1-9]*.0.0'
+      - 'v0.0.*'
       - '!v*.*.*-*'
 
 permissions: {}
@@ -51,6 +52,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install verifier dependencies without building assets
         run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Require a 1.0-class promotion or bounded historical fixture
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          case "${REPOSITORY}" in
+            lingkaix/openkit) [[ "${GITHUB_REF_NAME}" =~ ^v[1-9][0-9]*\.0\.0$ ]] ;;
+            notrucked/openkit) [[ "${GITHUB_REF_NAME}" =~ ^v0\.0\.[0-9]+$ ]] ;;
+            *) exit 1 ;;
+          esac
       - name: Observe the existing same-commit source without publication
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

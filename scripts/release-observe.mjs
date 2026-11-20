@@ -87,7 +87,7 @@ export function observeIssues(
     `repos/${repository}/issues?state=all&sort=created&direction=asc&per_page=100`,
     { paginate: true }
   );
-  if (!Array.isArray(pages) || pages.some((p) => !Array.isArray(p)))
+  if (!Array.isArray(pages) || !pages.length || pages.some((p) => !Array.isArray(p)))
     throw Error('Incomplete issue pagination');
   const issues = pages
     .flat()
@@ -104,6 +104,7 @@ export function observeIssues(
       return {
         number: i.number,
         title: publicText(i.title),
+        bodySha256: sha(String(i.body ?? '')),
         state: i.state,
         updatedAt: i.updated_at,
         closedAt: i.closed_at,
@@ -147,7 +148,8 @@ export function issueDelta(previous, current) {
         : [];
     if (prior.state === 'closed' && issue.state === 'open')
       return [{ number: issue.number, change: 'reopened', previous: prior, current: issue }];
-    return canonical(prior) === canonical(issue)
+    const current = prior.bodySha256 === undefined ? { ...issue, bodySha256: undefined } : issue;
+    return canonical(prior) === canonical(current)
       ? []
       : [{ number: issue.number, change: 'changed', previous: prior, current: issue }];
   });

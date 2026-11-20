@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { parseVersionTag } from './release-preflight.mjs';
+import { isDirectStableTag, parseVersionTag } from './release-preflight.mjs';
 import { assertSbom, provenanceSubjects, sbomAssetNames, sbomName } from './release-sbom.mjs';
 import { indexPlatforms, observeIndex, publishedImages } from './release-security.mjs';
 
@@ -20,7 +20,8 @@ function signerConstraints({ repository, tag, sha }) {
       !(repository === 'notrucked/openkit' && /^v0\.0\.\d+(?:-[a-z0-9.-]+)?$/u.test(tag)))
   )
     throw Error('Release attestation namespace refused');
-  const workflow = version.includes('-') ? 'ci.yml' : 'release-promotion.yml';
+  const workflow =
+    version.includes('-') || isDirectStableTag(tag) ? 'ci.yml' : 'release-promotion.yml';
   return [
     '--repo',
     repository,
@@ -81,20 +82,25 @@ export function verifyCandidateSubjects({ subjects, repository, tag, sha, verify
   }
   return lines.length;
 }
-/** Shared manifest/checksum verification happens before any package inventory is admitted. */
-export function verifyReleaseIntegrity({
+/** Check the manifest, SBOMs, checksum and subject identity before any signing effect. */
+export function releaseIntegritySubjects({
   directory,
   repository,
   tag,
   sha,
   repoRoot = process.cwd(),
+  expectedSource,
 }) {
   // Validate the fixed signer namespace before even reading a supplied artifact projection.
   signerConstraints({ repository, tag, sha });
-  const manifest = publishedImages({ directory, repository, sha, repoRoot });
+  const manifest = publishedImages({ directory, repository, sha, repoRoot, expectedSource });
   if (
     manifest.tag !== tag &&
-    !(parseVersionTag(tag).includes('-') === false && manifest.tag.startsWith(`${tag}-`))
+    !(
+      !isDirectStableTag(tag) &&
+      !parseVersionTag(tag).includes('-') &&
+      manifest.tag.startsWith(`${tag}-`)
+    )
   )
     throw Error('Release/source tag relationship refused');
   const required = sbomAssetNames(manifest.tag);
@@ -132,7 +138,38 @@ export function verifyReleaseIntegrity({
       reference: `sha256:${hash(readFileSync(archive))}`,
     });
   }
-  const subjects = provenanceSubjects({ manifest, assetsDir: directory }).trimEnd().split('\n');
+  return {
+    manifest,
+    count: required.length,
+    subjects: provenanceSubjects({ manifest, assetsDir: directory }),
+  };
+}
+
+/** Bind the downloaded checksum list to the selected candidate, even when C is unchanged. */
+export function verifyCandidateBundleChecksum({ proof, bytes, repository, tag, sha }) {
+  if (
+    !proof ||
+    proof.repository !== repository ||
+    proof.tag !== tag ||
+    proof.sha !== sha ||
+    proof.checksums !== hash(bytes)
+  )
+    throw Error('Published bundle differs from the selected stable candidate');
+}
+
+/** Verify the published subject set with the actual tag's keyless signing identity. */
+export function verifyReleaseIntegrity(input) {
+  const { directory, repository, tag, sha, candidateProof } = input;
+  if (isDirectStableTag(tag))
+    verifyCandidateBundleChecksum({
+      proof: candidateProof,
+      bytes: readFileSync(join(directory, 'SHA256SUMS')),
+      repository,
+      tag,
+      sha,
+    });
+  const { manifest, count, subjects: inventory } = releaseIntegritySubjects(input);
+  const subjects = inventory.trimEnd().split('\n');
   for (const line of subjects) {
     const match = /^([a-f0-9]{64}) {2}(.+)$/u.exec(line);
     if (!match) throw Error('Controlled provenance subject refused');
@@ -142,9 +179,7 @@ export function verifyReleaseIntegrity({
       : join(directory, reference);
     verifyNative({ subject, repository, tag, sha });
   }
-  console.log(
-    `Release integrity verified: ${required.length} SBOMs, ${subjects.length} signed subjects`
-  );
+  console.log(`Release integrity verified: ${count} SBOMs, ${subjects.length} signed subjects`);
   return manifest;
 }
 
@@ -162,6 +197,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         platforms: { type: 'string' },
         subjects: { type: 'string' },
         'verify-subjects': { type: 'string' },
+        'candidate-proof': { type: 'string' },
       },
     });
     if (values.image) {
@@ -187,6 +223,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         tag: values.tag,
         sha: values.sha,
         repoRoot: resolve(values['repo-root'] ?? '.'),
+        candidateProof: values['candidate-proof']
+          ? JSON.parse(readFileSync(values['candidate-proof'], 'utf8'))
+          : undefined,
       });
   } catch {
     console.error('Release integrity verification refused; no private input was printed');

@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isDirectStableTag } from './lib/release-version.mjs';
 
 const platforms = ['linux/amd64', 'linux/arm64'];
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
@@ -22,9 +23,14 @@ function command(program, args, options = {}) {
 function identity() {
   const e = process.env;
   requireFact(/^[a-f0-9]{40}$/.test(e.GITHUB_SHA ?? ''), 'source revision');
+  const tagged = /^refs\/tags\/v/.test(e.GITHUB_REF ?? '') && e.GITHUB_EVENT_NAME === 'push';
   requireFact(
-    /^refs\/tags\/v/.test(e.GITHUB_REF ?? '') && e.GITHUB_EVENT_NAME === 'push',
-    'tag push'
+    tagged ||
+      (e.GITHUB_REPOSITORY === 'lingkaix/openkit' &&
+        e.GITHUB_REF === 'refs/heads/main' &&
+        ['push', 'workflow_dispatch'].includes(e.GITHUB_EVENT_NAME) &&
+        isDirectStableTag(e.RELEASE_TAG)),
+    'tag push or direct stable main candidate'
   );
   requireFact(
     /^\d+$/.test(e.GITHUB_RUN_ID ?? '') && /^\d+$/.test(e.GITHUB_RUN_ATTEMPT ?? ''),
@@ -33,7 +39,7 @@ function identity() {
   return {
     repository: e.GITHUB_REPOSITORY,
     source: e.GITHUB_SHA,
-    tag: e.GITHUB_REF_NAME,
+    tag: tagged ? e.GITHUB_REF_NAME : e.RELEASE_TAG,
     runId: e.GITHUB_RUN_ID,
     attempt: e.GITHUB_RUN_ATTEMPT,
   };

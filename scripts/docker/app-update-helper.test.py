@@ -744,6 +744,25 @@ class StageTargetTests(unittest.TestCase):
             code = module.main(argv=[str(HELPER_PATH), "--stage-target"], stdin=io.BytesIO(), stdout=stdout, effects=effects)
         return code, json.loads(stdout.getvalue())
 
+    def test_fresh_root_refuses_staging_before_any_effect(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = dict(RELEASE_SOURCE, tag="v0.2.0")
+            path = write_config(root, compatibility={
+                "appliedMigrations": ["core_0000_setup"],
+                "candidate": source,
+                "currentImageId": DIGEST,
+            })
+            effects = RecordingEffects()
+            effects.bind(root)
+            code, result = self.stage_target(module, path, effects)
+            self.assertNotEqual(code, 0)
+            self.assertEqual(result["error"]["code"], "app_update_invalid_request", result)
+            self.assertIn("fresh Data Root", result["error"]["message"])
+            self.assertEqual(effects.calls, [])
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+
     def test_each_filesystem_shortage_refuses_before_the_first_pull(self) -> None:
         module = load_helper()
         required = 3 * 1024 ** 3
@@ -1276,9 +1295,10 @@ console.log(JSON.stringify({ push: workflow.on.push, aggregate, shard, plan: sha
         result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=REPO_ROOT, check=True, capture_output=True, text=True)
         workflow = json.loads(result.stdout)
         condition = "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('[\"l0-l2\",\"release-gate\",\"full\"]'), inputs.gate))"
-        self.assertEqual(workflow["push"]["tags"], ["v*.*.*-*"])
-        self.assertEqual(workflow["shard"]["if"], condition)
-        self.assertEqual(workflow["aggregate"]["if"], f"always() && ({condition})")
+        direct_stable_candidate = "(!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-'))"
+        self.assertIn("v0.[2-9].*", workflow["push"]["tags"])
+        self.assertEqual(workflow["shard"]["if"], f"{direct_stable_candidate} && ({condition})")
+        self.assertEqual(workflow["aggregate"]["if"], f"{direct_stable_candidate} && (always() && ({condition}))")
         self.assertEqual(workflow["aggregate"]["needs"], ["l0-l2-plan", "l0-l2-shards", "l0-l2-coverage"])
         self.assertFalse(any("app-update-helper.test.py" in step.get("run", "") for step in workflow["prSteps"]))
         self.assertEqual(len([shard for shard in workflow["plan"] if shard["kind"] == "root" and shard["id"] == "root"]), 1)
@@ -1395,6 +1415,49 @@ class DoctorReadinessTests(unittest.TestCase):
 
 
 class MigrationJournalTests(unittest.TestCase):
+    def test_v020_fresh_root_refuses_equal_journals_before_receipt_or_effect(self) -> None:
+        module = load_helper()
+        source = dict(RELEASE_SOURCE, tag="v0.2.0")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, effects, _, result = _prepare(module, root, source=source)
+            self.assertEqual(result["error"]["code"], "app_update_invalid_request", result)
+            self.assertIn("fresh Data Root", result["error"]["message"])
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertEqual(effects.calls, [])
+
+            with patch.object(module.AppUpdateHelper, "_refuse_fresh_root_release"):
+                path, effects, _, prepared = _prepare(module, root, source=source)
+            request_id = prepared["requestId"]
+            receipt = root / "receipts" / (request_id + ".json")
+            original = receipt.read_bytes()
+            effects.calls.clear()
+            _, result = invoke(module, {"op": "start", "requestId": request_id, "maintenanceConsent": True}, path, effects)
+            self.assertEqual(result["error"]["code"], "app_update_invalid_request", result)
+            self.assertIn("fresh Data Root", result["error"]["message"])
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertEqual(effects.calls, [])
+
+    def test_queued_apply_refuses_fresh_root_before_receipt_change_or_effect(self) -> None:
+        module = load_helper()
+        source = dict(RELEASE_SOURCE, tag="v0.2.0")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Create the queued receipt using the historical behavior.
+            with patch.object(module.AppUpdateHelper, "_refuse_fresh_root_release"):
+                path, effects, _, prepared = _prepare(module, root, source=source)
+                request_id = prepared["requestId"]
+                _, started = invoke(module, {"op": "start", "requestId": request_id, "maintenanceConsent": True}, path, effects)
+            self.assertEqual(started["stage"], "launching")
+            receipt = root / "receipts" / (request_id + ".json")
+            original = receipt.read_bytes()
+            effects.calls.clear()
+            _, result = invoke(module, {}, path, effects, extra_argv=["--apply", request_id], stdin_bytes=b"")
+            self.assertEqual(result["error"]["code"], "app_update_invalid_request", result)
+            self.assertIn("fresh Data Root", result["error"]["message"])
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertEqual(effects.calls, [])
+
     def test_prepare_refuses_configured_forward_migration_without_app_effect(self) -> None:
         module = load_helper()
         with tempfile.TemporaryDirectory() as tmp:

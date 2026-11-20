@@ -7,6 +7,7 @@ import { premerge, validateMergeSnapshot } from '../scripts/ci-premerge.mjs';
 import {
   admissionIdentities,
   collectAdmission,
+  decisionIssueDigest,
   publishTag,
   reconcileTriage,
 } from '../scripts/release-coordinate.mjs';
@@ -307,6 +308,52 @@ test('admission collection refuses incomplete or stale triage and cannot erase a
       issues: [{ ...snapshot.issues[0], labels: ['release-blocker'] }],
     })
   );
+});
+
+test('direct admission ignores unrelated edits and refuses material issue or disposition changes', () => {
+  const row = {
+    number: 1,
+    state: 'open',
+    applicable: true,
+    blocker: false,
+    owner: 'owner',
+    disposition: 'reviewed',
+    disclosure: 'known',
+  };
+  const issue = {
+    number: 1,
+    state: 'open',
+    title: 'A reviewed finding',
+    bodySha256: 'a'.repeat(64),
+    labels: ['documentation'],
+    updatedAt: '2026-11-20T10:00:00Z',
+  };
+  const snapshot = { complete: true, blockerLabelExists: true, issues: [issue] };
+  const triage = {
+    complete: true,
+    reconciled: true,
+    issues: [row],
+    decisionSha256: decisionIssueDigest(snapshot, [row]),
+  };
+  const recheck = (issues, reviewed = triage) =>
+    reconcileTriage(reviewed, { ...snapshot, issues }, { direct: true });
+  assert.equal(
+    recheck([{ ...issue, labels: ['feature'], updatedAt: '2026-11-20T10:05:00Z' }]).label,
+    'release-blocker'
+  );
+  for (const issues of [
+    [{ ...issue, labels: ['release-blocker'] }],
+    [{ ...issue, bodySha256: 'b'.repeat(64) }],
+    [{ ...issue, state: 'closed' }],
+    [issue, { ...issue, number: 2, labels: ['release-blocker'] }],
+    [],
+  ])
+    assert.throws(() => recheck(issues), /Current complete reviewed issue reconciliation/);
+  for (const changed of [{ applicable: false }, { blocker: true }, { disposition: 'accepted' }])
+    assert.throws(
+      () => recheck([issue], { ...triage, issues: [{ ...row, ...changed }] }),
+      /Current complete reviewed issue reconciliation/
+    );
 });
 
 test('preparation imports existing authored issue rows and generates the two-section factual draft', () => {

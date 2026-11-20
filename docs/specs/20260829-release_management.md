@@ -441,7 +441,7 @@ A first live deployment upgrade counts only after a real deployment observation.
 ## Implementation Gaps
 
 - Exact v0.2.0 storage qualification - The native owner fit, current-authority restore, paired rollback and exact host/build cutover gates await evidence - #619, #766
-- Direct stable publication - Exact-candidate publication proof and the fresh-root assertion still require release tooling changes - #951
+- Direct stable publication - The first production candidate gate and v0.2.0 storage rollout await hosted evidence - #951
 - Separate image signature policy - provenance attestations, SBOMs, and the K/C gate are in force; a separate image signature policy is not - #354
 
 ## Historical First-Stable Prerequisites

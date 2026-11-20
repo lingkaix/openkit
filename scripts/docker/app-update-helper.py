@@ -774,6 +774,7 @@ class AppUpdateHelper:
         raise HelperError("app_update_recovery_required", "The original App did not return to a healthy state.")
 
     def prepare(self, command: Mapping[str, Any]) -> Dict[str, Any]:
+        self._refuse_fresh_root_release(command["source"])
         self._assert_capacity()
         inspect = self._inspect_container(self.config["containerName"])
         current_identity = self._image_identity(str(inspect.get("Image") or ""))
@@ -806,8 +807,15 @@ class AppUpdateHelper:
         self._write_receipt(receipt, exclusive=True)
         return project_status(receipt)
 
+    @staticmethod
+    def _refuse_fresh_root_release(source: Mapping[str, Any]) -> None:
+        """The exact storage cutover is an operator reinstall with paired host recovery."""
+        if source["tag"] == "v0.2.0":
+            raise HelperError("app_update_invalid_request", "Release v0.2.0 requires a fresh Data Root installation and paired predecessor recovery.")
+
     def start(self, request_id: str) -> Dict[str, Any]:
         receipt = self._load_receipt(request_id, missing_code="app_update_recovery_required")
+        self._refuse_fresh_root_release(receipt["source"])
         receipt = self._maybe_mark_unknown(receipt)
         if receipt["stage"] != "prepared":
             return project_status(receipt)
@@ -870,6 +878,7 @@ class AppUpdateHelper:
             receipt = self._load_receipt(request_id, missing_code="app_update_recovery_required")
             if receipt["stage"] in TERMINAL_STAGES:
                 return project_status(receipt)
+            self._refuse_fresh_root_release(receipt["source"])
             if receipt["stage"] not in {"launching", "applying", "verifying", "prepared"}:
                 raise HelperError("app_update_recovery_required", "Receipt lifecycle is contradictory.")
             set_stage(receipt, "applying")
@@ -1104,6 +1113,7 @@ class AppUpdateHelper:
 
     def _acquire_candidate(self, source: Mapping[str, Any]) -> Dict[str, Any]:
         """Pull the verified published digest only after checking host capacity."""
+        self._refuse_fresh_root_release(source)
         verified_commit = self._verify_release_attribution(source)
         self._assert_pull_capacity()
         ref = "%s@%s" % (self.config["imageRepository"], source["appDigest"])

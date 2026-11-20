@@ -50,6 +50,18 @@ async function temp(t) {
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }
+test('release qualification retains the exact stable identity and artifact attribution', () => {
+  const p = validateParams({ ...parameters(), releaseTag: 'v0.2.1' });
+  const b = bundle(p);
+  assert.deepEqual(evaluate(b, p).global, []);
+  assert.equal(p.releaseTag, 'v0.2.1');
+  assert.throws(() => validateParams({ ...p, releaseTag: 'v0.2.01' }), /Release tag must match/);
+  b.attribution.candidateCommit = 'b'.repeat(40);
+  assert.ok(
+    evaluate(b, p).global.includes('candidate/checklist/configuration/instrument attribution')
+  );
+});
+
 test('admits current explicit Workspace Turn ownership without a retired selector', () => {
   const p = parameters(),
     b = bundle(p);
@@ -259,10 +271,11 @@ test('Worker-only prepare makes no browser or remote call', async (t) => {
   await assert.rejects(fs.access(path.join(dir, 'browser-preflight.json')), /ENOENT/);
   assert((await readJson(path.join(dir, 'prepare-complete.json'))).runnerSha256);
   const prepared = await readJson(path.join(dir, 'prepare.json'));
-  assert.equal(
-    prepared.instrumentFiles.find((entry) => entry.file === 'scripts/release-safety.mjs').sha256,
-    sha(await fs.readFile(new URL('../scripts/release-safety.mjs', import.meta.url)))
-  );
+  for (const file of ['scripts/release-safety.mjs', 'scripts/lib/release-version.mjs'])
+    assert.equal(
+      prepared.instrumentFiles.find((entry) => entry.file === file).sha256,
+      sha(await fs.readFile(new URL(`../${file}`, import.meta.url)))
+    );
 });
 for (const failure of ['none', 'open', 'close', 'throw', 'timeout'])
   test(`browser-story preparation retains launch and close evidence: ${failure}`, async (t) => {
@@ -582,10 +595,8 @@ async function pinnedFixture(dir, p) {
       file: name,
       sha256: sha(await fs.readFile(new URL(`./support/${name}`, import.meta.url))),
     });
-  entries.push({
-    file: 'scripts/release-safety.mjs',
-    sha256: sha(await fs.readFile(new URL('../scripts/release-safety.mjs', import.meta.url))),
-  });
+  for (const file of ['scripts/release-safety.mjs', 'scripts/lib/release-version.mjs'])
+    entries.push({ file, sha256: sha(await fs.readFile(new URL(`../${file}`, import.meta.url))) });
   await fs.writeFile(path.join(dir, 'params.json'), raw);
   await save(path.join(dir, 'prepare.json'), {
     parameterSha256: sha(raw),

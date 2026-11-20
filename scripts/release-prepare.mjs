@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { isDirectStableTag } from './lib/release-version.mjs';
 import { parseReleaseNotesInput } from './release-notes.mjs';
 import {
   command,
@@ -77,14 +78,15 @@ export function prepareRelease(
 ) {
   requireRepository(repository);
   if (previous.repository !== repository) throw Error('Previous reconciliation repository differs');
+  const direct = isDirectStableTag(tag);
   if (
-    !/^v\d+\.\d+\.\d+-[a-z0-9][a-z0-9.-]*$/.test(tag ?? '') ||
+    (!direct && !/^v\d+\.\d+\.\d+-[a-z0-9][a-z0-9.-]*$/.test(tag ?? '')) ||
     !/^v\d+\.\d+\.\d+(?:-[a-z0-9][a-z0-9.-]*)?$/.test(previousTag ?? '')
   )
     throw Error('Explicit lowercase release range required');
   const source = commitAt('HEAD', { cwd: root });
   const previousCommit = commitAt(`refs/tags/${previousTag}`, { cwd: root });
-  const baseline = commitAt(baselineSha, { cwd: root });
+  const baseline = direct ? undefined : commitAt(baselineSha, { cwd: root });
   const raw = command(
     'git',
     ['log', '--no-merges', '--format=%H%x00%s', `${previousCommit}..${source}`],
@@ -106,24 +108,47 @@ export function prepareRelease(
   const closedIssues = snapshot.issues.filter(
     (i) => i.state === 'closed' && Date.parse(i.closedAt) >= Date.parse(release.published_at)
   );
+  const exactNotes = `release-notes/${previousTag}.md`;
+  const notesFiles = command(
+    'git',
+    ['ls-tree', '-r', '--name-only', previousCommit, '--', 'release-notes'],
+    { cwd: root }
+  ).split('\n');
+  let notesFile = exactNotes;
+  if (direct && !notesFiles.includes(exactNotes)) {
+    const historic =
+      release.assets
+        ?.map(({ name }) => /^openkit-release-(v0\.1\.[0-9]+-[a-z0-9.-]+)\.json$/u.exec(name)?.[1])
+        .filter((sourceTag) => sourceTag?.startsWith(`${previousTag}-`)) ?? [];
+    if (
+      historic.length !== 1 ||
+      commitAt(`refs/tags/${historic[0]}`, { cwd: root }) !== previousCommit ||
+      !notesFiles.includes(`release-notes/${historic[0]}.md`)
+    )
+      throw Error('Exact published predecessor notes input required');
+    notesFile = `release-notes/${historic[0]}.md`;
+  }
   const knownIssues = parseReleaseNotesInput(
-    command('git', ['show', `${previousCommit}:release-notes/${previousTag}.md`], { cwd: root })
+    command('git', ['show', `${previousCommit}:${notesFile}`], { cwd: root })
   ).split('## Known issues\n')[1];
   const draft = notesDraft({ commits, closedIssues, knownIssues });
   validateShaReferences(draft, { cwd: root });
   const candidate = publicationInputsAt(root, source);
-  const proved = publicationInputsAt(root, baseline);
+  const proved = baseline ? publicationInputsAt(root, baseline) : undefined;
   const facts = {
     repository,
     tag,
     sourceCommit: source,
     previousTag,
     previousCommit,
-    baselineCommit: baseline,
+    ...(baseline ? { baselineCommit: baseline } : {}),
     snapshotSha256: snapshot.sha256,
     commits,
     closedIssues,
-    publicationInputs: { candidate, baseline: proved, equal: candidate.sha256 === proved.sha256 },
+    publicationInputs: {
+      candidate,
+      ...(proved ? { baseline: proved, equal: candidate.sha256 === proved.sha256 } : {}),
+    },
     delta,
     status: 'draft-requires-meaning-and-disposition-review',
   };
@@ -143,7 +168,7 @@ export function prepareRelease(
     sourceCommit: source,
     issues: snapshot.issues.length,
     changedIssues: delta.length,
-    publicationInputsEqual: candidate.sha256 === proved.sha256,
+    ...(proved ? { publicationInputsEqual: candidate.sha256 === proved.sha256 } : {}),
     factsSha256: sha(canonical(facts)),
     status: facts.status,
   };
@@ -170,12 +195,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       );
     else {
       if (
-        ['repository', 'tag', 'previous-tag', 'previous-record', 'baseline-sha', 'output'].some(
+        ['repository', 'tag', 'previous-tag', 'previous-record', 'output'].some(
           (k) => !values[k]
-        )
+        ) ||
+        (!isDirectStableTag(values.tag) && !values['baseline-sha'])
       )
         throw Error(
-          'Release preparation needs repository, tag, previous-tag, previous-record, baseline-sha and a new output directory'
+          'Release preparation needs repository, tag, previous-tag, previous-record and a new output directory. A prerelease also needs baseline-sha.'
         );
       console.log(
         JSON.stringify(

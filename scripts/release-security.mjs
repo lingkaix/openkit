@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { checkImages, checkSecurity } from './check-security.mjs';
 import { imageIdentity, verifyIndex } from './release-candidate.mjs';
-import { parseVersionTag } from './release-preflight.mjs';
+import { isDirectStableTag, parseVersionTag } from './release-preflight.mjs';
 import { readPublishedManifest } from './release-record.mjs';
 import { releaseFindingRecord } from './security-findings.mjs';
 import { readSecurityFindingRegister } from './security-register.mjs';
@@ -86,9 +86,10 @@ export async function scanReleaseIndex({
   // Publishers consume this same digest; they never reselect another candidate after admission.
   writeFileSync(output, `${digest}\n`, { flag: 'wx' });
   publicFindingRecord(publicRecord, findings, register);
+  return findings;
 }
 /** Verify existing publication bytes through the same reader used by stable promotion. */
-export function publishedImages({ directory, repoRoot, repository, sha }) {
+export function publishedImages({ directory, repoRoot, repository, sha, expectedSource }) {
   const manifests = readdirSync(directory).filter((name) =>
     /^openkit-release-v[^/]+\.json$/u.test(name)
   );
@@ -97,9 +98,14 @@ export function publishedImages({ directory, repoRoot, repository, sha }) {
   parseVersionTag(sourceTag);
   const sourceCommit = run(
     'git',
-    ['rev-parse', '--verify', '--end-of-options', `${sourceTag}^{commit}`],
+    ['rev-parse', '--verify', '--end-of-options', `${expectedSource ?? sourceTag}^{commit}`],
     repoRoot
   );
+  if (
+    expectedSource !== undefined &&
+    (!isDirectStableTag(sourceTag) || sourceCommit !== expectedSource)
+  )
+    throw Error('Candidate source identity mismatch');
   if (!/^[a-f0-9]{40}$/u.test(sourceCommit) || (sha !== undefined && sha !== sourceCommit))
     throw Error('Published source commit mismatch');
   const temporary = mkdtempSync(join(tmpdir(), 'openkit-publication-security-'));

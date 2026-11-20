@@ -9,8 +9,10 @@ import { observePublication, validateRun } from '../scripts/release-observe.mjs'
 import { parseVersionTag } from '../scripts/release-preflight.mjs';
 import {
   checkPublication as actualCheck,
+  directCandidateJobs,
   publicationInputsAt,
 } from '../scripts/release-publication-check.mjs';
+import { canonical, sha as digest } from '../scripts/release-safety.mjs';
 
 /** Actual local Git objects let false, missing and changed byte claims fail independently of fixtures. */
 function repository({ moved = false } = {}) {
@@ -777,6 +779,98 @@ test('complete observed main-push evidence passes admission without relabeling i
 
 test('first covered prerelease passes a complete mechanical publication check', () => {
   assert.equal(checkPublication(evidence(), { now }).tag, 'v0.1.0-rc.6');
+});
+
+test('v0.2.0 is eligible only with all reviewed qualification reports on the exact C and predecessor', () => {
+  const r = repository();
+  const input = evidence();
+  input.tag = 'v0.2.0';
+  const assessment = {
+    migrationFree: false,
+    configurationCompatible: false,
+    retainedDataCompatible: false,
+    recovery: 'fresh-root-paired-restore',
+    previousAppImageId: `sha256:${'a'.repeat(64)}`,
+    provenance: 'reviewed-pair',
+  };
+  const notes = path.join(r.root, 'release-notes');
+  const assessmentFile = path.join(notes, `${input.tag}.manifest.json`);
+  mkdirSync(notes);
+  writeFileSync(assessmentFile, JSON.stringify(assessment));
+  r.git('add', '.');
+  r.git('commit', '-m', 'reviewed recovery assessment');
+  const source = r.git('rev-parse', 'HEAD');
+  input.sha = input.review.sha = input.main.sha = input.candidate.sha = source;
+  input.grant.exactGrant = `${input.tag}@${source}:1:1`;
+  input.publicationInputs = input.grant.publicationInputs = publicationInputsAt(
+    r.root,
+    source
+  ).sha256;
+  input.candidate.jobs.push(
+    ...directCandidateJobs.map((name) => ({ name, id: 2, conclusion: 'success' }))
+  );
+  input.flags = { prerelease: false, githubLatest: true, ghcrLatest: true };
+  const report = (evidenceSha256) => ({
+    sourceCommit: source,
+    conclusion: 'success',
+    evidenceSha256,
+  });
+  const qualification = {
+    assessmentSha256: digest(canonical(assessment)),
+    workerReadiness: report('1'.repeat(64)),
+    storageSchema: report('2'.repeat(64)),
+    storageDegraded: report('3'.repeat(64)),
+    pairedRestore: { ...report('4'.repeat(64)), previousAppImageId: assessment.previousAppImageId },
+  };
+  const proof = {
+    tag: input.tag,
+    repository: input.repository,
+    sha: source,
+    runId: 1,
+    attempt: 1,
+    inputs: input.publicationInputs,
+    checksums: hash,
+    validUntil: input.validUntil,
+  };
+  const admit = (value) =>
+    actualCheck(
+      { ...input, directProof: { ...proof, qualification: value } },
+      { now, repoRoot: r.root }
+    );
+  assert.equal(admit(qualification).status, 'eligible');
+  assert.throws(() => admit(undefined), /candidate qualification/u);
+  for (const name of ['workerReadiness', 'storageSchema', 'storageDegraded', 'pairedRestore']) {
+    const missing = { ...qualification };
+    delete missing[name];
+    assert.throws(() => admit(missing), /candidate qualification/u, name);
+    assert.throws(
+      () => admit({ ...qualification, [name]: { ...qualification[name], sourceCommit: r.head } }),
+      /candidate qualification refused/u,
+      name
+    );
+    assert.throws(
+      () => admit({ ...qualification, [name]: { ...qualification[name], conclusion: 'failure' } }),
+      /candidate qualification refused/u,
+      name
+    );
+  }
+  assert.throws(
+    () =>
+      admit({
+        ...qualification,
+        pairedRestore: {
+          ...qualification.pairedRestore,
+          previousAppImageId: `sha256:${'b'.repeat(64)}`,
+        },
+      }),
+    /candidate qualification refused: pairedRestore/u
+  );
+  const changedAssessment = { ...assessment, configurationCompatible: true };
+  writeFileSync(assessmentFile, JSON.stringify(changedAssessment));
+  assert.throws(
+    () => admit({ ...qualification, assessmentSha256: digest(canonical(changedAssessment)) }),
+    /reviewed recovery assessment required/u
+  );
 });
 test('the successor prerelease grant admits 0.1.x candidates with an equal-input scratch baseline', () => {
   const input = scratchEvidence();

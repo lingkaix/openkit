@@ -433,6 +433,12 @@ test('forward-migration preflight checks the declared ledger against the publish
     repository,
     tag: previousTag,
     sourceCommit,
+    assertions: {
+      migrationFree: true,
+      configurationCompatible: true,
+      retainedDataCompatible: true,
+      recovery: 'previous-image-compatible',
+    },
     images: [
       {
         id: 'app',
@@ -564,6 +570,94 @@ test('forward-migration preflight checks the declared ledger against the publish
   rmSync(join(drizzle, 'workspace', '0001_add.sql'));
   commit('candidate missing the declared SQL');
   assert.throws(() => validateReleasePreflight(options, deps), /SQL changes differ/);
+});
+
+test('the predecessor reader shares the closed manifest transition and attachment rules', async () => {
+  const repository = 'lingkaix/openkit';
+  const sourceCommit = 'd'.repeat(40);
+  const appImageId = `sha256:${'a'.repeat(64)}`;
+  const digest = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const appPlatform = JSON.stringify({ config: { digest: appImageId } });
+  const platformDigest = digest(appPlatform);
+  const compatible = {
+    migrationFree: true,
+    configurationCompatible: true,
+    retainedDataCompatible: true,
+    recovery: 'previous-image-compatible',
+  };
+  const freshRoot = {
+    migrationFree: false,
+    configurationCompatible: false,
+    retainedDataCompatible: false,
+    recovery: 'fresh-root-paired-restore',
+  };
+  const observe = (tag, assertions, attachedTag = tag) => {
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository,
+      tag: attachedTag,
+      sourceCommit,
+      assertions,
+      images: [
+        {
+          id: 'app',
+          image: 'ghcr.io/lingkaix/openkit-app',
+          platforms: [{ platform: 'linux/amd64', digest: platformDigest }],
+        },
+      ],
+    });
+    const api = `https://api.github.com/repos/${repository}`;
+    const responses = new Map([
+      [
+        `${api}/releases?per_page=100&page=1`,
+        JSON.stringify([
+          {
+            tag_name: tag,
+            published_at: '2026-11-20T12:00:00Z',
+            draft: false,
+            assets: [
+              { id: 42, name: `openkit-release-${attachedTag}.json`, digest: digest(manifest) },
+            ],
+          },
+        ]),
+      ],
+      [`${api}/releases/assets/42`, manifest],
+      [
+        `${api}/git/ref/tags/${tag}`,
+        JSON.stringify({ object: { type: 'commit', sha: sourceCommit } }),
+      ],
+      [
+        'https://ghcr.io/token?service=ghcr.io&scope=repository%3Alingkaix%2Fopenkit-app%3Apull',
+        JSON.stringify({ token: 'synthetic-read-token' }),
+      ],
+      [`https://ghcr.io/v2/lingkaix/openkit-app/manifests/${platformDigest}`, appPlatform],
+    ]);
+    return observePublishedPredecessor(repository, 'v0.2.2', async (url) => {
+      assert.ok(responses.has(url), 'unexpected predecessor request');
+      return new Response(responses.get(url));
+    });
+  };
+
+  for (const [tag, assertions, attachedTag] of [
+    ['v0.2.0', freshRoot],
+    ['v0.2.1', compatible],
+    ['v0.1.1', compatible, 'v0.1.1-rc.1'],
+  ])
+    assert.deepEqual(await observe(tag, assertions, attachedTag), {
+      tag,
+      sourceCommit,
+      appImageId,
+    });
+  for (const [tag, assertions] of [
+    ['v0.2.1', freshRoot],
+    ['v0.2.0', compatible],
+    ['v0.2.1', { ...compatible, recovery: 'unknown' }],
+  ])
+    await assert.rejects(observe(tag, assertions), /predecessor recovery transition refused/u);
+  await assert.rejects(
+    observe('v0.2.1', compatible, 'v0.2.1-rc.1'),
+    /predecessor manifest attachment required/u
+  );
 });
 
 /**

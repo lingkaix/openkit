@@ -7,7 +7,18 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { findReusableJob } from './release-ci-reuse.mjs';
 import { parseReleaseNotesInput } from './release-notes.mjs';
+import { isDirectStableTag, parseVersionTag } from './release-preflight.mjs';
 import { publicationInputsAt } from './release-publication-check.mjs';
+
+/** Preserve historical identity checks for previous 0.x releases and admit direct stable candidates. */
+function candidateTag(tag) {
+  if (isDirectStableTag(tag)) return true;
+  try {
+    return parseVersionTag(tag).includes('-');
+  } catch {
+    return false;
+  }
+}
 
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 /** Refuse before a candidate can influence a release identity. */
@@ -20,10 +31,7 @@ export function validateCandidate(record, { repository, sha, tag, inputs, proof,
   const coordinate = `ghcr.io/${repository.split('/')[0].toLowerCase()}/${image.repository}`;
   requireFact(record?.schemaVersion === 1 && record.repository === repository, 'repository');
   requireFact(/^[a-f0-9]{40}$/.test(sha) && record.sha === sha, 'exact P');
-  requireFact(
-    /^v\d+\.\d+\.\d+-[a-z0-9][a-z0-9.-]*$/.test(tag) && record.tag === tag,
-    'intended prerelease'
-  );
+  requireFact(candidateTag(tag) && record.tag === tag, 'intended release tag');
   requireFact(/^[a-f0-9]{64}$/.test(inputs) && record.inputs === inputs, 'proved inputs');
   requireFact(
     proof &&
@@ -119,15 +127,20 @@ function output(values) {
 }
 
 /** Resolve the intended tag from an explicit dispatch or the single committed untagged notes input. */
-export function selectTag({ explicit = '', notes, tags }) {
+export function selectTag({ explicit = '', notes, tags, repository }) {
   const candidates = notes.filter(
-    (n) => /^v\d+\.\d+\.\d+-[a-z0-9][a-z0-9.-]*$/.test(n) && !tags.includes(n)
+    (tag) =>
+      candidateTag(tag) &&
+      !tags.includes(tag) &&
+      (repository !== 'lingkaix/openkit' ||
+        isDirectStableTag(tag) ||
+        /^v[1-9]\d*\.0\.0-/u.test(tag))
   );
   if (explicit) {
     requireFact(candidates.includes(explicit), 'intended tag needs committed unused notes');
     return explicit;
   }
-  requireFact(candidates.length <= 1, 'ambiguous intended prerelease');
+  requireFact(candidates.length <= 1, 'ambiguous intended release tag');
   return candidates[0] ?? '';
 }
 
@@ -151,7 +164,7 @@ export function candidateMatrix(images) {
 
 /** Preserve release OCI labels and supply the same immutable identity to App and Worker builds. */
 export function imageIdentity({ repository, sha, tag, created, image }) {
-  requireFact(/^v\d+\.\d+\.\d+-[a-z0-9][a-z0-9.-]*$/.test(tag), 'prerelease identity');
+  requireFact(candidateTag(tag), 'candidate tag identity');
   const labels = [
     `org.opencontainers.image.title=${image.repository}`,
     `org.opencontainers.image.description=OpenKit ${image.id} release image`,
@@ -327,6 +340,7 @@ async function main() {
   if (action === 'select') {
     const tag = selectTag({
       explicit: values.tag,
+      repository: process.env.GITHUB_REPOSITORY,
       notes: readdirSync('release-notes')
         .filter((n) => n.endsWith('.md'))
         .map((n) => n.slice(0, -3)),
@@ -335,6 +349,7 @@ async function main() {
     if (tag) parseReleaseNotesInput(readFileSync(`release-notes/${tag}.md`, 'utf8'));
     output({
       enabled: String(Boolean(tag)),
+      direct: String(isDirectStableTag(tag)),
       tag,
       matrix: candidateMatrix(images),
     });

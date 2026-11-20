@@ -59,9 +59,21 @@ For v0.2.0, retain the two exact-C fitness results from [Storage Cutover](../spe
 
 Inventory the exact source and six platform digests after registry admission. COORD checks the scoped register, sets `OPENKIT_SECURITY_FINDINGS` as a secret in the protected candidate environment and approves its waiting job. Retain its successful exact-C run, attempt and read-only registry observation.
 
+Configure the `candidate-release-security` environment with required COORD review and restrict deployments to main. Set the checked `OPENKIT_SECURITY_FINDINGS` secret in that environment. Its JSON export accepts the existing compressed transport and has `schemaVersion: 1`, `scope`, `validUntil`, `register`, and `qualification`. The scope contains `repository`, `tag`, `sha`, `runId`, `attempt`, and `images`. Each image contains `id`, its index `digest`, and `platforms` with the exact platform and digest. Print the exact scope from the candidate run's registry-admission artifact with `node scripts/release-direct.mjs scope <registry-admission.json>`. Set `validUntil` to a UTC time within eight hours. The published proof expires sooner if an admitted finding's review expires first. The nested register retains its existing schema.
+
+COORD reads the owners' reports before approval and records `workerReadiness` in `qualification`. Confirm that the Worker report covers the selected candidate build and digests. Each report entry records its observed `sourceCommit`, `conclusion: success` and `evidenceSha256` over the original report bytes as lowercase hex. For v0.2.0, also record the A10 `storageSchema`, `storageDegraded` and `pairedRestore` reports on C. Record the restore's observed `previousAppImageId` in `pairedRestore` and the SHA-256 of the canonical reviewed assessment JSON in `qualification.assessmentSha256`. Use `sha(canonical(facts))` from `scripts/release-safety.mjs` over the parsed `release-notes/v0.2.0.manifest.json` on C. Retain the original reports privately. The candidate proof carries only the qualification results and evidence digests. A missing or failed result, a different source or a different restore predecessor refuses admission.
+
 Obtain the engineer’s exact authorization for the stable tag, C and candidate attempt, and confirm unused immutable identities or the permitted retry. Keep both complete issue observations privately. Compare each against the same reviewed decision projection. Ignore unrelated label and comment timestamp changes. Refuse missing pages, new applicable blockers and changed reviewed dispositions. Rerun offline admission with the current evidence just before tagging.
 
 Push the authorized tag on C. The tag refuses missing or stale candidate evidence and has no fallback or fresh L0–L3 runs. It checks identity and authority, signs under the stable tag, publishes the immutable candidate payload, then verifies exact signatures, attachments and all Latest aliases through independent readback. Preserve an existing publication. A permitted retry uses the original C, current candidate proof and matching immutable identities.
+
+### Direct Stable Admission Commands
+
+Use `release-prepare.mjs` with the previous stable tag, private prior issue snapshot, and new private output directory. The previous stable release may retain its original prerelease notes and manifest names. Preparation resolves that published source before carrying forward known issues.
+
+Use the same existing admission input fields for exact C, review, asset set, publication fingerprint, time window, flags and triage. Set `grant.exactGrant` and the repository variable `OPENKIT_STABLE_RELEASE` to the approved `<tag>@<sha>:<run-id>:<attempt>`. The grant's `publicationInputs` and the evidence's `publicationInputs` are the exact C fingerprint. Use true for `flags.githubLatest` and `flags.ghcrLatest`, and false for `flags.prerelease`.
+
+Calculate `triage.decisionSha256` with `node scripts/release-coordinate.mjs --input <private-admission.json> --issue-review-hash <private-snapshot.json>` after reviewing applicability and disposition. Run `node scripts/release-coordinate.mjs --input <private-admission.json> --output <new-private-directory>` to check eligibility. The checker reads the configured grant through the repository Variables API. The admission reader needs Variables read access. [GitHub Actions variables](https://docs.github.com/en/rest/actions/variables#get-a-repository-variable) The authorized `--publish` invocation repeats the complete check before pushing the tag and retains its fresh issue snapshot. Supply a read-only `GH_TOKEN` for local predecessor observation where anonymous GitHub quota is unavailable. The predecessor reader uses that token only for the production repository's GitHub API.
 
 ### Rollout And Closeout
 
@@ -81,6 +93,7 @@ Measure elapsed wall time from the recorded P cut to stable publication. Record 
 | Exact source and image inventory with COORD secret check | Stale, missing or wrongly scoped security decisions | Keep once for the candidate |
 | Complete fresh issue observation and reviewed dispositions | An in-scope blocker or material disposition change slips through | Keep and compare decision fields |
 | Source preflight, predecessor evidence, asset assembly and native qualification | Invalid retention claim, wrong host build or incomplete bundle | Keep |
+| Exact-C owner qualification and matched disposable restore | Untested storage cutover, wrong recovery image or unsupported Worker readiness claim | Keep |
 | Read-only registry admission; live immutable digest and alias checks | Collision, partial identity or incorrect Latest | Keep |
 | Publication dry-run and subject validation | Candidate inputs fail only after the tag is pushed | Keep in exact candidate gate |
 | Tag signing, independent asset download, checksum and alias readback | Incorrect or incomplete published bytes or provenance | Keep |

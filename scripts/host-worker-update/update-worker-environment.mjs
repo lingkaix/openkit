@@ -8,7 +8,7 @@ import {
   PrepareWorkerEnvironmentResponseSchema,
   WorkerEnvironmentPrepareInputSchema,
 } from '@openkit/app-api-schemas';
-import { createReleaseManifest } from '../release-record.mjs';
+import { validateReleaseManifest } from '../release-record.mjs';
 import { canonical, noSecrets, once, save } from '../release-safety.mjs';
 import {
   admitArchiveAttribution,
@@ -35,18 +35,7 @@ function admit(schema, value, reason) {
 function releaseSelection(p) {
   requireFact(p.manifest?.schemaVersion === 1, 'unsupported release manifest');
   const m = p.manifest;
-  const manifest = createReleaseManifest({
-    repository: m.repository,
-    tag: m.tag,
-    sha: m.sourceCommit,
-    images: m.images.map((image) => ({
-      ...image,
-      prerelease: true,
-      tags: [m.tag, m.tag.slice(1), `sha-${m.sourceCommit.slice(0, 12)}`],
-    })),
-    checksums: m.assets.map((asset) => `${asset.sha256}  ${asset.name}`).join('\n'),
-    assertions: m.assertions,
-  });
+  const manifest = validateReleaseManifest(m);
   requireFact(['linux/amd64', 'linux/arm64'].includes(p.platform), 'unsupported platform');
   const image = manifest.images.find((item) => item.id === 'worker-runtimes');
   const child = image?.platforms.find((item) => item.platform === p.platform);

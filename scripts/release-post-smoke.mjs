@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-/** Observe a published App on the development machine without replacing deployment, Worker or L6 evidence. */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+/** Observe a published App on the development machine without replacing deployment, Worker or L6 evidence. */
+import { parseVersionTag } from './lib/release-version.mjs';
 import { verifyOperationsSkillArchive } from './package-release-assets.mjs';
 import { command, commitAt, observePublication, requireRepository } from './release-observe.mjs';
 import { canonical, noSecrets, sha } from './release-safety.mjs';
@@ -154,7 +155,7 @@ export function verifyLocalIdentity({ published, local, build, repository, tag, 
   const expected = published.platforms?.filter((p) => p.platform === local.platform);
   if (
     published.id !== 'app' ||
-    published.prerelease !== true ||
+    published.prerelease !== parseVersionTag(tag).includes('-') ||
     !/^ghcr\.io\/[a-z0-9._/-]+$/.test(published.image ?? '') ||
     !/^sha256:[a-f0-9]{64}$/.test(published.digest ?? '') ||
     !Array.isArray(expected) ||
@@ -215,8 +216,8 @@ export function postPublicationSmoke(
   target = localTarget(target);
   noSecrets(params);
   requireRepository(params.repository);
+  parseVersionTag(params.tag);
   if (
-    !/^v\d+\.\d+\.\d+-[a-z0-9][a-z0-9.-]*$/.test(params.tag ?? '') ||
     !/^[a-f0-9]{40}$/.test(params.sha ?? '') ||
     !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(params.container ?? '') ||
     !Array.isArray(params.reads) ||
@@ -224,7 +225,7 @@ export function postPublicationSmoke(
     params.reads.length > 8
   )
     throw Error(
-      'Exact published prerelease, local container and one to eight retained reads required'
+      'Exact published release, local container and one to eight retained reads required'
     );
   if (commitAt('HEAD') !== params.sha)
     throw Error('Use the reviewed published checkout for smoke verification');

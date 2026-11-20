@@ -40,23 +40,29 @@ function tagOnly(workflow, job) {
     !triggers.push.branches
   )
     return;
+  const condition = String(job.if);
   assert.match(
-    String(job.if),
-    /github\.event_name\s*==\s*['"]push['"]/u,
-    'Signing must require a push'
+    condition,
+    /^(?:always\(\) && !cancelled\(\) && )?\(?github\.event_name == 'push' && startsWith\(github\.ref, 'refs\/tags\/'\)\)?(?: && |$)/u,
+    'Signing must require a tag push before either release lane can proceed'
   );
-  assert.match(
-    String(job.if),
-    /startsWith\(github\.ref,\s*['"]refs\/tags\//u,
-    'Signing must require a release tag'
-  );
-  assert.doesNotMatch(String(job.if), /\|\|/u, 'Signing must not admit a non-tag alternative');
+  let depth = 0;
+  for (const char of condition) {
+    if (char === '(') depth++;
+    else if (char === ')') depth--;
+    else if (char === '|') assert.ok(depth > 0, 'Signing must not admit a non-tag alternative');
+  }
 }
 
 const attests = (step) => /^actions\/attest(?:-build-provenance)?@/u.test(step.uses ?? '');
 
 test('tag publication declares SBOM production and attachment/checksum delivery for every subject family', () => {
   const producers = Object.entries(ci.jobs).filter(([, job]) => invokes(job, 'release-sbom'));
+  const directProof = ci.jobs['candidate-publication'];
+  assert.ok(invokes(directProof, 'release-direct'));
+  assert.deepEqual(directProof.permissions, { contents: 'read', packages: 'read' });
+  assert.match(readFileSync('scripts/release-direct.mjs', 'utf8'), /await generateReleaseSboms\(/u);
+  assert.match(declared(ci.jobs['github-release']), /direct-release-assets/u);
   assert.ok(producers.length > 0, 'Tag path must invoke the SBOM producer');
   for (const [id, job] of producers) {
     tagOnly(ci, job);
@@ -186,12 +192,14 @@ test('image provenance is produced and verified before any publisher assigns a r
   );
   assert.ok(signing > 0 && verify > signing, 'Verification must follow the candidate attestation');
   assert.ok(upstream(ci, 'release-security', 'attest-release-images'));
-  for (const [id, job] of Object.entries(ci.jobs).filter(([, job]) =>
-    /imagetools create/u.test(commands(job))
-  ))
+  const publishers = Object.entries(ci.jobs)
+    .filter(([, job]) =>
+      /imagetools create|release-image-state\.mjs --publish-digest/u.test(commands(job))
+    )
+    .map(([name]) => name);
+  assert.deepEqual(publishers.sort(), ['publish-app-image', 'publish-container-images']);
+  for (const id of publishers)
     assert.ok(upstream(ci, 'attest-release-images', id), `${id} tags before provenance`);
-  assert.ok(upstream(ci, 'attest-release-images', 'publish-app-image'));
-  assert.ok(upstream(ci, 'attest-release-images', 'publish-container-images'));
 });
 
 test('terminal release verification invokes integrity checks for the complete published release', () => {

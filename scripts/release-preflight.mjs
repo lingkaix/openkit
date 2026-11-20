@@ -6,8 +6,11 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { checkWorkflows } from './check-workflows.mjs';
 import { NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
+import { isDirectStableTag, parseVersionTag } from './lib/release-version.mjs';
 import { readReleaseNotesInput } from './release-notes.mjs';
 import { canonical, sha as digestHex, noSecrets } from './release-safety.mjs';
+
+export { isDirectStableTag, parseVersionTag };
 
 const drizzleScopes = ['app', 'core', 'user', 'workspace'];
 const drizzleRoot = 'apps/nanocore/drizzle';
@@ -33,6 +36,8 @@ const hasExactKeys = (value, keys) =>
  * @param {string} [input.promotionSourceTag] Published prerelease whose bytes a stable tag promotes.
  * @param {string} [input.repository] Exact publication repository.
  * @param {string} [input.authorization] Engineer-authorized stable tag and commit, joined with @.
+ * @param {'candidate'|'publish'} [input.directStable] Explicit direct-stable preflight phase.
+ * @param {boolean} [input.tagIdentityOnly] Validate a direct stable tag before reading its complete candidate proof.
  * @param {object} [observations] Transport adapter for deterministic verification.
  * @param {Function} [observations.predecessor] Reader for the published predecessor.
  * @returns {{ version: string, releaseImages: string[], promotionSourceTag?: string }} Release summary.
@@ -46,12 +51,31 @@ export function validateReleasePreflight(input, { predecessor = readPublishedPre
   }
   if (input.promotionSourceTag && version.includes('-'))
     throw Error('Release Management: a promotion target must be stable');
-  if (!version.includes('-') && (input.requirePrerelease || input.promotionSourceTag)) {
+  if (input.directStable) {
+    if (
+      !['candidate', 'publish'].includes(input.directStable) ||
+      input.repository !== 'lingkaix/openkit' ||
+      !isDirectStableTag(input.tag) ||
+      !commitSha.test(input.sha ?? '') ||
+      input.promotionSourceTag
+    )
+      throw Error(
+        'Release Management: direct stable publication needs exact tag and source authority'
+      );
+    if (input.directStable === 'publish')
+      directStableGrant(input.tag, input.sha, input.authorization);
+  } else if (!version.includes('-') && (input.requirePrerelease || input.promotionSourceTag)) {
     if (!input.promotionSourceTag)
       throw new Error(
         `Release tag must identify a prerelease until stable-release blockers close: ${input.tag}`
       );
     validateStablePromotionIdentity({ ...input, sourceTag: input.promotionSourceTag });
+  }
+
+  if (input.tagIdentityOnly) {
+    if (input.directStable !== 'publish' || !input.requireMain)
+      throw Error('Tag identity check requires a direct stable publication on main');
+    return { version, releaseImages: [] };
   }
 
   if (input.requireReleaseManifestAssessment) {
@@ -108,23 +132,20 @@ export function validateStablePromotionIdentity({
     );
 }
 
-/**
- * Parses a release tag into the product version value.
- *
- * @param {string} tag Tag name.
- * @returns {string} Version without leading v.
- */
-export function parseVersionTag(tag) {
-  const match =
-    /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9a-z-]*[a-z-][0-9a-z-]*)(?:\.(?:0|[1-9]\d*|[0-9a-z-]*[a-z-][0-9a-z-]*))*)?)$/.exec(
-      tag
-    );
-  if (!match) {
-    throw new Error(
-      `Release tag must match v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-<pre>: ${tag}`
-    );
-  }
-  return match[1];
+/** The grant selects one source, stable tag and reviewed Actions attempt. */
+export function directStableGrant(tag, source, authorization) {
+  const prefix = `${tag}@${source}:`;
+  const match = /^[1-9]\d*:[1-9]\d*$/u.exec(authorization?.slice(prefix.length) ?? '');
+  if (
+    !isDirectStableTag(tag) ||
+    !/^[a-f0-9]{40}$/u.test(source) ||
+    !authorization?.startsWith(prefix) ||
+    !match
+  )
+    throw Error('Exact stable tag, source and candidate attempt grant required');
+  const [runId, attempt] = match[0].split(':').map(Number);
+  if (![runId, attempt].every(Number.isSafeInteger)) throw Error('Invalid candidate attempt');
+  return { runId, attempt };
 }
 
 /** Verify the closed forward-migration assertion before it can be included in a manifest. */
@@ -182,8 +203,16 @@ export function compatibleTransitionFacts(facts) {
   );
 }
 
-/** Before v0.1.0, a prerelease may also disclose a reset without retained-data continuity. */
+/** Admit the exact cutover separately from compatible updates and historical prerelease resets. */
 export function admittedTransitionFacts(facts, tag) {
+  if (tag === 'v0.2.0')
+    return (
+      facts?.recovery === 'fresh-root-paired-restore' &&
+      facts.migrationFree === false &&
+      typeof facts.configurationCompatible === 'boolean' &&
+      facts.retainedDataCompatible === false &&
+      !Object.hasOwn(facts, 'forwardMigration')
+    );
   if (compatibleTransitionFacts(facts)) return facts.forwardMigration?.previousTag !== tag;
   const [core, prerelease] = parseVersionTag(tag).split(/-(.*)/su);
   const [major, minor, patch] = core.split('.').map(Number);
@@ -223,12 +252,14 @@ export async function observePublishedPredecessor(repository, sourceTag, request
   if (!githubRepository.test(repository)) throw Error('GitHub release repository required');
   parseVersionTag(sourceTag);
   const [owner] = repository.toLowerCase().split('/');
-  // A hosted read-only job may read its own private packages. Local public observation is anonymous.
-  const token =
+  // Private package access belongs only to the hosted read-only job for that repository.
+  const hostedToken =
     process.env.GITHUB_ACTIONS === 'true' && process.env.GITHUB_REPOSITORY === repository
       ? process.env.GH_TOKEN
       : undefined;
-  const githubHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+  const apiToken =
+    hostedToken ?? (repository === 'lingkaix/openkit' ? process.env.GH_TOKEN : undefined);
+  const githubHeaders = apiToken ? { Authorization: `Bearer ${apiToken}` } : {};
   const read = async (url, headers = {}, redirect = 'error') => {
     const response = await request(url, { headers, redirect, signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw Error('Published release evidence unavailable');
@@ -272,7 +303,10 @@ export async function observePublishedPredecessor(repository, sourceTag, request
   const manifestTag = (name) => /^openkit-release-(v[0-9a-z.-]+)\.json$/u.exec(name)?.[1];
   const attachments = previous.assets?.filter(({ name }) => {
     const attachedTag = manifestTag(name);
-    return attachedTag === tag || (!prerelease && attachedTag?.startsWith(`${tag}-`));
+    return (
+      attachedTag === tag ||
+      (!prerelease && !isDirectStableTag(tag) && attachedTag?.startsWith(`${tag}-`))
+    );
   });
   const asset = attachments?.[0];
   if (attachments?.length !== 1 || !Number.isSafeInteger(asset.id) || !sha256.test(asset.digest))
@@ -303,6 +337,8 @@ export async function observePublishedPredecessor(repository, sourceTag, request
     !sha256.test(platformDigest ?? '')
   )
     throw Error('Published predecessor App manifest binding differs');
+  if (!admittedTransitionFacts(manifest.assertions, attachedTag))
+    throw Error('Published predecessor recovery transition refused');
 
   let ref = JSON.parse(await read(`${api}/git/ref/tags/${tag}`, githubHeaders)).object;
   for (let depth = 0; depth < 8 && ref?.type === 'tag' && commitSha.test(ref.sha); depth++)
@@ -312,8 +348,8 @@ export async function observePublishedPredecessor(repository, sourceTag, request
 
   const actor = process.env.GITHUB_ACTOR;
   const registryAuth =
-    token && owner !== 'lingkaix'
-      ? { Authorization: `Basic ${Buffer.from(`${actor}:${token}`).toString('base64')}` }
+    hostedToken && owner !== 'lingkaix'
+      ? { Authorization: `Basic ${Buffer.from(`${actor}:${hostedToken}`).toString('base64')}` }
       : {};
   const scope = encodeURIComponent(`repository:${image}:pull`);
   const ghcr = 'https://ghcr.io';
@@ -425,13 +461,23 @@ function checkMigrationLedgers(repoRoot, tag, sha, predecessor, migration) {
 }
 
 /** Admit only reviewed compatibility facts; source and published digest are joined by the producer. */
-export function readReleaseAssessment(repoRoot, tag) {
-  if (!parseVersionTag(tag).includes('-'))
-    throw Error('Release Management: assessment requires a prerelease tag');
-  const file = join(repoRoot, 'release-notes', `${tag}.manifest.json`);
-  if (!lstatSync(file).isFile())
-    throw Error('Release Management: assessment must be a regular reviewed file');
-  const facts = JSON.parse(readFileSync(file, 'utf8'));
+export function readReleaseAssessment(repoRoot, tag, sourceCommit) {
+  if (!parseVersionTag(tag).includes('-') && !isDirectStableTag(tag))
+    throw Error('Release Management: assessment requires a prerelease or direct stable tag');
+  const relative = `release-notes/${tag}.manifest.json`;
+  const file = join(repoRoot, relative);
+  const git = (...args) =>
+    spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', timeout: 10000 });
+  const regular = sourceCommit
+    ? commitSha.test(sourceCommit) &&
+      /^100(?:644|755) blob [a-f0-9]{40}\t/u.test(
+        git('ls-tree', sourceCommit, '--', relative).stdout
+      )
+    : lstatSync(file).isFile();
+  if (!regular) throw Error('Release Management: assessment must be a regular reviewed file');
+  const facts = JSON.parse(
+    sourceCommit ? git('show', `${sourceCommit}:${relative}`).stdout : readFileSync(file, 'utf8')
+  );
   noSecrets(facts);
   if (
     !hasExactKeys(facts, [
@@ -451,6 +497,39 @@ export function readReleaseAssessment(repoRoot, tag) {
       'Release Management: reviewed compatibility/recovery assessment is missing or unassessed'
     );
   return facts;
+}
+
+/** Require the independently reviewed reports on C. The reset's restore must use its reviewed predecessor. */
+export function validateCandidateQualification(qualification, { tag, source, assessment }) {
+  const reset = tag === 'v0.2.0';
+  const reports = [
+    'workerReadiness',
+    ...(reset ? ['storageSchema', 'storageDegraded', 'pairedRestore'] : []),
+  ];
+  if (
+    !hasExactKeys(qualification, [...reports, ...(reset ? ['assessmentSha256'] : [])]) ||
+    (reset &&
+      (!admittedTransitionFacts(assessment, tag) ||
+        qualification.assessmentSha256 !== digestHex(canonical(assessment))))
+  )
+    throw Error('Exact candidate qualification and reviewed recovery assessment required');
+  for (const name of reports) {
+    const report = qualification[name];
+    const restore = name === 'pairedRestore';
+    if (
+      !hasExactKeys(report, [
+        'sourceCommit',
+        'conclusion',
+        'evidenceSha256',
+        ...(restore ? ['previousAppImageId'] : []),
+      ]) ||
+      report.sourceCommit !== source ||
+      report.conclusion !== 'success' ||
+      !/^[a-f0-9]{64}$/u.test(report.evidenceSha256 ?? '') ||
+      (restore && report.previousAppImageId !== assessment.previousAppImageId)
+    )
+      throw Error(`Exact candidate qualification refused: ${name}`);
+  }
 }
 
 /**
@@ -991,7 +1070,7 @@ function parseArgs(argv) {
       throw new Error(`Unexpected argument: ${arg}`);
     }
     const key = arg.slice(2);
-    if (key === 'require-main') {
+    if (['require-main', 'candidate', 'tag-identity-only'].includes(key)) {
       args[key] = true;
     } else {
       const value = argv[++index];
@@ -1004,26 +1083,51 @@ function parseArgs(argv) {
   return args;
 }
 
+/** Resolve the local checkout for a pre-effect candidate preflight. */
+function checkoutSha(root = process.cwd()) {
+  const result = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) throw Error('Exact release checkout required');
+  return result.stdout.trim();
+}
+
 /**
  * Runs the preflight CLI.
  */
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  const tag = String(args.tag ?? process.env.GITHUB_REF_NAME ?? '');
   const result = validateReleasePreflight({
     mainRef: String(args['main-ref'] ?? 'origin/main'),
     repoRoot: String(args['repo-root'] ?? process.cwd()),
     requireMain: Boolean(args['require-main']),
     requirePrerelease: true,
+    tagIdentityOnly: Boolean(args['tag-identity-only']),
     requireReleaseManifestAssessment: true,
     requireReleaseImageDigests: true,
-    sha: args.sha ? String(args.sha) : undefined,
-    tag: String(args.tag ?? process.env.GITHUB_REF_NAME ?? ''),
+    sha: args.sha
+      ? String(args.sha)
+      : isDirectStableTag(tag)
+        ? checkoutSha(args['repo-root'])
+        : undefined,
+    tag,
+    directStable: isDirectStableTag(tag) ? (args.candidate ? 'candidate' : 'publish') : undefined,
     promotionSourceTag: args['promotion-source'] ? String(args['promotion-source']) : undefined,
-    repository: args.repository ? String(args.repository) : process.env.GITHUB_REPOSITORY,
-    authorization: process.env.OPENKIT_STABLE_PROMOTION,
+    repository: isDirectStableTag(tag)
+      ? releaseRepository(
+          String(args['repo-root'] ?? process.cwd()),
+          args.repository ?? process.env.GITHUB_REPOSITORY
+        )
+      : (args.repository ?? process.env.GITHUB_REPOSITORY),
+    authorization: isDirectStableTag(tag)
+      ? process.env.OPENKIT_STABLE_RELEASE
+      : process.env.OPENKIT_STABLE_PROMOTION,
   });
 
-  checkWorkflows({ repoRoot: String(args['repo-root'] ?? process.cwd()), all: true });
+  if (!args['tag-identity-only'])
+    checkWorkflows({ repoRoot: String(args['repo-root'] ?? process.cwd()), all: true });
   console.log(`Release preflight passed for ${result.version}.`);
   if (result.promotionSourceTag) console.log(`Promotion source: ${result.promotionSourceTag}`);
   console.log(`Release images: ${result.releaseImages.join(', ')}`);

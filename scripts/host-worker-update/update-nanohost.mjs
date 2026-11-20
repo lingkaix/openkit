@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { AppUpdatePreflightResponseSchema } from '@openkit/app-api-schemas';
 import { z } from 'zod';
-import { createReleaseManifest } from '../release-record.mjs';
+import { validateReleaseManifest } from '../release-record.mjs';
 import { canonical, noSecrets, once, save } from '../release-safety.mjs';
 import { admitArchiveAttribution, observeOperatorHost } from './host-observation.mjs';
 
@@ -154,18 +154,7 @@ function admit(schema, raw, reason) {
 function selectionFor(p) {
   const m = p.manifest;
   requireFact(m?.schemaVersion === 1, 'unsupported release manifest');
-  const manifest = createReleaseManifest({
-    repository: m.repository,
-    tag: m.tag,
-    sha: m.sourceCommit,
-    images: m.images.map((image) => ({
-      ...image,
-      prerelease: true,
-      tags: [m.tag, m.tag.slice(1), `sha-${m.sourceCommit.slice(0, 12)}`],
-    })),
-    checksums: m.assets.map((asset) => `${asset.sha256}  ${asset.name}`).join('\n'),
-    assertions: m.assertions,
-  });
+  const manifest = validateReleaseManifest(m);
   requireFact(['linux/amd64', 'linux/arm64'].includes(p.platform), 'unsupported platform');
   const distribution = manifest.assets.find(
     (asset) =>

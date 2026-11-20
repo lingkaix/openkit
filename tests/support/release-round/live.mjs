@@ -73,10 +73,8 @@ async function instrument() {
     entries = [];
   for (const n of names)
     entries.push({ file: n, sha256: sha(await fs.readFile(path.join(repo, 'tests/support', n))) });
-  entries.push({
-    file: 'scripts/release-safety.mjs',
-    sha256: sha(await fs.readFile(path.join(repo, 'scripts/release-safety.mjs'))),
-  });
+  for (const file of ['scripts/release-safety.mjs', 'scripts/lib/release-version.mjs'])
+    entries.push({ file, sha256: sha(await fs.readFile(path.join(repo, file))) });
   return { entries, sha256: sha(canonical(entries)) };
 }
 async function git(io, args) {

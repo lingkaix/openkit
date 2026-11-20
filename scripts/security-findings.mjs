@@ -156,9 +156,9 @@ function cleared(record, now) {
 /**
  * Admit only current mitigated, independently reviewed not-affected, or engineer-accepted K/C rows.
  * Absence of the engineer-controlled export means no approvals, never an implicit clearance.
- * @param {{findings: object[], register?: object, now: number}} input Exact scanner projections and private export.
+ * @param {{findings: object[], register?: object, now: number, onClear?: Function}} input Exact scanner projections and private export.
  */
-export function assertReleaseFindingGate({ findings, register, now }) {
+export function assertReleaseFindingGate({ findings, register, now, onClear }) {
   if (!Array.isArray(findings) || !Number.isFinite(now)) refuse();
   const publicIds = new Set();
   let records = [];
@@ -191,6 +191,7 @@ export function assertReleaseFindingGate({ findings, register, now }) {
     if (!urgent) continue;
     if (!previous || !sameBinding(finding, previous)) refuse();
     cleared(previous, now);
+    onClear?.(previous);
     finding.advisoryIds.forEach((id) => {
       publicIds.add(id);
     });

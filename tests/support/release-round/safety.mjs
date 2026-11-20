@@ -1,5 +1,6 @@
 /** Qualification-owned matrix, sentence, Artifact digest and closed parameter admission. */
 import path from 'node:path';
+import { parseVersionTag } from '../../../scripts/lib/release-version.mjs';
 import { noSecrets, sha } from '../../../scripts/release-safety.mjs';
 
 /** Closed parameter keys. DeepSeek remains so the refusal selection has an agent id. */
@@ -69,7 +70,10 @@ export function validateParams(p) {
     ],
     'params'
   );
-  if (p.releaseTag !== undefined) text(p.releaseTag, 'releaseTag', /^v0\.1\.0-rc\.[1-9][0-9]*$/);
+  if (p.releaseTag !== undefined) {
+    text(p.releaseTag, 'releaseTag');
+    parseVersionTag(p.releaseTag);
+  }
   noSecrets(p);
   text(p.roundId, 'roundId', /^[a-z0-9][a-z0-9-]{0,62}$/);
   text(p.candidateCommit, 'candidateCommit', /^[a-f0-9]{40}$/);

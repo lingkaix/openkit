@@ -22,7 +22,13 @@ test('test image jobs reap orphaned processes through Docker init', () => {
 });
 
 test('release workflow serializes tag releases and pins third-party actions', () => {
-  assert.deepEqual(workflow.on.push.tags, ['v*.*.*-*']);
+  assert.deepEqual(workflow.on.push.tags, [
+    'v0.[2-9].*',
+    'v0.[1-9][0-9]*.*',
+    '!v0.*.*-*',
+    'v0.0.*-*',
+    'v[1-9]*.0.0-*',
+  ]);
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
   assert.match(workflow.concurrency.group, /openkit-release/);
 
@@ -150,7 +156,7 @@ test('tag publication promotes the proved candidate digest without rebuilding or
   assert.match(smoke.run, /release-candidate\.mjs platform/u);
   assert.ok(candidateJob.steps.indexOf(candidate) < candidateJob.steps.indexOf(smoke));
   assert.deepEqual(gate.permissions, { contents: 'read', packages: 'read', actions: 'read' });
-  assert.equal(gate.if, "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')");
+  assert.match(gate.if, /github.event_name == 'push' && startsWith\(github.ref, 'refs\/tags\/'\)/);
   for (const publisher of ['publish-container-images', 'publish-app-image'])
     assert.ok(workflow.jobs[publisher].needs.includes('release-security'), publisher);
   assert.match(selected.run, /release-candidate\.mjs fetch/u);
@@ -174,13 +180,8 @@ test('tag publication promotes the proved candidate digest without rebuilding or
   assert.ok(job.steps.indexOf(download) < job.steps.indexOf(resolve));
   assert.match(
     resolve.run,
-    /readFileSync\(`security-admitted\/\$\{process\.env\.IMAGE_ID\}\.digest`/u
+    /release-image-state\.mjs --admitted "security-admitted\/\$\{IMAGE_ID\}\.digest"/u
   );
-  assert.match(
-    resolve.run,
-    /process\.env\.PRESENT === 'true'.*process\.env\.EXISTING_DIGEST !== digest/u
-  );
-  assert.match(resolve.run, /digest=\$\{digest\}/u);
   assert.doesNotMatch(
     job.steps.map((entry) => entry.run ?? '').join('\n'),
     /release-candidate\.mjs (?:fetch|select)/u
@@ -206,7 +207,7 @@ test('tag publication promotes the proved candidate digest without rebuilding or
   });
   assert.ok(job.steps.indexOf(verify) < job.steps.indexOf(anonymous));
   assert.equal(record.env.ANONYMOUS_PULL, actionExpression('matrix.anonymousPull'));
-  assert.match(promote.run, /imagetools create.*\$\{IMAGE\}@\$\{DIGEST\}/u);
+  assert.match(promote.run, /release-image-state\.mjs --publish-digest "\$\{DIGEST\}"/u);
 });
 
 test('candidate matrix smokes each catalog platform exactly once on a native runner', () => {
@@ -320,9 +321,9 @@ test('manual release gate derives a nonpublishing worker image smoke matrix', ()
   assert.ok(step(smokeJob, 'Set up Docker Buildx').uses);
   assert.equal(step(smokeJob, 'Build worker image').with.load, true);
   assert.equal(step(smokeJob, 'Build worker image').with.push, false);
-  assert.equal(
+  assert.match(
     workflow.jobs['publish-container-images'].if,
-    "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+    /github.event_name == 'push' && startsWith\(github.ref, 'refs\/tags\/'\)/
   );
   assert.ok(workflow.jobs['publish-container-images'].needs.includes('release-preflight'));
   assert.ok(
@@ -349,9 +350,10 @@ test('release workflow publishes and independently verifies the portable release
   const download = step(verify, 'Download and verify GitHub Release assets');
   const anonymous = step(verify, 'Verify public worker base without registry credentials');
 
-  assert.equal(preflight.needs, 'test-image');
+  assert.deepEqual(preflight.needs, ['test-image', 'candidate-plan']);
   assert.deepEqual(preflight.permissions, { contents: 'read', packages: 'read' });
   assert.deepEqual(githubRelease.needs, [
+    'release-preflight',
     'package-release-assets',
     'qualify-nanohost',
     'publish-container-images',
@@ -363,9 +365,9 @@ test('release workflow publishes and independently verifies the portable release
     'id-token': 'write',
     attestations: 'write',
   });
-  assert.equal(
+  assert.match(
     githubRelease.if,
-    "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+    /github.event_name == 'push' && startsWith\(github.ref, 'refs\/tags\/'\)/
   );
   assert.ok(step(githubRelease, 'Create immutable GitHub Release'));
   assert.deepEqual(verify.needs, [
@@ -566,10 +568,7 @@ test('release image metadata emits the plural catalog runtime label', () => {
 test('release qualification runs both exact archives natively before publication', () => {
   const qualification = workflow.jobs['qualify-nanohost'];
   assert.ok(qualification, 'missing release-time NanoHost qualification');
-  assert.equal(
-    qualification.if,
-    "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
-  );
+  assert.match(qualification.if, /needs.package-release-assets.result == 'success'/);
   assert.equal(qualification.container, undefined);
   assert.equal(qualification.needs, 'package-release-assets');
   assert.deepEqual(qualification.permissions, { contents: 'read' });
@@ -582,7 +581,7 @@ test('release qualification runs both exact archives natively before publication
     const native = workflow.jobs[`build-nanohost-${architecture}`];
     assert.ok(native);
     assert.equal(native['runs-on'], architecture === 'amd64' ? 'ubuntu-24.04' : 'ubuntu-24.04-arm');
-    assert.equal(native.if, qualification.if);
+    assert.match(native.if, /needs.release-preflight.result == 'success'/);
     assert.ok(
       workflow.jobs['package-release-assets'].needs.includes(`build-nanohost-${architecture}`)
     );
@@ -591,7 +590,10 @@ test('release qualification runs both exact archives natively before publication
     assert.ok(workflow.jobs[publisher].needs.includes('qualify-nanohost'));
   }
   const download = step(qualification, 'Download exact NanoHost archive and checksum');
-  assert.equal(download.with.name, `nanohost-release-${actionExpression('matrix.architecture')}`);
+  assert.equal(
+    download.with.name,
+    `nanohost-release-${actionExpression('matrix.architecture')}-${actionExpression('github.run_attempt')}`
+  );
   const commands = qualification.steps.map((entry) => entry.run ?? '').join('\n');
   assert.match(commands, /verify-nanohost-release\.mjs/);
   assert.match(commands, /install\.sh" --check-host/);
@@ -675,6 +677,8 @@ test('the complete job graph stays enumerated and no checkout persists credentia
       ...unchangedJobNames,
       ...shardJobNames,
       ...candidateJobNames,
+      'candidate-publication',
+      'direct-release-admission',
       'release-security',
       'attest-release-images',
       'image-security-diagnostic',
@@ -708,6 +712,7 @@ test('only complete L0-L2 shards, whole-owner coverage and NanoCore e2e read exa
           'build-app-candidate',
           'candidate-registry',
           'release-security',
+          'direct-release-admission',
           'image-security-diagnostic',
         ].includes(name)
           ? 'read'
@@ -888,7 +893,22 @@ test('artifact reuse refuses malformed or ambiguous successful proof before publ
 });
 
 /** Evaluate the finite GitHub job expressions with synthetic event contexts only. */
-function jobRuns(id, event, ref, gate = '') {
+function jobRuns(id, event, ref, gate = '', overrides = {}, status = {}) {
+  const tag = ref.startsWith('refs/tags/');
+  const applicable = tag ? 'success' : 'skipped';
+  const needs = Object.fromEntries(
+    Object.keys(workflow.jobs).map((job) => [
+      job,
+      {
+        result: applicable,
+        outputs: { enabled: 'false', direct: 'false' },
+      },
+    ])
+  );
+  Object.assign(needs, overrides);
+  const condition = workflow.jobs[id].if ?? 'true';
+  if (!/\b(?:always|cancelled|success|failure)\(/u.test(condition) && status.ancestorSkipped)
+    return false;
   return Boolean(
     new Function(
       'github',
@@ -897,19 +917,38 @@ function jobRuns(id, event, ref, gate = '') {
       'fromJSON',
       'startsWith',
       'always',
+      'cancelled',
       'needs',
-      `return (${(workflow.jobs[id].if ?? 'true').replace(/needs\.([a-z0-9-]+)/g, "needs['$1']")});`
+      `return (${condition.replace(/needs\.([a-z0-9-]+)/g, "needs['$1']")});`
     )(
-      { event_name: event, ref },
+      { event_name: event, ref, ref_name: ref.split('/').at(-1), repository: 'lingkaix/openkit' },
       { gate },
       (values, value) => values.includes(value),
       JSON.parse,
       (value, prefix) => value.startsWith(prefix),
       () => true,
-      { 'candidate-plan': { outputs: { enabled: 'false' } } }
+      () => Boolean(status.cancelled),
+      needs
     )
   );
 }
+
+test('tag verification runs after intentional ancestor skips only when all four dependencies pass', () => {
+  const id = 'verify-release';
+  const stable = 'refs/tags/v0.2.0';
+  const status = { ancestorSkipped: true };
+  assert.deepEqual(workflow.jobs[id].needs.toSorted(), [
+    'github-release',
+    'publish-app-image',
+    'publish-container-images',
+    'test-image',
+  ]);
+  assert.equal(jobRuns(id, 'push', stable, '', {}, status), true);
+  for (const name of workflow.jobs[id].needs)
+    assert.equal(jobRuns(id, 'push', stable, '', { [name]: { result: 'failure' } }, status), false);
+  assert.equal(jobRuns(id, 'push', stable, '', {}, { ...status, cancelled: true }), false);
+  assert.equal(jobRuns(id, 'workflow_dispatch', stable, 'full', {}, status), false);
+});
 
 test('every main push runs the complete nonpublishing candidate gate without publishing', () => {
   assert.deepEqual(workflow.on.push.branches, ['main']);
@@ -1126,11 +1165,14 @@ test('Worker publication and final verification retain the reviewed cadence step
     'Checkout',
     'Download image release records',
     'Set up pinned release verification tools',
-    'Install checksum-bound inventory and workflow tools',
+    'Install the legacy SBOM scanner',
+    'Install checksum-bound workflow tools',
     'Lint before registry credentials',
     'Set up release Docker Buildx',
     'Read-only release registry login',
     'Install verifier dependencies without lifecycle scripts',
+    'Download the exact verified stable payload',
+    'Compare the stable payload with the live release image records',
     'Download portable release assets',
     'Generate every image platform and NanoHost archive SBOM',
     'Generate release manifest and checksum',
@@ -1148,6 +1190,7 @@ test('Worker publication and final verification retain the reviewed cadence step
     'Install integrity verifier dependencies without lifecycle scripts',
     'Verify every published image digest',
     'Download and verify GitHub Release assets',
+    'Download the selected stable candidate proof for checksum comparison',
     'Verify release SBOM bindings and native keyless attestations',
     'Verify public worker base without registry credentials',
   ]);
@@ -1174,9 +1217,9 @@ test('Worker publication and final verification retain the reviewed cadence step
     'id-token': 'write',
     attestations: 'write',
   });
-  assert.equal(
+  assert.match(
     workflow.jobs['github-release'].if,
-    "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+    /github.event_name == 'push' && startsWith\(github.ref, 'refs\/tags\/'\)/
   );
   assert.deepEqual(workflow.jobs['publish-container-images'].permissions, {
     contents: 'read',
@@ -1198,11 +1241,12 @@ test('publication proof covers every App producer, consumer and native fixture b
       return r.stdout.trim();
     };
     git(['init', '--initial-branch=main']);
-    for (const directory of ['.github/workflows', 'scripts', 'containers'])
+    for (const directory of ['.github/workflows', 'scripts/lib', 'containers'])
       mkdirSync(join(root, directory), { recursive: true });
     for (const file of [
       'scripts/release-app-native.mjs',
       'scripts/release-app-no-as-limit.c',
+      'scripts/lib/release-version.mjs',
       'containers/images.json',
     ])
       writeFileSync(join(root, file), readFileSync(file));
@@ -1239,6 +1283,7 @@ test('publication proof covers every App producer, consumer and native fixture b
         'containers/images.json',
         'scripts/release-app-native.mjs',
         'scripts/release-app-no-as-limit.c',
+        'scripts/lib/release-version.mjs',
       ].sort()
     );
     writeFileSync(
@@ -1547,7 +1592,7 @@ test('the release verifier installs dependencies once, without lifecycle scripts
 
 test('stable rehearsal is tag-only, authority-gated, serialized and has no construction path', () => {
   const stable = parse(readFileSync('.github/workflows/release-promotion.yml', 'utf8'));
-  assert.deepEqual(stable.on.push.tags, ['v*.*.*', '!v*.*.*-*']);
+  assert.deepEqual(stable.on.push.tags, ['v[1-9]*.0.0', 'v0.0.*', '!v*.*.*-*']);
   assert.deepEqual(Object.keys(stable.on), ['push']);
   assert.deepEqual(stable.permissions, {});
   assert.equal(stable.concurrency.group, 'openkit-release');
@@ -1571,9 +1616,9 @@ test('stable rehearsal is tag-only, authority-gated, serialized and has no const
     PATH: process.env.PATH,
     REPOSITORY: 'lingkaix/openkit',
     FORK: 'false',
-    GITHUB_REF_NAME: 'v0.1.0',
+    GITHUB_REF_NAME: 'v1.0.0',
     GITHUB_SHA: sha,
-    OPENKIT_STABLE_PROMOTION: `v0.1.0@${sha}`,
+    OPENKIT_STABLE_PROMOTION: `v1.0.0@${sha}`,
   };
   /** Runs the released authority check exactly as the runner would, with no other input. */
   const authorityStatus = (environment) =>
@@ -1595,13 +1640,13 @@ test('stable rehearsal is tag-only, authority-gated, serialized and has no const
     ['unauthorized production promotion', { ...production, OPENKIT_STABLE_PROMOTION: '' }],
     [
       'an authorization for another tag',
-      { ...production, OPENKIT_STABLE_PROMOTION: `v0.1.1@${sha}` },
+      { ...production, OPENKIT_STABLE_PROMOTION: `v1.0.1@${sha}` },
     ],
     [
       'an authorization for another commit',
-      { ...production, OPENKIT_STABLE_PROMOTION: `v0.1.0@${'b'.repeat(40)}` },
+      { ...production, OPENKIT_STABLE_PROMOTION: `v1.0.0@${'b'.repeat(40)}` },
     ],
-    ['an authorization without its commit', { ...production, OPENKIT_STABLE_PROMOTION: 'v0.1.0' }],
+    ['an authorization without its commit', { ...production, OPENKIT_STABLE_PROMOTION: 'v1.0.0' }],
     ['a forked repository', { ...production, FORK: 'true' }],
     [
       'a foreign repository holding the exact production authorization',
@@ -1716,4 +1761,87 @@ test('only repository-check owners fetch full operation-contract history', () =>
     step(workflow.jobs['l0-l2-shards'], 'Checkout').with['fetch-depth'],
     "${{ matrix.id == 'static' && '0' || '1' }}"
   );
+});
+
+test('direct stable proof holds the real secret until exact qualification and gates every writer', () => {
+  const main = 'refs/heads/main';
+  const stable = 'refs/tags/v0.2.0';
+  const passed = { result: 'success' };
+  const skipped = { result: 'skipped' };
+  const branch = {
+    'candidate-plan': { ...passed, outputs: { enabled: 'true', direct: 'true' } },
+    'candidate-registry': passed,
+    'release-preflight': { ...passed, outputs: { direct: 'true' } },
+    'package-release-assets': passed,
+    'qualify-nanohost': passed,
+    'smoke-app-native': passed,
+  };
+  const proof = workflow.jobs['candidate-publication'];
+  const candidate = step(
+    proof,
+    'Admit source and all image platforms with the reviewed secret and dry-run publication'
+  );
+  assert.equal(proof.environment, 'candidate-release-security');
+  assert.deepEqual(proof.permissions, { contents: 'read', packages: 'read' });
+  assert.equal(
+    candidate.env.OPENKIT_SECURITY_FINDINGS,
+    actionExpression('secrets.OPENKIT_SECURITY_FINDINGS')
+  );
+  assert.ok(proof.needs.includes('candidate-registry'));
+  assert.ok(proof.needs.includes('smoke-app-native'));
+  assert.ok(proof.needs.includes('qualify-nanohost'));
+  assert.equal(jobRuns('candidate-publication', 'push', main, '', branch), true);
+  assert.equal(
+    jobRuns('candidate-publication', 'workflow_dispatch', 'refs/heads/other', 'full', branch),
+    false
+  );
+  assert.equal(
+    jobRuns('candidate-publication', 'pull_request', 'refs/pull/1/merge', '', branch),
+    false
+  );
+
+  const tag = {
+    'release-preflight': { ...passed, outputs: { direct: 'true' } },
+    'package-release-assets': skipped,
+    'qualify-nanohost': skipped,
+    'build-app-candidate': skipped,
+    'smoke-app-native': skipped,
+    'l0-l2': skipped,
+    'nano-core-e2e': skipped,
+    smoke: skipped,
+  };
+  assert.equal(jobRuns('direct-release-admission', 'push', stable, '', tag), true);
+  for (const result of ['failure', 'skipped'])
+    assert.equal(
+      jobRuns('release-security', 'push', stable, '', {
+        ...tag,
+        'direct-release-admission': { result },
+      }),
+      false
+    );
+  const writers = [
+    'attest-release-images',
+    'publish-app-image',
+    'publish-container-images',
+    'github-release',
+  ];
+  for (const writer of writers) {
+    assert.equal(jobRuns(writer, 'push', main, '', branch), false, writer);
+    assert.equal(jobRuns(writer, 'push', stable, '', tag), true, writer);
+    assert.equal(
+      jobRuns(writer, 'push', stable, '', {
+        ...tag,
+        'release-preflight': { result: 'failure', outputs: { direct: 'true' } },
+      }),
+      false,
+      writer
+    );
+  }
+  for (const job of [
+    'package-release-assets',
+    'qualify-nanohost',
+    'build-app-candidate',
+    'smoke-app-native',
+  ])
+    assert.equal(jobRuns(job, 'push', stable, '', tag), false, job);
 });

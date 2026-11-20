@@ -52,23 +52,29 @@ test('selected retained content is compared in memory and only its digest enters
   }
 });
 /** Synthetic admitted inputs with exact reviewed assessment and public retained-record selector. */
-function params() {
+function params(releaseTag = tag) {
+  const prerelease = releaseTag.includes('-');
   const manifest = createReleaseManifest({
     repository: 'lingkaix/openkit',
-    tag,
+    tag: releaseTag,
     sha,
     images: ['app', 'worker-common', 'worker-runtimes'].map((id) => ({
       id,
       image: `ghcr.io/example/${id}`,
       digest,
-      prerelease: true,
-      tags: [tag, tag.slice(1), `sha-${sha.slice(0, 12)}`],
+      prerelease,
+      tags: [
+        releaseTag,
+        releaseTag.slice(1),
+        `sha-${sha.slice(0, 12)}`,
+        ...(!prerelease ? ['latest'] : []),
+      ],
       platforms: ['linux/amd64', 'linux/arm64'].map((platform) => ({ platform, digest })),
     })),
     checksums: [
-      `openkit-ops-skill-${tag}.tar.gz`,
-      ...['amd64', 'arm64'].map((a) => `openkit-nanohost-${tag}-linux-${a}.tar.gz`),
-      ...sbomAssetNames(tag),
+      `openkit-ops-skill-${releaseTag}.tar.gz`,
+      ...['amd64', 'arm64'].map((a) => `openkit-nanohost-${releaseTag}-linux-${a}.tar.gz`),
+      ...sbomAssetNames(releaseTag),
     ]
       .map((n) => `${'d'.repeat(64)}  ${n}`)
       .join('\n'),
@@ -76,10 +82,10 @@ function params() {
       sourceCommit: sha,
       appDigest: digest,
       previousAppImageId: previous,
-      migrationFree: true,
+      migrationFree: releaseTag !== 'v0.2.0',
       configurationCompatible: true,
-      retainedDataCompatible: true,
-      recovery: 'previous-image-compatible',
+      retainedDataCompatible: releaseTag !== 'v0.2.0',
+      recovery: releaseTag === 'v0.2.0' ? 'fresh-root-paired-restore' : 'previous-image-compatible',
       provenance: 'synthetic-assessment',
     },
   });
@@ -485,6 +491,14 @@ test('missing target, production and unassessed compatibility refuse before effe
   assert.throws(() => validateUpdate('https://a2', p));
   p.manifest.assertions.migrationFree = false;
   assert.throws(() => validateUpdate(target, p));
+});
+
+test('the bounded App path admits a compatible stable patch and refuses the fresh-root release', () => {
+  assert.doesNotThrow(() => validateUpdate(target, params('v0.2.1'), deployment));
+  assert.throws(
+    () => validateUpdate(target, params('v0.2.0'), deployment),
+    /fresh Data Root installation and paired predecessor recovery required/
+  );
 });
 
 test('the bounded deployment grant refuses a published forward migration before App effects', async (t) => {

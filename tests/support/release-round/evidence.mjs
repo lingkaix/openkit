@@ -356,7 +356,7 @@ function validArtifact(a, title, body, tid, turnId) {
 /** Every fixed scenario traverses its predicates; attribution failures cannot become passes. */
 export function evaluate(bundle, p) {
   const global = [];
-  if (!p.releaseTag) global.push('published prerelease identity unavailable');
+  if (!p.releaseTag) global.push('published release identity unavailable');
   const a = bundle.attribution;
   if (
     !a ||

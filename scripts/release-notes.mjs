@@ -246,6 +246,7 @@ export function createReleaseNotes(input) {
       throw new Error(`Release notes ${name} is required.`);
     }
   }
+  const stable = !input.tag.includes('-');
   const sections = readReleaseNotesInput(input.repoRoot, input.tag);
   const images = readImageRecords(input.recordsDir);
   return `${[
@@ -266,18 +267,24 @@ export function createReleaseNotes(input) {
     '- L0-L2 static, unit, and contract verification passed.',
     '- L3 NanoCore e2e passed.',
     '- L5 built-artifact smoke passed.',
-    '- Every release image platform passed smoke before tag promotion.',
+    stable
+      ? '- Every release image platform passed smoke before tag publication.'
+      : '- Every release image platform passed smoke before tag promotion.',
     '- Public worker-common anonymous exact-digest inspection passed.',
     '- The Skill and NanoHost archives and their shared checksum passed local verification.',
     '- Both NanoHost targets passed fresh hosted requirement, no-write disposition, and contained staging qualification.',
     '',
     '## Manual Gates',
     '',
-    '- L4 Web e2e was not required by the automatic tag gate. This prerelease publication makes no claim that the L6 catalog stories passed. A stable release that promotes these bytes records their verdicts in its release record.',
+    stable
+      ? '- L4 Web e2e passed on the exact candidate. Golden-path and real-use host acceptance follow verified publication.'
+      : '- L4 Web e2e was not required by the automatic tag gate. This prerelease publication makes no claim that the L6 catalog stories passed. A stable release that promotes these bytes records their verdicts in its release record.',
     '',
-    '## Prerelease Readiness at Publication',
+    stable ? '## Readiness at Publication' : '## Prerelease Readiness at Publication',
     '',
-    '- At publication of this prerelease, the linux/amd64 and linux/arm64 NanoHost archives were installable and the exact-product Worker readiness gate (R001) was open. A stable release that promotes these bytes records its closure in its release record.',
+    stable
+      ? '- Candidate admission requires exact-product Worker readiness evidence (R001). Both NanoHost targets passed qualification on the exact candidate.'
+      : '- At publication of this prerelease, the linux/amd64 and linux/arm64 NanoHost archives were installable and the exact-product Worker readiness gate (R001) was open. A stable release that promotes these bytes records its closure in its release record.',
     '',
     sections,
     '',

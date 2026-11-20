@@ -6,7 +6,11 @@ on:
     branches:
       - main
     tags:
-      - "v*.*.*-*"
+      - "v0.[2-9].*"
+      - "v0.[1-9][0-9]*.*"
+      - "!v0.*.*-*"
+      - "v0.0.*-*"
+      - "v[1-9]*.0.0-*"
   workflow_dispatch:
     inputs:
       gate:
@@ -25,7 +29,7 @@ on:
           - registry-admission
 
       candidate_tag:
-        description: Intended prerelease with a committed unused notes input; empty selects the sole pending input
+        description: Intended release with a committed unused notes input; empty selects the sole pending input
         required: false
         default: ''
         type: string
@@ -207,7 +211,7 @@ jobs:
 
   nanohost-installer:
     name: NanoHost installer fixed-path gate (${{ matrix.runner }})
-    if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gate != 'registry-admission')
+    if: (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-')) && (github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gate != 'registry-admission'))
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -233,18 +237,33 @@ jobs:
 
   release-preflight:
     name: Release preflight
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    needs: test-image
+    if: >-
+      !cancelled() && needs.test-image.result == 'success' &&
+      ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.repository == 'lingkaix/openkit' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' &&
+      contains(fromJSON('["release-gate","full"]'), inputs.gate))) &&
+      needs.candidate-plan.result == 'success' && needs.candidate-plan.outputs.direct == 'true'))
+    needs: [test-image, candidate-plan]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
     container:
-      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified repository@sha256 digest.
+      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified digest.
       options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || needs.candidate-plan.outputs.tag }}
+      TAG_PUSH: ${{ startsWith(github.ref, 'refs/tags/') }}
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      direct: ${{ steps.identity.outputs.direct }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -256,24 +275,108 @@ jobs:
         run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Validate release identity and assets
+        id: identity
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENKIT_STABLE_RELEASE: ${{ vars.OPENKIT_STABLE_RELEASE }}
         run: |
-          node scripts/release-preflight.mjs \
-            --tag "${GITHUB_REF_NAME}" \
-            --repo-root . \
-            --sha "${GITHUB_SHA}" \
-            --main-ref origin/main \
-            --require-main
+          echo "tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          if [[ "${RELEASE_TAG}" == *-* ]]; then
+            echo "direct=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "direct=true" >> "${GITHUB_OUTPUT}"
+          fi
+          if [ "${TAG_PUSH}" = true ] && [[ "${RELEASE_TAG}" == *-* ]]; then
+            case "${GITHUB_REPOSITORY}" in
+              lingkaix/openkit) [[ "${RELEASE_TAG}" =~ ^v[1-9][0-9]*[.]0[.]0- ]] ;;
+              notrucked/openkit) [[ "${RELEASE_TAG}" =~ ^v0[.]0[.][0-9]+- ]] ;;
+              *) exit 1 ;;
+            esac
+          fi
+          phase=()
+          if [ "${TAG_PUSH}" = false ]; then
+            phase+=(--candidate)
+          elif [[ "${RELEASE_TAG}" != *-* ]]; then
+            phase+=(--tag-identity-only)
+          fi
+          node scripts/release-preflight.mjs --tag "${RELEASE_TAG}" --repo-root . \
+            --sha "${GITHUB_SHA}" --main-ref origin/main --require-main "${phase[@]}"
 
       - name: Check release notes input
-        run: node scripts/release-notes.mjs --check --repo-root . --tag "${GITHUB_REF_NAME}"
+        if: env.TAG_PUSH == 'false' || steps.identity.outputs.direct == 'false'
+        run: node scripts/release-notes.mjs --check --repo-root . --tag "${RELEASE_TAG}"
 
       - name: Admit all lock files and the release tree
+        if: env.TAG_PUSH == 'true' && steps.identity.outputs.direct == 'false'
         env:
           OPENKIT_SECURITY_FINDINGS: ${{ secrets.OPENKIT_SECURITY_FINDINGS }}
         run: |
           node scripts/check-security.mjs --release --head "${GITHUB_SHA}" --public-record "${RUNNER_TEMP}/source.md"
+      - name: Retain public source finding identifiers
+        if: env.TAG_PUSH == 'true' && steps.identity.outputs.direct == 'false'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: security-admitted-source-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source.md
+          if-no-files-found: error
+
+  direct-release-admission:
+    name: Admit the exact stable candidate on the tag
+    if: >-
+      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') &&
+      needs.release-preflight.result == 'success' && needs.release-preflight.outputs.direct == 'true'
+    needs: release-preflight
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Set up pinned release tools
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: node pnpm
+      - name: Set up Docker Buildx for live immutable identity checks
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Authenticate read-only release registry checks
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch and verify the authorized candidate proof
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENKIT_STABLE_RELEASE: ${{ vars.OPENKIT_STABLE_RELEASE }}
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          node scripts/release-direct.mjs fetch "${GITHUB_REF_NAME}" direct-release
+          cp direct-release/security/source.md "${RUNNER_TEMP}/source.md"
+
+      - name: Retain candidate assets for the tag publisher
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: direct-release-assets-${{ github.run_attempt }}
+          path: direct-release/assets/
+          if-no-files-found: error
+
+      - name: Retain the approved candidate's registry and security observations
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: direct-release-admission-${{ github.run_attempt }}
+          path: |
+            direct-release/proof.json
+            direct-release/registry-admission.json
+            direct-release/security/
+          if-no-files-found: error
+
       - name: Retain public source finding identifiers
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -283,7 +386,7 @@ jobs:
 
   l0-l2-plan:
     name: L0-L2 shard inventory
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
+    if: (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-')) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate)))
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -301,7 +404,7 @@ jobs:
 
   l0-l2-build:
     name: L0-L2 shared build
-    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))) || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
+    if: (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-')) && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))) || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate)))
     needs: [test-image, l0-l2-plan]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -354,7 +457,7 @@ jobs:
 
   l0-l2-shards:
     name: L0-L2 shard (${{ matrix.id }})
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
+    if: (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-')) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate)))
     needs: [test-image, l0-l2-plan, l0-l2-build]
     runs-on: ubuntu-24.04
     # Bound hung installs while retaining every in-case test deadline.
@@ -470,7 +573,7 @@ jobs:
 
   l0-l2-coverage:
     name: L0-L2 coverage (${{ matrix.id }})
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
+    if: (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-')) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate)))
     needs: [test-image, l0-l2-plan, l0-l2-shards]
     runs-on: ubuntu-24.04
     # Bound hung installs while retaining every in-case test deadline.
@@ -556,7 +659,7 @@ jobs:
 
   l0-l2:
     name: L0-L2 static, unit, contract
-    if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate)))
+    if: (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-')) && (always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))))
     needs: [l0-l2-plan, l0-l2-shards, l0-l2-coverage]
     runs-on: ubuntu-24.04
     steps:
@@ -581,7 +684,7 @@ jobs:
 
   nano-core-e2e:
     name: L3 NanoCore e2e
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["nano-core-e2e","release-gate","full"]'), inputs.gate))
+    if: (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-')) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["nano-core-e2e","release-gate","full"]'), inputs.gate)))
     needs: test-image
     runs-on: ubuntu-24.04
     permissions:
@@ -682,7 +785,7 @@ jobs:
 
   smoke:
     name: L5 smoke
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate))
+    if: (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-')) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate)))
     needs: test-image
     runs-on: ubuntu-24.04
     permissions:
@@ -742,7 +845,7 @@ jobs:
 
   build-nanohost-amd64:
     name: Build NanoHost natively on amd64
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: needs.release-preflight.result == 'success' && (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-'))
     needs:
       - release-preflight
       - nanohost-installer
@@ -783,13 +886,13 @@ jobs:
       - name: Upload native NanoHost binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: nanohost-native-amd64
+          name: nanohost-native-amd64-${{ github.run_attempt }}
           path: nanohost-native/nanohost
           if-no-files-found: error
 
   build-nanohost-arm64:
     name: Build NanoHost natively on arm64
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: needs.release-preflight.result == 'success' && (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-'))
     needs:
       - release-preflight
       - nanohost-installer
@@ -830,13 +933,13 @@ jobs:
       - name: Upload native NanoHost binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: nanohost-native-arm64
+          name: nanohost-native-arm64-${{ github.run_attempt }}
           path: nanohost-native/nanohost
           if-no-files-found: error
 
   package-release-assets:
     name: Package portable release assets
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: needs.release-preflight.result == 'success' && (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-'))
     needs:
       - test-image
       - release-preflight
@@ -855,6 +958,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      RELEASE_TAG: ${{ needs.release-preflight.outputs.tag }}
+    outputs:
+      tag: ${{ needs.release-preflight.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -875,13 +982,13 @@ jobs:
       - name: Download native NanoHost amd64 binary
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nanohost-native-amd64
+          name: nanohost-native-amd64-${{ github.run_attempt }}
           path: nanohost-native/amd64
 
       - name: Download native NanoHost arm64 binary
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nanohost-native-arm64
+          name: nanohost-native-arm64-${{ github.run_attempt }}
           path: nanohost-native/arm64
 
       - name: Resolve accepted OpenShell inputs
@@ -939,7 +1046,7 @@ jobs:
           }
           NODE
           node scripts/package-release-assets.mjs \
-            --tag "${GITHUB_REF_NAME}" \
+            --tag "${RELEASE_TAG}" \
             --nanohost-amd64-binary nanohost-native/amd64/nanohost \
             --nanohost-arm64-binary nanohost-native/arm64/nanohost \
             --openshell-amd64-gateway-archive "nanohost-input/${OPENSHELL_AMD64_ARCHIVE}" \
@@ -948,11 +1055,11 @@ jobs:
             --openshell-notices nanohost-input/openshell-THIRD-PARTY-NOTICES
           cd dist/release
           sha256sum -c SHA256SUMS
-          tar -tzf "openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-ops-skill-${GITHUB_REF_NAME}/LICENSE"
-          tar -tzf "openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-ops-skill-${GITHUB_REF_NAME}/skills/openkit-ops/SKILL.md"
-          tar -tzf "openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-ops-skill-${GITHUB_REF_NAME}/skills/openkit-ops/scripts/openkit"
+          tar -tzf "openkit-ops-skill-${RELEASE_TAG}.tar.gz" | grep -Fx "openkit-ops-skill-${RELEASE_TAG}/LICENSE"
+          tar -tzf "openkit-ops-skill-${RELEASE_TAG}.tar.gz" | grep -Fx "openkit-ops-skill-${RELEASE_TAG}/skills/openkit-ops/SKILL.md"
+          tar -tzf "openkit-ops-skill-${RELEASE_TAG}.tar.gz" | grep -Fx "openkit-ops-skill-${RELEASE_TAG}/skills/openkit-ops/scripts/openkit"
           ops_extract="$(mktemp -d)"
-          OPS_ARCHIVE="openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" OPS_EXTRACT="${ops_extract}" node --input-type=module <<'NODE'
+          OPS_ARCHIVE="openkit-ops-skill-${RELEASE_TAG}.tar.gz" OPS_EXTRACT="${ops_extract}" node --input-type=module <<'NODE'
           import { verifyOperationsSkillArchive } from '../../scripts/package-release-assets.mjs';
           verifyOperationsSkillArchive({
             archivePath: process.env.OPS_ARCHIVE,
@@ -962,7 +1069,7 @@ jobs:
           verification_parent="$(mktemp -d)"
           for architecture in amd64 arm64; do
             node ../../scripts/verify-nanohost-release.mjs \
-              --archive "openkit-nanohost-${GITHUB_REF_NAME}-linux-${architecture}.tar.gz" \
+              --archive "openkit-nanohost-${RELEASE_TAG}-linux-${architecture}.tar.gz" \
               --checksum-file SHA256SUMS \
               --destdir "${verification_parent}/${architecture}" \
               --repo-root ../..
@@ -971,31 +1078,31 @@ jobs:
       - name: Upload portable release assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-portable-assets
+          name: release-portable-assets-${{ github.run_attempt }}
           path: dist/release/
           if-no-files-found: error
 
       - name: Upload exact NanoHost amd64 qualification inputs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: nanohost-release-amd64
+          name: nanohost-release-amd64-${{ github.run_attempt }}
           path: |
-            dist/release/openkit-nanohost-${{ github.ref_name }}-linux-amd64.tar.gz
+            dist/release/openkit-nanohost-${{ env.RELEASE_TAG }}-linux-amd64.tar.gz
             dist/release/SHA256SUMS
           if-no-files-found: error
 
       - name: Upload exact NanoHost arm64 qualification inputs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: nanohost-release-arm64
+          name: nanohost-release-arm64-${{ github.run_attempt }}
           path: |
-            dist/release/openkit-nanohost-${{ github.ref_name }}-linux-arm64.tar.gz
+            dist/release/openkit-nanohost-${{ env.RELEASE_TAG }}-linux-arm64.tar.gz
             dist/release/SHA256SUMS
           if-no-files-found: error
 
   qualify-nanohost:
     name: Qualify NanoHost on ${{ matrix.architecture }}
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: needs.package-release-assets.result == 'success' && (!startsWith(github.ref, 'refs/tags/') || contains(github.ref_name, '-'))
     needs: package-release-assets
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -1008,6 +1115,8 @@ jobs:
             architecture: amd64
           - runner: ubuntu-24.04-arm
             architecture: arm64
+    env:
+      RELEASE_TAG: ${{ needs.package-release-assets.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1017,7 +1126,7 @@ jobs:
       - name: Download exact NanoHost archive and checksum
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nanohost-release-${{ matrix.architecture }}
+          name: nanohost-release-${{ matrix.architecture }}-${{ github.run_attempt }}
           path: nanohost-release
 
       - name: Verify the exact target archive
@@ -1026,11 +1135,11 @@ jobs:
         run: |
           verification_parent="$(mktemp -d)"
           node scripts/verify-nanohost-release.mjs \
-            --archive "nanohost-release/openkit-nanohost-${GITHUB_REF_NAME}-linux-${ARCHITECTURE}.tar.gz" \
+            --archive "nanohost-release/openkit-nanohost-${RELEASE_TAG}-linux-${ARCHITECTURE}.tar.gz" \
             --checksum-file nanohost-release/SHA256SUMS \
             --destdir "${verification_parent}/stage" \
             --repo-root .
-          tar -xzf "nanohost-release/openkit-nanohost-${GITHUB_REF_NAME}-linux-${ARCHITECTURE}.tar.gz" -C nanohost-release
+          tar -xzf "nanohost-release/openkit-nanohost-${RELEASE_TAG}-linux-${ARCHITECTURE}.tar.gz" -C nanohost-release
 
       - name: Provision missing declared inspection prerequisites
         run: |
@@ -1090,7 +1199,7 @@ jobs:
         env:
           ARCHITECTURE: ${{ matrix.architecture }}
         run: |
-          bundle="${GITHUB_WORKSPACE}/nanohost-release/openkit-nanohost-${GITHUB_REF_NAME}-linux-${ARCHITECTURE}"
+          bundle="${GITHUB_WORKSPACE}/nanohost-release/openkit-nanohost-${RELEASE_TAG}-linux-${ARCHITECTURE}"
           # Snapshot all fixed live and reserved paths, including inode, mode, and bytes.
           snapshot() {
             sudo /usr/bin/python3 -I -B - <<'PY_SNAPSHOT'
@@ -1128,9 +1237,9 @@ jobs:
           const result = JSON.parse(readFileSync('nanohost-release/check-host.json', 'utf8'));
           assert.equal(result.hardVerdict, 'requirements-met');
           assert.equal(result.productCommit, process.env.GITHUB_SHA);
-          const manifest = JSON.parse(readFileSync(`nanohost-release/openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-${process.env.ARCHITECTURE}/MANIFEST.json`, 'utf8'));
+          const manifest = JSON.parse(readFileSync(`nanohost-release/openkit-nanohost-${process.env.RELEASE_TAG}-linux-${process.env.ARCHITECTURE}/MANIFEST.json`, 'utf8'));
           assert.equal(result.profileDigest, manifest.profileDigest);
-          const checksum = readFileSync('nanohost-release/SHA256SUMS', 'utf8').split('\n').find((line) => line.endsWith(`  openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-${process.env.ARCHITECTURE}.tar.gz`));
+          const checksum = readFileSync('nanohost-release/SHA256SUMS', 'utf8').split('\n').find((line) => line.endsWith(`  openkit-nanohost-${process.env.RELEASE_TAG}-linux-${process.env.ARCHITECTURE}.tar.gz`));
           assert.equal(result.archiveSha256, checksum?.slice(0, 64));
           NODE
           [ "${disposition_status}" -eq 0 ]
@@ -1141,7 +1250,7 @@ jobs:
         env:
           ARCHITECTURE: ${{ matrix.architecture }}
         run: |
-          bundle="${GITHUB_WORKSPACE}/nanohost-release/openkit-nanohost-${GITHUB_REF_NAME}-linux-${ARCHITECTURE}"
+          bundle="${GITHUB_WORKSPACE}/nanohost-release/openkit-nanohost-${RELEASE_TAG}-linux-${ARCHITECTURE}"
           staging_parent="$(mktemp -d)"
           DESTDIR="${staging_parent}/stage" sh "${bundle}/install.sh" > nanohost-release/staging.txt
           grep -Fx 'staged-only' nanohost-release/staging.txt
@@ -1220,11 +1329,12 @@ jobs:
           NODE
 
   candidate-plan:
-    name: Prerelease candidate inputs
+    name: Release candidate inputs
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["release-gate","full"]'), inputs.gate))
     runs-on: ubuntu-24.04
     outputs:
       enabled: ${{ steps.plan.outputs.enabled }}
+      direct: ${{ steps.plan.outputs.direct }}
       tag: ${{ steps.plan.outputs.tag }}
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
@@ -1233,7 +1343,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Select the committed intended prerelease
+      - name: Select the committed intended release
         id: plan
         env:
           CANDIDATE_TAG: ${{ inputs.candidate_tag }}
@@ -1351,7 +1461,12 @@ jobs:
 
   candidate-registry:
     name: Prerelease registry admission
-    if: always() && ((needs.candidate-plan.outputs.enabled == 'true' && needs.candidate-index.result == 'success' && needs.l0-l2.result == 'success' && needs.nano-core-e2e.result == 'success' && needs.web-e2e.result == 'success' && needs.smoke.result == 'success' && needs.app-image-admin-recovery.result == 'success' && needs.nanohost-installer.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.gate == 'registry-admission'))
+    if: >-
+      always() && ((needs.candidate-plan.outputs.enabled == 'true' && needs.candidate-index.result == 'success' &&
+      needs.l0-l2.result == 'success' && needs.nano-core-e2e.result == 'success' && needs.web-e2e.result == 'success' &&
+      needs.smoke.result == 'success' && needs.app-image-admin-recovery.result == 'success' &&
+      needs.nanohost-installer.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.gate ==
+      'registry-admission'))
     needs: [candidate-plan, candidate-index, l0-l2, nano-core-e2e, web-e2e, smoke, app-image-admin-recovery, nanohost-installer]
     runs-on: ubuntu-24.04
     permissions:
@@ -1383,6 +1498,80 @@ jobs:
         with:
           name: registry-admission-${{ github.run_attempt }}
           path: temp/registry-admission/registry-admission.json
+          if-no-files-found: error
+          retention-days: 14
+
+  candidate-publication:
+    name: Direct stable publication proof
+    if: >-
+      github.repository == 'lingkaix/openkit' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' &&
+      contains(fromJSON('["release-gate","full"]'), inputs.gate))) &&
+      needs.candidate-plan.outputs.direct == 'true'
+    needs: [candidate-plan, candidate-registry, release-preflight, package-release-assets, qualify-nanohost, smoke-app-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment: candidate-release-security
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Set up pinned tools
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: node pnpm
+      - name: Install checksum-bound inventory and workflow tools
+        run: |
+          node scripts/install-security-tools.mjs --tool osv-scanner --directory "${RUNNER_TEMP}/security-tools"
+          node scripts/install-security-tools.mjs --tool zizmor --directory "${RUNNER_TEMP}/security-tools"
+          echo "${RUNNER_TEMP}/security-tools" >> "${GITHUB_PATH}"
+      - name: Lint before registry credentials
+        run: node scripts/check-workflows.mjs --all
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Read-only release registry login
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install verifier dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Download this attempt's registry observation
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: registry-admission-${{ github.run_attempt }}
+          path: candidate-registry
+      - name: Download the exact qualified portable assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release-portable-assets-${{ github.run_attempt }}
+          path: qualified-assets
+      - name: Admit source and all image platforms with the reviewed secret and dry-run publication
+        env:
+          OPENKIT_SECURITY_FINDINGS: ${{ secrets.OPENKIT_SECURITY_FINDINGS }}
+          RELEASE_TAG: ${{ needs.candidate-plan.outputs.tag }}
+        run: |
+          node scripts/release-direct.mjs build "${RELEASE_TAG}" direct-release \
+            candidate-registry/registry-admission.json qualified-assets
+          mv qualified-assets direct-release/assets
+      - name: Retain the small public admission proof for the pre-tag checker
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: direct-admission-${{ github.run_attempt }}
+          path: direct-release/proof.json
+          if-no-files-found: error
+      - name: Retain only public candidate proof and exact release bytes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: direct-release-${{ github.run_attempt }}
+          path: direct-release/
           if-no-files-found: error
           retention-days: 14
 
@@ -1433,9 +1622,16 @@ jobs:
 
   build-app-candidate:
     name: Read ${{ matrix.id }} candidate
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      always() && !cancelled() && needs.release-preflight.result == 'success' && needs.l0-l2.result == 'success' &&
+      needs.nano-core-e2e.result == 'success' && needs.smoke.result == 'success' && needs.container-image-matrix.result
+      == 'success' && (((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) &&
+      (needs.qualify-nanohost.result == 'success' && needs.release-preflight.outputs.direct == 'false')) ||
+      (!startsWith(github.ref, 'refs/tags/') && needs.release-preflight.outputs.direct == 'true' &&
+      needs.candidate-index.result == 'success'))
     needs:
       - release-preflight
+      - candidate-index
       - l0-l2
       - nano-core-e2e
       - smoke
@@ -1449,6 +1645,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.container-image-matrix.outputs.app-matrix) }}
+    env:
+      RELEASE_TAG: ${{ needs.release-preflight.outputs.tag }}
+      DIRECT: ${{ needs.release-preflight.outputs.direct }}
+    outputs:
+      tag: ${{ needs.release-preflight.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1479,11 +1680,11 @@ jobs:
           CREATED="${created}" node <<'NODE' >> "${GITHUB_OUTPUT}"
           const owner = process.env.GITHUB_REPOSITORY_OWNER.toLowerCase();
           const repository = process.env.IMAGE_REPOSITORY;
-          const version = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+          const version = process.env.RELEASE_TAG.replace(/^v/, '');
           const image = `ghcr.io/${owner}/${repository}`;
           const shortSha = process.env.GITHUB_SHA.slice(0, 12);
           const tags = [
-            `${image}:${process.env.GITHUB_REF_NAME}`,
+            `${image}:${process.env.RELEASE_TAG}`,
             `${image}:${version}`,
             `${image}:sha-${shortSha}`,
           ];
@@ -1537,14 +1738,30 @@ jobs:
             --sha-tag "${SHA_TAG}" \
             --latest-tag "${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
 
+      - name: Download direct stable candidate App index
+        if: env.DIRECT == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: candidate-app-${{ github.run_attempt }}
+          path: current-index
       - name: Fetch proved App candidate
         id: candidate
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          node scripts/release-candidate.mjs fetch --id app --tag "${RELEASE_TAG}" \
-            --directory "${RUNNER_TEMP}/app-prebuilt" >> "${GITHUB_OUTPUT}"
+          if [ "${DIRECT}" = true ]; then
+            node --input-type=module <<'NODE' >> "${GITHUB_OUTPUT}"
+            import { readFileSync } from 'node:fs';
+            const read = (path) => JSON.parse(readFileSync(path, 'utf8'));
+            const app = read('current-index/app.json');
+            if (app?.tag !== process.env.RELEASE_TAG || app?.sha !== process.env.GITHUB_SHA || !/^sha256:[a-f0-9]{64}$/.test(app?.digest))
+              throw Error('Authorized exact App candidate required');
+            console.log(`digest=${app.digest}`);
+          NODE
+          else
+            node scripts/release-candidate.mjs fetch --id app --tag "${RELEASE_TAG}" \
+              --directory "${RUNNER_TEMP}/app-prebuilt" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Resolve candidate digest
         id: release
@@ -1583,7 +1800,7 @@ jobs:
 
   smoke-app-native:
     name: Smoke App native (${{ matrix.platform }})
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: needs.build-app-candidate.result == 'success'
     needs: build-app-candidate
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -1599,6 +1816,8 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             architecture: ARM64
+    env:
+      RELEASE_TAG: ${{ needs.build-app-candidate.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1636,7 +1855,7 @@ jobs:
 
   image-security-diagnostic:
     name: Diagnose current candidate platform digests (${{ matrix.id }})
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.candidate-plan.outputs.enabled == 'true'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.candidate-plan.outputs.enabled == 'true' && needs.candidate-plan.outputs.direct != 'true'
     needs: [candidate-plan, candidate-index, container-image-matrix]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1682,8 +1901,12 @@ jobs:
 
   release-security:
     name: Admit candidate findings (${{ matrix.id }})
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    needs: [container-image-matrix, build-app-candidate, smoke-app-native]
+    if: >-
+      always() && !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.release-preflight.result == 'success' && needs.container-image-matrix.result == 'success' &&
+      ((needs.release-preflight.outputs.direct == 'true' && needs.direct-release-admission.result == 'success') ||
+      (needs.release-preflight.outputs.direct == 'false' && needs.build-app-candidate.result == 'success' &&
+      needs.smoke-app-native.result == 'success'))
+    needs: [container-image-matrix, build-app-candidate, smoke-app-native, release-preflight, direct-release-admission]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -1692,32 +1915,55 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.container-image-matrix.outputs.matrix) }}
+    env:
+      DIRECT: ${{ needs.release-preflight.outputs.direct }}
     steps:
+      - name: Download the candidate's immutable security admission
+        if: env.DIRECT == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: direct-release-admission-${{ github.run_attempt }}
+          path: direct-release-admission
+      - name: Read current candidate security admission
+        if: env.DIRECT == 'true'
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+        run: |
+          node -e 'const fs = require("node:fs"); const proof = JSON.parse(fs.readFileSync("direct-release-admission/proof.json")); if (!(Date.now() < Date.parse(proof.validUntil))) throw Error("Candidate admission expired");'
+          mkdir security-admitted
+          cp "direct-release-admission/security/${IMAGE_ID}."{digest,md} security-admitted/
+
       - name: Checkout
+        if: env.DIRECT == 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Set up pinned Node
+        if: env.DIRECT == 'false'
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           cache: false
           install_args: node
       - name: Install checksum-bound security tools and lint before credentials
+        if: env.DIRECT == 'false'
         run: |
           node scripts/install-security-tools.mjs --tool zizmor --directory "${RUNNER_TEMP}/security-tools"
           node scripts/install-security-tools.mjs --tool osv-scanner --directory "${RUNNER_TEMP}/security-tools"
           echo "${RUNNER_TEMP}/security-tools" >> "${GITHUB_PATH}"
           PATH="${RUNNER_TEMP}/security-tools:${PATH}" node scripts/check-workflows.mjs --all
       - name: Set up Docker Buildx
+        if: env.DIRECT == 'false'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in with read-only package authority
+        if: env.DIRECT == 'false'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Resolve existing image identity
+        if: env.DIRECT == 'false'
         id: existing
         env:
           IMAGE_ID: ${{ matrix.id }}
@@ -1727,19 +1973,20 @@ jobs:
           echo "image=${image}" >> "${GITHUB_OUTPUT}"
           node scripts/release-image-state.mjs --version-tag "${image}:${GITHUB_REF_NAME}" --version-without-v-tag "${image}:${GITHUB_REF_NAME#v}" --sha-tag "${image}:sha-${GITHUB_SHA:0:12}" --latest-tag "${image}:latest" >> "${GITHUB_OUTPUT}"
       - name: Download current-attempt App candidate
-        if: matrix.id == 'app'
+        if: env.DIRECT == 'false' && matrix.id == 'app'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: app-candidate-${{ github.run_attempt }}
           path: app-evidence
       - name: Download current-attempt native observations
-        if: matrix.id == 'app'
+        if: env.DIRECT == 'false' && matrix.id == 'app'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: app-native-*-${{ github.run_attempt }}
           merge-multiple: true
           path: app-evidence
       - name: Select the already-proved immutable candidate
+        if: env.DIRECT == 'false'
         id: selected
         env:
           IMAGE_ID: ${{ matrix.id }}
@@ -1756,6 +2003,7 @@ jobs:
             node scripts/release-candidate.mjs fetch --id "${IMAGE_ID}" --tag "${GITHUB_REF_NAME}" --directory "temp/security-${IMAGE_ID}" >> "${GITHUB_OUTPUT}"
           fi
       - name: Admit every platform digest before publication
+        if: env.DIRECT == 'false'
         env:
           OPENKIT_SECURITY_FINDINGS: ${{ secrets.OPENKIT_SECURITY_FINDINGS }}
           IMAGE_ID: ${{ matrix.id }}
@@ -1776,7 +2024,13 @@ jobs:
 
   attest-release-images:
     name: Attest ${{ matrix.id }} candidate provenance
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      always() && !cancelled() && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) &&
+      needs.release-security.result == 'success' && needs.release-preflight.result == 'success' &&
+      needs.container-image-matrix.result == 'success' && (needs.release-preflight.outputs.direct == 'true' ||
+      (needs.l0-l2.result == 'success' && needs.nano-core-e2e.result == 'success' && needs.smoke.result == 'success' &&
+      needs.qualify-nanohost.result == 'success' && needs.build-app-candidate.result == 'success' &&
+      needs.smoke-app-native.result == 'success'))
     needs:
       - release-security
       - build-app-candidate
@@ -1843,7 +2097,13 @@ jobs:
 
   publish-app-image:
     name: Publish ${{ matrix.id }} image
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      always() && !cancelled() && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) &&
+      needs.attest-release-images.result == 'success' && needs.release-security.result == 'success' &&
+      needs.release-preflight.result == 'success' && needs.container-image-matrix.result == 'success' &&
+      (needs.release-preflight.outputs.direct == 'true' || (needs.l0-l2.result == 'success' && needs.nano-core-e2e.result
+      == 'success' && needs.smoke.result == 'success' && needs.qualify-nanohost.result == 'success' &&
+      needs.build-app-candidate.result == 'success' && needs.smoke-app-native.result == 'success'))
     needs:
       - attest-release-images
       - release-security
@@ -1862,6 +2122,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.container-image-matrix.outputs.app-matrix) }}
+    env:
+      DIRECT: ${{ needs.release-preflight.outputs.direct }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1951,12 +2213,14 @@ jobs:
             --latest-tag "${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
 
       - name: Download current-attempt App candidate
+        if: env.DIRECT == 'false'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: app-candidate-${{ github.run_attempt }}
           path: app-evidence
 
       - name: Download current-attempt native observations
+        if: env.DIRECT == 'false'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: app-native-*-${{ github.run_attempt }}
@@ -1975,9 +2239,15 @@ jobs:
           PRESENT: ${{ steps.existing.outputs.present }}
           EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
           LATEST_BEFORE: ${{ steps.existing.outputs.latest_before }}
-        run: node scripts/release-app-native.mjs join app-evidence/app-candidate.json app-evidence >> "${GITHUB_OUTPUT}"
+        run: |
+          if [ "${DIRECT}" = true ]; then
+            node scripts/release-image-state.mjs --admitted security-admitted/app.digest >> "${GITHUB_OUTPUT}"
+          else
+            node scripts/release-app-native.mjs join app-evidence/app-candidate.json app-evidence >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Require the same security-admitted App index
+        if: env.DIRECT == 'false'
         env:
           IMAGE_ID: ${{ matrix.id }}
           DIGEST: ${{ steps.release.outputs.digest }}
@@ -1989,16 +2259,7 @@ jobs:
         env:
           DIGEST: ${{ steps.release.outputs.digest }}
           IMAGE: ${{ steps.image.outputs.image }}
-          PRERELEASE: ${{ steps.image.outputs.prerelease }}
-          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
-          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
-          VERSION_WITHOUT_V_TAG: ${{ steps.image.outputs.version_without_v_tag }}
-        run: |
-          tags=(--tag "${VERSION_TAG}" --tag "${VERSION_WITHOUT_V_TAG}" --tag "${SHA_TAG}")
-          if [ "${PRERELEASE}" = "false" ]; then
-            tags+=(--tag "${IMAGE}:latest")
-          fi
-          docker buildx imagetools create "${tags[@]}" "${IMAGE}@${DIGEST}"
+        run: node scripts/release-image-state.mjs --publish-digest "${DIGEST}"
 
       - name: Verify promoted identity
         env:
@@ -2111,13 +2372,18 @@ jobs:
       - name: Upload image release record
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-image-${{ matrix.id }}
+          name: release-image-${{ matrix.id }}-${{ github.run_attempt }}
           path: release-records/
           if-no-files-found: error
 
   publish-container-images:
     name: Publish ${{ matrix.id }} image
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      always() && !cancelled() && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) &&
+      needs.attest-release-images.result == 'success' && needs.release-security.result == 'success' &&
+      needs.release-preflight.result == 'success' && needs.container-image-matrix.result == 'success' &&
+      (needs.release-preflight.outputs.direct == 'true' || (needs.l0-l2.result == 'success' && needs.nano-core-e2e.result
+      == 'success' && needs.smoke.result == 'success' && needs.qualify-nanohost.result == 'success'))
     needs:
       - attest-release-images
       - release-security
@@ -2235,30 +2501,14 @@ jobs:
           IMAGE_ID: ${{ matrix.id }}
           EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
           PRESENT: ${{ steps.existing.outputs.present }}
-        run: |
-          node <<'NODE' >> "${GITHUB_OUTPUT}"
-          const fs = require('node:fs');
-          const digest = fs.readFileSync(`security-admitted/${process.env.IMAGE_ID}.digest`, 'utf8').trim();
-          if (!/^sha256:[a-f0-9]{64}$/.test(digest) || !['true', 'false'].includes(process.env.PRESENT)) throw Error('Invalid admitted identity');
-          if (process.env.PRESENT === 'true' && process.env.EXISTING_DIGEST !== digest) throw Error('Immutable identity changed after security admission');
-          console.log(`digest=${digest}\nreused=${process.env.PRESENT}`);
-          NODE
+        run: node scripts/release-image-state.mjs --admitted "security-admitted/${IMAGE_ID}.digest" >> "${GITHUB_OUTPUT}"
 
       - name: Promote the smoked digest
         if: steps.existing.outputs.present == 'false'
         env:
           DIGEST: ${{ steps.release.outputs.digest }}
           IMAGE: ${{ steps.image.outputs.image }}
-          PRERELEASE: ${{ steps.image.outputs.prerelease }}
-          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
-          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
-          VERSION_WITHOUT_V_TAG: ${{ steps.image.outputs.version_without_v_tag }}
-        run: |
-          tags=(--tag "${VERSION_TAG}" --tag "${VERSION_WITHOUT_V_TAG}" --tag "${SHA_TAG}")
-          if [ "${PRERELEASE}" = "false" ]; then
-            tags+=(--tag "${IMAGE}:latest")
-          fi
-          docker buildx imagetools create "${tags[@]}" "${IMAGE}@${DIGEST}"
+        run: node scripts/release-image-state.mjs --publish-digest "${DIGEST}"
 
       - name: Verify promoted identity
         env:
@@ -2375,14 +2625,19 @@ jobs:
       - name: Upload image release record
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-image-${{ matrix.id }}
+          name: release-image-${{ matrix.id }}-${{ github.run_attempt }}
           path: release-records/
           if-no-files-found: error
 
   github-release:
     name: Publish GitHub Release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      always() && !cancelled() && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) &&
+      needs.release-preflight.result == 'success' && needs.publish-app-image.result == 'success' &&
+      needs.publish-container-images.result == 'success' && ((needs.qualify-nanohost.result == 'success' &&
+      needs.package-release-assets.result == 'success') || needs.release-preflight.outputs.direct == 'true')
     needs:
+      - release-preflight
       - package-release-assets
       - qualify-nanohost
       - publish-container-images
@@ -2393,6 +2648,8 @@ jobs:
       packages: read
       id-token: write
       attestations: write
+    env:
+      DIRECT: ${{ needs.release-preflight.outputs.direct }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2402,7 +2659,7 @@ jobs:
       - name: Download image release records
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: release-image-*
+          pattern: release-image-*-${{ github.run_attempt }}
           path: release-records
           merge-multiple: true
 
@@ -2411,9 +2668,11 @@ jobs:
         with:
           cache: false
           install_args: node pnpm
-      - name: Install checksum-bound inventory and workflow tools
+      - name: Install the legacy SBOM scanner
+        if: env.DIRECT == 'false'
+        run: node scripts/install-security-tools.mjs --tool osv-scanner --directory "${RUNNER_TEMP}/security-tools"
+      - name: Install checksum-bound workflow tools
         run: |
-          node scripts/install-security-tools.mjs --tool osv-scanner --directory "${RUNNER_TEMP}/security-tools"
           node scripts/install-security-tools.mjs --tool zizmor --directory "${RUNNER_TEMP}/security-tools"
           echo "${RUNNER_TEMP}/security-tools" >> "${GITHUB_PATH}"
       - name: Lint before registry credentials
@@ -2429,18 +2688,36 @@ jobs:
       - name: Install verifier dependencies without lifecycle scripts
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Download the exact verified stable payload
+        if: env.DIRECT == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: direct-release-assets-${{ github.run_attempt }}
+          path: portable-assets
+
+      - name: Compare the stable payload with the live release image records
+        if: env.DIRECT == 'true'
+        run: |
+          node scripts/release-record.mjs \
+            --repo-root . --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" \
+            --repository "${GITHUB_REPOSITORY}" --records release-records \
+            --verify-publication-assets portable-assets
+
       - name: Download portable release assets
+        if: env.DIRECT == 'false'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-portable-assets
+          name: release-portable-assets-${{ github.run_attempt }}
           path: portable-assets
 
       - name: Generate every image platform and NanoHost archive SBOM
+        if: env.DIRECT == 'false'
         run: |
           node scripts/release-sbom.mjs release --records release-records --assets portable-assets \
             --repository "${GITHUB_REPOSITORY}" --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}"
 
       - name: Generate release manifest and checksum
+        if: env.DIRECT == 'false'
         run: |
           node scripts/release-record.mjs \
             --repo-root . --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" \
@@ -2484,6 +2761,10 @@ jobs:
             echo "Existing published GitHub Release is immutable; continuing to verification."
             exit 0
           fi
+          if [ "${DIRECT}" = true ]; then
+            node scripts/release-direct.mjs publish "${GITHUB_REF_NAME}" portable-assets release-notes.md
+            exit 0
+          fi
           release_flags=(--verify-tag --title "${GITHUB_REF_NAME}" --notes-file release-notes.md)
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             release_flags+=(--prerelease --latest=false)
@@ -2502,7 +2783,10 @@ jobs:
 
   verify-release:
     name: Verify published release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') &&
+      needs.test-image.result == 'success' && needs.github-release.result == 'success' &&
+      needs.publish-container-images.result == 'success' && needs.publish-app-image.result == 'success'
     needs:
       - test-image
       - github-release
@@ -2532,7 +2816,7 @@ jobs:
       - name: Download image release records
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: release-image-*
+          pattern: release-image-*-${{ github.run_attempt }}
           path: release-records
           merge-multiple: true
 
@@ -2575,6 +2859,10 @@ jobs:
           TEST_IMAGE: ${{ needs.test-image.outputs.image }}
         run: |
           release_json="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,isPrerelease,assets,body)"
+          if [[ "${GITHUB_REF_NAME}" != *-* ]]; then
+            [ "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "${GITHUB_REF_NAME}" ] ||
+              { echo 'GitHub Latest differs from the stable tag.' >&2; exit 1; }
+          fi
           mkdir release-download
           gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --dir release-download
           checksum="$(sha256sum release-download/SHA256SUMS | cut -d ' ' -f1)"
@@ -2648,12 +2936,23 @@ jobs:
           done
           VERIFY_ASSETS
 
+      - name: Download the selected stable candidate proof for checksum comparison
+        if: "!contains(github.ref_name, '-')"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: direct-release-admission-${{ github.run_attempt }}
+          path: direct-release-admission
+
       - name: Verify release SBOM bindings and native keyless attestations
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          proof=()
+          if [[ "${GITHUB_REF_NAME}" != *-* ]]; then
+            proof+=(--candidate-proof direct-release-admission/proof.json)
+          fi
           node scripts/verify-release-integrity.mjs --directory release-download --repository "${GITHUB_REPOSITORY}" \
-            --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}"
+            --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" "${proof[@]}"
 
       - name: Verify public worker base without registry credentials
         run: |
