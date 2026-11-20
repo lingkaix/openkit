@@ -82,6 +82,9 @@ type RuntimeConfigChange = z.infer<typeof RuntimeConfigChangeSchema>;
 type RuntimeConfigReloadPlan = z.infer<typeof RuntimeConfigReloadPlanSchema>;
 type RuntimeConfigReloadSummary = z.infer<typeof RuntimeConfigReloadSummarySchema>;
 
+/** Runtime plan path for the current NanoHost transport fence. */
+export const NANO_HOST_TRANSPORT_RESTART_PATH = 'nanohost.transport';
+
 interface RuntimeConfigSnapshotConstructionInput {
   dataRoot: string | null;
   version: number;
@@ -297,6 +300,10 @@ export interface RuntimeConfigManager {
   getDataRoot(): string | null;
   /** Returns the active runtime config snapshot. */
   current(): RuntimeConfigSnapshot;
+  /** Binds the App's transport fence and returns a reader for the lifetime admission latch. */
+  bindNanoHostTransportFence(fence: () => Promise<void>): () => boolean;
+  /** Adds current process restart reasons to a candidate or failed plan for reporting. */
+  reportCurrentRestart(plan: RuntimeConfigReloadPlan): RuntimeConfigReloadPlan;
   /** Acknowledges this manager's actual installed Policy on the canonical native Core opening. */
   bindNativePolicyPublication(coreDb: CoreDb): Promise<void>;
   /** Publishes a committed Workspace creation or name edit without activating other saved inputs. */
@@ -567,6 +574,8 @@ export function createRuntimeConfigManager(
   let lastReload: RuntimeConfigReloadSummary | null = null;
   let lastFailedReload: RuntimeConfigReloadSummary | null = null;
   let pendingRestart: RuntimeConfigChange[] = [];
+  let fenceNanoHostTransport: (() => Promise<void>) | undefined;
+  let nanoHostTransportFenced = false;
   /**
    * Pushes the snapshot's capture pair onto the optional live store sink.
    *
@@ -743,7 +752,26 @@ export function createRuntimeConfigManager(
     reload: (input) => {
       const startedAt = new Date().toISOString();
       const nextVersion = current.version + 1;
-      const failed = (error: unknown): RuntimeConfigReloadResponse => {
+      const respond = (
+        status: RuntimeConfigReloadResponse['status'],
+        plan: RuntimeConfigReloadPlan
+      ) => {
+        const fence =
+          !input.dryRun &&
+          !nanoHostTransportFenced &&
+          plan.requiresRestart.some((entry) => entry.path.startsWith('nanohost.'))
+            ? fenceNanoHostTransport
+            : undefined;
+        // Latch before native readiness I/O. A failed acknowledgement must leave admission closed.
+        if (fence) nanoHostTransportFenced = true;
+        const response = {
+          status,
+          runtimeConfig: createRuntimeConfigStatus(),
+          plan: reportCurrentRestart(plan),
+        };
+        return fence ? fence().then(() => response) : response;
+      };
+      const failed = (error: unknown) => {
         const message = redactRuntimeConfigReloadError(error, options.dataRoot);
         const plan = failedReloadPlan(current, nextVersion, message);
 
@@ -756,11 +784,7 @@ export function createRuntimeConfigManager(
           message
         );
 
-        return {
-          status: 'failed',
-          runtimeConfig: createRuntimeConfigStatus(current, pendingRestart),
-          plan,
-        };
+        return respond('failed', plan);
       };
 
       try {
@@ -784,38 +808,30 @@ export function createRuntimeConfigManager(
             'rejected'
           );
 
-          return {
-            status: 'rejected',
-            runtimeConfig: createRuntimeConfigStatus(current, pendingRestart),
-            plan: {
-              ...plan,
-              rejected: [
-                ...plan.rejected,
-                ...plan.requiresRestart.map((change) => ({
-                  ...change,
-                  action: 'rejected' as const,
-                  category: 'rejected' as const,
-                })),
-              ],
-            },
-          };
+          return respond('rejected', {
+            ...plan,
+            rejected: [
+              ...plan.rejected,
+              ...plan.requiresRestart.map((change) => ({
+                ...change,
+                action: 'rejected' as const,
+                category: 'rejected' as const,
+              })),
+            ],
+          });
         }
 
         if (input.dryRun) {
           lastReload = reloadSummary(startedAt, input, current.version, current.version, 'dry-run');
 
-          return {
-            status: 'dry-run',
-            runtimeConfig: createRuntimeConfigStatus(current, pendingRestart),
-            plan,
-          };
+          return respond('dry-run', plan);
         }
 
         const safe = applySafeRuntimeConfigReload(current, next, plan);
         const ready = installSnapshot(safe, undefined, () => {
           pendingRestart = plan.requiresRestart;
         });
-        const complete = (): RuntimeConfigReloadResponse => {
+        const complete = () => {
           lastReload = reloadSummary(
             startedAt,
             input,
@@ -823,37 +839,48 @@ export function createRuntimeConfigManager(
             current.version,
             'applied'
           );
-          return {
-            status: 'applied',
-            runtimeConfig: createRuntimeConfigStatus(current, pendingRestart),
-            plan,
-          };
+          return respond('applied', plan);
         };
         return ready instanceof Promise ? ready.then(complete, failed) : complete();
       } catch (error) {
         return failed(error);
       }
     },
-    status: () => ({
-      ...createRuntimeConfigStatus(current, pendingRestart),
-      lastReload,
-      lastFailedReload,
-    }),
+    bindNanoHostTransportFence: (fence) => {
+      fenceNanoHostTransport = fence;
+      return () => nanoHostTransportFenced;
+    },
+    reportCurrentRestart,
+    status: createRuntimeConfigStatus,
   };
 
-  /**
-   * Creates a runtime config status using manager-owned summaries.
-   */
-  function createRuntimeConfigStatus(
-    snapshot: RuntimeConfigSnapshot,
-    restartChanges: RuntimeConfigChange[]
-  ): RuntimeConfigStatus {
+  /** A latched fence is a current process condition. It must stay outside candidate decisions. */
+  function currentRestartReasons(restartChanges: RuntimeConfigChange[]): RuntimeConfigChange[] {
+    if (!nanoHostTransportFenced) return restartChanges;
+    return [
+      ...restartChanges,
+      change(
+        NANO_HOST_TRANSPORT_RESTART_PATH,
+        'restart-required',
+        'requires-restart',
+        'NanoHost transport admission is fenced until NanoCore restarts.'
+      ),
+    ];
+  }
+
+  /** Projects current restart reasons into a plan after candidate decisions finish. */
+  function reportCurrentRestart(plan: RuntimeConfigReloadPlan): RuntimeConfigReloadPlan {
+    return { ...plan, requiresRestart: currentRestartReasons(plan.requiresRestart) };
+  }
+
+  /** Creates status from the active snapshot, reload outcomes, and current restart reasons. */
+  function createRuntimeConfigStatus(): RuntimeConfigStatus {
     return {
-      currentVersion: snapshot.version,
-      loadedAt: snapshot.loadedAt,
+      currentVersion: current.version,
+      loadedAt: current.loadedAt,
       lastReload,
       lastFailedReload,
-      pendingRestart: restartChanges,
+      pendingRestart: currentRestartReasons(pendingRestart),
     };
   }
 }
@@ -1415,7 +1442,7 @@ function reloadSummary(
 ): RuntimeConfigReloadSummary {
   return {
     at,
-    dryRun: input.dryRun,
+    dryRun: input.dryRun ?? false,
     mode: input.mode,
     previousVersion,
     currentVersion,

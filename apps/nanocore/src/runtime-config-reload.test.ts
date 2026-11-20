@@ -8,6 +8,7 @@ import { getNanoHostTransportSessionAuthority } from './app.js';
 import transportRevision from './auth/nanohost-transport-revision.json' with { type: 'json' };
 import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
+import { runtimeConfigCandidateRequiresRestart } from './config/runtime-config-files.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ProviderRegistry } from './providers/registry.js';
 import {
@@ -121,6 +122,11 @@ describe('NanoHost restart-required reload fencing', () => {
           identityId: 'fixture-reload-host',
           rendezvousUrl: 'http://127.0.0.1:3101',
         };
+        const transportRestart = expect.objectContaining({
+          path: 'nanohost.transport',
+          action: 'requires-restart',
+          summary: 'NanoHost transport admission is fenced until NanoCore restarts.',
+        });
         const configPath = join(dataRoot, 'config', 'server.jsonc');
         const originalConfig = JSON.parse(readFileSync(configPath, 'utf8'));
         const writeHost = (value: typeof host) =>
@@ -222,14 +228,20 @@ describe('NanoHost restart-required reload fencing', () => {
             expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
             expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
             expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
+            expect(manager.status().pendingRestart).toContainEqual(transportRestart);
+            expect((await manager.reload({ mode: 'safe' })).plan.requiresRestart).toContainEqual(
+              transportRestart
+            );
           } finally {
             readFailure.mockRestore();
           }
           // Failed durable observation stays unchanged; process fencing does not claim a committed readiness update.
           expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toEqual(targetBeforeReload);
-        } else if (mode === 'safe')
-          expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
-        else {
+        } else if (mode === 'safe') {
+          const result = await manager.reload({ mode: 'safe' });
+          expect(result.status).toBe('applied');
+          expect(result.plan.requiresRestart).toContainEqual(transportRestart);
+        } else {
           const response = await app.request(
             ...operationRequest(
               'runtime.reload',
@@ -242,7 +254,11 @@ describe('NanoHost restart-required reload fencing', () => {
             )
           );
           expect(response.status).toBe(200);
-          expect((await response.json()).status).toBe('rejected');
+          const result = await response.json();
+          expect(result.status).toBe('rejected');
+          if (mode === 'strict')
+            expect(result.plan.requiresRestart).toContainEqual(transportRestart);
+          else expect(result.plan.requiresRestart).not.toContainEqual(transportRestart);
         }
         expect(manager.current().openKitConfig.nanohost).toEqual(host);
         if (mode === 'strict' || mode === 'dry-run') expect(manager.current()).toBe(initial);
@@ -269,18 +285,57 @@ describe('NanoHost restart-required reload fencing', () => {
         expect((await admit()).status).toBe(409);
 
         writeHost(host);
-        expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
-        expect(manager.status().pendingRestart).toEqual([]);
+        const preview = await manager.reload({ dryRun: true, mode: 'safe' });
+        expect(preview.status).toBe('dry-run');
+        expect(preview.plan.requiresRestart).toEqual([transportRestart]);
+        expect(runtimeConfigCandidateRequiresRestart(preview.plan)).toBe(false);
+        const restored = await manager.reload({ mode: 'safe' });
+        expect(restored.status).toBe('applied');
+        expect(restored.plan.requiresRestart).toEqual([transportRestart]);
+        expect(manager.status().pendingRestart).toEqual([transportRestart]);
+
+        writeFileSync(configPath, '{');
+        const failed = await manager.reload({ mode: 'safe' });
+        expect(failed.status).toBe('failed');
+        expect(failed.plan.requiresRestart).toEqual([transportRestart]);
+
+        // A current fence must not turn a supported live change into a strict reload rejection.
+        writeFileSync(
+          configPath,
+          JSON.stringify({ ...originalConfig, nanohost: host, security: { pauseAgentWork: true } })
+        );
+        const live = await manager.reload({ mode: 'strict' });
+        expect(live.status).toBe('applied');
+        expect(live.runtimeConfig.pendingRestart).toEqual([transportRestart]);
+        expect(manager.current().openKitConfig.security?.pauseAgentWork).toBe(true);
+
+        const validation = await app.request(
+          ...operationRequest(
+            'runtime.validate',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                files: [{ id: 'server.jsonc', content: readFileSync(configPath, 'utf8') }],
+              }),
+            }
+          )
+        );
+        expect(validation.status).toBe(200);
+        expect(await validation.json()).toMatchObject({
+          valid: true,
+          plan: { requiresRestart: [transportRestart] },
+          runtimeConfig: { pendingRestart: [transportRestart] },
+        });
         expect((await admit()).status).toBe(409);
         expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
 
         // A new App lifetime reads the restored startup file and admits a fresh generation.
-        app = createApp({
-          coreDb,
-          dataRoot,
-          runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
-          store,
-        });
+        writeHost(host);
+        const restartedManager = createRuntimeConfigManager({ dataRoot });
+        app = createApp({ coreDb, dataRoot, runtimeConfigManager: restartedManager, store });
+        expect(restartedManager.status().pendingRestart).toEqual([]);
         authorities.push(getNanoHostTransportSessionAuthority(app));
         expect((await admit()).status).toBe(200);
       } finally {

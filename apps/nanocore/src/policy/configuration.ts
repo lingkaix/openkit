@@ -23,6 +23,7 @@ import { parseJsoncObject } from '../config/jsonc.js';
 import {
   type RuntimeConfigFileService,
   RuntimeConfigFileServiceError,
+  runtimeConfigCandidateRequiresRestart,
 } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
 import { readExecutionJournalInvocation } from '../runtime/execution-journal.js';
@@ -503,7 +504,7 @@ export function preparePolicyConfiguration(input: {
     after: prepared.document,
     content,
     policyProposal: proposal,
-    restartRequired: validation.plan.requiresRestart.length > 0,
+    restartRequired: runtimeConfigCandidateRequiresRestart(validation.plan),
   };
 }
 
