@@ -202,7 +202,7 @@ export interface NanoHostTransportTokenRow {
 
 /** Converts one existing SQL row without re-reading or truncating its committed values. */
 export function readNanoHostTransportTokenRecord(
-  row: NanoHostTransportTokenRow
+  row: Omit<NanoHostTransportTokenRow, 'token_hash'>
 ): NanoHostTransportTokenRecord {
   return {
     deploymentId: row.deployment_id,

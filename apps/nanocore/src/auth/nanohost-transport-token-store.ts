@@ -5,6 +5,7 @@ import {
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import type { Actor } from './identity.js';
 import {
@@ -441,11 +442,23 @@ export function isNanoHostTransportIdentityActive(
   );
 }
 
-/** Existing Main read; this function has no mutation or post-ACK reconstruction. */
-export function listNanoHostTransportTokenRecords(coreDb: CoreDb): NanoHostTransportTokenRecord[] {
-  const rows = coreDb.sqlite
-    .prepare('SELECT * FROM nanohost_transport_tokens ORDER BY issued_at DESC, token_id DESC')
-    .all() as NanoHostTransportTokenRow[];
+/** Injected credential inventory read bound to the admitted NanoHost owner. */
+export type NanoHostTransportTokenReader = () => StorageResult<
+  'nanohost',
+  readonly NanoHostTransportTokenRecord[]
+>;
+
+/** Reads the redacted inventory on the caller's already admitted owner handle. */
+export function listNanoHostTransportTokenRecords(db: {
+  readonly sqlite: Pick<CoreDb['sqlite'], 'prepare'>;
+}): NanoHostTransportTokenRecord[] {
+  const rows = db.sqlite
+    .prepare(`SELECT token_id, owner_nanohost_identity_id, token_type, scope, deployment_id,
+      status, issued_at, expires_at, revoked_at, predecessor_token_id,
+      rotation_overlap_expires_at, responsible_server_admin_actor_id,
+      last_used_at, last_used_channel, last_used_source
+      FROM nanohost_transport_tokens ORDER BY issued_at DESC, token_id DESC`)
+    .all() as Omit<NanoHostTransportTokenRow, 'token_hash'>[];
 
   return rows.map(readNanoHostTransportTokenRecord);
 }
