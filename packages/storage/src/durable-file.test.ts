@@ -228,7 +228,7 @@ describe('snapshot Storage byte primitives', () => {
     expect(partial).toEqual(authored.subarray(0, partial.length));
     expect(await readdir(f.root)).toEqual(['source']);
     expect(await readFile(f.sourcePath)).toEqual(authored);
-    expect((await stat(f.sourcePath)).mode & 0o777).toBe(0o640);
+    expect((await stat(f.sourcePath)).mode & 0o777).toBe(0o640 & ~process.umask());
     expect(handles).toHaveLength(2);
     expect(handles.map((handle) => handle.fd)).toEqual([-1, -1]);
   });
@@ -526,7 +526,7 @@ describe('snapshot Storage byte primitives', () => {
     expect(mutated).toBe(true);
     expect(await identity(f.sourcePath)).toBe(f.sourceProof.identity);
     expect(await readFile(f.sourcePath)).toEqual(changed);
-    expect((await stat(f.sourcePath)).mode & 0o777).toBe(0o640);
+    expect((await stat(f.sourcePath)).mode & 0o777).toBe(0o640 & ~process.umask());
     expect(await readFile(f.destinationPath, 'utf8')).toBe('Previous destination bytes.');
     expect(await identity(f.destinationPath)).toBe(f.destinationIdentity);
     expect(faults.syncCalls).toBe(0);
