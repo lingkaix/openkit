@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import { recordServerAuditEvent } from '../audit-events.js';
 import { OperationError } from '../operation-error.js';
 import { assertControlProductWriter } from '../storage/control-store-products.js';
@@ -44,37 +45,6 @@ export function applyControlNanoHostTransport(
     }
   }
   switch (input.kind) {
-    case 'issue':
-      return { kind: 'record', record: createNanoHostTransportTokenRecord(coreDb, input.record) };
-    case 'enroll':
-      return { kind: 'record', record: enrollNanoHostTransportIdentity(coreDb, input.record) };
-    case 'verify':
-      return {
-        kind: 'record',
-        record: verifyNanoHostTransportTokenRecord(coreDb, input.tokenHash, input),
-      };
-    case 'revoke':
-      return {
-        kind: 'record',
-        record: revokeNanoHostTransportTokenRecord(coreDb, input.tokenId, input),
-      };
-    case 'cutover':
-      return {
-        kind: 'record',
-        record: completeNanoHostTransportTokenCutover(coreDb, input.tokenId, input),
-      };
-    case 'rotate':
-      return {
-        kind: 'rotation',
-        result: rotateNanoHostTransportTokenRecord(coreDb, input.tokenId, input),
-      };
-    case 'abort':
-      return { kind: 'abort', result: abortNanoHostTransportTokenRotation(coreDb, input) };
-    case 'decommission': {
-      const records = decommissionNanoHostTransportTokens(coreDb, input.identityId, input);
-      decommissionNanoHostIntegrationIdentity(coreDb, input.identityId, input.deploymentId, input);
-      return { kind: 'decommission', records };
-    }
     case 'lifecycle-audit':
       recordNanoHostTransportLifecycleAuditEvent(
         coreDb,
@@ -96,15 +66,58 @@ export function applyControlNanoHostTransport(
       });
       return { kind: 'audit' };
     }
+    default:
+      return applyNanoHostTransportMutation(coreDb.sqlite, input);
+  }
+}
+
+/** Runs an admitted transport mutation against only its owning SQLite transaction. */
+export function applyNanoHostTransportMutation(
+  sqlite: Database.Database,
+  input: Exclude<ControlNanoHostTransportInput, { kind: 'lifecycle-audit' | 'decommission-audit' }>
+): ControlNanoHostTransportResult {
+  assertControlProductWriter(sqlite);
+  switch (input.kind) {
+    case 'issue':
+      return { kind: 'record', record: createNanoHostTransportTokenRecord(sqlite, input.record) };
+    case 'enroll':
+      return { kind: 'record', record: enrollNanoHostTransportIdentity(sqlite, input.record) };
+    case 'verify':
+      return {
+        kind: 'record',
+        record: verifyNanoHostTransportTokenRecord(sqlite, input.tokenHash, input),
+      };
+    case 'revoke':
+      return {
+        kind: 'record',
+        record: revokeNanoHostTransportTokenRecord(sqlite, input.tokenId, input),
+      };
+    case 'cutover':
+      return {
+        kind: 'record',
+        record: completeNanoHostTransportTokenCutover(sqlite, input.tokenId, input),
+      };
+    case 'rotate':
+      return {
+        kind: 'rotation',
+        result: rotateNanoHostTransportTokenRecord(sqlite, input.tokenId, input),
+      };
+    case 'abort':
+      return { kind: 'abort', result: abortNanoHostTransportTokenRotation(sqlite, input) };
+    case 'decommission': {
+      const records = decommissionNanoHostTransportTokens(sqlite, input.identityId, input);
+      decommissionNanoHostIntegrationIdentity(sqlite, input.identityId, input.deploymentId, input);
+      return { kind: 'decommission', records };
+    }
   }
 }
 
 function createNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   input: Extract<ControlNanoHostTransportInput, { kind: 'issue' }>['record']
 ): NanoHostTransportTokenRecord {
   if (
-    !isNanoHostTransportIdentityActive(coreDb, input.ownerNanoHostIdentityId, input.deploymentId)
+    !isNanoHostTransportIdentityActive(sqlite, input.ownerNanoHostIdentityId, input.deploymentId)
   ) {
     throw new Error(
       'NanoHost transport token issuance requires the exact active identity and deployment pair.'
@@ -114,7 +127,7 @@ function createNanoHostTransportTokenRecord(
   const tokenId = input.tokenId;
   const now = (input.now ?? new Date()).toISOString();
 
-  coreDb.sqlite
+  sqlite
     .prepare(
       `INSERT INTO nanohost_transport_tokens (
         token_id,
@@ -143,7 +156,7 @@ function createNanoHostTransportTokenRecord(
       input.responsibleServerAdminActorId
     );
 
-  const record = getNanoHostTransportTokenRecord(coreDb, tokenId);
+  const record = getNanoHostTransportTokenRecord(sqlite, tokenId);
   if (!record) {
     throw new Error(`NanoHost transport token record was not created: ${tokenId}`);
   }
@@ -152,12 +165,12 @@ function createNanoHostTransportTokenRecord(
 }
 
 function enrollNanoHostTransportIdentity(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   input: Extract<ControlNanoHostTransportInput, { kind: 'enroll' }>['record']
 ): NanoHostTransportTokenRecord {
-  return coreDb.sqlite.transaction(() => {
+  return sqlite.transaction(() => {
     const now = (input.now ?? new Date()).toISOString();
-    const rows = coreDb.sqlite
+    const rows = sqlite
       .prepare(
         `SELECT identity_id, deployment_id, status
          FROM nanohost_integration_identities
@@ -168,7 +181,7 @@ function enrollNanoHostTransportIdentity(
       identity_id: string;
       status: string;
     }>;
-    const retainedTokenHistory = coreDb.sqlite
+    const retainedTokenHistory = sqlite
       .prepare(
         `SELECT COUNT(*) AS count
          FROM nanohost_transport_tokens
@@ -182,14 +195,14 @@ function enrollNanoHostTransportIdentity(
     }
 
     if (rows.length === 0) {
-      coreDb.sqlite
+      sqlite
         .prepare(
           `INSERT INTO nanohost_integration_identities (
             identity_id, deployment_id, status, created_at
           ) VALUES (?, ?, 'active', ?)`
         )
         .run(input.ownerNanoHostIdentityId, input.deploymentId, now);
-      return createNanoHostTransportTokenRecord(coreDb, input);
+      return createNanoHostTransportTokenRecord(sqlite, input);
     }
 
     const exact = rows[0];
@@ -212,7 +225,7 @@ function enrollNanoHostTransportIdentity(
       );
     }
 
-    const reactivated = coreDb.sqlite
+    const reactivated = sqlite
       .prepare(
         `UPDATE nanohost_integration_identities
          SET status = 'active', decommissioned_at = NULL
@@ -225,17 +238,17 @@ function enrollNanoHostTransportIdentity(
       );
     }
 
-    return createNanoHostTransportTokenRecord(coreDb, input);
+    return createNanoHostTransportTokenRecord(sqlite, input);
   })();
 }
 
 function isNanoHostTransportIdentityActive(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   identityId: string,
   deploymentId: string
 ): boolean {
   return Boolean(
-    coreDb.sqlite
+    sqlite
       .prepare(
         `SELECT 1 FROM nanohost_integration_identities
          WHERE identity_id = ? AND deployment_id = ? AND status = 'active'`
@@ -245,7 +258,7 @@ function isNanoHostTransportIdentityActive(
 }
 
 function verifyNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   expectedHash: string,
   options: {
     channel?: string | undefined;
@@ -253,7 +266,7 @@ function verifyNanoHostTransportTokenRecord(
     source?: string | undefined;
   } = {}
 ): VerifiedNanoHostTransportTokenRecord | null {
-  const row = coreDb.sqlite
+  const row = sqlite
     .prepare('SELECT * FROM nanohost_transport_tokens WHERE token_hash = ?')
     .get(expectedHash) as NanoHostTransportTokenRow | undefined;
 
@@ -264,7 +277,7 @@ function verifyNanoHostTransportTokenRecord(
   if (
     row.token_type !== NANOHOST_TRANSPORT_TOKEN_TYPE ||
     row.scope !== NANOHOST_TRANSPORT_TOKEN_SCOPE ||
-    !isNanoHostTransportIdentityActive(coreDb, row.owner_nanohost_identity_id, row.deployment_id)
+    !isNanoHostTransportIdentityActive(sqlite, row.owner_nanohost_identity_id, row.deployment_id)
   ) {
     return null;
   }
@@ -283,7 +296,7 @@ function verifyNanoHostTransportTokenRecord(
   }
 
   const lastUsedAt = (options.now ?? new Date()).toISOString();
-  coreDb.sqlite
+  sqlite
     .prepare(
       `UPDATE nanohost_transport_tokens
        SET last_used_at = ?, last_used_channel = ?, last_used_source = ?
@@ -291,16 +304,16 @@ function verifyNanoHostTransportTokenRecord(
     )
     .run(lastUsedAt, options.channel ?? null, options.source ?? null, row.token_id);
 
-  return getNanoHostTransportTokenRecord(coreDb, row.token_id);
+  return getNanoHostTransportTokenRecord(sqlite, row.token_id);
 }
 
 function revokeNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   tokenId: string,
   options: { now?: Date | undefined } = {}
 ): NanoHostTransportTokenRecord | null {
   const now = (options.now ?? new Date()).toISOString();
-  coreDb.sqlite
+  sqlite
     .prepare(
       `UPDATE nanohost_transport_tokens
        SET status = 'revoked', revoked_at = ?
@@ -308,15 +321,15 @@ function revokeNanoHostTransportTokenRecord(
     )
     .run(now, tokenId);
 
-  return getNanoHostTransportTokenRecord(coreDb, tokenId);
+  return getNanoHostTransportTokenRecord(sqlite, tokenId);
 }
 
 function rotateNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   tokenId: string,
   input: Extract<ControlNanoHostTransportInput, { kind: 'rotate' }>
 ): { record: NanoHostTransportTokenRecord; rotatedRecord: NanoHostTransportTokenRecord } | null {
-  const current = getNanoHostTransportTokenRecord(coreDb, tokenId);
+  const current = getNanoHostTransportTokenRecord(sqlite, tokenId);
   const now = input.now ?? new Date();
 
   if (
@@ -335,8 +348,8 @@ function rotateNanoHostTransportTokenRecord(
   }
 
   const overlapExpiresAt = new Date(now.getTime() + input.overlapSeconds * 1000).toISOString();
-  const rotate = coreDb.sqlite.transaction(() => {
-    coreDb.sqlite
+  const rotate = sqlite.transaction(() => {
+    sqlite
       .prepare(
         `UPDATE nanohost_transport_tokens
          SET status = 'rotated', rotation_overlap_expires_at = ?
@@ -344,7 +357,7 @@ function rotateNanoHostTransportTokenRecord(
       )
       .run(overlapExpiresAt, tokenId);
 
-    const record = createNanoHostTransportTokenRecord(coreDb, {
+    const record = createNanoHostTransportTokenRecord(sqlite, {
       tokenId: input.successorTokenId,
       tokenHash: input.successorTokenHash,
       deploymentId: current.deploymentId,
@@ -354,7 +367,7 @@ function rotateNanoHostTransportTokenRecord(
       predecessorTokenId: current.tokenId,
       responsibleServerAdminActorId: current.responsibleServerAdminActorId,
     });
-    const rotatedRecord = getNanoHostTransportTokenRecord(coreDb, tokenId);
+    const rotatedRecord = getNanoHostTransportTokenRecord(sqlite, tokenId);
 
     if (!rotatedRecord) {
       throw new Error(`NanoHost transport token record was not rotated: ${tokenId}`);
@@ -367,12 +380,12 @@ function rotateNanoHostTransportTokenRecord(
 }
 
 function decommissionNanoHostTransportTokens(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   ownerNanoHostIdentityId: string,
   options: { now?: Date | undefined } = {}
 ): NanoHostTransportTokenRecord[] {
   const now = (options.now ?? new Date()).toISOString();
-  const rows = coreDb.sqlite
+  const rows = sqlite
     .prepare(
       `SELECT token_id FROM nanohost_transport_tokens
        WHERE owner_nanohost_identity_id = ? AND status != 'revoked'`
@@ -381,7 +394,7 @@ function decommissionNanoHostTransportTokens(
 
   const revoked: NanoHostTransportTokenRecord[] = [];
   for (const row of rows) {
-    const record = revokeNanoHostTransportTokenRecord(coreDb, row.token_id, {
+    const record = revokeNanoHostTransportTokenRecord(sqlite, row.token_id, {
       now: new Date(now),
     });
     if (record) {
@@ -393,12 +406,12 @@ function decommissionNanoHostTransportTokens(
 }
 
 function decommissionNanoHostIntegrationIdentity(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   identityId: string,
   deploymentId: string,
   options: { now?: Date | undefined } = {}
 ): void {
-  const updated = coreDb.sqlite
+  const updated = sqlite
     .prepare(
       `UPDATE nanohost_integration_identities
        SET status = 'decommissioned', decommissioned_at = ?
@@ -413,10 +426,10 @@ function decommissionNanoHostIntegrationIdentity(
 }
 
 function getNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   tokenId: string
 ): NanoHostTransportTokenRecord | null {
-  const row = coreDb.sqlite
+  const row = sqlite
     .prepare('SELECT * FROM nanohost_transport_tokens WHERE token_id = ?')
     .get(tokenId) as NanoHostTransportTokenRow | undefined;
 
@@ -424,17 +437,17 @@ function getNanoHostTransportTokenRecord(
 }
 
 function completeNanoHostTransportTokenCutover(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   predecessorTokenId: string,
   options: { now?: Date | undefined } = {}
 ): NanoHostTransportTokenRecord | null {
-  const current = getNanoHostTransportTokenRecord(coreDb, predecessorTokenId);
+  const current = getNanoHostTransportTokenRecord(sqlite, predecessorTokenId);
   if (!current) {
     return null;
   }
 
   const now = (options.now ?? new Date()).toISOString();
-  coreDb.sqlite
+  sqlite
     .prepare(
       `UPDATE nanohost_transport_tokens
        SET status = 'rotated', rotation_overlap_expires_at = ?
@@ -442,11 +455,11 @@ function completeNanoHostTransportTokenCutover(
     )
     .run(now, predecessorTokenId);
 
-  return getNanoHostTransportTokenRecord(coreDb, predecessorTokenId);
+  return getNanoHostTransportTokenRecord(sqlite, predecessorTokenId);
 }
 
 function abortNanoHostTransportTokenRotation(
-  coreDb: CoreDb,
+  sqlite: Database.Database,
   input: {
     predecessorTokenId: string;
     successorTokenId: string;
@@ -456,16 +469,16 @@ function abortNanoHostTransportTokenRotation(
   predecessor: NanoHostTransportTokenRecord;
   successor: NanoHostTransportTokenRecord;
 } | null {
-  const predecessor = getNanoHostTransportTokenRecord(coreDb, input.predecessorTokenId);
-  const successor = getNanoHostTransportTokenRecord(coreDb, input.successorTokenId);
+  const predecessor = getNanoHostTransportTokenRecord(sqlite, input.predecessorTokenId);
+  const successor = getNanoHostTransportTokenRecord(sqlite, input.successorTokenId);
   if (!predecessor || !successor) {
     return null;
   }
 
   const now = input.now ?? new Date();
-  const abort = coreDb.sqlite.transaction(() => {
-    revokeNanoHostTransportTokenRecord(coreDb, input.successorTokenId, { now });
-    coreDb.sqlite
+  const abort = sqlite.transaction(() => {
+    revokeNanoHostTransportTokenRecord(sqlite, input.successorTokenId, { now });
+    sqlite
       .prepare(
         `UPDATE nanohost_transport_tokens
          SET status = 'active', rotation_overlap_expires_at = NULL, revoked_at = NULL
@@ -473,8 +486,8 @@ function abortNanoHostTransportTokenRotation(
       )
       .run(input.predecessorTokenId);
 
-    const restored = getNanoHostTransportTokenRecord(coreDb, input.predecessorTokenId);
-    const revokedSuccessor = getNanoHostTransportTokenRecord(coreDb, input.successorTokenId);
+    const restored = getNanoHostTransportTokenRecord(sqlite, input.predecessorTokenId);
+    const revokedSuccessor = getNanoHostTransportTokenRecord(sqlite, input.successorTokenId);
     if (!restored || !revokedSuccessor) {
       throw new Error('NanoHost transport rotation abort failed to update token records.');
     }
@@ -497,7 +510,7 @@ function recordNanoHostTransportLifecycleAuditEvent(
 ): void {
   if (action === 'nanohost.transport.rotate' && record.status === 'revoked') {
     const predecessor = record.predecessorTokenId
-      ? getNanoHostTransportTokenRecord(coreDb, record.predecessorTokenId)
+      ? getNanoHostTransportTokenRecord(coreDb.sqlite, record.predecessorTokenId)
       : null;
     recordServerAuditEvent({
       action,

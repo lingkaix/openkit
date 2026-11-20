@@ -83,7 +83,10 @@ CREATE TABLE `nanohost_runtime_targets` (
 	`fresh_empty` integer NOT NULL,
 	`physical_epoch` text,
 	`observed_at` text NOT NULL,
-	`slot_count` integer NOT NULL, `last_fresh_ready_at` text);
+	`slot_count` integer NOT NULL,
+	`last_fresh_ready_at` text,
+	`vault_epoch_fence_json` text
+);
 --> statement-breakpoint
 CREATE TABLE `nanohost_transport_tokens` (
 	`token_id` text PRIMARY KEY NOT NULL,

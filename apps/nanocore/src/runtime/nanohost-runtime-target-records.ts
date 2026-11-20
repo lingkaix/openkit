@@ -3,9 +3,12 @@ import {
   NanoHostRuntimeTargetStatusResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
+import type Database from 'better-sqlite3';
 import type { CoreMode } from '../config/mode.js';
-import type { CoreDb } from '../storage/db.js';
-import { RuntimeTargetRefusal } from '../storage/runtime-target-codecs.js';
+import {
+  type ControlRuntimeTargetInput,
+  RuntimeTargetRefusal,
+} from '../storage/runtime-target-codecs.js';
 
 /** Expected cleanup exclusion while the matching target lacks fresh replacement Epoch proof. */
 export class NanoHostCleanupFencePendingError extends Error {
@@ -100,6 +103,8 @@ export interface RecordNanoHostRuntimeTargetConnectionCloseInput {
 }
 
 /** Raw configured NanoHost target database row. */
+type NanoHostRuntimeTargetDb = { readonly sqlite: Database.Database };
+
 interface NanoHostRuntimeTargetRow {
   readonly target_id: string;
   readonly identity_id: string;
@@ -113,6 +118,23 @@ interface NanoHostRuntimeTargetRow {
   readonly slot_count: number;
 }
 
+/** Applies one original target transition inside its owner's admitted transaction. */
+export function mutateNanoHostRuntimeTarget(
+  owner: NanoHostRuntimeTargetDb,
+  input: ControlRuntimeTargetInput
+): NanoHostRuntimeTargetRecord | null {
+  switch (input.kind) {
+    case 'allocate':
+      return allocateNanoHostRuntimeTargetConnectionGeneration(owner, input);
+    case 'ready':
+      return upsertNanoHostRuntimeTarget(owner, input);
+    case 'close':
+      return recordNanoHostRuntimeTargetConnectionClose(owner, input);
+    case 'restart':
+      return fenceNanoHostRuntimeTargetAfterRestart(owner, input.observedAt);
+  }
+}
+
 /**
  * Allocates and persists the next NanoHost connection generation.
  *
@@ -121,24 +143,24 @@ interface NanoHostRuntimeTargetRow {
  * The committed generation starts non-ready and unfenced. Rejected identity,
  * deployment, target, concurrent, or overflow attempts do not advance it.
  *
- * @param coreDb Open Core database handle.
+ * @param owner Admitted NanoHost database handle.
  * @param input Configured target identity and allocation timestamp.
  * @returns Newly allocated durable target projection.
  * @throws Error when target ownership conflicts or generation would overflow.
  */
 export function allocateNanoHostRuntimeTargetConnectionGeneration(
-  coreDb: CoreDb,
+  owner: NanoHostRuntimeTargetDb,
   input: AllocateNanoHostRuntimeTargetConnectionGenerationInput
 ): NanoHostRuntimeTargetRecord {
-  const existing = selectNanoHostRuntimeTarget(coreDb, input.targetId);
+  const existing = selectNanoHostRuntimeTarget(owner, input.targetId);
   if (!existing) {
-    const configuredTarget = coreDb.sqlite
+    const configuredTarget = owner.sqlite
       .prepare('SELECT target_id FROM nanohost_runtime_targets LIMIT 1')
       .get() as { readonly target_id: string } | undefined;
     if (configuredTarget) {
       throw new RuntimeTargetRefusal('A different NanoHost RuntimeTarget is already configured.');
     }
-    coreDb.sqlite
+    owner.sqlite
       .prepare(
         `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
@@ -160,7 +182,7 @@ export function allocateNanoHostRuntimeTargetConnectionGeneration(
       throw new RuntimeTargetRefusal('NanoHost RuntimeTarget connection generation overflow.');
     }
     const nextGeneration = existing.connection_generation + 1;
-    const updated = coreDb.sqlite
+    const updated = owner.sqlite
       .prepare(
         `UPDATE nanohost_runtime_targets
            SET connection_generation = ?, predecessor_fenced = 0, ready = 0,
@@ -183,22 +205,22 @@ export function allocateNanoHostRuntimeTargetConnectionGeneration(
     }
   }
 
-  return requireNanoHostRuntimeTarget(coreDb, input.targetId);
+  return requireNanoHostRuntimeTarget(owner, input.targetId);
 }
 
 /**
  * Projects one native physical close without lowering the durable generation high-water.
  *
- * @param coreDb Open Core database handle.
+ * @param owner Admitted NanoHost database handle.
  * @param input Closed generation, remaining authority, and observation timestamp.
  * @returns Current durable target projection after the monotone close projection.
  * @throws Error when the target is absent or close generations exceed durable high-water.
  */
 export function recordNanoHostRuntimeTargetConnectionClose(
-  coreDb: CoreDb,
+  owner: NanoHostRuntimeTargetDb,
   input: RecordNanoHostRuntimeTargetConnectionCloseInput
 ): NanoHostRuntimeTargetRecord {
-  const current = selectNanoHostRuntimeTarget(coreDb, input.targetId);
+  const current = selectNanoHostRuntimeTarget(owner, input.targetId);
   if (!current) {
     throw new RuntimeTargetRefusal('NanoHost RuntimeTarget is not configured.');
   }
@@ -216,7 +238,7 @@ export function recordNanoHostRuntimeTargetConnectionClose(
     (input.closedGeneration === current.connection_generation &&
       input.authoritativeGeneration === null);
   const closesCurrentGeneration = input.closedGeneration === current.connection_generation;
-  const projected = coreDb.sqlite
+  const projected = owner.sqlite
     .prepare(
       `UPDATE nanohost_runtime_targets
        SET predecessor_fenced = CASE
@@ -244,15 +266,15 @@ export function recordNanoHostRuntimeTargetConnectionClose(
       'NanoHost RuntimeTarget generation changed before close projection.'
     );
   }
-  return requireNanoHostRuntimeTarget(coreDb, input.targetId);
+  return requireNanoHostRuntimeTarget(owner, input.targetId);
 }
 
 /** Fences the sole durable RuntimeTarget after process-local transport authority is lost. */
 export function fenceNanoHostRuntimeTargetAfterRestart(
-  coreDb: CoreDb,
+  owner: NanoHostRuntimeTargetDb,
   observedAt: string
 ): NanoHostRuntimeTargetRecord | null {
-  const targets = coreDb.sqlite
+  const targets = owner.sqlite
     .prepare(
       `SELECT target_id AS targetId, connection_generation AS connectionGeneration
        FROM nanohost_runtime_targets`
@@ -263,7 +285,7 @@ export function fenceNanoHostRuntimeTargetAfterRestart(
   if (targets.length !== 1) {
     throw new RuntimeTargetRefusal('NanoHost restart found multiple configured RuntimeTargets.');
   }
-  return recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+  return recordNanoHostRuntimeTargetConnectionClose(owner, {
     authoritativeGeneration: null,
     closedGeneration: target.connectionGeneration,
     observedAt,
@@ -277,16 +299,16 @@ export function fenceNanoHostRuntimeTargetAfterRestart(
  * Only the already-allocated exact current generation may become fresh-empty and
  * ready. This record is an admission gate; scheduler rows remain capacity authority.
  *
- * @param coreDb Open Core database handle.
+ * @param owner Admitted NanoHost database handle.
  * @param input Configured identity and readiness observation.
  * @returns Current durable target projection.
  * @throws Error when allocation, identity, deployment, generation, observation, or proof conflicts.
  */
 export function upsertNanoHostRuntimeTarget(
-  coreDb: CoreDb,
+  owner: NanoHostRuntimeTargetDb,
   input: UpsertNanoHostRuntimeTargetInput
 ): NanoHostRuntimeTargetRecord {
-  const existing = selectNanoHostRuntimeTarget(coreDb, input.targetId);
+  const existing = selectNanoHostRuntimeTarget(owner, input.targetId);
   if (!existing) {
     throw new RuntimeTargetRefusal('NanoHost RuntimeTarget must be allocated before readiness.');
   }
@@ -312,7 +334,7 @@ export function upsertNanoHostRuntimeTarget(
     );
   }
 
-  const update = coreDb.sqlite
+  const update = owner.sqlite
     .prepare(
       `UPDATE nanohost_runtime_targets
          SET predecessor_fenced = ?, ready = ?, fresh_empty = ?, physical_epoch = ?, observed_at = ?,
@@ -338,21 +360,21 @@ export function upsertNanoHostRuntimeTarget(
     );
   }
 
-  return requireNanoHostRuntimeTarget(coreDb, input.targetId);
+  return requireNanoHostRuntimeTarget(owner, input.targetId);
 }
 
 /**
  * Reads one configured NanoHost RuntimeTarget.
  *
- * @param coreDb Open Core database handle.
+ * @param owner Admitted NanoHost database handle.
  * @param targetId Scheduler target id.
  * @returns Durable target projection or null when absent.
  */
 export function getNanoHostRuntimeTarget(
-  coreDb: CoreDb,
+  owner: NanoHostRuntimeTargetDb,
   targetId: string
 ): NanoHostRuntimeTargetRecord | null {
-  const row = selectNanoHostRuntimeTarget(coreDb, targetId);
+  const row = selectNanoHostRuntimeTarget(owner, targetId);
   return row ? mapNanoHostRuntimeTargetRow(row) : null;
 }
 
@@ -363,7 +385,7 @@ export function getNanoHostRuntimeTarget(
  * @returns Ready or unready status fields, or the configured observation's missing, configuration, storage or server-mode failure.
  */
 export function readConfiguredNanoHostRuntimeTargetStatus(input: {
-  readonly coreDb: CoreDb | undefined;
+  readonly coreDb: NanoHostRuntimeTargetDb | undefined;
   readonly mode: CoreMode;
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
 }): NanoHostRuntimeTargetStatusObservation {
@@ -428,10 +450,10 @@ function isReadyObservation(input: UpsertNanoHostRuntimeTargetInput): boolean {
 
 /** Selects one raw configured target row. */
 function selectNanoHostRuntimeTarget(
-  coreDb: CoreDb,
+  owner: NanoHostRuntimeTargetDb,
   targetId: string
 ): NanoHostRuntimeTargetRow | undefined {
-  return coreDb.sqlite
+  return owner.sqlite
     .prepare(
       `SELECT target_id, identity_id, deployment_id, connection_generation,
               predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at,
@@ -444,10 +466,10 @@ function selectNanoHostRuntimeTarget(
 
 /** Reads one configured target or throws. */
 function requireNanoHostRuntimeTarget(
-  coreDb: CoreDb,
+  owner: NanoHostRuntimeTargetDb,
   targetId: string
 ): NanoHostRuntimeTargetRecord {
-  const target = getNanoHostRuntimeTarget(coreDb, targetId);
+  const target = getNanoHostRuntimeTarget(owner, targetId);
   if (!target) {
     throw new RuntimeTargetRefusal(`NanoHost RuntimeTarget not found: ${targetId}`);
   }

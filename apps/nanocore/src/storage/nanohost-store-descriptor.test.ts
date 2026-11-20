@@ -9,6 +9,12 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { describe, expect, it } from 'vitest';
 import { listNanoHostTransportTokenRecords } from '../auth/nanohost-transport-token-store.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  fenceNanoHostRuntimeTargetAfterRestart,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from '../runtime/nanohost-runtime-target-records.js';
 import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 
 const migrationsFolder = fileURLToPath(
@@ -102,6 +108,55 @@ describe('NanoHost extension baseline', () => {
       }
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('applies exact target generation and restart transitions using only the extension', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      migrate(drizzle(sqlite), { migrationsFolder });
+      const owner = { sqlite };
+      const target = {
+        deploymentId: 'fixture-deployment',
+        identityId: 'fixture-identity',
+        targetId: 'fixture-target',
+      };
+      const allocated = sqlite.transaction(() =>
+        allocateNanoHostRuntimeTargetConnectionGeneration(owner, {
+          ...target,
+          observedAt: '2026-11-20T00:00:00.000Z',
+        })
+      )();
+      expect(allocated).toMatchObject({
+        connectionGeneration: 1,
+        physicalEpoch: null,
+        ready: false,
+      });
+      const readiness = {
+        ...target,
+        connectionGeneration: allocated.connectionGeneration,
+        freshEmpty: true,
+        observedAt: '2026-11-20T00:00:01.000Z',
+        physicalEpoch: 'a'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      };
+      const publishReady = sqlite.transaction((input: typeof readiness) =>
+        upsertNanoHostRuntimeTarget(owner, input)
+      );
+      expect(() => publishReady({ ...readiness, connectionGeneration: 2 })).toThrow(/generation/);
+      expect(getNanoHostRuntimeTarget(owner, target.targetId)).toEqual(allocated);
+      expect(publishReady(readiness)).toMatchObject({
+        physicalEpoch: readiness.physicalEpoch,
+        ready: true,
+      });
+      const stopped = sqlite.transaction(() =>
+        fenceNanoHostRuntimeTargetAfterRestart(owner, '2026-11-20T00:00:02.000Z')
+      )();
+      expect(stopped).toMatchObject({ connectionGeneration: 1, physicalEpoch: null, ready: false });
+      expect(() => publishReady(readiness)).toThrow(/stale/);
+    } finally {
+      sqlite.close();
     }
   });
 
