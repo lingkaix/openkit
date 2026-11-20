@@ -8,6 +8,13 @@
       "when": 1794664200000,
       "tag": "0000_baseline",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1795147200000,
+      "tag": "0001_discord_reports_bindings",
+      "breakpoints": true
     }
   ]
 }
