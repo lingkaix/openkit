@@ -36,7 +36,24 @@ export default defineConfig({
           cwd: fileURLToPath(new URL('.', import.meta.url)),
         });
         if (result.status !== 0) {
-          this.error(result.stderr || 'shell worker emit failed');
+          // A signal or a spawn error leaves stderr empty. Report status, signal, and the error.
+          const spawnError = result.error;
+          const errorCode =
+            spawnError != null && 'code' in spawnError && spawnError.code != null
+              ? String(spawnError.code)
+              : '';
+          const stdoutLength = result.stdout == null ? 0 : result.stdout.length;
+          this.error(
+            [
+              'shell worker emit failed',
+              `status=${String(result.status)}`,
+              `signal=${String(result.signal)}`,
+              `errorCode=${errorCode}`,
+              `errorMessage=${spawnError?.message ?? ''}`,
+              `stdoutLength=${stdoutLength}`,
+              `stderr=${result.stderr ?? ''}`,
+            ].join(' ')
+          );
           return;
         }
         this.emitFile({ type: 'asset', fileName: 'sw.js', source: result.stdout });
