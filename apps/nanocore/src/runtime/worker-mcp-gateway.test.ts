@@ -1816,8 +1816,14 @@ describe('worker MCP gateway', () => {
       await gateway.closeServerIfIdle(input);
       expect(upstream.observed.some((request) => request.endsWith('|DELETE|'))).toBe(false);
       await expect(call).resolves.toMatchObject({ content: [{ text: 'delayed' }] });
-      await gateway.closeServerIfIdle(input);
+      const replacement = {
+        ...input,
+        server: { ...server, catalogDigest: `sha256:${'7'.repeat(64)}` },
+      };
+      await gateway.listTools(replacement);
+      await gateway.closeServerIfIdle(input, { exactCatalog: true });
       expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(1);
+      expect(gateway.getServerHealth(replacement)).toBe('ready');
     } finally {
       await gateway.close();
       await upstream.close();

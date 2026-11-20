@@ -14,12 +14,14 @@ import {
   type InternalRoleProfilesConfig,
   type ProviderSubscriptionAccountSlotId,
   resolveProviderSubscriptionFamily,
+  resolveWorkspaceMcpServer,
   type SubscriptionProviderId,
 } from '@openkit/config-schema';
 import type { ActorRef, Item, TurnSchema } from '@openkit/protocol';
 import {
   allocateEntityId,
   canonicalIdentifierName,
+  canonicalJsonText,
   compareCodeUnits,
   deriveEntityId,
   isEntityId,
@@ -932,12 +934,43 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           role: 'rejected',
         }
       : admitNanoHostSession(input);
+  /** Retires only the superseded local entry generation. Active calls use the existing idle cleanup. */
+  async function retireWorkspaceMcpSessions(
+    previous: RuntimeConfigSnapshot,
+    active: RuntimeConfigSnapshot
+  ): Promise<void> {
+    const activeCatalogs = new Map(
+      active.workspaceMcpServerCatalogs.map(({ workspaceId, catalog }) => [workspaceId, catalog])
+    );
+    for (const { workspaceId, catalog } of previous.workspaceMcpServerCatalogs) {
+      const activeServers = new Map(
+        activeCatalogs.get(workspaceId)?.servers.map((server) => [server.id, server])
+      );
+      for (const server of catalog.servers) {
+        if (!server.enabled) continue;
+        const replacement = activeServers.get(server.id);
+        if (replacement && canonicalJsonText(replacement) === canonicalJsonText(server)) continue;
+        const superseded = resolveWorkspaceMcpServer({ catalog, serverId: server.id });
+        void workerMcpGateway
+          .closeServerIfIdle({ workspaceId, server: superseded }, { exactCatalog: true })
+          .catch(() =>
+            console.warn('Superseded Workspace MCP session cleanup requires inspection.')
+          );
+      }
+    }
+  }
+  runtimeConfigManager.bindWorkspaceMcpCatalogChange((previous, active) => {
+    void retireWorkspaceMcpSessions(previous, active).catch(() =>
+      console.warn('Superseded Workspace MCP session cleanup requires inspection.')
+    );
+  });
+
   let resumeAgentWork: (() => Promise<void>) | undefined;
   const reloadRuntimeConfig = runtimeConfigManager.reload.bind(runtimeConfigManager);
   runtimeConfigManager.reload = async (input) => {
     const wasPaused = runtimeConfig().openKitConfig.security?.pauseAgentWork === true;
-    const result = reloadRuntimeConfig(input);
-    const response = result instanceof Promise ? await result : result;
+    const pending = reloadRuntimeConfig(input);
+    const response = pending instanceof Promise ? await pending : pending;
     if (!input.dryRun && wasPaused && !runtimeConfig().openKitConfig.security?.pauseAgentWork)
       await resumeAgentWork?.();
     return response;

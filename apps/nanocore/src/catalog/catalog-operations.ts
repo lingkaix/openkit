@@ -1,5 +1,6 @@
 import { tmpdir } from 'node:os';
 import { CATALOG_OPERATION_DEFINITIONS, type OperationInput } from '@openkit/app-api-schemas';
+import type { ResourceCatalogDocument } from '@openkit/config-schema';
 import { createPrivateTreeSync, removePrivateTreeSync } from '@openkit/storage';
 import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
@@ -145,9 +146,46 @@ export function createCatalogOperationImplementations(
     if (!value) throw new Error('Workspace catalog operations require a data root.');
     return value;
   };
-  const afterMutation = async (workspaceId: string) => {
+  const afterMutation = async () => {
     await dependencies.runtimeConfigManager?.reload({ dryRun: false, mode: 'safe' });
-    void dependencies.closeWorkspaceMcpSessions?.(workspaceId);
+  };
+  /** Reports actual activation once the revision and its required Audit have settled. */
+  const activateSavedMcpCatalog = async (
+    workspaceId: string,
+    entryId: string,
+    saved: ResourceCatalogDocument
+  ) => {
+    const manager = dependencies.runtimeConfigManager;
+    let reloadStatus: 'failed' | 'rejected' | 'superseded' | 'unknown' = 'unknown';
+    let cause: unknown;
+    try {
+      const reload = await manager?.reload({ dryRun: false, mode: 'safe' });
+      if (manager && reload?.status === 'applied') {
+        const confirmed = manager.matchesWorkspaceMcpEntry(workspaceId, entryId, saved);
+        if (confirmed === true) return;
+        if (confirmed === false) reloadStatus = 'superseded';
+      } else if (reload?.status === 'failed' || reload?.status === 'rejected') {
+        reloadStatus = reload.status;
+      }
+    } catch (error) {
+      cause = error;
+    }
+    throw new OperationError(
+      reloadStatus === 'unknown'
+        ? 'mcp_config_saved_activation_unknown'
+        : 'mcp_config_saved_activation_failed',
+      'The MCP catalog revision is saved and its Audit was acknowledged. Inspect runtime status before retrying activation.',
+      409,
+      {
+        cause,
+        details: {
+          savedRevision: saved.revision,
+          auditAcknowledged: true,
+          reloadStatus,
+          activeRuntimeVersion: manager?.current().version ?? null,
+        },
+      }
+    );
   };
   const management = createSkillManagementCommands(dependencies, afterMutation);
   const administrator = (context: AdmittedOperationContext) => {
@@ -449,7 +487,7 @@ export function createCatalogOperationImplementations(
             input.candidateId,
             catalog.revision
           );
-          await afterMutation(input.workspaceId);
+          await afterMutation();
           await getControlStoreWorkerClient().recordCommandReceipt(owners.workspaceDb, {
             key: receipt.key,
             command: operation,
@@ -515,7 +553,8 @@ export function createCatalogOperationImplementations(
         `mcp:${result.version.entryId}@${result.version.digest}`,
         result.catalog.revision
       );
-      await afterMutation(input.workspaceId);
+      if (stage) await afterMutation();
+      else await activateSavedMcpCatalog(input.workspaceId, result.version.entryId, result.catalog);
       return {
         entry: mcpEntries(result.catalog).find((item) => item.id === result.version.entryId)!,
         revision: result.catalog.revision,
@@ -783,7 +822,7 @@ export function createCatalogOperationImplementations(
               result.candidate.id,
               result.catalog.revision
             );
-            await afterMutation(input.workspaceId);
+            await afterMutation();
             await getControlStoreWorkerClient().recordCommandReceipt(owners.workspaceDb, {
               key: receipt.key,
               command: 'catalog.skill-candidate-submit',
@@ -879,7 +918,7 @@ export function createCatalogOperationImplementations(
           `mcp:${input.mcpId}`,
           catalog.revision
         );
-        await afterMutation(input.workspaceId);
+        await activateSavedMcpCatalog(input.workspaceId, input.mcpId, catalog);
         return { revision: catalog.revision };
       } catch (error) {
         catalogFailure(error, 'mcp_remove_failed');
@@ -907,7 +946,7 @@ export function createCatalogOperationImplementations(
           `mcp:${input.mcpId}@${input.digest}`,
           catalog.revision
         );
-        await afterMutation(input.workspaceId);
+        await activateSavedMcpCatalog(input.workspaceId, input.mcpId, catalog);
         return { revision: catalog.revision };
       } catch (error) {
         catalogFailure(error, 'mcp_select_failed');
@@ -958,7 +997,7 @@ export function createCatalogOperationImplementations(
           `mcp:${input.mcpId}`,
           next.revision
         );
-        await afterMutation(input.workspaceId);
+        await activateSavedMcpCatalog(input.workspaceId, entryId, next);
         return { revision: next.revision };
       } catch (error) {
         catalogFailure(error, 'mcp_binding_failed');
@@ -1002,7 +1041,7 @@ export function createCatalogOperationImplementations(
           `plugin:${result.version.entryId}@${result.version.digest}`,
           result.catalog.revision
         );
-        await afterMutation(input.workspaceId);
+        await afterMutation();
         return {
           diagnostics: result.diagnostics,
           entry: pluginEntries(result.catalog).find((item) => item.id === result.version.entryId)!,

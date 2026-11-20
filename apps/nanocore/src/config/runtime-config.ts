@@ -18,6 +18,7 @@ import {
   InternalRoleProfilesConfigSchema,
   type ModelCatalog,
   parseWorkspaceDataSourceCatalog,
+  type ResourceCatalogDocument,
   type UserConfig,
   UserConfigSchema,
   type WorkspaceConfig,
@@ -171,7 +172,15 @@ interface LoadedWorkspaceMcpServerCatalog {
   path: string;
   /** Parsed Workspace MCP server catalog. */
   catalog: WorkspaceMcpServerCatalog;
+  /** Present when loaded from the Workspace catalog document. */
+  entryIdentities?: ReadonlyMap<string, WorkspaceMcpEntryIdentity>;
 }
+
+/** Entry identity retained only in memory, including entries without a Gateway projection. */
+type WorkspaceMcpEntryIdentity = Pick<
+  ResourceCatalogDocument['mcp']['entries'][number],
+  'availability' | 'currentVersionDigest'
+> & { bindingRevision: number | null };
 
 /**
  * Runtime config diagnostic collected while loading a snapshot.
@@ -310,6 +319,16 @@ export interface RuntimeConfigManager {
   current(): RuntimeConfigSnapshot;
   /** Binds the App's transport fence and returns a reader for the lifetime admission latch. */
   bindNanoHostTransportFence(fence: () => Promise<void>): () => boolean;
+  /** Observes the exact replaced and installed snapshots for Workspace MCP cleanup after reload. */
+  bindWorkspaceMcpCatalogChange(
+    observe: (previous: RuntimeConfigSnapshot, active: RuntimeConfigSnapshot) => void
+  ): void;
+  /** Confirms the installed identity and effect of just the saved entry. Null means no proof. */
+  matchesWorkspaceMcpEntry(
+    workspaceId: string,
+    entryId: string,
+    saved: ResourceCatalogDocument
+  ): boolean | null;
   /** Adds current process restart reasons to a candidate or failed plan for reporting. */
   reportCurrentRestart(plan: RuntimeConfigReloadPlan): RuntimeConfigReloadPlan;
   /** Adds the capacity effect implied by a validated candidate and the current resident. */
@@ -619,6 +638,9 @@ export function createRuntimeConfigManager(
   let lastFailedReload: RuntimeConfigReloadSummary | null = null;
   let pendingRestart: RuntimeConfigChange[] = [];
   let fenceNanoHostTransport: (() => Promise<void>) | undefined;
+  let onWorkspaceMcpCatalogChange:
+    | ((previous: RuntimeConfigSnapshot, active: RuntimeConfigSnapshot) => void)
+    | undefined;
   let nanoHostTransportFenced = false;
   /**
    * Pushes the snapshot's capture pair onto the optional live store sink.
@@ -678,7 +700,7 @@ export function createRuntimeConfigManager(
   function installSnapshot(
     next: RuntimeConfigSnapshot,
     validate: () => void = () => {},
-    installed: () => void = () => {}
+    installed: (previous: RuntimeConfigSnapshot, active: RuntimeConfigSnapshot) => void = () => {}
   ) {
     if (installation) throw new Error('Runtime Policy publication is still pending.');
     const previous = current;
@@ -688,7 +710,7 @@ export function createRuntimeConfigManager(
         throw new Error('Runtime configuration changed during publication.');
       if (next !== previous) {
         current = next;
-        installed();
+        installed(previous, next);
         applyCaptureCoverage(current);
       }
     };
@@ -929,8 +951,10 @@ export function createRuntimeConfigManager(
             return respond('dry-run', plan, { previous, next: snapshot });
           }
 
-          const ready = installSnapshot(snapshot, undefined, () => {
+          const ready = installSnapshot(snapshot, undefined, (replaced, active) => {
             pendingRestart = plan.requiresRestart;
+            if (plan.deferred.some((entry) => entry.path === 'workspaceMcpServers'))
+              onWorkspaceMcpCatalogChange?.(replaced, active);
           });
           const complete = () => {
             lastReload = reloadSummary(
@@ -952,6 +976,22 @@ export function createRuntimeConfigManager(
     bindNanoHostTransportFence: (fence) => {
       fenceNanoHostTransport = fence;
       return () => nanoHostTransportFenced;
+    },
+    bindWorkspaceMcpCatalogChange: (observe) => {
+      onWorkspaceMcpCatalogChange = observe;
+    },
+    matchesWorkspaceMcpEntry: (workspaceId, entryId, saved) => {
+      const installed = current.workspaceMcpServerCatalogs.find(
+        (entry) => entry.workspaceId === workspaceId
+      );
+      const expectedIdentity = projectWorkspaceMcpEntryIdentities(saved).get(entryId);
+      if (!installed?.entryIdentities || !expectedIdentity) return null;
+      if (!equalSemantic(expectedIdentity, installed.entryIdentities.get(entryId))) return false;
+      const expected = projectEffectiveWorkspaceMcpCatalog(saved).servers.find(
+        (entry) => entry.id === entryId
+      );
+      const active = installed.catalog.servers.find((entry) => entry.id === entryId);
+      return equalSemantic(expected, active);
     },
     reportCurrentRestart,
     reportCandidateCapacity,
@@ -1992,13 +2032,28 @@ function loadWorkspaceMcpServerCatalogs(
     if (quarantinedWorkspaceIds?.has(id)) continue;
     const catalogPath = join(workspacesRoot, id, 'catalog', 'catalog.json');
     if (!existsSync(catalogPath)) continue;
+    const document = loadWorkspaceResourceCatalog(dataRoot, id);
     catalogs.push({
       workspaceId: id,
       path: catalogPath,
-      catalog: projectEffectiveWorkspaceMcpCatalog(loadWorkspaceResourceCatalog(dataRoot, id)),
+      catalog: projectEffectiveWorkspaceMcpCatalog(document),
+      entryIdentities: projectWorkspaceMcpEntryIdentities(document),
     });
   }
   return catalogs;
+}
+
+/** Identifies entries from the same catalog document used for the Gateway projection. */
+function projectWorkspaceMcpEntryIdentities(catalog: ResourceCatalogDocument) {
+  const bindings = new Map(
+    catalog.mcp.bindings.map(({ entryId, revision }) => [entryId, revision])
+  );
+  return new Map(
+    catalog.mcp.entries.map(({ id, availability, currentVersionDigest }) => [
+      id,
+      { availability, currentVersionDigest, bindingRevision: bindings.get(id) ?? null },
+    ])
+  );
 }
 
 /**

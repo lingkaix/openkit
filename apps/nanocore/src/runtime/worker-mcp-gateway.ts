@@ -144,8 +144,11 @@ export interface WorkerMcpGateway {
   close(): Promise<void>;
   /** Stops the cached client for one resolved server. */
   closeServer(input: WorkerMcpGatewayServerInput): Promise<void>;
-  /** Stops cached clients for one server only when no operation is using them. */
-  closeServerIfIdle(input: Omit<WorkerMcpGatewayServerInput, 'credentials'>): Promise<void>;
+  /** Stops idle clients for one server. Reload can restrict teardown to the previous generation. */
+  closeServerIfIdle(
+    input: Omit<WorkerMcpGatewayServerInput, 'credentials'>,
+    options?: { exactCatalog: true }
+  ): Promise<void>;
   /** Stops cached or initializing clients carrying any of the exact revoked grants. */
   closeCredentialGrants?(grantIds: readonly string[]): Promise<void>;
   /** Stops every cached client owned by one Workspace. */
@@ -639,7 +642,8 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
 
   /** Stops only idle sessions so one operation cannot terminate another in-flight call. */
   public async closeServerIfIdle(
-    input: Omit<WorkerMcpGatewayServerInput, 'credentials'>
+    input: Omit<WorkerMcpGatewayServerInput, 'credentials'>,
+    options?: { exactCatalog: true }
   ): Promise<void> {
     const keys = [...this.sessions.keys()].filter((key) => {
       const cached = this.sessionInputs.get(key);
@@ -647,6 +651,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         cached?.workspaceId === input.workspaceId &&
         cached.server.id === input.server.id &&
         cached.server.scope === input.server.scope &&
+        (!options?.exactCatalog || cached.server.catalogDigest === input.server.catalogDigest) &&
         (this.activeUses.get(key) ?? 0) === 0
       );
     });
