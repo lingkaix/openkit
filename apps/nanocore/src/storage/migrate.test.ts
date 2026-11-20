@@ -286,7 +286,11 @@ describe('database setup', () => {
         readdirSync(join(process.cwd(), 'drizzle', 'core'))
           .filter((name) => name.endsWith('.sql'))
           .sort()
-      ).toEqual(['0000_baseline.sql', '0001_discord_reports_bindings.sql']);
+      ).toEqual([
+        '0000_baseline.sql',
+        '0001_discord_reports_bindings.sql',
+        '0002_discord_reports_delivery.sql',
+      ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
           existsSync(join(process.cwd(), 'drizzle', scope, 'meta', '_journal.json'))
@@ -295,6 +299,7 @@ describe('database setup', () => {
       expect(listAppliedMigrationIds(coreDb)).toEqual([
         'core_0000_baseline',
         'core_0001_discord_reports_bindings',
+        'core_0002_discord_reports_delivery',
       ]);
       // Current private Login slots remain optional; absence never infers a Login.
       const loginColumns = coreDb.sqlite.pragma('table_info(vault_references)') as Array<{

@@ -18,6 +18,8 @@ Each inbound event is one `channel.discord.inbound` command row: the request id 
 
 `discord-rest.ts` opens and verifies a private DM, checks current recipient eligibility again after credential and DM preparation, and sends fixed attention text containing only an absolute HTTPS App link. It suppresses mentions and link embeds. Token resolution is injected; raw credentials, transport errors and upstream bodies do not escape. A message acknowledgement must name the expected channel. Loss, timeout, a server failure or an invalid acknowledgement remains delivery-unknown. No automatic retry is implemented.
 
+`discord-group-delivery.ts` is the Reports transport boundary for an exact Core-approved group answer. It verifies the credential's bot identity and the bound guild text channel before taking the caller's shared claim. It makes one post with mentions and embeds disabled. Only an acknowledgement for the exact channel, bot and text proves sent. This module does not wire a caller, grant publication authority or write delivery records.
+
 Run `pnpm --filter @openkit/nanocore exec vitest run src/channels src/storage/migrate.test.ts` for signature, pairing, revocation, disclosure, native operation projection, duplicate/restart and REST boundary coverage. Tests use generated keys, isolated real SQLite and fake fetch only. They make no Discord contact and prove no real-account or deployment acceptance.
 
 Discord account pairing resolves an ordinary session-shaped actor without administrator credential projection, including in local mode. Each action still requires current membership and its exact Pending authority. Pairing never inherits an unpresented administrator Token.
