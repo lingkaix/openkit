@@ -40,6 +40,8 @@ Worker-side MCP, product Skill Catalog/version/candidate operations, Agent Plugi
 
 Doctor reports service availability separately from product-work readiness, update qualification and content-free maintenance safety. Unknown evidence stays unknown. The operations archive includes reviewed App-update helper bytes outside the Skill tree, and the operator verifies and replaces them before preparation. See the operations reference for checksum, atomic installation, status identity, refusal and recovery steps.
 
+Doctor reports the Skill's protocol compatibility and the installed App's update configuration under current administrator admission. It compares the running release to the public stable release when release identity is available. Preparation still decides whether a specific update can run.
+
 Discord pairing remains in the authenticated Web flow. The generated CLI explicitly excludes its one-use challenge instead of placing it in an access-token sink. Discord status, revocation, and conditional notification delivery use their definition-derived online operations.
 
 Stopped-server recovery-envelope ingestion uses the shared canonical Token and User schemas, including the one owner-declared recovery Token UUIDv5 producer. Local credential storage persists only the secret field; request and identity metadata remain excluded from its stored payload.

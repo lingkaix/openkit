@@ -19,6 +19,8 @@ import {
 
 const INTERFACE_VERSION = packageMetadata.version;
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:3000';
+const LATEST_RELEASE_URL = 'https://api.github.com/repos/lingkaix/openkit/releases/latest';
+const RELEASE_TAG = /^v(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})(-[\dA-Za-z.-]+)?$/u;
 const COMMAND_USAGE = Object.freeze({
   '': 'openkit --help',
   help: 'openkit help [command]',
@@ -213,19 +215,44 @@ async function doctor(env, state, destination) {
   state.requestId = createRequestId();
   const client = createClient(endpoint, credential);
   const meta = await client.core.meta();
+  const contract = {
+    interfaceVersion: INTERFACE_VERSION,
+    expectedProtocolVersion: PROTOCOL_VERSION,
+    serverProtocolVersion: meta.protocolVersion,
+  };
   if (meta.protocolVersion !== PROTOCOL_VERSION) {
     throw new CliFailure('incompatible_contract', 'NanoCore protocol is incompatible.', 3, {
       actual: meta.protocolVersion,
       expected: PROTOCOL_VERSION,
+      skillCompatibility: {
+        ...contract,
+        state: 'incompatible',
+        reason: 'protocol-version-mismatch',
+      },
     });
   }
   const [diagnostics, preflight] = await Promise.allSettled([
     client.operations['diagnostics.app']({}),
     client.operations['app-update.preflight']({}),
   ]);
-  const readiness = diagnostics.status === 'fulfilled' ? diagnostics.value.readiness : undefined;
+  const app = diagnostics.status === 'fulfilled' ? diagnostics.value : undefined;
+  const readiness = app?.readiness;
+  const denied =
+    diagnostics.status === 'rejected' &&
+    diagnostics.reason instanceof ApiCallError &&
+    [401, 403].includes(diagnostics.reason.status);
+  const limits = [];
+  if (!readiness) limits.push('app-readiness-unavailable');
+  if (preflight.status === 'rejected') limits.push('maintenance-preflight-unavailable');
+  const runningRelease = app?.build?.releaseTag ?? null;
+  const publication = await observeLatestRelease(runningRelease);
   return {
     interfaceVersion: INTERFACE_VERSION,
+    skillCompatibility: {
+      ...contract,
+      state: limits.length ? 'compatible-with-limits' : 'compatible',
+      limits,
+    },
     nodeVersion: process.versions.node,
     endpoint,
     authentication: credential?.source ?? 'unauthenticated-local',
@@ -233,6 +260,12 @@ async function doctor(env, state, destination) {
       serviceAvailability: 'available',
       productWorkReadiness: readiness?.productWork ?? 'unknown',
       updateReadiness: readiness?.update ?? { state: 'unknown', qualification: 'prepare-required' },
+      appUpdateAvailability: {
+        state: readiness?.update.state ?? (denied ? 'denied' : 'unknown'),
+        qualification: 'prepare-required',
+        runningRelease,
+        ...publication,
+      },
       maintenanceSafety:
         preflight.status === 'fulfilled'
           ? { state: preflight.value.state, observation: preflight.value }
@@ -248,6 +281,42 @@ async function doctor(env, state, destination) {
       capabilities: meta.capabilities,
     },
   };
+}
+
+/** Compares the authenticated running tag with GitHub's public stable release observation. */
+async function observeLatestRelease(runningTag) {
+  const unknown = { latestRelease: null, newerReleaseAvailable: null };
+  const running = RELEASE_TAG.exec(runningTag ?? '');
+  if (!running) return unknown;
+  try {
+    const response = await globalThis.fetch(LATEST_RELEASE_URL, {
+      headers: { accept: 'application/vnd.github+json' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok || !response.body) return unknown;
+    const chunks = [];
+    let bytes = 0;
+    for await (const chunk of response.body) {
+      bytes += chunk.length;
+      if (bytes > 256 * 1024) return unknown;
+      chunks.push(chunk);
+    }
+    const published = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (published?.draft !== false || published.prerelease !== false) return unknown;
+    const latest = typeof published.tag_name === 'string' && RELEASE_TAG.exec(published.tag_name);
+    if (!latest || latest[4]) return unknown;
+    const difference =
+      Number(latest[1]) - Number(running[1]) ||
+      Number(latest[2]) - Number(running[2]) ||
+      Number(latest[3]) - Number(running[3]);
+    return {
+      latestRelease: latest[0],
+      newerReleaseAvailable: difference > 0 || (difference === 0 && Boolean(running[4])),
+    };
+  } catch {
+    return unknown;
+  }
 }
 
 /**

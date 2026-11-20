@@ -187,6 +187,8 @@ The [pinned official Codex source](https://github.com/openai/codex/blob/2dae757b
 
 Use the same public interface for local and remote NanoCore endpoints. Do not assume that a local endpoint authorizes unauthenticated access; follow the result returned by `doctor`.
 
+Read `skillCompatibility` for the interface and protocol versions and the compatibility result. A matching protocol can carry named limits for unavailable operational reads. A protocol mismatch returns `incompatible_contract` with this result in the error details. Read `nanocore.appUpdateAvailability` for the update configuration visible to the selected credential. A configured result still requires preparation for the exact candidate. `runningRelease`, `latestRelease`, and `newerReleaseAvailable` compare the running App with the published stable release. The public release lookup sends no App credential. A null availability value means the comparison could not be made.
+
 ## Connect With A Named Workspace Token
 
 Use this procedure for a scoped member connection through the bundled CLI. It requires Node.js 24 or 26, the complete operations package, and the named Token already stored for the exact endpoint in the caller's protected local store. The administrator issues it with `token.create` or `token.rotate` and an explicit `destination`. Issuance must occur in the intended authorized local credential context. A slot on another machine or under another operating-system user is not available here. Do not copy encrypted files between users or expose the secret to transfer it.
