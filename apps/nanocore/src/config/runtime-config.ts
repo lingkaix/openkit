@@ -313,6 +313,11 @@ export interface RuntimeConfigManager {
     workspaceId: string,
     freeze: WorkspaceFrozenAdmission
   ): RuntimeConfigSnapshot | Promise<RuntimeConfigSnapshot>;
+  /** Plans the draft or saved candidate with the same checks and live supply predicates. */
+  prepareReloadCandidate(
+    dataRoot: string,
+    mode: RuntimeConfigReloadRequest['mode']
+  ): { snapshot: RuntimeConfigSnapshot; plan: RuntimeConfigReloadPlan };
   /** Reloads runtime config from the configured data root. */
   reload(
     input: RuntimeConfigReloadRequest
@@ -434,19 +439,6 @@ export function loadRuntimeConfig(
     undefined,
     quarantinedWorkspaceIds
   );
-  for (const model of gatewayConfig.logicalModels) {
-    for (const route of model.routes) {
-      const profile = providerLoadResult.providerRegistry.get(route.providerProfileId);
-      if (profile?.extensions?.openkit?.localBackend?.backendId === 'sherpa-onnx-asr') {
-        gatewayDiagnostics.push({
-          code: 'gateway.speech_model_as_chat',
-          message: `Logical model ${model.id} names speech model ${route.providerModel}.`,
-          severity: 'error',
-          source: 'DATA_ROOT/config/gateway.jsonc',
-        });
-      }
-    }
-  }
   // #604: a rotating-family refresh shape stays parseable; its delivery refuses before effects.
   for (const shape of gatewayConfig.providerAccessShapes ?? []) {
     if (shape.refresh && BLOCKED_DELEGATED_REFRESH_STRATEGIES.includes(shape.refresh.strategy))
@@ -456,42 +448,6 @@ export function loadRuntimeConfig(
         severity: 'warning',
         source: 'DATA_ROOT/config/gateway.jsonc',
       });
-  }
-  try {
-    assertConfiguredModelsHaveKnownContext(providerLoadResult.providerRegistry, gatewayConfig);
-  } catch (error) {
-    gatewayDiagnostics.push({
-      code: 'provider.unknown_model_context',
-      message: error instanceof Error ? error.message : 'Provider model context limit is unknown.',
-      severity: 'warning',
-      source: 'DATA_ROOT/config/providers/*.provider.jsonc',
-    });
-  }
-  try {
-    for (const model of resolveLogicalModelCatalog(
-      gatewayConfig,
-      providerLoadResult.providerRegistry,
-      options.subscriptionAccounts,
-      options.providerCredentialConfigured
-    )) {
-      for (const route of model.routes) {
-        if (!route.available)
-          gatewayDiagnostics.push({
-            code: 'gateway.unavailable_member',
-            message: `Logical model route ${route.id} is unavailable: ${route.unavailableReason}.`,
-            severity: 'warning',
-            source: 'DATA_ROOT/config/gateway.jsonc',
-          });
-      }
-    }
-  } catch (error) {
-    gatewayDiagnostics.push({
-      code: 'gateway.invalid_logical_model',
-      message:
-        error instanceof Error ? error.message : 'Gateway logical model configuration is invalid.',
-      severity: 'error',
-      source: 'DATA_ROOT/config/gateway.jsonc',
-    });
   }
   const diagnostics: RuntimeConfigDiagnostic[] = [
     ...configLoadResult.diagnostics.map(configDiagnostic),
@@ -509,6 +465,7 @@ export function loadRuntimeConfig(
       source: redactSourcePath(diagnostic.path),
     })),
     ...gatewayDiagnostics,
+    ...gatewayCompositionDiagnostics(gatewayConfig, providerLoadResult.providerRegistry, options),
   ];
   const snapshot = createRuntimeConfigSnapshot({
     dataRoot,
@@ -552,6 +509,77 @@ export function loadRuntimeConfig(
   return Object.freeze(snapshot);
 }
 
+const gatewayCompositionCodes = {
+  speechAsChat: 'gateway.speech_model_as_chat',
+  unknownContext: 'provider.unknown_model_context',
+  unavailableMember: 'gateway.unavailable_member',
+  invalidLogicalModel: 'gateway.invalid_logical_model',
+};
+const effectiveGatewayDiagnosticCodes = new Set([
+  gatewayCompositionCodes.speechAsChat,
+  gatewayCompositionCodes.unavailableMember,
+  gatewayCompositionCodes.invalidLogicalModel,
+]);
+
+/** Checks the exact Gateway and Provider combination without contacting an upstream. */
+function gatewayCompositionDiagnostics(
+  gatewayConfig: GatewayConfig,
+  providerRegistry: ProviderRegistry,
+  options: LoadRuntimeConfigOptions
+): RuntimeConfigDiagnostic[] {
+  const gatewayDiagnostics: RuntimeConfigDiagnostic[] = [];
+  for (const model of gatewayConfig.logicalModels) {
+    for (const route of model.routes) {
+      const profile = providerRegistry.get(route.providerProfileId);
+      if (profile?.extensions?.openkit?.localBackend?.backendId === 'sherpa-onnx-asr') {
+        gatewayDiagnostics.push({
+          code: gatewayCompositionCodes.speechAsChat,
+          message: `Logical model ${model.id} names speech model ${route.providerModel}.`,
+          severity: 'error',
+          source: 'DATA_ROOT/config/gateway.jsonc',
+        });
+      }
+    }
+  }
+  try {
+    assertConfiguredModelsHaveKnownContext(providerRegistry, gatewayConfig);
+  } catch (error) {
+    gatewayDiagnostics.push({
+      code: gatewayCompositionCodes.unknownContext,
+      message: error instanceof Error ? error.message : 'Provider model context limit is unknown.',
+      severity: 'warning',
+      source: 'DATA_ROOT/config/providers/*.provider.jsonc',
+    });
+  }
+  try {
+    for (const model of resolveLogicalModelCatalog(
+      gatewayConfig,
+      providerRegistry,
+      options.subscriptionAccounts,
+      options.providerCredentialConfigured
+    )) {
+      for (const route of model.routes) {
+        if (!route.available)
+          gatewayDiagnostics.push({
+            code: gatewayCompositionCodes.unavailableMember,
+            message: `Logical model route ${route.id} is unavailable: ${route.unavailableReason}.`,
+            severity: 'warning',
+            source: 'DATA_ROOT/config/gateway.jsonc',
+          });
+      }
+    }
+  } catch (error) {
+    gatewayDiagnostics.push({
+      code: gatewayCompositionCodes.invalidLogicalModel,
+      message:
+        error instanceof Error ? error.message : 'Gateway logical model configuration is invalid.',
+      severity: 'error',
+      source: 'DATA_ROOT/config/gateway.jsonc',
+    });
+  }
+  return gatewayDiagnostics;
+}
+
 /**
  * Creates a runtime config manager backed by one data root.
  *
@@ -590,6 +618,34 @@ export function createRuntimeConfigManager(
 
   let publicationBinding: { db: CoreDb; publisherId: string } | undefined;
   let installation: Promise<void> | undefined;
+
+  /** Uses the installed generation for restart-held fields before checking safe-mode compatibility. */
+  function prepareReloadCandidate(dataRoot: string, mode: RuntimeConfigReloadRequest['mode']) {
+    const previous = current;
+    const candidate = loadRuntimeConfig(dataRoot, {
+      version: previous.version + 1,
+      subscriptionAccounts: options.subscriptionAccounts,
+      providerCredentialConfigured: options.providerCredentialConfigured,
+    });
+    const plan = diffRuntimeConfig(previous, candidate);
+    if (plan.rejected.length > 0) return { snapshot: candidate, plan };
+
+    assertCatalogContextRemovalIsValid(previous, candidate);
+    if (mode === 'strict' || plan.requiresRestart.length === 0)
+      return { snapshot: candidate, plan };
+
+    const snapshot = applySafeRuntimeConfigReload(previous, candidate, plan, options);
+    const diagnostics = runtimeConfigPlanDiagnostics(snapshot);
+    return {
+      snapshot,
+      plan: {
+        ...plan,
+        ...diagnostics,
+        applied: diagnostics.rejected.length > 0 ? [] : plan.applied,
+        deferred: diagnostics.rejected.length > 0 ? [] : plan.deferred,
+      },
+    };
+  }
 
   /** One bounded handoff excludes competing installers; it does not queue configuration requests. */
   function installSnapshot(
@@ -749,6 +805,7 @@ export function createRuntimeConfigManager(
       });
       return ready instanceof Promise ? ready.then(() => current) : current;
     },
+    prepareReloadCandidate,
     reload: (input) => {
       const startedAt = new Date().toISOString();
       const nextVersion = current.version + 1;
@@ -789,14 +846,11 @@ export function createRuntimeConfigManager(
 
       try {
         if (installation) throw new Error('Runtime Policy publication is still pending.');
-        const next = loadRuntimeConfig(requireDataRoot(options.dataRoot), {
-          version: nextVersion,
-          subscriptionAccounts: options.subscriptionAccounts,
-          providerCredentialConfigured: options.providerCredentialConfigured,
-        });
-        assertNoBlockingDiagnostics(next);
-        assertCatalogContextRemovalIsValid(current, next);
-        const plan = diffRuntimeConfig(current, next);
+        const { snapshot, plan } = prepareReloadCandidate(
+          requireDataRoot(options.dataRoot),
+          input.mode
+        );
+        assertNoBlockingDiagnostics(snapshot);
 
         if (input.mode === 'strict' && plan.requiresRestart.length > 0) {
           pendingRestart = plan.requiresRestart;
@@ -827,15 +881,14 @@ export function createRuntimeConfigManager(
           return respond('dry-run', plan);
         }
 
-        const safe = applySafeRuntimeConfigReload(current, next, plan);
-        const ready = installSnapshot(safe, undefined, () => {
+        const ready = installSnapshot(snapshot, undefined, () => {
           pendingRestart = plan.requiresRestart;
         });
         const complete = () => {
           lastReload = reloadSummary(
             startedAt,
             input,
-            safe.version - 1,
+            snapshot.version - 1,
             current.version,
             'applied'
           );
@@ -913,19 +966,34 @@ function assertCatalogContextRemovalIsValid(
  * @param previous Active runtime config snapshot.
  * @param next Candidate runtime config snapshot loaded from disk.
  * @param plan Semantic reload plan computed for the candidate.
+ * @param options Active supply predicates for post-hold validation.
  * @returns Snapshot that exposes only changes safe for the running process.
  */
 function applySafeRuntimeConfigReload(
   previous: RuntimeConfigSnapshot,
   next: RuntimeConfigSnapshot,
-  plan: RuntimeConfigReloadPlan
+  plan: RuntimeConfigReloadPlan,
+  options: LoadRuntimeConfigOptions
 ): RuntimeConfigSnapshot {
-  if (plan.requiresRestart.length === 0) {
-    return next;
-  }
-
   const openKitConfig = cloneJsonValue(next.openKitConfig);
   const restartPaths = new Set(plan.requiresRestart.map((change) => change.path));
+  const retainProviders = restartPaths.has('providers') || restartPaths.has('modelCatalog');
+  const providerRegistry = retainProviders ? previous.providerRegistry : next.providerRegistry;
+  let diagnostics = next.diagnostics;
+  if (retainProviders) {
+    // Unknown context in a saved Provider remains actionable before restart.
+    const authoredContextWarning = diagnostics.find(
+      (entry) => entry.code === gatewayCompositionCodes.unknownContext
+    );
+    diagnostics = [
+      ...diagnostics.filter((entry) => !effectiveGatewayDiagnosticCodes.has(entry.code)),
+      ...gatewayCompositionDiagnostics(next.gatewayConfig, providerRegistry, options).filter(
+        (entry) =>
+          entry.code !== gatewayCompositionCodes.unknownContext ||
+          entry.message !== authoredContextWarning?.message
+      ),
+    ];
+  }
 
   for (const restartChange of plan.requiresRestart) {
     // The optional NanoHost envelope has required children. Restore its whole prior shape across addition or removal so capacity cannot leave an invalid partial envelope.
@@ -945,14 +1013,10 @@ function applySafeRuntimeConfigReload(
       dataRoot: null,
       openKitConfig,
       modelCatalog: restartPaths.has('modelCatalog') ? previous.modelCatalog : next.modelCatalog,
-      providerRegistry:
-        restartPaths.has('providers') || restartPaths.has('modelCatalog')
-          ? previous.providerRegistry
-          : next.providerRegistry,
-      providerDiagnostics:
-        restartPaths.has('providers') || restartPaths.has('modelCatalog')
-          ? previous.providerDiagnostics
-          : next.providerDiagnostics,
+      providerRegistry,
+      providerDiagnostics: retainProviders
+        ? previous.providerDiagnostics
+        : next.providerDiagnostics,
       agentManifests: restartPaths.has('agents') ? previous.agentManifests : next.agentManifests,
       gatewayConfig: next.gatewayConfig,
       internalRoleProfiles: next.internalRoleProfiles,
@@ -960,7 +1024,7 @@ function applySafeRuntimeConfigReload(
       workspaceConfigs: next.workspaceConfigs,
       workspaceDataSourceCatalogs: next.workspaceDataSourceCatalogs,
       workspaceMcpServerCatalogs: next.workspaceMcpServerCatalogs,
-      diagnostics: next.diagnostics,
+      diagnostics,
     })
   );
 }
@@ -1135,7 +1199,6 @@ export function diffRuntimeConfig(
   const applied: RuntimeConfigChange[] = [];
   const deferred: RuntimeConfigChange[] = [];
   const requiresRestart: RuntimeConfigChange[] = [];
-  const rejected: RuntimeConfigChange[] = [];
 
   if (!equalSemantic(previous.modelCatalog, next.modelCatalog)) {
     requiresRestart.push(
@@ -1284,25 +1347,13 @@ export function diffRuntimeConfig(
     }
   }
 
-  if (next.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
-    rejected.push(
-      change(
-        'config.diagnostics',
-        'rejected',
-        'rejected',
-        'Runtime config contains blocking diagnostics.'
-      )
-    );
-  }
-
   return {
     previousVersion: previous.version,
     nextVersion: next.version,
     applied,
     deferred,
     requiresRestart,
-    rejected,
-    warnings: runtimeConfigWarnings(next),
+    ...runtimeConfigPlanDiagnostics(next),
   };
 }
 
@@ -1469,6 +1520,25 @@ function failedReloadPlan(
       change('config', 'rejected', 'rejected', `Runtime config reload failed: ${message}`),
     ],
     warnings: runtimeConfigWarnings(current),
+  };
+}
+
+/** Keeps plans tied to the diagnostics of the snapshot the caller would install. */
+function runtimeConfigPlanDiagnostics(
+  snapshot: RuntimeConfigSnapshot
+): Pick<RuntimeConfigReloadPlan, 'rejected' | 'warnings'> {
+  return {
+    rejected: snapshot.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
+      ? [
+          change(
+            'config.diagnostics',
+            'rejected',
+            'rejected',
+            'Runtime config contains blocking diagnostics.'
+          ),
+        ]
+      : [],
+    warnings: runtimeConfigWarnings(snapshot),
   };
 }
 

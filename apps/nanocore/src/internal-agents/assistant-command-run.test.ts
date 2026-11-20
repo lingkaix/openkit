@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
@@ -16,21 +16,30 @@ import {
   publishWorkspaceResourceCatalog,
   setWorkspaceSkillPin,
 } from '../catalog/resource-catalog.js';
+import * as knowledgeOverview from '../context/knowledge-overview.js';
+import { compactWorkspaceEvidenceBundles, readWorkObservationBody } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { ModelCaptureError, withTurnModelCapture } from '../llm/model-capture.js';
 import type { OpenAICompatibleResponsesResponse } from '../llm/openai-compatible-client.js';
-import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
+import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
+import * as retrievalKnowledge from '../retrieval-knowledge-adapter.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
+import * as workRecords from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { assembleAssistantCommandRun, runAssistantCommand } from './assistant-command-run.js';
+import {
+  assembleAssistantCommandRun,
+  runAssistantCommand,
+  runPublishedAnswer,
+} from './assistant-command-run.js';
+import * as skillResources from './assistant-skill-resources.js';
 import {
   AssistantSkillReadInputSchema,
   AssistantSkillResourceError,
@@ -40,6 +49,7 @@ import {
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import type { AgentMessage, AgentTool } from './internal-agent-loop.js';
 import { readInternalContextEvidence } from './internal-context-evidence.js';
+import * as profileResolver from './profile-resolver.js';
 
 const SKILL_READER_ID = allocateEntityId('usr');
 const roots: string[] = [];
@@ -339,6 +349,339 @@ async function expectEntryFailure(run: Promise<unknown>, code: string, status: n
   expect(error).toMatchObject({ code, status });
 }
 
+/** Supplies the published candidate with a separate admitted Turn and model. */
+async function publishedFixture(
+  f: Fixture,
+  capture: 'off' | 'on' = 'off',
+  title = 'Published question'
+) {
+  const thread = await f.store.createThread(f.workspaceId, title);
+  const turn = await f.store.createTurn(
+    f.workspaceId,
+    thread.id,
+    'How many visits were recorded?',
+    { kind: 'user', id: f.actor.userId },
+    null,
+    { captureCoverage: { scope: 'server', value: capture } }
+  );
+  const model: ResolvedLogicalModel = {
+    ...logicalModel,
+    id: 'reports-model',
+    capabilities: ['responses'],
+    autoFailover: true,
+    routes: [
+      { ...logicalModel.routes[0]!, providerModel: 'reports' },
+      { ...logicalModel.routes[0]!, id: 'backup', providerModel: 'reports-backup' },
+    ],
+  };
+  const input = {
+    store: f.store,
+    turn,
+    workspaceDb: f.workspaceDb,
+    gateway: {
+      ...f.input.gateway,
+      logicalModel: model,
+      resolveLogicalModel: vi.fn(() => model),
+      resolveGatewayProvider: () =>
+        ({
+          id: 'provider',
+          models: ['reports', 'reports-backup'],
+          gatewayCapabilities: {},
+          modelMetadata: {
+            reports: { limit: { context: 64_000 } },
+            'reports-backup': { limit: { context: 64_000 } },
+          },
+        }) as never,
+      promptCacheScope: { sessionId: thread.id, workspaceId: f.workspaceId },
+    },
+    systemPrompt: 'Reports: answer from the admitted fact.',
+    question: 'How many visits were recorded?',
+    fact: 'Visits: 14 (Weekly visits, as of 2026-10-15).',
+    signal: f.input.signal,
+    assertCurrent: vi.fn(),
+  };
+  return { turn, input };
+}
+
+describe('published answer on the internal Agent Gateway', () => {
+  it('submits exactly the Reports prompt, question and single admitted fact with no excluded reads', async () => {
+    const f = await fixture(true, 'excluded-skill-marker', true);
+    const previousTitle = 'excluded-old-thread-title';
+    const published = await publishedFixture(f, 'off', previousTitle);
+    const oldItemMarker = 'excluded-current-turn-item-marker';
+    await f.store.createItem({
+      id: allocateEntityId('it'),
+      owner: { kind: 'workspace', workspaceId: f.workspaceId },
+      threadId: published.turn.threadId,
+      turnId: published.turn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: oldItemMarker,
+      createdAt: published.turn.startedAt!,
+      completedAt: published.turn.startedAt!,
+    });
+    const privateLogin = testEntityId('vault', 'excluded-private-thread-login');
+    f.workspaceDb.sqlite
+      .prepare(`UPDATE control_threads SET record_json=json_set(
+      record_json, '$.login', json(?), '$.requiredFeatures[#]', 'openkit.thread-login.v1'
+    ) WHERE id=?`)
+      .run(JSON.stringify({ referenceId: privateLogin, lastLeftAt: {} }), published.turn.threadId);
+    const threadRows: unknown[] = [];
+    const prepare = f.workspaceDb.sqlite.prepare.bind(f.workspaceDb.sqlite);
+    vi.spyOn(f.workspaceDb.sqlite, 'prepare').mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (/FROM control_threads WHERE id=/.test(sql)) {
+        const get = statement.get.bind(statement);
+        vi.spyOn(statement, 'get').mockImplementation((...parameters: unknown[]) => {
+          const result = get(...parameters);
+          threadRows.push(result);
+          return result;
+        });
+      }
+      return statement;
+    });
+    const currentTurnHistory = vi.spyOn(workRecords, 'readNativeTurnHistorySteps');
+    const overviewRevision = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head
+      .notebookCommit;
+    const memoryMarker = 'excluded-memory-marker';
+    const memoryRead = vi
+      .spyOn(retrievalKnowledge, 'readAuthorizedUserMemoryPages')
+      .mockReturnValue({
+        knowledgeBaseId: 'user-memory',
+        notebookRevision: 'memory-revision',
+        externallyInfluenced: false,
+        pages: [
+          {
+            id: 'preference',
+            path: 'preference.md',
+            content: memoryMarker,
+            contentDigest: createHash('sha256').update(memoryMarker).digest('hex'),
+          },
+        ],
+        scopeSchemaText: '',
+        registeredSources: new Map(),
+        referenceProofs: new Map(),
+      });
+    const memoryInventory = vi.spyOn(retrievalKnowledge, 'collectUserMemoryInventory');
+    const historyRead = vi.spyOn(f.store, 'listThreadItems');
+    const skillRead = vi.spyOn(skillResources, 'assembleAssistantSkillResources');
+    const overviewRead = vi.spyOn(knowledgeOverview, 'prepareKnowledgeOverview');
+    const modelRead = vi.spyOn(profileResolver, 'resolveInternalRoleProfile');
+    const worker = vi.spyOn(f.store, 'createAgentSession');
+
+    await expect(runPublishedAnswer(published.input)).resolves.toMatchObject({
+      content: 'Bounded answer.',
+      providerId: 'provider',
+    });
+    expect(threadRows.length).toBeGreaterThan(0);
+    expect(JSON.stringify(threadRows)).not.toContain(previousTitle);
+    expect(JSON.stringify(threadRows)).not.toContain(privateLogin);
+    expect(f.createResponses).toHaveBeenCalledTimes(1);
+    const request = f.createResponses.mock.calls[0]![1];
+    expect(request).toEqual({
+      model: 'reports',
+      instructions: published.input.systemPrompt,
+      input: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: JSON.stringify({
+                fact: published.input.fact,
+                question: published.input.question,
+              }),
+            },
+          ],
+        },
+      ],
+      tools: [],
+      parallel_tool_calls: false,
+    });
+    for (const marker of [
+      'excluded-skill-marker',
+      oldItemMarker,
+      memoryMarker,
+      'user-message 0:',
+      'assistant-message 0:',
+      overviewRevision,
+      'knowledge_overviews',
+      'skill_read',
+      'thread_history_read',
+    ])
+      expect(JSON.stringify(request)).not.toContain(marker);
+    for (const read of [
+      memoryRead,
+      memoryInventory,
+      currentTurnHistory,
+      historyRead,
+      skillRead,
+      overviewRead,
+      modelRead,
+      worker,
+    ])
+      expect(read).not.toHaveBeenCalled();
+    expect(published.input.gateway.resolveLogicalModel).toHaveBeenCalledExactlyOnceWith(
+      'reports-model'
+    );
+    expect(
+      readWorkObservations(f.workspaceDb, {
+        threadId: published.turn.threadId,
+        turnId: published.turn.id,
+      })
+    ).toEqual([
+      expect.objectContaining({
+        type: 'env.bound',
+        payload: expect.objectContaining({ tools: [] }),
+      }),
+    ]);
+  });
+
+  it('withholds the candidate when current authority changes during inference', async () => {
+    const f = await fixture(false);
+    const { input } = await publishedFixture(f);
+    const changed = new Error('Published fact is no longer current.');
+    f.createResponses.mockImplementationOnce(async () => {
+      input.assertCurrent.mockImplementation(() => {
+        throw changed;
+      });
+      return response();
+    });
+
+    await expect(runPublishedAnswer(input)).rejects.toBe(changed);
+    expect(f.createResponses).toHaveBeenCalledTimes(1);
+  });
+
+  it('consumes the only attempt on a settled retryable Provider failure', async () => {
+    const f = await fixture(false);
+    const published = await publishedFixture(f);
+    const failure = Object.assign(new Error('Provider unavailable.'), {
+      failure: { kind: 'provider_unavailable', settled: true, retryAfter: '0' },
+    });
+    f.createResponses.mockRejectedValueOnce(failure);
+
+    await expect(runPublishedAnswer(published.input)).rejects.toMatchObject({
+      failure: failure.failure,
+    });
+    expect(f.createResponses).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes one stock HTTP submission and traces the captured request to Storage disposal', async () => {
+    const f = await fixture(false);
+    const { input, turn } = await publishedFixture(f, 'on');
+    const requestFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      Response.json(
+        { error: { message: 'Fixture rate limit.' } },
+        {
+          status: 429,
+          headers: { 'retry-after': '0' },
+        }
+      )
+    );
+    const providerModel = 'gpt-5.2';
+    const model = {
+      ...input.gateway.logicalModel,
+      routes: input.gateway.logicalModel.routes.map((route) => ({ ...route, providerModel })),
+    };
+    await expect(
+      runPublishedAnswer({
+        ...input,
+        gateway: {
+          ...input.gateway,
+          logicalModel: model,
+          resolveLogicalModel: () => model,
+          dispatcher: new LLMGatewayProviderDispatcher({}),
+          resolveGatewayProvider: () => ({
+            id: 'provider',
+            adapterId: 'openai',
+            baseUrl: 'https://reports-provider.example.invalid/v1',
+            displayName: 'Fixture provider',
+            apiKey: 'fixture',
+            requiresApiKey: true,
+            models: [providerModel],
+            gatewayCapabilities: { responses: 'native', chatCompletions: 'bridged' },
+            modelMetadata: { [providerModel]: { limit: { context: 64_000, output: 256 } } },
+          }),
+        },
+      })
+    ).rejects.toThrow();
+
+    expect(requestFetch).toHaveBeenCalledTimes(1);
+    const [, init] = requestFetch.mock.calls[0]!;
+    const wire = JSON.parse(String(init?.body));
+    expect(wire.input).toEqual([
+      { role: 'developer', content: input.systemPrompt },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: JSON.stringify({ fact: input.fact, question: input.question }),
+          },
+        ],
+      },
+    ]);
+    expect(wire.tools ?? []).toEqual([]);
+    const scope = { threadId: turn.threadId, turnId: turn.id };
+    const rows = readWorkObservations(f.workspaceDb, scope);
+    const request = rows.find(
+      (row) => row.type === 'model.observed' && row.payload.direction === 'request'
+    );
+    const publication = rows.find(
+      (row) => row.type === 'content.published' && row.parent === request?.id
+    );
+    const ref = publication?.refs?.find((entry) => entry.edge === 'publication');
+    if (!publication || !ref?.digest) throw new Error('Expected captured request bytes.');
+    const body = { ...scope, bundleId: ref.locator, createdAt: publication.ts, sha256: ref.digest };
+    expect(new TextDecoder().decode(readWorkObservationBody(f.workspaceDb, body)!)).toContain(
+      input.fact
+    );
+    const path = join(
+      f.dataRoot,
+      'workspaces',
+      f.workspaceId,
+      'evidence',
+      'backend',
+      ref.locator,
+      'raw',
+      'content'
+    );
+    expect(existsSync(path)).toBe(true);
+    const storage = { workspaceDb: f.workspaceDb, workspaceId: f.workspaceId };
+    expect(
+      compactWorkspaceEvidenceBundles({ ...storage, olderThan: publication.ts }).expiredCount
+    ).toBe(0);
+    const cutoff = new Date(Date.parse(publication.ts) + 1).toISOString();
+    expect(
+      compactWorkspaceEvidenceBundles({ ...storage, olderThan: cutoff }).expiredCount
+    ).toBeGreaterThanOrEqual(1);
+    expect(readWorkObservationBody(f.workspaceDb, body)).toBeNull();
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('refuses an unexpected Tool request even when it includes answer text', async () => {
+    const f = await fixture(false);
+    const published = await publishedFixture(f);
+    const answer = response();
+    f.createResponses.mockResolvedValueOnce({
+      ...answer,
+      output: [
+        ...answer.output,
+        {
+          type: 'function_call',
+          call_id: 'unexpected-call',
+          name: 'memory_ask',
+          arguments: '{}',
+        },
+      ],
+    });
+
+    await expectEntryFailure(runPublishedAnswer(published.input), 'provider_response_invalid', 502);
+    expect(f.createResponses).toHaveBeenCalledTimes(1);
+    expect(f.createResponses.mock.calls[0]![1].tools).toEqual([]);
+  });
+});
+
 describe('ordinary Assistant command assembly', () => {
   it('keeps catalog metadata delimited and untrusted, canonical history ordered, and Tools fixed', async () => {
     const attack =
@@ -390,6 +733,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     const f = await fixture(false);
     const revision = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head
       .notebookCommit;
+    const notebookRead = vi.spyOn(retrievalKnowledge, 'readAuthorizedWorkspaceNotebookPages');
     f.createResponses.mockImplementation(async (_provider, request) => {
       const delivered = JSON.stringify(request.input);
       expect(delivered).toContain('knowledge_overviews');
@@ -402,6 +746,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     const result = await runAssistantCommand(f.input);
     expect(f.createResponses).toHaveBeenCalledTimes(1);
     expect(f.assembly.messages).toEqual(original);
+    expect(notebookRead).toHaveBeenCalledWith(expect.objectContaining({ pageIds: ['index'] }));
     expect(result.content).toBe('Bounded answer.');
     expect(() => result.assertContextCurrent?.()).not.toThrow();
   });

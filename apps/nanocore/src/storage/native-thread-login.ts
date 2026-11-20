@@ -1,4 +1,5 @@
 import { VaultReferenceIdSchema } from '@openkit/protocol';
+import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import {
   StoredThreadSnapshotV1Schema,
@@ -34,6 +35,24 @@ export const StoredNativeThreadSnapshotV1Schema = StoredThreadSnapshotV1Schema.s
   requiredFeatures: NativeThreadRequiredFeaturesSchema,
 });
 export type NativeThreadLogin = z.infer<typeof NativeThreadLoginSchema>;
+
+const loginValidityReaders = new WeakSet<Database.Database>();
+
+/** Validates retained Login metadata within the SQLite owner. Only a validity result crosses the query boundary. */
+export function registerNativeThreadLoginValidity(sqlite: Database.Database): void {
+  if (loginValidityReaders.has(sqlite)) return;
+  sqlite.function(
+    'native_thread_login_valid',
+    { deterministic: true, directOnly: true },
+    (json: unknown) =>
+      json === null
+        ? null
+        : typeof json === 'string' && NativeThreadLoginSchema.safeParse(JSON.parse(json)).success
+          ? 1
+          : 0
+  );
+  loginValidityReaders.add(sqlite);
+}
 
 /** Computes only a proposal; the native effect/receipt owner is the sole caller allowed to publish it. */
 export function nextNativeThreadLogin(

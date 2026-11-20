@@ -31,6 +31,11 @@ import {
 
 export { AdminRecoveryError } from './admin-recovery-codecs.js';
 
+import { parseDiscordReportsOperatorCommand } from '../channels/discord-reports-operator.js';
+import type {
+  DiscordReportsOperatorCommand,
+  DiscordReportsOperatorResult,
+} from '../storage/discord-reports-bindings.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
 const MAX_RECOVERY_LIFETIME_MS = 24 * 60 * 60 * 1_000;
@@ -95,6 +100,11 @@ export type OpenKitOperatorPhase =
 
 /** Testable sinks, clock, and crash-boundary observer for the stopped-server operator. */
 export interface OpenKitOperatorOptions {
+  /** Exact-authority Core port; absent until the Reports authority owners are composed. */
+  discordReports?: (
+    coreDb: CoreDb,
+    input: DiscordReportsOperatorCommand
+  ) => Promise<DiscordReportsOperatorResult>;
   /** Current wall clock. */
   now?: () => Date;
   /** Standard-output sink. */
@@ -153,7 +163,20 @@ interface RecoveryAuditRow {
 export async function runOpenKitOperatorCli(
   argv: readonly string[],
   options: OpenKitOperatorOptions = {}
-): Promise<readonly AdminRecoveryUser[] | AdminRecoverySummary> {
+): Promise<readonly AdminRecoveryUser[] | AdminRecoverySummary | DiscordReportsOperatorResult> {
+  if (argv[0] === 'discord' && argv[1] === 'reports') {
+    const flags = parseFlags(argv.slice(2), ['--data-root', '--request']);
+    const dataRoot = requireAbsolutePath(flags['--data-root']!, 'data-root');
+    const input = parseDiscordReportsOperatorCommand(flags['--request']!);
+    const invoke = options.discordReports;
+    if (!input || !invoke) throw invalidRequest('Reports operator admission is unavailable.');
+    return runLocked(dataRoot, options, async (coreDb) => {
+      const result = await invoke(coreDb, input);
+      if (!result) throw invalidRequest('Reports binding operation was refused.');
+      return result;
+    });
+  }
+
   if (argv[0] === 'admin' && argv[1] === 'recovery-users') {
     const flags = parseFlags(argv.slice(2), ['--data-root']);
     const dataRoot = requireAbsolutePath(flags['--data-root']!, 'data-root');

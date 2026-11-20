@@ -59,6 +59,8 @@ export type ProviderHttpErrorDiagnostic = {
  * Provider transport state shared across one gateway dispatch.
  */
 export interface LLMGatewayTransportContext {
+  /** Bound Responses callers consume the attempt on a stock transport failure. */
+  readonly singleAttempt?: true;
   /** Trusted local admission after stock serialization and native overlays, before HTTP. */
   readonly finalRequestAdmission?: (
     request: {

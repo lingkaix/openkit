@@ -66,8 +66,6 @@ import type { CoreDb } from '../storage/db.js';
 import { VaultBackendError } from '../vault/vault-backend.js';
 import { parseJsoncObject } from './jsonc.js';
 import {
-  diffRuntimeConfig,
-  loadRuntimeConfig,
   NANO_HOST_TRANSPORT_RESTART_PATH,
   type RuntimeConfigManager,
   WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE,
@@ -515,11 +513,11 @@ export class RuntimeConfigFileService {
     const tempRoot = this.createOverlayDataRoot(input);
 
     try {
-      const next = loadRuntimeConfig(tempRoot, {
-        version: this.runtimeConfigManager.current().version + 1,
-      });
-      const plan = diffRuntimeConfig(this.runtimeConfigManager.current(), next);
-      const runtimeDiagnostics = next.diagnostics.map((diagnostic) =>
+      const { snapshot, plan } = this.runtimeConfigManager.prepareReloadCandidate(
+        tempRoot,
+        input.mode
+      );
+      const runtimeDiagnostics = snapshot.diagnostics.map((diagnostic) =>
         runtimeDiagnosticToFileDiagnostic(diagnostic)
       );
       const diagnostics = [...singleFileDiagnostics];

@@ -1,3 +1,4 @@
+import { ASSISTANT_RUN_DEADLINE_MS } from '@openkit/config-schema';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { Actor } from '../auth/identity.js';
@@ -231,6 +232,72 @@ export async function runAssistantCommand(
         },
       })
   );
+}
+
+/**
+ * Runs one internal answer attempt for an already admitted published question.
+ *
+ * The caller owns the role, fact, model, current authority and one invocation per admitted Turn.
+ * Use the explicit payload and an empty Tool inventory to exclude personal context. The caller
+ * governs the returned candidate and owns terminal Turn publication.
+ */
+export async function runPublishedAnswer(
+  input: Pick<AssistantCommandRunInput, 'store' | 'turn' | 'workspaceDb' | 'signal'> & {
+    readonly systemPrompt: string;
+    readonly fact: string;
+    readonly question: string;
+    readonly assertCurrent: () => void;
+    readonly gateway: Omit<
+      InternalAgentGatewayProviderOptions,
+      'capture' | 'onDispatch' | 'singleAttempt' | 'usageEndpoint'
+    >;
+  }
+): Promise<AssistantCommandResult> {
+  if (input.signal.aborted) throw aborted();
+  input.assertCurrent();
+  const { systemPrompt, fact, question } = input;
+  const result = await withTurnModelCapture(
+    {
+      store: input.store,
+      turn: input.turn,
+      ...(input.workspaceDb ? { workspaceDb: input.workspaceDb } : {}),
+      environment: { systemPrompt, tools: [] },
+    },
+    (capture) =>
+      runAssistantModel({
+        systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({ fact, question }),
+              },
+            ],
+          },
+        ],
+        tools: [],
+        profileId: null,
+        // The loop requires a positive Tool limit. Only registered Tools can execute.
+        limits: { maxModelTurns: 1, maxToolCalls: 1, deadlineMs: ASSISTANT_RUN_DEADLINE_MS },
+        signal: input.signal,
+        assertCurrent: input.assertCurrent,
+        gateway: {
+          ...input.gateway,
+          capture,
+          singleAttempt: true,
+          usageEndpoint: 'responses',
+          assertExecutionAvailable: () => {
+            input.gateway.assertExecutionAvailable?.();
+            input.assertCurrent();
+          },
+        },
+      })
+  );
+  if (input.signal.aborted) throw aborted();
+  input.assertCurrent();
+  return { ...result, assertContextCurrent: input.assertCurrent };
 }
 
 /**

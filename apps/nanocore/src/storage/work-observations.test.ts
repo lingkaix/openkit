@@ -35,6 +35,7 @@ import {
   prepareControlWorkObservation,
   readThreadRuntimeActivity,
   readWorkObservations,
+  readWorkObservationTurnBinding,
   type WorkObservationDraft,
 } from './work-observations.js';
 
@@ -212,6 +213,37 @@ function assistant(bytes: Uint8Array): WorkObservationDraft {
     },
   };
 }
+
+it.each(['self-parent', 'legacy-thread-owner', 'legacy-turn-owner', 'malformed-login'] as const)(
+  'rejects %s in both the narrow binding and the native observation writer',
+  async (fault) => {
+    const f = await fixture();
+    const table = fault === 'legacy-turn-owner' ? 'control_turns' : 'control_threads';
+    const id = fault === 'legacy-turn-owner' ? f.owner.turnId : f.owner.threadId;
+    const stored = f.db.sqlite.prepare(`SELECT record_json FROM ${table} WHERE id=?`).get(id) as {
+      record_json: string;
+    };
+    const record = JSON.parse(stored.record_json);
+    if (fault === 'self-parent') record.parentThreadId = f.owner.threadId;
+    else if (fault === 'malformed-login') {
+      record.login = { referenceId: null };
+      record.requiredFeatures.push('openkit.thread-login.v1');
+    } else {
+      record.workspaceId = testEntityId('ws', 'foreign-observation-workspace');
+    }
+    f.db.sqlite
+      .prepare(`UPDATE ${table} SET record_json=? WHERE id=?`)
+      .run(JSON.stringify(record), id);
+    expect(() => readWorkObservationTurnBinding(f.db, f.owner)).toThrow(/recovery_required/);
+    await expectNativeObservationRefusal(
+      appendWorkObservation(f.db, {
+        ...f.owner,
+        observation: model(),
+        bodies: [],
+      })
+    );
+  }
+);
 
 describe('durable work observations', () => {
   it('reads retained environments without inserting an Assistant Skill admission default', async () => {

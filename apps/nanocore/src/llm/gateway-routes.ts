@@ -2777,6 +2777,8 @@ export async function dispatchLogicalModel<T>(input: {
   ledger?: GatewayCallLedgerBinding;
   logicalModel: ResolvedLogicalModel;
   signal: AbortSignal;
+  /** The entry budget admits one attempt before retry, failover or quota recovery. */
+  singleAttempt?: true;
   requiredCapabilities?: readonly string[];
   /** Native request evidence and immutable bound-Turn fallback; absence leaves internal producers unchanged. */
   reasoningEffort?: {
@@ -3039,6 +3041,7 @@ export async function dispatchLogicalModel<T>(input: {
       return manager.tryWeeklyCodexReset(pair, signal, version);
     },
     autoFailover: input.logicalModel.autoFailover,
+    ...(input.singleAttempt ? { singleAttempt: true } : {}),
     signal: input.signal,
     ...(input.clock ? { clock: input.clock } : {}),
     attempt: async (selection, execution) => {

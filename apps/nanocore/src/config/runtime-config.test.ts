@@ -1286,16 +1286,34 @@ describe('runtime config loading and reload planning', () => {
     expect(manager.status().pendingRestart).toContainEqual(
       expect.objectContaining({ path: 'providers' })
     );
-    expect(loadRuntimeConfig(dataRoot).providerRegistry.get('orca-custom')?.models).toEqual([
+    const authored = loadRuntimeConfig(dataRoot);
+    expect(authored.providerRegistry.get('orca-custom')?.models).toEqual([
       'handwritten/local-flash',
     ]);
-    expect(manager.current().diagnostics).toContainEqual(
-      expect.objectContaining({
-        code: 'provider.unknown_model_context',
-        severity: 'warning',
-      })
+    const warning = expect.objectContaining({
+      code: 'provider.unknown_model_context',
+      severity: 'warning',
+    });
+    expect(authored.diagnostics).toContainEqual(warning);
+    expect(manager.current().diagnostics).toContainEqual(warning);
+    expect(loaded.plan.warnings).toContainEqual(
+      expect.objectContaining({ code: 'provider.unknown_model_context' })
     );
     expect(manager.status().lastFailedReload).toBeNull();
+
+    const restarted = createRuntimeConfigManager({ dataRoot });
+    const path = join(dataRoot, 'config', 'providers', 'orca-custom.provider.jsonc');
+    const profile = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(path, JSON.stringify({ ...profile, displayName: 'Orca renamed' }));
+    const pending = await restarted.reload({ dryRun: false, mode: 'safe' });
+    expect(pending.plan.requiresRestart).toContainEqual(
+      expect.objectContaining({ path: 'providers' })
+    );
+    expect(
+      restarted
+        .current()
+        .diagnostics.filter((entry) => entry.code === 'provider.unknown_model_context')
+    ).toEqual([warning]);
   });
 
   it('reports a blocked delegated-refresh strategy without rejecting the Gateway config', () => {
@@ -1339,6 +1357,123 @@ describe('runtime config loading and reload planning', () => {
       },
     ]);
     expect(loaded.diagnostics.filter((value) => value.severity === 'error')).toEqual([]);
+  });
+
+  it('validates the Gateway against the Providers that safe reload can actually install', async () => {
+    const dataRoot = createDataRoot();
+    try {
+      writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+      writeGatewayConfig(dataRoot);
+      const providerId = 'providers/agent-openrouter.provider.jsonc';
+      const gatewayId = 'gateway.jsonc';
+      const providerPath = join(dataRoot, 'config', providerId);
+      const gatewayPath = join(dataRoot, 'config', gatewayId);
+      const originalProvider = {
+        ...JSON.parse(readFileSync(providerPath, 'utf8')),
+        modelMetadata: { 'openai/gpt-5.1': { limit: { context: 32_000, output: 4_000 } } },
+      };
+      writeFileSync(providerPath, JSON.stringify(originalProvider));
+      const originalGateway = JSON.parse(readFileSync(gatewayPath, 'utf8'));
+      const store = await createDemoStore({ dataRoot });
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const thread = await store.createThread(workspaceId, 'Turn during Gateway reload');
+      const running = structuredClone(
+        await store.createTurn(workspaceId, thread.id, 'Keep the admitted Turn', {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        })
+      );
+      expect(running.status).toBe('running');
+      const manager = createRuntimeConfigManager({
+        dataRoot,
+        providerCredentialConfigured: () => false,
+      });
+      const files = new RuntimeConfigFileService({
+        dataRoot,
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: manager.status,
+      });
+      const initial = manager.current();
+      const initialGatewayRevision = files.readFile(gatewayId).file.revision;
+      writeProviderConfig(dataRoot, 'openai/gpt-5.2');
+      writeGatewayConfig(dataRoot, 'openai/gpt-5.2');
+
+      const unavailable = expect.objectContaining({
+        code: 'gateway.unavailable_member',
+        message: expect.stringContaining('primary is unavailable: provider_model_delisted'),
+      });
+      const preview = files.validate({ files: [], mode: 'safe' });
+      expect(preview.valid).toBe(true);
+      expect(preview.plan.warnings).toContainEqual(unavailable);
+      expect(manager.current()).toBe(initial);
+      const applied = await manager.reload({ dryRun: false, mode: 'safe' });
+      expect(applied.status).toBe('applied');
+      expect(applied.plan).toEqual(preview.plan);
+      expect(manager.current().providerRegistry).toBe(initial.providerRegistry);
+      expect(manager.current().diagnostics).toContainEqual(unavailable);
+      expect(
+        resolveLogicalModelCatalog(
+          manager.current().gatewayConfig,
+          manager.current().providerRegistry
+        )[0]?.routes[0]
+      ).toMatchObject({ available: false, unavailableReason: 'provider_model_delisted' });
+
+      const active = manager.current();
+      const oversizedGateway = structuredClone(originalGateway);
+      oversizedGateway.logicalModels[0].contextManagement[0].compactThreshold = 64_000;
+      writeFileSync(gatewayPath, JSON.stringify(oversizedGateway));
+      writeFileSync(
+        providerPath,
+        JSON.stringify({
+          ...originalProvider,
+          modelMetadata: { 'openai/gpt-5.1': { limit: { context: 300_000, output: 4_000 } } },
+        })
+      );
+      const rejected = files.validate({ files: [], mode: 'safe' });
+      expect(rejected.valid).toBe(false);
+      expect(rejected.diagnostics).toContainEqual(
+        expect.objectContaining({ code: 'gateway.invalid_logical_model', severity: 'error' })
+      );
+      expect(rejected.plan.applied).toEqual([]);
+      expect(await manager.reload({ dryRun: true, mode: 'safe' })).toMatchObject({
+        status: 'failed',
+      });
+      expect(await manager.reload({ dryRun: false, mode: 'safe' })).toMatchObject({
+        status: 'failed',
+      });
+      await expect(
+        files.updateFile({
+          id: gatewayId,
+          kind: 'gateway',
+          content: JSON.stringify(originalGateway),
+          expectedRevision: initialGatewayRevision,
+        })
+      ).rejects.toMatchObject({ code: 'config_revision_conflict' });
+      expect(manager.current()).toBe(active);
+      expect(store.getTurnById(running.id)).toEqual(running);
+
+      writeFileSync(providerPath, JSON.stringify(originalProvider));
+      originalGateway.logicalModels[0].routes[0].id = 'next';
+      writeFileSync(gatewayPath, JSON.stringify(originalGateway));
+      const gatewayOnly = files.validate({ files: [], mode: 'safe' });
+      expect(gatewayOnly.valid).toBe(true);
+      expect(gatewayOnly.plan.requiresRestart).toEqual([]);
+      expect(gatewayOnly.plan.warnings).toContainEqual(
+        expect.objectContaining({
+          code: 'gateway.unavailable_member',
+          message: expect.stringContaining('next is unavailable: provider_api_key_missing'),
+        })
+      );
+      const recovered = await manager.reload({ dryRun: false, mode: 'safe' });
+      expect(recovered.status).toBe('applied');
+      expect(recovered.plan).toEqual(gatewayOnly.plan);
+      expect(manager.current().gatewayConfig.logicalModels[0]?.routes[0]?.id).toBe('next');
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('admits a transcription-only model without context through file validation and reload', async () => {

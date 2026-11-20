@@ -116,8 +116,10 @@ export async function withTurnModelCapture<T>(
   )
     throw new ModelCaptureError();
   try {
-    if (turn.owner.kind === 'server') store.getServerTurn(turn.threadId, turn.id);
-    else store.getTurn(workspaceIdForOwner(turn.owner), turn.threadId, turn.id);
+    // Keep the Store's acknowledgement fence. The native binding below verifies exact lineage
+    // and coverage without reconstructing any Item revisions on this Turn.
+    if (turn.owner.kind === 'workspace')
+      store.assertWorkspacePublicationAcknowledged(turn.owner.workspaceId);
   } catch {
     throw new ModelCaptureError();
   }
