@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   AnswerUserInputRequestSchema,
   isUserId,
@@ -25,36 +25,27 @@ import {
   settleDiscordInboundCommand,
 } from '../storage/discord-inbound-commands.js';
 import type { ControlDiscordChannelInput, ControlDiscordChannelResult } from './discord-codecs.js';
+import {
+  type DiscordPendingView,
+  type DiscordReply,
+  discordDigest,
+  discordFreshnessMs,
+  discordPrivateReply,
+  discordTransportSnowflake,
+  discordViewDigest,
+  readVerifiedDiscordCommand,
+  type VerifiedDiscordInteraction,
+  verifyDiscordInteraction,
+} from './discord-interaction.js';
 import { DISCORD_AUTOMATION_NOTICE } from './discord-rest.js';
 
-/** Discord inline response. Protected replies are private and disable mentions. */
-export type DiscordReply =
-  | { readonly type: 1 }
-  | {
-      readonly type: 4;
-      readonly data: {
-        readonly content: string;
-        readonly flags: 64;
-        readonly allowed_mentions: { readonly parse: readonly [] };
-      };
-    };
-
-/** A current Pending owner projection admitted for this actor and private external audience. */
-export type DiscordPendingView =
-  | {
-      readonly status: 'available';
-      readonly kind: 'approval' | 'user-input';
-      readonly workspaceId: string;
-      readonly threadId: string;
-      readonly pendingRequestId: string;
-      readonly turnId: string;
-      /** Complete exact effect or non-secret questions; never a summary in place of the effect. */
-      readonly content: string;
-      /** False for secret questions, unsupported decision strength, or incomplete disclosure. */
-      readonly responseAllowed: boolean;
-    }
-  | { readonly status: 'app-only' }
-  | { readonly status: 'unavailable'; readonly code: string };
+export {
+  type DiscordPendingView,
+  type DiscordReply,
+  discordPrivateReply,
+  type VerifiedDiscordInteraction,
+  verifyDiscordInteraction,
+} from './discord-interaction.js';
 
 /** Current identity, Pending owner and native invocation dependencies supplied by Core composition. */
 export interface DiscordChannelOptions {
@@ -93,110 +84,6 @@ export interface DiscordChannelOptions {
   ) => Promise<unknown>;
 }
 
-const verifiedInputs = new WeakSet<object>();
-const freshnessMs = 300_000;
-const snowflake = z.string().regex(/^[0-9]{1,20}$/);
-const envelopeSchema = z
-  .object({
-    id: snowflake,
-    application_id: snowflake,
-    type: z.number().int(),
-    version: z.literal(1),
-  })
-  .passthrough();
-const commandSchema = z.object({
-  user: z.object({ id: snowflake }),
-  context: z.literal(1),
-  channel: z.object({ id: snowflake, type: z.literal(1) }),
-  data: z.object({
-    name: z.literal('openkit'),
-    type: z.literal(1),
-    options: z
-      .array(
-        z
-          .object({
-            name: z.enum(['pair', 'inspect', 'answer', 'approve', 'deny']),
-            type: z.literal(1),
-            options: z
-              .array(
-                z
-                  .object({ name: z.string(), type: z.literal(3), value: z.string().max(6_000) })
-                  .strict()
-              )
-              .max(5),
-          })
-          .strict()
-      )
-      .length(1),
-  }),
-});
-
-/** Immutable raw request admitted by this module's signature verifier. */
-export interface VerifiedDiscordInteraction {
-  readonly body: string;
-  readonly payloadDigest: string;
-  readonly applicationId: string;
-  readonly publicKey: string;
-}
-
-/** Verifies Ed25519 over timestamp plus exact raw body, then checks application and freshness. */
-export function verifyDiscordInteraction(input: {
-  readonly body: Uint8Array;
-  readonly signature: string;
-  readonly timestamp: string;
-  readonly publicKey: string;
-  readonly applicationId: string;
-  readonly now?: number;
-}): VerifiedDiscordInteraction {
-  const reject = () =>
-    new OperationError('invalid_discord_signature', 'Discord authentication failed.', 401);
-  if (
-    input.body.byteLength > 65_536 ||
-    !/^[0-9a-f]{128}$/i.test(input.signature) ||
-    !/^[0-9a-f]{64}$/i.test(input.publicKey) ||
-    !/^[0-9]{1,12}$/.test(input.timestamp) ||
-    Math.abs((input.now ?? Date.now()) - Number(input.timestamp) * 1000) > freshnessMs
-  )
-    throw reject();
-  try {
-    const key = createPublicKey({
-      key: Buffer.concat([
-        Buffer.from('302a300506032b6570032100', 'hex'),
-        Buffer.from(input.publicKey, 'hex'),
-      ]),
-      type: 'spki',
-      format: 'der',
-    });
-    if (
-      !verify(
-        null,
-        Buffer.concat([Buffer.from(input.timestamp), input.body]),
-        key,
-        Buffer.from(input.signature, 'hex')
-      )
-    )
-      throw reject();
-    const body = new TextDecoder('utf-8', { fatal: true }).decode(input.body);
-    const envelope = envelopeSchema.parse(JSON.parse(body));
-    if (envelope.application_id !== input.applicationId) throw reject();
-    const value = Object.freeze({
-      body,
-      payloadDigest: digest(input.body),
-      applicationId: input.applicationId,
-      publicKey: input.publicKey.toLowerCase(),
-    });
-    verifiedInputs.add(value);
-    return value;
-  } catch {
-    throw reject();
-  }
-}
-
-/** Private response helper also used by the HTTP entry's bounded interaction deadline. */
-export function discordPrivateReply(content: string): DiscordReply {
-  return { type: 4, data: { content, flags: 64, allowed_mentions: { parse: [] } } };
-}
-
 /** Non-secret active account binding. Revision changes after every new pairing. */
 export interface DiscordAccountBinding {
   readonly discordUserId: string;
@@ -217,7 +104,7 @@ export function readDiscordAccountBinding(
   if (!row) return null;
   const parsed = z
     .object({
-      discordUserId: snowflake,
+      discordUserId: discordTransportSnowflake,
       userId: z.string().refine(isUserId),
       revision: RequestIdSchema,
       pairedAt: z.number().int().nonnegative(),
@@ -580,12 +467,12 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
         403
       );
     const challenge = randomBytes(32).toString('base64url');
-    const expiresAt = now() + freshnessMs;
+    const expiresAt = now() + discordFreshnessMs;
     await writeStage({
       stage: 'issue-challenge',
       mode,
       userId: actor.userId,
-      digest: digest(challenge),
+      digest: discordDigest(challenge),
       expiresAt,
     });
     if (options.resolveActor(actor.userId)?.userId !== actor.userId)
@@ -611,7 +498,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
         .prepare(
           'SELECT user_id AS userId FROM discord_pairing_challenges WHERE digest = ? AND consumed_at IS NULL AND expires_at > ?'
         )
-        .get(digest(challenge), now()) as { userId: string } | undefined;
+        .get(discordDigest(challenge), now()) as { userId: string } | undefined;
       if (row && options.resolveActor(row.userId)?.userId === row.userId)
         admittedUserId = row.userId;
     }
@@ -620,7 +507,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
         stage: 'consume-challenge',
         mode,
         discordUserId,
-        digest: digest(challenge),
+        digest: discordDigest(challenge),
         admittedUserId,
       })
     ).text;
@@ -628,29 +515,18 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
 
   /** Dispatches exactly one verified event after its durable deduplication fence commits. */
   async function handleVerified(input: VerifiedDiscordInteraction): Promise<DiscordReply> {
-    if (
-      !verifiedInputs.has(input) ||
-      input.applicationId !== options.applicationId ||
-      input.publicKey !== options.publicKey.toLowerCase()
-    )
-      throw new OperationError('invalid_discord_signature', 'Discord authentication failed.', 401);
-    const envelope = envelopeSchema.parse(JSON.parse(input.body));
-    if (envelope.type === 1) return { type: 1 };
-    if (
-      envelope.guild_id !== undefined ||
-      envelope.guild !== undefined ||
-      envelope.member !== undefined ||
-      envelope.context !== 1 ||
-      !commandSchema.safeParse(envelope).success
-    )
+    const verified = readVerifiedDiscordCommand(input, options);
+    if (verified.state === 'ping') return { type: 1 };
+    if (verified.state === 'outside-dm')
       return reply(
         'Use a private DM with the OpenKit bot. Unsupported input must be handled in OpenKit.'
       );
-    const command = commandSchema.parse(envelope);
-    if (envelope.type !== 2) return reply('This interaction is unsupported. Use OpenKit.');
+    if (verified.state === 'unsupported')
+      return reply('This interaction is unsupported. Use OpenKit.');
+    const { eventId, command } = verified;
     const { receipt } = await writeStage({
       stage: 'reserve-inbound',
-      eventId: envelope.id,
+      eventId,
       payloadDigest: input.payloadDigest,
       discordUserId: command.user.id,
     });
@@ -670,7 +546,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
     /** Never repost settlement when its own acknowledgement is unavailable. */
     async function settleReceipt(state: 'settled' | 'response-unknown') {
       settlementStarted = true;
-      await settle(envelope.id, state);
+      await settle(eventId, state);
       settlementFinished = true;
     }
     try {
@@ -751,7 +627,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
               .prepare(`SELECT content_digest AS contentDigest,kind FROM discord_disclosures
             WHERE token_digest = ? AND discord_user_id = ? AND binding_revision = ? AND workspace_id = ? AND thread_id = ? AND pending_request_id = ? AND expires_at > ?`)
               .get(
-                digest(values.disclosure!),
+                discordDigest(values.disclosure!),
                 command.user.id,
                 row.revision,
                 target.workspaceId,
@@ -767,7 +643,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
               409
             );
           const view = currentView(actor, target);
-          if (view.kind !== disclosure.kind || viewDigest(view) !== disclosure.contentDigest)
+          if (view.kind !== disclosure.kind || discordViewDigest(view) !== disclosure.contentDigest)
             throw new OperationError(
               'channel_disclosure_changed',
               'The exact effect or question changed.',
@@ -812,7 +688,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
             threadId: view.threadId,
             pendingRequestId: view.pendingRequestId,
             turnId: view.turnId,
-            eventId: envelope.id,
+            eventId,
             requestId: receipt.requestId,
           });
           if (origin.changes !== 1)
@@ -832,7 +708,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
             );
           if (
             currentDisclosure.kind !== view.kind ||
-            currentDisclosure.contentDigest !== viewDigest(view)
+            currentDisclosure.contentDigest !== discordViewDigest(view)
           )
             throw new OperationError(
               'channel_disclosure_changed',
@@ -847,7 +723,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
         } else {
           const view = currentView(actor, target);
           const token = randomBytes(32).toString('base64url');
-          text = `${view.content}\nDigest: ${viewDigest(view)}\nDisclosure: ${token}\nUse this disclosure only for this exact request. It expires in five minutes.`;
+          text = `${view.content}\nDigest: ${discordViewDigest(view)}\nDisclosure: ${token}\nUse this disclosure only for this exact request. It expires in five minutes.`;
           if (text.length + appLink.length + 1 > 2_000)
             throw new OperationError(
               'channel_disclosure_too_large',
@@ -858,15 +734,15 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
             stage: 'publish-disclosure',
             mode,
             userId: actor.userId,
-            tokenDigest: digest(token),
+            tokenDigest: discordDigest(token),
             discordUserId: command.user.id,
             bindingRevision: row.revision,
             workspaceId: target.workspaceId,
             threadId: target.threadId,
             pendingRequestId: target.pendingRequestId,
             kind: view.kind,
-            contentDigest: viewDigest(view),
-            expiresAt: now() + freshnessMs,
+            contentDigest: discordViewDigest(view),
+            expiresAt: now() + discordFreshnessMs,
           });
           protectedReplyAdmission = () => admitAfterStage(actor, target, row.revision, view);
           protectedReplyAdmission();
@@ -936,7 +812,10 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
     if (binding(actor)?.revision !== revision)
       throw new OperationError('channel_binding_unavailable', 'Current binding unavailable.', 403);
     const current = currentView(actor, target);
-    if (current.kind !== original.kind || viewDigest(current) !== viewDigest(original))
+    if (
+      current.kind !== original.kind ||
+      discordViewDigest(current) !== discordViewDigest(original)
+    )
       throw new OperationError(
         'channel_disclosure_changed',
         'The exact effect or question changed.',
@@ -967,23 +846,4 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
       );
     },
   };
-}
-
-/** Hashes boundary bytes without retaining their sensitive content. */
-function digest(value: string | Uint8Array): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-/** Binds disclosure bytes to exact current Pending lineage as well as content. */
-function viewDigest(view: Extract<DiscordPendingView, { status: 'available' }>): string {
-  return digest(
-    JSON.stringify([
-      view.kind,
-      view.workspaceId,
-      view.threadId,
-      view.pendingRequestId,
-      view.turnId,
-      view.content,
-    ])
-  );
 }

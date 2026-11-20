@@ -75,12 +75,23 @@ CREATE UNIQUE INDEX notification_one_active_attempt
 CREATE TABLE communication_intents (
   sequence INTEGER PRIMARY KEY,
   request_id TEXT NOT NULL UNIQUE,
-  event_id TEXT NOT NULL UNIQUE,
   schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-  event_json TEXT NOT NULL CHECK (json_valid(event_json)),
+  kind TEXT NOT NULL CHECK (kind IN ('relay-pairing-audit', 'channel.inbound')),
   intent_json TEXT NOT NULL CHECK (json_valid(intent_json)),
-  receipt_digest TEXT
+  event_id TEXT UNIQUE,
+  event_json TEXT CHECK (event_json IS NULL OR json_valid(event_json)),
+  external_account_id TEXT,
+  origin_json TEXT CHECK (origin_json IS NULL OR json_valid(origin_json)),
+  native_input_hash TEXT,
+  refusal_code TEXT,
+  receipt_digest TEXT,
+  CHECK (
+    (kind = 'relay-pairing-audit' AND event_id IS NOT NULL AND event_json IS NOT NULL
+      AND external_account_id IS NULL AND origin_json IS NULL
+      AND native_input_hash IS NULL AND refusal_code IS NULL)
+    OR (kind = 'channel.inbound' AND event_id IS NULL AND event_json IS NULL)
+  )
 );
 --> statement-breakpoint
 CREATE INDEX communication_pairing_audit_pending
-  ON communication_intents(sequence) WHERE receipt_digest IS NULL;
+  ON communication_intents(sequence) WHERE kind = 'relay-pairing-audit' AND receipt_digest IS NULL;

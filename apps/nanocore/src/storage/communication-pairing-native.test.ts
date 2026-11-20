@@ -9,11 +9,16 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  readCommunicationDisclosure,
+  writeCommunicationDisclosureInDb,
+} from './communication-disclosure-native.js';
 import { communicationOwner } from './communication-owner.js';
 import {
   issuePairingChallengeInDb,
   pairCommunicationInDb,
   readCommunicationBinding,
+  readCommunicationBindingForAccount,
   readPairingChallengeUser,
   readPendingPairingAuditInDb,
   revokePairingChallengesInDb,
@@ -250,7 +255,7 @@ describe('communication pairing owner', () => {
   it('rolls back binding, challenge and unbind when the local Audit INSERT fails', () => {
     issue(alice, firstDigest);
     const rejectAudit =
-      "CREATE TRIGGER reject_audit BEFORE INSERT ON communication_intents BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END";
+      "CREATE TRIGGER reject_audit BEFORE INSERT ON communication_intents WHEN NEW.kind = 'relay-pairing-audit' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END";
     writer.exec(rejectAudit);
     expect(() => pair()).toThrow('audit unavailable');
     expect(readPairingChallengeUser(writer, firstDigest, now)).toBe(alice);
@@ -302,6 +307,52 @@ describe('communication pairing owner', () => {
     expect(() => readPendingPairingAuditInDb(writer)).toThrow(
       'Unsupported retained record format.'
     );
+  });
+
+  it('authorizes a disclosure only for its current binding and exact request until authority expires', () => {
+    issue(alice, firstDigest);
+    const binding = pair();
+    expect(readCommunicationBindingForAccount(writer, '101')?.revision).toBe(
+      binding.bindingRevision
+    );
+    const disclosure = {
+      externalAccountId: '101',
+      bindingRevision: binding.bindingRevision,
+      userId: alice,
+      workspaceId: allocateEntityId('ws'),
+      threadId: allocateEntityId('th'),
+      pendingRequestId: 'original-input',
+      tokenDigest: sha256Hex('private-disclosure'),
+      contentDigest: sha256Hex('disclosed-input'),
+      kind: 'user-input',
+      expiresAt: now + 20,
+    } as const;
+    writeCommunicationDisclosureInDb(writer, disclosure, now);
+    expect(readCommunicationDisclosure(writer, disclosure, now)).toEqual({
+      kind: disclosure.kind,
+      contentDigest: disclosure.contentDigest,
+      expiresAt: disclosure.expiresAt,
+    });
+    expect(
+      readCommunicationDisclosure(writer, { ...disclosure, pendingRequestId: 'other-input' }, now)
+    ).toBeNull();
+    expect(readCommunicationDisclosure(writer, disclosure, disclosure.expiresAt)).toBeNull();
+
+    unbindCommunicationInDb(
+      writer,
+      { userId: alice, bindingRevision: binding.bindingRevision },
+      context
+    );
+    issue(bob, secondDigest);
+    const rebound = pair(secondDigest, '101', '202');
+    expect(readCommunicationBindingForAccount(writer, '101')?.revision).toBe(
+      rebound.bindingRevision
+    );
+    expect(readCommunicationDisclosure(writer, disclosure, now)).toBeNull();
+    expect(() => writeCommunicationDisclosureInDb(writer, disclosure, now)).toThrow(
+      'Current disclosure unavailable.'
+    );
+    expect(writer.prepare('SELECT count(*) FROM channel_disclosures').pluck().get()).toBe(1);
   });
 
   it('relays the original event after reopen and settles a lost kernel ACK by inspection', async () => {

@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
   AuditEventIdSchema,
-  canonicalIdentifierName,
   canonicalJsonText,
   isUserId,
   RequestIdSchema,
@@ -18,6 +17,7 @@ import type {
   PairingAuditReceipt,
   PairingChange,
 } from './communication-port.js';
+import { hasOriginalReceiptDigest } from './communication-receipt.js';
 import { storageRequestId } from './storage-owner.js';
 
 const Digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -70,7 +70,7 @@ const PairingAuditEventV1 = z.strictObject({
 
 type PairInput = Parameters<CommunicationStore['pair']>[0];
 type UnbindInput = Parameters<CommunicationStore['unbind']>[0];
-type Binding = z.infer<typeof Binding>;
+export type CommunicationBinding = z.infer<typeof Binding>;
 
 /** The caller holds the kernel authority observation through the local deciding commit. */
 interface PairingContext {
@@ -79,17 +79,28 @@ interface PairingContext {
   readonly now: () => number;
 }
 
+const activeBindingSelection = `
+  SELECT external_account_id AS externalAccountId, user_id AS userId, revision, paired_at AS pairedAt
+  FROM channel_account_bindings WHERE channel_kind = 'discord' AND revoked_at IS NULL
+`;
+
 /** Reads a validated active revision over the admitted communication reader. */
 export function readCommunicationBinding(
   sqlite: Database.Database,
   userId: string
-): Binding | null {
+): CommunicationBinding | null {
+  const row = sqlite.prepare(`${activeBindingSelection} AND user_id = ?`).get(UserId.parse(userId));
+  return row === undefined ? null : Binding.parse(row);
+}
+
+/** Resolves the authenticated external account to its current retained revision. */
+export function readCommunicationBindingForAccount(
+  sqlite: Database.Database,
+  externalAccountId: string
+): CommunicationBinding | null {
   const row = sqlite
-    .prepare(`
-    SELECT external_account_id AS externalAccountId, user_id AS userId, revision, paired_at AS pairedAt
-    FROM channel_account_bindings WHERE channel_kind = 'discord' AND user_id = ? AND revoked_at IS NULL
-  `)
-    .get(UserId.parse(userId));
+    .prepare(`${activeBindingSelection} AND external_account_id = ?`)
+    .get(DiscordSnowflakeSchema.parse(externalAccountId));
   return row === undefined ? null : Binding.parse(row);
 }
 
@@ -151,7 +162,7 @@ function appendPairingAudit(
   sqlite: Database.Database,
   deploymentId: string,
   action: 'channel.pairing.bind' | 'channel.pairing.unbind',
-  binding: Binding,
+  binding: CommunicationBinding,
   administratorAtEvent: boolean,
   now: number
 ): PairingChange {
@@ -188,10 +199,10 @@ function appendPairingAudit(
   });
   sqlite
     .prepare(`
-    INSERT INTO communication_intents(request_id, event_id, schema_version, event_json, intent_json)
-    VALUES (?, ?, 1, ?, ?)
+    INSERT INTO communication_intents(request_id, schema_version, kind, intent_json, event_id, event_json)
+    VALUES (?, 1, 'relay-pairing-audit', ?, ?, ?)
   `)
-    .run(relay.requestId, audit.id, eventJson, canonicalJsonText(relay));
+    .run(relay.requestId, canonicalJsonText(relay), audit.id, eventJson);
   return { bindingRevision: binding.revision, audit, relay };
 }
 
@@ -369,7 +380,7 @@ export function readPendingPairingAuditInDb(sqlite: Database.Database): PairingC
   const row = sqlite
     .prepare<[], Parameters<typeof decodePairingAudit>[0]>(`
     SELECT ${auditColumns} FROM communication_intents
-    WHERE receipt_digest IS NULL ORDER BY sequence LIMIT 1
+    WHERE kind = 'relay-pairing-audit' AND receipt_digest IS NULL ORDER BY sequence LIMIT 1
   `)
     .get();
   return row ? decodePairingAudit(row) : null;
@@ -386,12 +397,8 @@ export function settlePairingAuditInDb(
   ) {
     throw new Error('Kernel receipt did not apply the communication Audit fact.');
   }
-  const { disposition, intent, result, receiptDigest } = receipt;
-  // Match the v1 kernel receipt framing while the shared A8 writer is staged.
-  const expectedDigest = `sha256:${sha256Hex(
-    canonicalIdentifierName(['openkit:storage-receipt:v1', { disposition, intent, result }])
-  )}`;
-  if (receiptDigest !== expectedDigest) {
+  const { receiptDigest } = receipt;
+  if (!hasOriginalReceiptDigest(receipt)) {
     throw new Error(
       'Kernel receipt digest does not match the original communication Audit decision.'
     );
@@ -405,7 +412,7 @@ export function settlePairingAuditInDb(
             receipt_digest: string | null;
           }
         >(`
-      SELECT ${auditColumns}, receipt_digest FROM communication_intents WHERE request_id = ?
+      SELECT ${auditColumns}, receipt_digest FROM communication_intents WHERE request_id = ? AND kind = 'relay-pairing-audit'
     `)
         .get(receipt.intent.requestId);
       if (
@@ -418,7 +425,8 @@ export function settlePairingAuditInDb(
       if (row.receipt_digest !== null) throw new Error('Conflicting communication Audit receipt.');
       sqlite
         .prepare(`
-      UPDATE communication_intents SET receipt_digest = ? WHERE request_id = ?
+      UPDATE communication_intents SET receipt_digest = ?
+      WHERE request_id = ? AND kind = 'relay-pairing-audit'
     `)
         .run(receiptDigest, receipt.intent.requestId);
     })
