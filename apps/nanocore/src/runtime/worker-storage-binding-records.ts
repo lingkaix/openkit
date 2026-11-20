@@ -7,7 +7,10 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 
+import type Database from 'better-sqlite3';
 import type { CoreDb } from '../storage/db.js';
+
+type WorkerStorageBindingDb = { readonly sqlite: Database.Database };
 
 /** Fixed image-derived layout admitted for one retained Worker storage association. */
 export interface WorkerStorageLayout {
@@ -23,7 +26,7 @@ export interface WorkerStorageLayout {
   readonly targets: readonly { readonly target: string }[];
 }
 
-/** One target-to-volume identity retained by Core. */
+/** One target-to-volume identity retained by the storage owner. */
 export interface WorkerStorageTarget {
   /** Whether the current admitted image requests this retained target. */
   readonly active: boolean;
@@ -47,7 +50,7 @@ export interface WorkerStorageContributor {
   readonly workSlotRef: string;
 }
 
-/** Private Core association and current attachment certainty. */
+/** Private storage association and current attachment certainty. */
 export interface WorkerStorageBinding {
   readonly attachmentGeneration: number;
   readonly contributors: readonly WorkerStorageContributor[];
@@ -152,7 +155,7 @@ interface WorkerStorageContributorRow {
 
 /** Creates one empty private association before its first host materialization. */
 export function createWorkerStorageBinding(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: {
     readonly storageRef?: string;
     readonly deploymentId: string;
@@ -166,7 +169,7 @@ export function createWorkerStorageBinding(
   const runtimeTargetId = requireIdentity(input.runtimeTargetId, 'RuntimeTarget');
   const workspaceId = requireIdentity(input.workspaceId, 'Workspace');
   const layout = normalizeWorkerStorageLayout(input.layout);
-  const target = coreDb.sqlite
+  const target = owner.sqlite
     .prepare('SELECT deployment_id FROM nanohost_runtime_targets WHERE target_id = ?')
     .get(runtimeTargetId) as { deployment_id: string } | undefined;
   if (!target || target.deployment_id !== deploymentId) {
@@ -183,7 +186,7 @@ export function createWorkerStorageBinding(
     target: targetPath,
     volumeRef: opaqueRef('wsv', `${storageRef}\0${targetPath}`),
   }));
-  coreDb.sqlite
+  owner.sqlite
     .prepare(
       `INSERT INTO worker_storage_bindings (
          storage_ref, runtime_target_id, deployment_id, workspace_id, scope_digest,
@@ -211,40 +214,40 @@ export function createWorkerStorageBinding(
       now,
       writeRetainedV1({}).schemaVersion
     );
-  return requireWorkerStorageBinding(coreDb, storageRef);
+  return requireWorkerStorageBinding(owner, storageRef);
 }
 
 /** Reads one exact private association without performing audience admission. */
 export function getWorkerStorageBinding(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: { readonly storageRef: string }
 ): WorkerStorageBinding | null {
   const storageRef = requireIdentity(input.storageRef, 'storage');
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(
       'SELECT *, schema_version AS schemaVersion FROM worker_storage_bindings WHERE storage_ref = ?'
     )
     .get(storageRef) as WorkerStorageBindingRow | undefined;
-  return row ? bindingFromRow(coreDb, row) : null;
+  return row ? bindingFromRow(owner, row) : null;
 }
 
 /** Reads the sole association currently attached to one exact Sandbox binding. */
 export function getWorkerStorageBindingForSandbox(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: { readonly sandboxBindingRef: string }
 ): WorkerStorageBinding | null {
   const sandboxBindingRef = requireIdentity(input.sandboxBindingRef, 'Sandbox binding');
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(
       'SELECT *, schema_version AS schemaVersion FROM worker_storage_bindings WHERE current_sandbox_binding_ref = ?'
     )
     .get(sandboxBindingRef) as WorkerStorageBindingRow | undefined;
-  return row ? bindingFromRow(coreDb, row) : null;
+  return row ? bindingFromRow(owner, row) : null;
 }
 
 /** Lists only Workspace associations whose complete contributor audience remains current. */
 export function listWorkerStorageBindings(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: {
     readonly authorizeContributor: AuthorizeWorkerStorageContributor;
     readonly workspaceId: string;
@@ -252,7 +255,7 @@ export function listWorkerStorageBindings(
 ): WorkerStorageBinding[] {
   const workspaceId = requireIdentity(input.workspaceId, 'Workspace');
   return (
-    coreDb.sqlite
+    owner.sqlite
       .prepare(
         `SELECT *, schema_version AS schemaVersion FROM worker_storage_bindings
          WHERE workspace_id = ? AND state <> 'purged'
@@ -260,22 +263,25 @@ export function listWorkerStorageBindings(
       )
       .all(workspaceId) as WorkerStorageBindingRow[]
   )
-    .map((row) => bindingFromRow(coreDb, row))
+    .map((row) => bindingFromRow(owner, row))
     .filter((binding) => binding.contributors.every(input.authorizeContributor));
 }
 
-/** Proves Workspace storage absence from the complete Core ledger, without audience filtering or Host discovery. */
-export function isWorkspaceWorkerStorageProvedAbsent(coreDb: CoreDb, workspaceId: string): boolean {
+/** Proves Workspace storage absence from the complete storage ledger, without audience filtering or Host discovery. */
+export function isWorkspaceWorkerStorageProvedAbsent(
+  owner: WorkerStorageBindingDb,
+  workspaceId: string
+): boolean {
   requireIdentity(workspaceId, 'Workspace');
-  return coreDb.sqlite.transaction(() => {
-    const rows = coreDb.sqlite
+  return owner.sqlite.transaction(() => {
+    const rows = owner.sqlite
       .prepare(
         `SELECT *, schema_version AS schemaVersion FROM worker_storage_bindings
          WHERE workspace_id = ?`
       )
       .all(workspaceId) as WorkerStorageBindingRow[];
     for (const row of rows) {
-      const binding = bindingFromRow(coreDb, row);
+      const binding = bindingFromRow(owner, row);
       if (
         binding.state !== 'purged' ||
         binding.purgedAt === null ||
@@ -288,7 +294,7 @@ export function isWorkspaceWorkerStorageProvedAbsent(coreDb: CoreDb, workspaceId
         return false;
     }
     // Orphaned or cross-Workspace lineage cannot make an incomplete census look empty.
-    return !coreDb.sqlite
+    return !owner.sqlite
       .prepare(
         `SELECT 1 FROM worker_storage_contributors AS contributor
          LEFT JOIN worker_storage_bindings AS binding ON binding.storage_ref = contributor.storage_ref
@@ -302,23 +308,23 @@ export function isWorkspaceWorkerStorageProvedAbsent(coreDb: CoreDb, workspaceId
 
 /** Rechecks and returns one explicitly selected idle association. */
 export function selectWorkerStorageBinding(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: WorkerStorageSelectionInput
 ): WorkerStorageBinding {
-  const binding = requireWorkerStorageBinding(coreDb, input.storageRef);
+  const binding = requireWorkerStorageBinding(owner, input.storageRef);
   assertSelectable(binding, input);
   return binding;
 }
 
 /** Authorizes one selected association before its exact attached Sandbox is replaced. */
 export function authorizeAttachedWorkerStorageReplacement(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: Omit<WorkerStorageSelectionInput, 'layout'> & {
     readonly reuseWorkSlotRef?: string;
     readonly sandboxBindingRef: string;
   }
 ): WorkerStorageBinding {
-  const binding = requireWorkerStorageBinding(coreDb, input.storageRef);
+  const binding = requireWorkerStorageBinding(owner, input.storageRef);
   assertAdmission(binding, { ...input, layout: binding.layout });
   if (binding.revision !== input.expectedRevision) throw revisionConflict();
   if (
@@ -336,7 +342,7 @@ export function authorizeAttachedWorkerStorageReplacement(
 
 /** Reserves the sole attachment through one revision compare-and-set transaction. */
 export function reserveWorkerStorageAttachment(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: WorkerStorageSelectionInput & {
     readonly agentSessionId: string;
     readonly now?: string;
@@ -345,8 +351,8 @@ export function reserveWorkerStorageAttachment(
   }
 ): WorkerStorageBinding {
   const now = input.now ?? new Date().toISOString();
-  const transaction = coreDb.sqlite.transaction(() => {
-    const binding = selectWorkerStorageBinding(coreDb, input);
+  const transaction = owner.sqlite.transaction(() => {
+    const binding = selectWorkerStorageBinding(owner, input);
     if (binding.runtimeTargetId !== requireIdentity(input.runtimeTargetId, 'RuntimeTarget')) {
       throw new WorkerStorageBindingError(
         'layout_conflict',
@@ -370,7 +376,7 @@ export function reserveWorkerStorageAttachment(
         'Worker storage contributor is not currently authorized.'
       );
     }
-    const changed = coreDb.sqlite
+    const changed = owner.sqlite
       .prepare(
         `UPDATE worker_storage_bindings
          SET revision = revision + 1, attachment_generation = ?, state = 'reserved',
@@ -405,20 +411,20 @@ export function reserveWorkerStorageAttachment(
         'Worker storage reservation changed concurrently.'
       );
     }
-    insertContributor(coreDb, contributor);
+    insertContributor(owner, contributor);
   });
   transaction();
-  return requireWorkerStorageBinding(coreDb, input.storageRef);
+  return requireWorkerStorageBinding(owner, input.storageRef);
 }
 
 /** Adds one authorized contributor to an already attached shared Sandbox generation. */
 export function admitWorkerStorageContributor(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: WorkerStorageSelectionInput & { readonly now?: string }
 ): WorkerStorageBinding {
   const now = input.now ?? new Date().toISOString();
-  const transaction = coreDb.sqlite.transaction(() => {
-    const binding = requireWorkerStorageBinding(coreDb, input.storageRef);
+  const transaction = owner.sqlite.transaction(() => {
+    const binding = requireWorkerStorageBinding(owner, input.storageRef);
     assertAdmission(binding, input);
     if (binding.layoutDigest !== workerStorageLayoutDigest(input.layout)) {
       throw new WorkerStorageBindingError(
@@ -442,26 +448,26 @@ export function admitWorkerStorageContributor(
         'Worker storage contributor is not currently authorized.'
       );
     }
-    const existing = coreDb.sqlite
+    const existing = owner.sqlite
       .prepare('SELECT contributor_ref FROM worker_storage_contributors WHERE contributor_ref = ?')
       .get(contributor.contributorRef);
     if (existing) return;
-    const changed = coreDb.sqlite
+    const changed = owner.sqlite
       .prepare(
         `UPDATE worker_storage_bindings SET revision = revision + 1, updated_at = ?
          WHERE storage_ref = ? AND revision = ? AND state = 'attached'`
       )
       .run(now, binding.storageRef, binding.revision);
     if (changed.changes !== 1) throw revisionConflict();
-    insertContributor(coreDb, contributor);
+    insertContributor(owner, contributor);
   });
   transaction();
-  return requireWorkerStorageBinding(coreDb, input.storageRef);
+  return requireWorkerStorageBinding(owner, input.storageRef);
 }
 
 /** Records exact host attachment and per-target initialization proof. */
 export function activateWorkerStorageAttachment(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: {
     readonly attachmentGeneration: number;
     readonly expectedRevision: number;
@@ -471,7 +477,7 @@ export function activateWorkerStorageAttachment(
     readonly targets: readonly WorkerStorageTarget[];
   }
 ): WorkerStorageBinding {
-  const binding = requireWorkerStorageBinding(coreDb, input.storageRef);
+  const binding = requireWorkerStorageBinding(owner, input.storageRef);
   assertExactAttachment(binding, input.expectedRevision, input.attachmentGeneration, 'reserved');
   const targets = normalizeStoredTargets(input.targets);
   const activeTargets = binding.targets.filter((target) => target.active);
@@ -490,7 +496,7 @@ export function activateWorkerStorageAttachment(
     const initialized = initializedByTarget.get(target.target);
     return initialized ? { ...target, initialized: initialized.initialized } : target;
   });
-  const changed = coreDb.sqlite
+  const changed = owner.sqlite
     .prepare(
       `UPDATE worker_storage_bindings
        SET revision = revision + 1, state = 'attached', current_sandbox_binding_ref = ?,
@@ -507,12 +513,12 @@ export function activateWorkerStorageAttachment(
       binding.attachmentGeneration
     );
   if (changed.changes !== 1) throw revisionConflict();
-  return requireWorkerStorageBinding(coreDb, input.storageRef);
+  return requireWorkerStorageBinding(owner, input.storageRef);
 }
 
 /** Releases one exact reservation or attachment only after ordinary cleanup proof. */
 export function releaseWorkerStorageAttachment(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: {
     readonly attachmentGeneration: number;
     readonly cleanupProved: boolean;
@@ -525,7 +531,7 @@ export function releaseWorkerStorageAttachment(
   if (!input.cleanupProved) {
     throw new WorkerStorageBindingError('storage_fenced', 'Worker storage cleanup is not proved.');
   }
-  const binding = requireWorkerStorageBinding(coreDb, input.storageRef);
+  const binding = requireWorkerStorageBinding(owner, input.storageRef);
   if (binding.state !== 'reserved' && binding.state !== 'attached' && binding.state !== 'unknown') {
     throw new WorkerStorageBindingError('storage_fenced', 'Worker storage is not releasable.');
   }
@@ -539,7 +545,7 @@ export function releaseWorkerStorageAttachment(
       'Worker storage Sandbox cleanup proof does not match.'
     );
   }
-  const changed = coreDb.sqlite
+  const changed = owner.sqlite
     .prepare(
       `UPDATE worker_storage_bindings
        SET revision = revision + 1, state = 'idle', current_agent_session_id = NULL,
@@ -556,12 +562,12 @@ export function releaseWorkerStorageAttachment(
       binding.state
     );
   if (changed.changes !== 1) throw revisionConflict();
-  return requireWorkerStorageBinding(coreDb, input.storageRef);
+  return requireWorkerStorageBinding(owner, input.storageRef);
 }
 
 /** Fences one association after an uncertain external attachment or detach result. */
 export function markWorkerStorageAttachmentUnknown(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: {
     readonly attachmentGeneration: number;
     readonly expectedRevision: number;
@@ -569,12 +575,12 @@ export function markWorkerStorageAttachmentUnknown(
     readonly storageRef: string;
   }
 ): WorkerStorageBinding {
-  const binding = requireWorkerStorageBinding(coreDb, input.storageRef);
+  const binding = requireWorkerStorageBinding(owner, input.storageRef);
   if (binding.state !== 'reserved' && binding.state !== 'attached') {
     throw new WorkerStorageBindingError('storage_fenced', 'Worker storage is not attachable.');
   }
   assertExactAttachment(binding, input.expectedRevision, input.attachmentGeneration, binding.state);
-  const changed = coreDb.sqlite
+  const changed = owner.sqlite
     .prepare(
       `UPDATE worker_storage_bindings
        SET revision = revision + 1, state = 'unknown', updated_at = ?
@@ -589,12 +595,12 @@ export function markWorkerStorageAttachmentUnknown(
       binding.state
     );
   if (changed.changes !== 1) throw revisionConflict();
-  return requireWorkerStorageBinding(coreDb, input.storageRef);
+  return requireWorkerStorageBinding(owner, input.storageRef);
 }
 
 /** Reserves an idle unreferenced association for one explicit whole-ref purge. */
 export function markWorkerStoragePurgePending(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: {
     readonly authorizePurge: () => boolean;
     readonly expectedRevision: number;
@@ -603,7 +609,7 @@ export function markWorkerStoragePurgePending(
     readonly storageRef: string;
   }
 ): WorkerStorageBinding {
-  const binding = requireWorkerStorageBinding(coreDb, input.storageRef);
+  const binding = requireWorkerStorageBinding(owner, input.storageRef);
   if (!input.authorizePurge()) {
     throw new WorkerStorageBindingError(
       'authorization_denied',
@@ -617,7 +623,7 @@ export function markWorkerStoragePurgePending(
       'Worker storage still has an attachment or surviving reference.'
     );
   }
-  const changed = coreDb.sqlite
+  const changed = owner.sqlite
     .prepare(
       `UPDATE worker_storage_bindings
        SET revision = revision + 1, state = 'purge-pending', updated_at = ?
@@ -625,12 +631,12 @@ export function markWorkerStoragePurgePending(
     )
     .run(input.now ?? new Date().toISOString(), binding.storageRef, binding.revision);
   if (changed.changes !== 1) throw revisionConflict();
-  return requireWorkerStorageBinding(coreDb, input.storageRef);
+  return requireWorkerStorageBinding(owner, input.storageRef);
 }
 
 /** Settles one exact purge result without widening an uncertain result to success. */
 export function settleWorkerStoragePurge(
-  coreDb: CoreDb,
+  owner: WorkerStorageBindingDb,
   input: {
     readonly expectedRevision: number;
     readonly now?: string;
@@ -638,14 +644,14 @@ export function settleWorkerStoragePurge(
     readonly storageRef: string;
   }
 ): WorkerStorageBinding {
-  const binding = requireWorkerStorageBinding(coreDb, input.storageRef);
+  const binding = requireWorkerStorageBinding(owner, input.storageRef);
   if (binding.revision !== input.expectedRevision || binding.state !== 'purge-pending') {
     throw revisionConflict();
   }
   const now = input.now ?? new Date().toISOString();
   const state =
     input.outcome === 'purged' ? 'purged' : input.outcome === 'retained' ? 'idle' : 'unknown';
-  const changed = coreDb.sqlite
+  const changed = owner.sqlite
     .prepare(
       `UPDATE worker_storage_bindings
        SET revision = revision + 1, state = ?, purged_at = ?, updated_at = ?
@@ -653,7 +659,7 @@ export function settleWorkerStoragePurge(
     )
     .run(state, input.outcome === 'purged' ? now : null, now, binding.storageRef, binding.revision);
   if (changed.changes !== 1) throw revisionConflict();
-  return requireWorkerStorageBinding(coreDb, input.storageRef);
+  return requireWorkerStorageBinding(owner, input.storageRef);
 }
 
 /** Computes the exact host-verifiable canonical image storage-layout digest. */
@@ -689,8 +695,11 @@ export function workerStorageDefaultWorkSlotRef(workspaceId: string, threadId: s
 }
 
 /** Reads one required association. */
-function requireWorkerStorageBinding(coreDb: CoreDb, storageRef: string): WorkerStorageBinding {
-  const binding = getWorkerStorageBinding(coreDb, { storageRef });
+function requireWorkerStorageBinding(
+  owner: WorkerStorageBindingDb,
+  storageRef: string
+): WorkerStorageBinding {
+  const binding = getWorkerStorageBinding(owner, { storageRef });
   if (!binding) {
     throw new WorkerStorageBindingError('not_found', 'Worker storage association was not found.');
   }
@@ -751,8 +760,11 @@ function assertAdmission(binding: WorkerStorageBinding, input: WorkerStorageSele
 }
 
 /** Inserts one append-only contributor row. */
-function insertContributor(coreDb: CoreDb, contributor: WorkerStorageContributor): void {
-  coreDb.sqlite
+function insertContributor(
+  owner: WorkerStorageBindingDb,
+  contributor: WorkerStorageContributor
+): void {
+  owner.sqlite
     .prepare(
       `INSERT INTO worker_storage_contributors (
          contributor_ref, storage_ref, attachment_generation, workspace_id, responsible_user_id,
@@ -804,7 +816,10 @@ export function resolveWorkerStorageWorkSlotRef(
 }
 
 /** Projects one strict SQLite row and its append-only contributor rows. */
-function bindingFromRow(coreDb: CoreDb, row: WorkerStorageBindingRow): WorkerStorageBinding {
+function bindingFromRow(
+  owner: WorkerStorageBindingDb,
+  row: WorkerStorageBindingRow
+): WorkerStorageBinding {
   const targets = readRetainedV1(row, () =>
     normalizeStoredTargets(JSON.parse(row.targets_json) as unknown)
   );
@@ -824,7 +839,7 @@ function bindingFromRow(coreDb: CoreDb, row: WorkerStorageBindingRow): WorkerSto
     throw new WorkerStorageBindingError('storage_fenced', 'Worker storage metadata is invalid.');
   }
   const contributors = (
-    coreDb.sqlite
+    owner.sqlite
       .prepare(
         `SELECT * FROM worker_storage_contributors
          WHERE storage_ref = ? ORDER BY attachment_generation`

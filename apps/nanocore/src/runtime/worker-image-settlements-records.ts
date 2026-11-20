@@ -4,6 +4,7 @@ import {
   canonicalNativeEnvironment,
   NativeEnvironmentRecordSchema,
 } from '@openkit/worker-protocol';
+import type Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { z } from 'zod';
 import { controlStoreFor } from '../storage/control-store.js';
@@ -15,6 +16,9 @@ import {
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from './execution-journal.js';
+
+/** An admitted connection to the image records, independent of Core journal authority. */
+type WorkerImageSettlementDb = { readonly sqlite: Database.Database };
 
 const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 /** Private immutable candidate lineage carried in process, never on the Host wire. */
@@ -57,10 +61,10 @@ export class WorkerImageSettlementDeferred extends Error {
 
 /** Reads one exact private settlement; storage errors remain errors, never absence. */
 export function readWorkerImageSettlement(
-  coreDb: CoreDb,
+  owner: WorkerImageSettlementDb,
   requestId: string
 ): WorkerImageSettlement | null {
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(`SELECT schema_version AS schemaVersion, request_id AS requestId, operation,
     authored_artifact_id AS authoredArtifactId, authored_artifact_version AS authoredArtifactVersion,
     authored_content_digest AS authoredContentDigest, input_digest AS inputDigest,
@@ -103,16 +107,33 @@ export function writeWorkerImageSettlement(coreDb: CoreDb, input: WorkerImageSet
 /** Keeps every receipt and journal statement on the supplied owning transaction, never a caller's sibling handle. */
 export function writeWorkerImageSettlementInTransaction(
   coreDb: CoreDb,
-  value: WorkerImageSettlement,
+  input: WorkerImageSettlement,
   sqlite: CoreDb['sqlite']
 ): void {
-  if (sqlite !== coreDb.sqlite || !sqlite.inTransaction)
-    throw new Error('Image settlement requires its owning connection.');
-  const existing = readWorkerImageSettlement(coreDb, value.requestId);
+  if (sqlite !== coreDb.sqlite) throw new Error('Image settlement requires its owning connection.');
+  const value = insertWorkerImageSettlementInTransaction(coreDb, input);
+  if (!value) return;
+  settleImageJournal(coreDb, value);
+  if (JSON.stringify(readWorkerImageSettlement(coreDb, value.requestId)) !== JSON.stringify(value))
+    throw new WorkerImageSettlementConflict();
+}
+
+/**
+ * Inserts a local outcome on the owning transaction. Returns the parsed input on insert or null on exact replay.
+ * The caller can confirm the stored outcome on this connection before committing.
+ */
+export function insertWorkerImageSettlementInTransaction(
+  owner: WorkerImageSettlementDb,
+  input: WorkerImageSettlement
+): WorkerImageSettlement | null {
+  const { sqlite } = owner;
+  if (!sqlite.inTransaction) throw new Error('Image settlement requires its owning connection.');
+  const value = WorkerImageSettlementSchema.parse(input);
+  const existing = readWorkerImageSettlement(owner, value.requestId);
   if (existing) {
     if (JSON.stringify(existing) !== JSON.stringify(value))
       throw new WorkerImageSettlementConflict();
-    return;
+    return null;
   }
   sqlite
     .prepare(`INSERT INTO worker_image_settlements
@@ -132,9 +153,7 @@ export function writeWorkerImageSettlementInTransaction(
       new Date().toISOString(),
       writeRetainedV1({}).schemaVersion
     );
-  settleImageJournal(coreDb, value);
-  if (JSON.stringify(readWorkerImageSettlement(coreDb, value.requestId)) !== JSON.stringify(value))
-    throw new WorkerImageSettlementConflict();
+  return value;
 }
 
 /** Advances only the selected acquisition; existing build receipts and retained unjournaled results remain data. */
@@ -282,16 +301,27 @@ function checkedImageEnvironment(value: unknown) {
 
 /** Adds exact confirmed defaults to the existing acquisition/build settlement, without rewriting its result. */
 export function admitWorkerImageEnvironment(
-  coreDb: CoreDb,
+  owner: WorkerImageSettlementDb,
+  candidate: WorkerImageSettlementIdentity,
+  input: unknown
+): void {
+  const admit = () => admitWorkerImageEnvironmentInTransaction(owner, candidate, input);
+  if (owner.sqlite.inTransaction) admit();
+  else owner.sqlite.transaction(admit).immediate();
+}
+
+/** Validates, writes and reads back the exact owner-local admission in one transaction. */
+function admitWorkerImageEnvironmentInTransaction(
+  owner: WorkerImageSettlementDb,
   candidate: WorkerImageSettlementIdentity,
   input: unknown
 ): void {
   const environment = checkedImageEnvironment(input);
   const identity = WorkerImageSettlementIdentitySchema.parse(candidate);
-  const previous = readAdmittedWorkerImageEnvironment(coreDb, environment.imageDigest);
+  const previous = readAdmittedWorkerImageEnvironment(owner, environment.imageDigest);
   if (previous && JSON.stringify(previous) !== JSON.stringify(environment))
     throw new WorkerImageSettlementConflict();
-  const rows = coreDb.sqlite
+  const rows = owner.sqlite
     .prepare(`SELECT schema_version AS schemaVersion, request_id AS requestId FROM worker_image_settlements
     WHERE authored_artifact_id = ? AND authored_artifact_version = ? AND authored_content_digest = ? AND input_digest = ? AND outcome = 'success' AND image_digest = ?`)
     .all(
@@ -304,19 +334,22 @@ export function admitWorkerImageEnvironment(
   if (rows.length !== 1) throw new WorkerImageSettlementConflict();
   const row = readRetainedV1(rows[0]!, () => rows[0]!);
   const bytes = JSON.stringify(environment);
-  coreDb.sqlite
+  owner.sqlite
     .prepare(
       'UPDATE worker_image_settlements SET native_environment_json = ? WHERE request_id = ? AND native_environment_json IS NULL'
     )
     .run(bytes, row.requestId);
-  const admitted = readAdmittedWorkerImageEnvironment(coreDb, environment.imageDigest);
+  const admitted = readAdmittedWorkerImageEnvironment(owner, environment.imageDigest);
   if (JSON.stringify(admitted) !== bytes) throw new WorkerImageSettlementConflict();
 }
 
 /** Finds only confirmed exact-image defaults; mere successful acquisition is not admission. */
-export function readAdmittedWorkerImageEnvironment(coreDb: CoreDb, imageDigest: string) {
+export function readAdmittedWorkerImageEnvironment(
+  owner: WorkerImageSettlementDb,
+  imageDigest: string
+) {
   digest.parse(imageDigest);
-  const rows = coreDb.sqlite
+  const rows = owner.sqlite
     .prepare(
       `SELECT schema_version AS schemaVersion, native_environment_json AS environment FROM worker_image_settlements WHERE image_digest = ? AND outcome = 'success' AND native_environment_json IS NOT NULL`
     )
