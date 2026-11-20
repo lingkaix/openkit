@@ -28,7 +28,7 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
-import type { z } from 'zod';
+import { ZodError, type z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
@@ -53,6 +53,7 @@ import { prepareControlPendingCommands } from '../storage/control-store-pending.
 import {
   type ControlProductContentMount,
   ControlProductEntrySchema,
+  ControlProductPreconditionError,
   openControlStoreProductReadHandle,
   readProduct,
 } from '../storage/control-store-product-records.js';
@@ -69,6 +70,7 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { prepareRetainedProductJson } from '../storage/immutable-content.js';
+import { readPendingItemAssociations } from '../storage/thread-dashboard-records.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   type ControlGoalCommandInput,
@@ -109,6 +111,7 @@ import {
   listThreadPendingRequests,
   type PendingRequestRecord,
   type PreparedControlPendingCommand,
+  pendingRequestItemId,
   projectApprovalRequest,
   raisePendingRequest,
   readPendingRequest,
@@ -455,15 +458,59 @@ export function requireNativeCoordinatorGoal(
   coordinatorTurn({ actor: binding.actor, coordinatorTurnId: binding.turnId }, db, goal);
   return goal;
 }
-/** Native-only preparation. SQL compares each prepared Item's current descriptor before using its bytes. */
+type GoalItemDescriptor = {
+  readonly id: string;
+  readonly turnId: string;
+  readonly sequence: number;
+  readonly revision: number;
+  readonly contentJson: string;
+};
+
+type GoalApprovalSource = Pick<PendingRequestRecord, 'requestId' | 'requestItemId' | 'threadId'>;
+
+/** Selects the current descriptor of one immutable Item. */
+function readGoalItemDescriptor(db: WorkspaceDb, id: string): GoalItemDescriptor | undefined {
+  return db.sqlite
+    .prepare(
+      `SELECT id,turn_id AS turnId,sequence,revision,content_json AS contentJson
+       FROM control_product_entries WHERE kind='item' AND id=? AND is_current=1`
+    )
+    .get(id) as GoalItemDescriptor | undefined;
+}
+
+/** Selects the expected decision and every competing decision associated with this request on its Thread. */
+function readGoalDecisionDescriptors(
+  db: WorkspaceDb,
+  request: GoalApprovalSource
+): GoalItemDescriptor[] {
+  const ids = new Set([pendingRequestItemId(request.requestId, 'decision')]);
+  const associated = readPendingItemAssociations(
+    db.sqlite,
+    request.requestId,
+    request.requestItemId
+  );
+  for (const item of associated)
+    if (item.threadId === request.threadId && item.type === 'approval-decision')
+      ids.add(item.itemId);
+  return [...ids].sort().flatMap((id) => {
+    const descriptor = readGoalItemDescriptor(db, id);
+    return descriptor ? [descriptor] : [];
+  });
+}
+
+/** Native-only preparation. SQL rechecks the Item descriptors and the approval decision set. */
 export interface PreparedControlGoalCommand {
   readonly pendingAdmission?: PreparedControlPendingCommand;
   readonly entries: readonly PreparedControlEntry[];
   readonly items: readonly {
     readonly item: Item;
-    readonly revision: number;
-    readonly contentJson: string;
+    readonly descriptor: GoalItemDescriptor;
   }[];
+  readonly decisions?: {
+    readonly request: GoalApprovalSource;
+    readonly descriptors: readonly GoalItemDescriptor[];
+    readonly contradictory: boolean;
+  };
 }
 /** Verifies actual immutable references before the caller enters its SQL savepoint; never runs file I/O inside SQL. */
 export async function prepareControlGoalCommand(
@@ -480,7 +527,12 @@ export async function prepareControlGoalCommand(
   const request = args.pendingRequestId
     ? readPendingRequest(db.sqlite, args.pendingRequestId)
     : null;
-  const ids = new Set<string>(request ? [request.requestItemId] : []);
+  const decisions = request
+    ? { request, descriptors: readGoalDecisionDescriptors(db, request), contradictory: false }
+    : undefined;
+  const decisionDescriptors = new Map(decisions?.descriptors.map((row) => [row.id, row] as const));
+  const ids = new Set(decisionDescriptors.keys());
+  if (request) ids.add(request.requestItemId);
   const candidate =
     request?.governedIntent?.operation === 'goal.completion.accept'
       ? StoredGoalCompletionCandidateV1Schema.parse(request.governedIntent.candidate)
@@ -496,28 +548,34 @@ export async function prepareControlGoalCommand(
   );
   const items: PreparedControlGoalCommand['items'][number][] = [];
   for (const id of ids) {
-    const row = db.sqlite
-      .prepare(
-        "SELECT turn_id,sequence,revision,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+    const descriptor = decisionDescriptors.get(id) ?? readGoalItemDescriptor(db, id);
+    if (!descriptor) continue;
+    try {
+      const entry = ControlProductEntrySchema.parse({
+        kind: 'item',
+        turnId: descriptor.turnId,
+        sequence: descriptor.sequence,
+        expectedRevision: descriptor.revision - 1,
+        content: JSON.parse(descriptor.contentJson),
+      });
+      const [retained] = await prepareRetainedControlEntries(db, binding, [entry]);
+      const item = readRetainedV1(readPreparedControlEntry(retained!), (value) =>
+        ItemSchema.parse(value)
+      );
+      if (item.id !== id)
+        throw new GoalCommandError('recovery_required', 'Goal Item identity is contradictory.');
+      items.push({ item, descriptor });
+    } catch (error) {
+      if (
+        !decisions ||
+        !decisionDescriptors.has(id) ||
+        !(error instanceof ControlProductPreconditionError || error instanceof ZodError)
       )
-      .get(id) as
-      | { turn_id: string; sequence: number; revision: number; content_json: string }
-      | undefined;
-    if (!row) continue;
-    const entry = ControlProductEntrySchema.parse({
-      kind: 'item',
-      turnId: row.turn_id,
-      sequence: row.sequence,
-      expectedRevision: row.revision - 1,
-      content: JSON.parse(row.content_json),
-    });
-    const [retained] = await prepareRetainedControlEntries(db, binding, [entry]);
-    const item = readRetainedV1(readPreparedControlEntry(retained!), (value) =>
-      ItemSchema.parse(value)
-    );
-    if (item.id !== id)
-      throw new GoalCommandError('recovery_required', 'Goal Item identity is contradictory.');
-    items.push({ item, revision: row.revision, contentJson: row.content_json });
+        throw error;
+      // A missing required field or a byte mismatch is a confirmed integrity failure.
+      // The transaction rechecks this descriptor, then closes the grant. Storage I/O still retries.
+      decisions.contradictory = true;
+    }
   }
   let pendingAdmission: PreparedControlPendingCommand | undefined;
   if (input.pendingAdmission) {
@@ -547,7 +605,12 @@ export async function prepareControlGoalCommand(
       newDirectories
     );
   }
-  return { entries, items, ...(pendingAdmission ? { pendingAdmission } : {}) };
+  return {
+    entries,
+    items,
+    ...(decisions ? { decisions } : {}),
+    ...(pendingAdmission ? { pendingAdmission } : {}),
+  };
 }
 /** Reads one current native Turn without introducing a Store or a second connection. */
 function nativeTurn(db: WorkspaceDb, turnId: string, items: readonly Item[] = []): Turn {
@@ -800,6 +863,7 @@ function consumeGrant(
 ): GoalRecord {
   let reason: string | null = goal.disposition ? 'The Goal was cancelled or accepted.' : null;
   if (
+    prepared.decisions?.contradictory ||
     validateCanonicalLoad(
       request,
       nativeTurns(
@@ -810,7 +874,8 @@ function consumeGrant(
       readCommandRequestRecordsFromSqlite(db.sqlite)
     )
   )
-    reason ??= 'The pending request is contradictory.';
+    reason ??=
+      'The pending request is contradictory. Read the current Goal and request a new approval.';
   if (
     request.state !== 'resolved' ||
     request.resolution !== 'granted' ||
@@ -1349,6 +1414,7 @@ function resolveNativeGoalApproval(
   );
   if (
     !isCommandIntentApproval(request) ||
+    prepared.decisions?.contradictory ||
     validateCanonicalLoad(request, turns, readCommandRequestRecordsFromSqlite(db.sqlite))
   )
     throw new GoalCommandError('recovery_required', 'The pending request is contradictory.');
@@ -1525,17 +1591,19 @@ export function applyControlGoalCommand(
         403
       );
   }
-  for (const source of prepared.items) {
-    const current = db.sqlite
-      .prepare(
-        "SELECT revision,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
-      )
-      .get(source.item.id) as { revision: number; content_json: string } | undefined;
-    if (
-      !current ||
-      current.revision !== source.revision ||
-      current.content_json !== source.contentJson
+  if (
+    prepared.decisions &&
+    !isDeepStrictEqual(
+      prepared.decisions.descriptors,
+      readGoalDecisionDescriptors(db, prepared.decisions.request)
     )
+  )
+    throw new GoalCommandError(
+      'revision_conflict',
+      'The Goal approval decisions changed before the native decision.'
+    );
+  for (const { descriptor } of prepared.items) {
+    if (!isDeepStrictEqual(readGoalItemDescriptor(db, descriptor.id), descriptor))
       throw new GoalCommandError(
         'revision_conflict',
         'The Goal source Item changed before the native decision.'
