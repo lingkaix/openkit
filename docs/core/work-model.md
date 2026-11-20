@@ -320,6 +320,14 @@ After a bounded step, Core should read the resulting items, artifacts, evidence,
 | Context compact | A traceable summary used for continuation, handoff, retry, recovery, or worker execution without replacing its source history. |
 | Interruption | A truthful stop when execution or its external outcome cannot be proved. It preserves the prior attempt and may require inspection or a new authorized Turn; it does not promise transparent resume or automatic repair. |
 
+The work owner MUST commit exact input bytes before acknowledging acceptance. Workspace owns immutable start and steer Items and frozen input batches with ordered members and digests. The Server work service owns Server inputs. The Turn locates the original bytes and preparation choices, including structured delegation and recurrence. Keep input at its work owner while it awaits selection. The kernel queue retains identity and digest. If the owner cannot supply the exact payload, hold dispatch.
+
+Server work stages product and Knowledge admission under the original identity, including a Turn that is already terminal when its Thread is busy. When an occurrence admits queued work, the kernel commits the occurrence and queue entry together. Dispatch requires verified publication by the work owner. For terminal content, stage the bytes, settle the kernel receipt and Audit, then publish once. Calls, usage and finish follow the same owner-receipt rule. Containment and Vault revocation commit even when their EvidenceBundle must follow.
+
+Keep the original bytes through proved consumption or governed resolution, then apply ordinary retention. The [kernel obligation](runtime-model.md#scheduling-model) tracks the exact delivery and its proof. Public steer success continues to mean native acceptance for the addressed Turn. Proving consumption requires receiver read-back. An unsupported steer refuses before contact. Worker Pending Request delivery requires read-back.
+
+Busy-loop behaviour is pending decision.
+
 ## Context Compaction And Handoff
 
 Context compaction is a workflow mechanism for continuing work without carrying the entire raw thread, runtime state, or source material forward.

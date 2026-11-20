@@ -121,6 +121,14 @@ An audit actor uses the `ActorRef` semantics from `docs/core/identity.md`. Displ
 
 `docs/core/storage.md` owns persistence and source-of-truth placement. Audit owns the semantic projection, query, filtering, and retention requirements independently of the storage mechanism.
 
+Record required redacted boot phase, readiness and Vault-administration attribution in the surviving kernel Audit envelope. There is no separate boot or Vault-administration Audit table. The communication owner's immutable pairing or revocation fact commits with the binding decision. That fact is the durable relay intent. After a lost relay acknowledgement, submit the same redacted envelope under the original event ID. The kernel appends it once, returns the original result on an exact replay and refuses conflicting content under that ID. Scan relayed facts in kernel append order and expose relay lag. Relay availability does not decide binding currentness.
+
+For a [governed repair call](mediation.md#governed-repair-calls), record admission through the existing `permission.decision` event and link its PermissionDecision. The kernel `reserve` step records the actual Budget reservation. Keep a Policy allow, a Budget refusal, and a provider call distinct.
+
+Register `repair.model-call` v1 as the terminal Audit action in category `capability` and use the existing Audit envelope and step carriage. Record the original actor, trusted role, attempt and step, authorization reference, redacted route, and observed usage. Deduplicate by invocation and stage and compare content on replay. Use the existing outcomes `succeeded`, `failed`, `denied`, `cancelled`, or `unknown`. If provider contact may have occurred and deciding evidence is insufficient, record `unknown`.
+
+When a close permits scoped abandonment, record the actor, original attempt, proven fences, surviving exclusions, waived handoffs, and residual costs or effects.
+
 Where possible, audit events should retain links back to item IDs, capability call IDs, permission decision IDs, vault reference IDs, and other related core records.
 
 Every admitted interception participant invocation MUST leave durable evidence through existing Audit, Policy and linked effect owners, including observation, advice, failure and timeout. Evidence identifies the binding/provider versions, actor/delegation, safe input/output references and actual outcome; a transformation retains safe references to both versions without storing secrets. No second transcript or interception ledger is required.

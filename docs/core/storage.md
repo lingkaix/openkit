@@ -13,7 +13,7 @@ Cross-release continuity follows [Contract Evolution](contract-evolution.md#reta
 
 ## Principles
 
-Each mutable control-state transition MUST commit in exactly one transaction in its owning scope store. Related local product records, execution facts and request receipts share that commit. Files hold immutable content made durable before its digest reference is committed. Bounded retained work-entry bodies may instead reside as exact bytes in the owning control database under the Item log rule below. Readable record files are projections, not a second authority. Publish observable state only after commit. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) replaces file-first control authority to remove split-publication recovery, not to add a journal beside it.
+Each mutable control-state transition MUST commit in exactly one transaction in its owning store. Related records, deciding facts, and receipts owned by the same decision share that commit. Files hold immutable content made durable before its digest reference is committed. Bounded retained work-entry bodies may instead reside as exact bytes in the owning control database under the Item log rule below. Readable record files are projections, not a second authority. Publish observable state only after commit. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) replaces file-first control authority to remove split-publication recovery, not to add a journal beside it.
 
 Each Workspace MUST retain independently backupable and movable control data and locally retained content inside its own directory. Server-owned physical state and global capacity remain separate. An operation across those scopes is an effect with intent and outcome, not one transaction across stores. External references, retained Worker volumes and Vault material require explicit coverage; local content identity does not make them portable bytes.
 
@@ -69,9 +69,9 @@ For capture, a no-residue cold App read requires proof at the held cut that no W
 
 One Core server may use multiple SQLite databases.
 
-A server-level database belongs to one Core server installation and may hold global indexes, known users, workspace registry data, server metadata, and migration metadata.
+A server-level database belongs to one Core server installation and has one [Server storage owner](#server-storage-owners).
 
-A user-level database belongs to one user and may hold user-level metadata, preferences, workspace list or order, and user-level indexes. It holds that User's private authority and projections, including command receipts, personal Thread read receipts, and User-home Audit and Policy evidence. It may reference Workspace or Thread identifiers. It is not canonical shared Workspace authority. Canonical users and authentication remain Server-owned. Corruption or unreadability of one User database fails that User only: boot continues for other Users, dependent operations for that User fail closed, and the failure creates no replacement database and infers no recovered loss. A shared, server-authority, or ownership violation remains globally critical.
+A user-level database belongs to one user and may hold user-level metadata, preferences, workspace list or order, and user-level indexes. It holds that User's private authority and projections, including command receipts, personal Thread read receipts, and User-home Audit and Policy evidence. It may reference Workspace or Thread identifiers. It is not canonical shared Workspace authority. Canonical users and authentication remain Server-owned. Corruption or unreadability of one User database fails that User only: boot continues for other Users, dependent operations for that User fail closed, and the failure creates no replacement database and infers no recovered loss. A violation involving kernel authority or an uncontained ownership boundary fences every scope that depends on it.
 
 A Workspace control database belongs to one Workspace and owns its mutable control and product-record state. Derived indexes, vector or embedding metadata and read models retain their distinct projection role.
 
@@ -81,9 +81,33 @@ The physical DatabaseOwner owns each SQLite database off Main, including its dec
 
 Workspace-local control authority MUST NOT depend on a server-global database to reconstruct local history. Cross-scope physical ownership remains an explicit dependency, not duplicated Workspace authority. Per-Workspace databases support independent backup, movement, deletion and failure isolation.
 
+### Server Storage Owners
+
+[Architecture](architecture.md#core) defines the three levels of Server ownership. The following paths are relative to the Data Root and show the [v0.2.0 storage realization](../decisions/20261120-control_kernel_and_service_storage.md#decision).
+
+| Owner | Database | Authority |
+| --- | --- | --- |
+| Control Kernel | `server/db/core.sqlite` | Identity, Workspace registry and membership, Policy, Audit, Server settings, Vault control facts, execution and steps, admission and attempts, recurrence, and deciding command receipts. |
+| Server work service | `server/services/server-work/state.sqlite` | Server Threads, Turns, product entries, observations, capability calls, usage, and evidence bundles. |
+| Communication service | `server/services/communication/state.sqlite` | Channel bindings, challenges, disclosures, local pairing Audit and relay intent, attention, and delivery attempts. |
+| Security trigger service | `server/services/security-trigger/state.sqlite` | Trigger state, alarms, Audit progress and assessments, recipient outbox, and security Thread destinations. |
+| Core Extension | `server/extensions/<id>/state.sqlite` | The extension's native state, references, and observations. The flat IDs include `nanohost`, `openai-agents`, and `discord`. |
+
+Discord owns its native route, cursor and message references. Communication owns participants, tiers and channel authority. Policy owns publication grants, attention owns send claims, and Workspace owns captured content.
+
+Each owner MUST keep its journal, foreign keys, and transactions local to its database. References across stores carry the owner and an opaque ID. Serving opens an existing owner file at its expected Data Root path and validates its identity, applied ledger and required schema before admitting work. A missing initialized file degrades its routes. Create a file only during fresh provisioning, explicit first enable or authorized rebuild. Disabling an owner closes and retains its store. Routes MUST distinguish disabled, missing, unsupported, corrupt, full, and migration-failed stores. Affected effects fail closed if their owner cannot commit the required evidence. The Control Kernel MUST retain its capacity for independent authorized operations.
+
+For a command across two owners, the initiator commits intent with original occurrence, target, verb, expected generation, and input digest before posting. The deciding owner compares the retained request tuple, target, expected generation and semantic input digest. An exact replay reads the original result under current read authority. A changed request conflicts. Only proved absence in complete current history permits a fresh authority and generation check and a compare-and-set that commits the transition, receipt and deciding Audit or step together. The initiator settles the original intent against that receipt and digest. Publish once only if the receipt permits it. A refusal blocks dependent publication. After a lost reply inspect the original ID. An uncertain external effect remains held. Keep the receipt or equivalent business uniqueness for the replay horizon.
+
+Under the root lock, stop postings to the migrating owner, drain its acknowledgements, retire its handles and verify free space. The original remains authoritative until the WAL-inclusive recovery copy and its directory are verified and synchronized. Apply SQL and the ledger in one native transaction. An interrupted migration or missing commit acknowledgement requires ledger, integrity, and receipt inspection before retry. Restore the immediate recovery copy only under continuous writer exclusion with no later writes. Otherwise preserve both histories and degrade the owner.
+
+For a whole-root hot backup, pause every active writer, migration, file creator or replacer, and content publisher. Drain their outstanding acknowledgements and keep the pause through sequential snapshots and verification of the inventory. Refuse the hot backup if a required participant cannot join. Keep immutable Light App snapshots byte-exact. Restore MUST verify deployment, manifest, and owner ledgers under exclusion before admitting ingress. [Fault Tolerance](fault-tolerance.md#restore-evidence) governs skewed histories.
+
+Before Workspace MOVE, deletion, or same-ID restore, freeze submissions and fence and drain writers and sends. Export native content and permitted inert history. Leave routes, credentials, grants, live queue, and outbox on the Server. Recheck registry revision on use. At the destination, check ID collisions, current users, and local grants. Track unavailable-owner cleanup on the original lifecycle step and invalidate stale references before reactivation. When deletion requires purge, purge duplicate Workspace payloads, retain permitted channel history with inert references, and report incomplete deletion.
+
 ### Source Of Truth
 
-The scope control store owns mutable Workspace, Thread, Turn, AgentSession, Item revision, catalog, configuration-head and execution records. Existing domain owners keep their meanings and retention rules. Immutable content and authored revision bytes retain their original identities and content owners; database heads select the admitted revision. Authored server configuration stays server-scoped, and Workspace executions retain its admitted revision/digest as provenance rather than server authority.
+Each scope's work owner retains its canonical work records. Workspace stores retain local Thread, Turn, and Item history. The Server work service retains Server work independently of the kernel execution and admission records. Existing domain owners keep their meanings and retention rules for Workspace, AgentSession, catalog, and configuration-head facts. Immutable content and authored revision bytes retain their original identities and content owners; database heads select the admitted revision. Authored server configuration stays server-scoped, and Workspace executions retain its admitted revision/digest as provenance rather than server authority.
 
 Required user work data produced or used on any placement MUST return to OpenKit storage under its existing owners before work counts as complete or its only copy is removed. This includes files, results, retrievable conversations and Items, usage needed for accounting, and Knowledge candidates.
 

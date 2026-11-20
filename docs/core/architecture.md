@@ -54,6 +54,16 @@ Core may coordinate context, capabilities, workspace changes, evidence, audit, a
 
 When Core cannot prove whether an external runtime effect occurred, it may preserve the accepted lineage and expose an interrupted or uncertain outcome that requires inspection or a new authorized attempt. It must not guess, duplicate the effect, or create a settlement workflow solely to hide that boundary.
 
+Core has three Server storage responsibility levels under the [Control Kernel and Service Storage decision](../decisions/20261120-control_kernel_and_service_storage.md).
+
+- The **Control Kernel** owns the common transactional facts that Core needs to govern and repair accepted work. It owns identity, current grants and revocation, admission, attempts, input obligations, and their deciding evidence.
+- **Core Services** own required product contracts with independent state. When a service loses its state, Core reports affected routes as degraded and holds their effects. Unaffected kernel operations stay available.
+- A **Core Extension** owns its integration-specific state and lifecycle. It submits bounded evidence to typed Core operations. Core checks that evidence and decides effects. Each owner keeps its native state and database handles private.
+
+A backend fact belongs in the kernel only when it has one meaning across NanoHost, OpenAI Agents and the E2B mock and changes a kernel decision. Declare adapter capabilities in code or configuration. Revoke the grants actually issued, including the case where a hosted Turn has no Worker token.
+
+Kernel readiness MUST precede service and extension recovery. Kernel sign-in, Audit, token revocation, and the [governed repair call](mediation.md#governed-repair-calls) MUST work without those owners. [Storage](storage.md#server-storage-owners) maps these responsibilities to the Server stores.
+
 ### Agent Adapter
 
 An Agent Adapter consumes an already authorized and resolved assignment and translates between Core operations and one runtime's native invocation, control, results, and evidence.

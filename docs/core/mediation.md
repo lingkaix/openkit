@@ -290,6 +290,16 @@ Each Budget's owning contract states the unit, the scope, the measuring producer
 
 An exhausted Budget does not change accepted results. More work needs a new decision through [Human Attention](work-model.md#human-attention). A choice of scope, priority, or a permitted model is an Elicitation Gate. A decision that authorizes more spending is an Approval Gate. Core MUST NOT offer a generic override. A retry after exhaustion is a new authorized request.
 
+### Governed Repair Calls
+
+Bind the authenticated repair role, original actor, model call and attempt to a [kernel execution step](storage.md#server-storage-owners) at entry. Use the Gateway planner, final Policy and Vault checks, and a kernel-accessible credential. Reserve the applicable call allowance atomically across callers before provider contact. Complete or inspect this invocation using kernel Audit and steps even when Thread, Turn, capture and Server work storage are unavailable. Ordinary calls keep their work-owned evidence.
+
+Policy governs `repair.model-call` v1. Before the kernel can use an allocation, it must verify the Budget owner's approval, scope, counting window, and call limit. Deduct the same allowance from the ordinary capacity of the shared Budget. If allocation crosses owners, hold ordinary capacity by original request ID and enable the allocation only on the matching receipt. Inspect that ID after a lost reply.
+
+In one kernel write transaction, check the current grant and remaining allowance and reserve one call in the existing `reserve` step of the original invocation and attempt. A replay reads the original result. The reservation survives a lost reply or restart, and revocation prevents new calls. If the applicable Budget cannot be proved, refuse provider contact.
+
+Only the repair role may use this kernel evidence path. A denial makes zero provider calls. A lost response consumes the reservation. Return the result to its original invocation and require governed steps for mutations. Record the outcome in [kernel Audit and steps](evidence.md#audit-source-of-truth). If terminal Audit cannot commit, withhold success.
+
 ## Usage Metering
 
 [Evidence](evidence.md#usage-and-metering) owns `UsageRecord`, capability-call usage units, usage attribution, system-wide measurement, and `AuditEvent` governance projections across Core. Mediation carries the capability gateway's obligation to produce usage and audit metadata for a `CapabilityCall`.

@@ -90,13 +90,17 @@ Client -> Core: read workspace resources
 Client -> Core: list, create, read, or re-enter threads
 ```
 
-All threads, turns, items, artifacts, knowledge records, AgentSessions, and workspace resources are scoped by workspace.
+In this flow, Threads, Turns, Items, Artifacts, Knowledge records, and AgentSessions belong to the selected Workspace.
 
 Thread selection brings the user or channel into a durable work container. It does not imply that an AgentSession already exists.
 
 ## Common Channel Contract
 
 Discord is the first external team channel under the [2026-10-15 ruling](../decisions/20261015-discord_first_and_desktop_deferred.md). Channel accounts bind to current Core actors; channel membership alone grants no Workspace access or authority. Inbound deduplication and exact command/request identity preserve the existing Core replay boundary. Outbound delivery is a projection of Core outcomes, never a second workflow or proof that a recipient read or accepted a result.
+
+The [communication owner](storage.md#server-storage-owners) is authoritative for bindings, challenges, disclosures, attention, and delivery attempts. A pairing transaction consumes the challenge, enforces active account and user uniqueness per channel, advances the binding revision, and appends an immutable local Audit fact. Unbind revokes the binding and outstanding challenges with its local fact. Serialize pairing with event-time role observation. Serialize unbind with the final claim that permits a channel effect.
+
+At the effect boundary, recheck current User authority and the binding revision. For an effect requiring disclosure, also recheck its digest and expiry. For a Pending decision, match the exact current request. Deduplicate authenticated inbound events across principals under the original occurrence. Restart inspects the original reservation, origin evidence, and settlement. If the owner is unavailable or restore leaves its currentness unproved, refuse channel effects. Keep kernel sign-in and token revocation independent. Retain Discord data through disable and repair until administrator deletion or opted-in expiry. Expired challenges and disclosures confer no authority.
 
 A Reports guild mention and a direct interaction have separate replay identities. A guild mention receipt binds guild, channel, message and the digest of exact sender, content and route. It keeps the first admitted principal and revision evidence, not the raw sender identifier. New reservations also keep `questionDigest` (SHA-256 of exact UTF-8 question bytes) and `postedAt` (lossless Discord instant). Published Turn preparation must match both against the committed origin receipt; legacy receipts without either field do not authorize preparation. Look up the original receipt before applying the five-minute cutoff to an unseen event. A changed replay conflicts; an incomplete dispatch remains unknown across restart. Only a durably acknowledged new reservation can start work.
 
@@ -109,6 +113,8 @@ The closed Pending Request requester set includes `automation`. A later Core-loc
 An attention event identifies a current Core request and its responsible recipient, or a durable security notice and its recipient. A security notice remains eligible while outstanding, independently of its request state. Only that recipient's recorded answer acknowledges it; another actor's answer or withdrawal MUST NOT end it. It carries no new approval, answer, grant or execution authority. Request answer authority remains unchanged, and the request owner remains authoritative for request outcomes ([Security](security.md), [Security Program Rulings](../decisions/20261109-security_program_rulings.md)).
 
 A delivery attempt records an external transport observation. A definite rejection before sending differs from an unknown send result. An unknown result MUST NOT imply a Core outcome or permit an automatic duplicate send. Restart preserves uncertainty when an attempt lacks a definite result. An explicit retry after a proved no-send failure requires current account binding, actor authority, source access, and destination audience checks.
+
+Attention follows publication at the work owner. Deduplicate attention by original occurrence and recipient. Commit a delivery claim before contacting the transport. An interrupted send remains unknown until exact evidence establishes its outcome. For security notices, commit the assessment, event-time recipient identities, outbox and cursor compare-and-set together. After acknowledgement of the original Workspace Turn or Pending Request, enqueue by occurrence and recipient. Compare-and-set the outbox to raised with that receipt. Raised proves enqueue only. Serialize disable with containment admission and recheck live delegation and generation before automatic action. For a security notice, stop completion requires the recipient's acknowledgement or authorized closure.
 
 Channel binding proves control of the external account and associates it with one current Core actor. Binding does not retain the actor's credential privileges. Revocation prevents later responses and sends. A channel MUST authenticate its external input before using account identity or event identity.
 

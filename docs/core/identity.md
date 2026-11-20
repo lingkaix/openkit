@@ -69,6 +69,8 @@ All inbound credential kinds MUST appear in one management list and surface for 
 
 Outbound secrets remain in [Vault](vault.md). Channel participants map through the verified sender identity and receive no Token. External-person principals have no default grant. The [Security](security.md) charter coordinates these rules.
 
+The [Control Kernel](storage.md#server-storage-owners) owns account-backed sign-in and current Token revocation. Those operations MUST remain available when the communication or backend owner is unavailable. [Communication](communication.md#common-channel-contract) proves the current binding for a channel effect and the disclosure when the effect requires one. A valid kernel ledger does not establish restored binding currentness.
+
 ### Implicit Local Human
 
 The implicit local human is one ordinary canonical User in the existing Core users authority. A fresh local deployment allocates its `usr` UUIDv7 once under the existing single-writer initialization and User transaction boundary. Local actor, ownership, personal-Workspace and recovery consumers resolve that recorded User. A fixed textual singleton or separate lookup registry supplies no identity authority ([Identifier Owner Declarations](../decisions/20261015-identifier_owner_declarations.md)).
