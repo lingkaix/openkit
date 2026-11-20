@@ -89,7 +89,7 @@ async function createWorkerControlFixture(
     codex: '0.153.4',
     deepseek: '0.2.1-rc.5',
     opencode: '2.2.5',
-    pi: '1.4.0',
+    pi: '1.5.2',
   }[adapter];
   const environmentPackage = await resolveAgentEnvironmentPackage({
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,

@@ -7,7 +7,7 @@ aspect: agent-session
 
 # Pi Worker Adapter
 
-This specification owns the Pi 1.4.0 SDK delta. Shared adapter rules live in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md).
+This specification owns the Pi 1.5.2 SDK delta. Shared adapter rules live in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md).
 
 ## Scope
 
@@ -25,7 +25,7 @@ Core: [AgentSession](../core/agent-session.md), [Sandbox](../core/sandbox.md).
 
 ## Runtime
 
-The pin uses the official Pi SDK 1.4.0 in a dedicated private-channel host, with the matched `pi-ai`, `pi-tui`, and `pi-mcp` closure and the required workspace patch. The shim and `worker-common` stage contain no Pi dependency. There is no JSON, RPC, or ACP interface ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)). Gateway `pi-ai` stays separately pinned at 0.99.2.
+The pin uses the official Pi SDK 1.5.2 in a dedicated private-channel host, with the matched `pi-ai`, `pi-tui`, and `pi-mcp` closure and the required workspace patch. The shim and `worker-common` stage contain no Pi dependency. There is no JSON, RPC, or ACP interface ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)). Gateway `pi-ai` stays separately pinned at 0.99.2.
 
 The image deploys the workspace-patched native MCP `onConnectionState` plus the matched private loader and default transport imports. A plain npm Pi install is not equivalent. Required managed connection and tool registration gate provider work, including pending transports.
 

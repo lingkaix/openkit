@@ -10,9 +10,9 @@ const OPENKIT_WORK_SERVER = 'openkit-work';
 const KNOWLEDGE_RESPONSE_WAIT_MS = KNOWLEDGE_MANAGER_RUN_DEADLINE_MS + 15_000;
 
 /**
- * Loaded MCP configuration returned by Pi 1.4.0's loader.
+ * Loaded MCP configuration returned by Pi 1.5.2's loader.
  *
- * `loadMcpConfig` and `createDefaultTransport` ship in the installed package but are not root-package exports. The host resolves the package entry and imports those sibling files by absolute file URL. That access is pinned to the installed 1.4.0 dist layout.
+ * `loadMcpConfig` and `createDefaultTransport` ship in the installed package but are not root-package exports. The host resolves the package entry and imports those sibling files by absolute file URL. That access is pinned to the installed 1.5.2 dist layout.
  */
 type LoadedMcpConfig = ReturnType<NonNullable<McpExtensionOptions['loadConfig']>>;
 
@@ -40,7 +40,7 @@ interface PiMcpInternals {
 let loading: Promise<PiMcpInternals> | undefined;
 
 /**
- * Loads Pi 1.4.0's MCP loader and default transport from the installed dist modules.
+ * Loads Pi 1.5.2's MCP loader and default transport from the installed dist modules.
  *
  * @returns The two helpers. They are not public root exports.
  */

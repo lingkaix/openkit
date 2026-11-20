@@ -6,7 +6,7 @@
   "runtime": {
     "kind": "pi",
     "adapter": "pi",
-    "version": "1.4.0",
+    "version": "1.5.2",
     "image": {
       "kind": "reference",
       "ref": "openkit/worker-runtimes:dev",

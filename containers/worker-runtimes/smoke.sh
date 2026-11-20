@@ -19,7 +19,7 @@ openkit-worker-common-smoke
 test "$(codex --version)" = "codex-cli 0.169.0"
 test "$(dsh --version)" = "0.2.1-rc.5"
 test "$(opencode --version)" = "opencode v2.2.5"
-test "$(PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 pi --version)" = "1.4.0"
+test "$(PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 pi --version)" = "1.5.2"
 for command in codex pi opencode dsh openkit-pi-runtime-host; do
   test "$(command -v "${command}")" = "/usr/local/bin/${command}"
   test ! -w "$(readlink -f "/usr/local/bin/${command}")"

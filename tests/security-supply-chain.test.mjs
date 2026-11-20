@@ -173,7 +173,7 @@ test('the pull-request graph holds no write permission and publishes nothing to 
 
 test('Worker Runtimes pins the shipped Pi native-state patch', () => {
   const { pi } = JSON.parse(readFileSync('containers/worker-runtimes/versions.json', 'utf8'));
-  const patch = readFileSync('patches/pi-coding-agent-1.4.0-openkit-native-state.patch');
+  const patch = readFileSync('patches/pi-coding-agent-1.5.2-openkit-native-state.patch');
   assert.equal(createHash('sha256').update(patch).digest('hex'), pi.patchSha256);
 });
 
