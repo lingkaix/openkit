@@ -140,6 +140,18 @@ export interface SchedulerDispatchLoopResult {
 /** Existing process-local invocation claim joins full closeout; no receipt, result, or claim survives its attempt. */
 export type SchedulerPreparationClaims = Map<string, Promise<SchedulerDispatchLoopResult>>;
 const preparationClaimsByDataRoot = new Map<string, SchedulerPreparationClaims>();
+const preparationExpirations = new Map<string, (reason: Error) => void>();
+
+/** Releases an exact stalled local waiter only after durable no-effect closure. */
+export function releaseExpiredSchedulerPreparation(coreDb: CoreDb, attemptId: string): void {
+  preparationExpirations.get(JSON.stringify([coreDb.dataRoot, attemptId]))?.(
+    new TurnStartValidationError(
+      'worker_preparation_failed',
+      'Worker preparation deadline expired.',
+      409
+    )
+  );
+}
 
 /** Returns the existing single-flight preparation owner for this Core data root. */
 export function getSchedulerPreparationClaims(coreDb: CoreDb): SchedulerPreparationClaims {
@@ -477,6 +489,9 @@ async function dispatchSchedulerAdmission(
     },
     ...(input.now ? { now: input.now } : {}),
   });
+  const expiration = Promise.withResolvers<never>();
+  const expirationKey = JSON.stringify([input.coreDb.dataRoot, attempt.attemptId]);
+  preparationExpirations.set(expirationKey, expiration.reject);
   try {
     const setup = resolveDispatchAgentSetup(
       input,
@@ -516,16 +531,31 @@ async function dispatchSchedulerAdmission(
     // Attempt creation awaited the native owner; policy may have changed before Host work.
     assertAgentWorkNotPaused(input.agentWorkPaused?.());
     if (!currentSchedulerDispatchAuthority(input, entry)) throw authorityDenial;
-    const prepared = await input.turnExecutor.prepareAgentSessionForTurn(input.store, preparation);
+    const prepared = await Promise.race([
+      input.turnExecutor.prepareAgentSessionForTurn(input.store, preparation),
+      expiration.promise,
+    ]);
     await bindSchedulerExecutionAttemptSession(input.coreDb, {
       attemptId: attempt.attemptId,
       agentSessionId: prepared.agentSessionId,
     });
-    const committed = await input.turnExecutor.commitPreparedAgentSessionForTurn?.(input.store, {
-      attemptId: attempt.attemptId,
-      prepared,
-      preparation,
-    });
+    const committed = await Promise.race([
+      input.turnExecutor.commitPreparedAgentSessionForTurn?.(input.store, {
+        attemptId: attempt.attemptId,
+        prepared,
+        preparation,
+      }),
+      expiration.promise,
+    ]);
+    if (
+      requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId).terminalCause ===
+      'preparation-deadline'
+    )
+      throw new TurnStartValidationError(
+        'worker_preparation_failed',
+        'Worker preparation deadline expired.',
+        409
+      );
     if (prepared.replacementRequired && !input.turnExecutor.commitPreparedAgentSessionForTurn)
       throw new Error('Configured executor has no AgentSession replacement owner.');
     // Echo the same frozen grant that startTurn checks against its canonical setup and ledger.
@@ -620,6 +650,8 @@ async function dispatchSchedulerAdmission(
     };
   } catch (error) {
     const current = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
+    // Recovery owns the expired attempt and its original Turn after the persisted fence.
+    if (current.terminalCause === 'preparation-deadline') throw error;
     if (
       error instanceof WorkerGovernanceCapacityUnavailableError &&
       current.phase === 'open' &&
@@ -661,6 +693,8 @@ async function dispatchSchedulerAdmission(
         message: error instanceof Error ? error.message : 'Worker preparation failed.',
       });
     throw error;
+  } finally {
+    preparationExpirations.delete(expirationKey);
   }
 }
 function resolveDispatchAgentSetup(

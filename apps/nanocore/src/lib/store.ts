@@ -7105,7 +7105,8 @@ export class FsStore {
         | 'status'
         | 'updatedAt'
       >
-    >
+    >,
+    assertPublicationCurrent?: (session: AgentSession) => void
   ): Promise<AgentSession> {
     const initial = this.getAgentSession(agentSessionId);
     const scope = this.dataRoot
@@ -7164,6 +7165,7 @@ export class FsStore {
       ...input,
       updatedAt: input.updatedAt ?? now(),
     }) as AgentSession;
+    assertPublicationCurrent?.(agentSession);
     if (this.dataRoot) {
       await this.writeNativeProducts(scope!, [
         {

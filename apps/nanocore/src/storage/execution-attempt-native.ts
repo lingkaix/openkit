@@ -91,6 +91,7 @@ export function applyControlExecutionAttempt(
       return records.markSchedulerExecutionAttemptClosing(db, {
         attemptId: input.attemptId,
         cause: input.cause,
+        ...(input.requireUnsubmitted ? { requireUnsubmitted: true } : {}),
         ...(input.outcomeRef === undefined ? {} : { outcomeRef: input.outcomeRef }),
         ...now,
       });

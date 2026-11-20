@@ -363,11 +363,15 @@ export function markSchedulerExecutionAttemptClosing(
   input: {
     readonly attemptId: string;
     readonly cause: string;
+    readonly requireUnsubmitted?: true;
     readonly outcomeRef?: string | null;
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
-  requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+  const current = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+  // The native owner decides whether submission or expiry owns this transition.
+  if (input.requireUnsubmitted && (current.phase !== 'open' || current.deadline !== null))
+    return current;
   revokeRunBoundAccessTokensInDb(coreDb, input.attemptId);
   coreDb.sqlite
     .prepare(

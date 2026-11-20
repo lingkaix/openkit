@@ -120,6 +120,7 @@ export const ControlExecutionAttemptInputSchema = z.discriminatedUnion('kind', [
       kind: z.literal('closing'),
       ...attempt,
       cause: z.string(),
+      requireUnsubmitted: z.literal(true).optional(),
       outcomeRef: z.string().nullable().optional(),
     })
     .strict(),
