@@ -46,7 +46,6 @@ const scannedPaths = [
   '.github/workflows',
   'docs/cookbooks',
   'docs/app-api.md',
-  'docs/roadmap.md',
   'DESIGN.md',
 ];
 const forbiddenNeedles = [

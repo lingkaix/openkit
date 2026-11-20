@@ -40,5 +40,5 @@ When a persistent deployment must update to an unpublished commit, revisit this 
 - [Release Management](../specs/20260829-release_management.md) states the same limit.
 - [Persistent live acceptance](../cookbooks/persistent-live-acceptance.md) no longer carries the procedure.
 - [NanoCore operations](../../skills/openkit-ops/references/nanocore-operations.en.md) covers only a published release in Update NanoCore And Web.
-- [Product Roadmap](../roadmap.md) no longer states that the procedure remains.
+- Product Roadmap no longer states that the procedure remains.
 - [App image guide](../../containers/app/README.md) no longer names the procedure.

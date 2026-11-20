@@ -31,4 +31,4 @@ Revisit additional channel actions for a named accepted use case and exact actor
 
 - [Communication](../core/communication.md)
 - [Web UI Rebuild Stack](../specs/20260710-web_ui_rebuild_stack.md)
-- [Roadmap](../roadmap.md)
+- Roadmap

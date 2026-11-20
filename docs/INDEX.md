@@ -27,7 +27,6 @@ and are not listed here.
 - `docs/change-execution-rationale.md` — This intent document preserves observations behind `docs/change-execution.md`.
 - `docs/engineering-doctrine.md` — This document explains the delegation premise and the observations behind repository governance.
 - `docs/product-vision.md` — > 文档说明： 本文使用中文书写，proper names、canonical terms、product names、technical identifiers 与其他专有 item 保留 English 原词；这项 document-local exception 仅适用于…
-- `docs/roadmap.md` — This document is the completion inventory from the current implementation to the Product Vision, plus the current execution order over it.
 
 ## Core Model
 

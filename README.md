@@ -37,7 +37,7 @@ The primary experience is conversation-first but not chat-only. A user can move 
 
 The durable product backbone is intentionally small: a Workspace holds related Threads, each Thread records bounded Turns, and Items make messages, status, approvals, errors, artifacts, and evidence visible. External systems remain authoritative for the domain data they own.
 
-Read the [Product Vision](./docs/product-vision.md) for the long-term direction, the [Work Model](./docs/core/work-model.md) for the stable product concepts, and the [Product Roadmap](./docs/roadmap.md) for the ordered path from the current system to the complete vision.
+Read the [Product Vision](./docs/product-vision.md) for the long-term direction, the [Work Model](./docs/core/work-model.md) for the stable product concepts, and the [issue tracker](https://github.com/lingkaix/openkit/issues) for remaining work.
 
 ## Current Status
 

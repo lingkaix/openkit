@@ -25,7 +25,7 @@ The engineer reviews Chat and Task experience and retained-data evidence, judges
 
 ## Affected Owners
 
-- docs/roadmap.md owns the execution priority and capability inventory.
+- the first-release roadmap owns the execution priority and capability inventory.
 - docs/specs/20260704-chat_mode_assistant.md and docs/specs/20260704-task_mode_worker_delegation.md continue to own mode behavior.
 - docs/specs/20260921-work_data_retention_format.md continues to own retained work data.
 - docs/specs/20260704-goal_mode_coordination.md retains its development freeze pending Redesign.

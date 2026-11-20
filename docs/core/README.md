@@ -54,7 +54,7 @@ Specs that introduce durable concepts must include a core-alignment explanation:
 
 Core documents must not depend downward on specs. Specs may cite core documents as stable doctrine, but core documents must not cite specs as authority, implementation detail, related reading, or deferred ownership.
 
-Core documents must not contain unresolved questions. If a candidate decision is not stable enough for core, keep it in the owning spec, change record, roadmap, or uncommitted working space until it is ready to promote.
+Core documents must not contain unresolved questions. If a candidate decision is not stable enough for core, keep it in the owning spec, change record, GitHub issues, or uncommitted working space until it is ready to promote.
 
 ## Aspect File Standard
 

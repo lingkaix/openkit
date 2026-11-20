@@ -14,7 +14,6 @@ const INTENT_FILES = new Set([
   'docs/product-vision.md',
   'docs/engineering-doctrine.md',
   'docs/change-execution-rationale.md',
-  'docs/roadmap.md',
 ]);
 // Platform references remain a filename enumeration because their members have
 // not clustered into a directory yet, and `docs/documentation-model.md` keeps

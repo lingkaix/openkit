@@ -11,7 +11,7 @@ Every document exists for a reader who builds, operates, verifies, or changes th
 
 | Family | Path | Question | Authority and shape |
 | --- | --- | --- | --- |
-| Intent | `docs/product-vision.md` (protected), `docs/engineering-doctrine.md`, `docs/change-execution-rationale.md`, `docs/roadmap.md` | Why, and in which direction? | Direction/premises only; no behavioral contract or sole implementation authority. |
+| Intent | `docs/product-vision.md` (protected), `docs/engineering-doctrine.md`, `docs/change-execution-rationale.md` | Why, and in which direction? | Direction/premises only; no behavioral contract or sole implementation authority. |
 | Governance | root `AGENTS.md` (protected), `docs/documentation-model.md`, `docs/change-execution.md`, `docs/verification-instruments.md` | How do we work? | One owner per rule: document rules here, coordination/change records in `docs/change-execution.md`, instrument trust in `docs/verification-instruments.md`. |
 | Role contract | `docs/roles/[a-z][a-z-]*.md` (`docs/roles/README.md` index) | What is one role's operating contract? | Lowercase ASCII letters/hyphens; one harness-neutral contract per role (question, reads, writes, independence, non-acceptance); ranks below governance ([decision](decisions/20260924-role_contracts_and_glossary_types.md)). |
 | Core | `docs/core/<aspect>.md` (21 aspects plus `README.md`, `AGENTS.md`) | What always holds: terms, authority, invariants? | 10–40 KB; highest behavioral authority. |
@@ -35,6 +35,8 @@ Role contracts, the glossary, and the writing and harness references are separat
 Induce a new type only when repeated behavior already exists across at least two committed documents covered by one definition; one document or predicted future members never justify a type, and file count alone is not the test. Split a type when its definition stops matching its members' audience or authority rather than widening it. Keep an uninduced document under the closest admitted type until its split lands; never commit a placeholder type, unclassified file, or unconverged material with unsettled authority. Filename enumeration is temporary debt; prefer directory classification when members cluster.
 
 ## Ownership
+
+Remaining work is tracked in [GitHub issues](https://github.com/lingkaix/openkit/issues) under the [issue tracking decision](decisions/20261120-issues_track_remaining_work.md).
 
 One fact has one owner; other documents link to it instead of restating it. Documents speak in the present while Git holds history, and paths stay stable unless renaming yields a clear reader gain. Body rules stay with their owners: `docs/change-execution.md` owns execution, change-record content, role existence, and position/function composition; `docs/specs/20260529-l6_story_acceptance.md` owns story artifacts; `docs/core/doctrine.md` owns product doctrine; and `docs/writing.md` owns skeleton text and sweep rules ([DOC-FINAL Question Rulings](decisions/20261116-doc_final_question_rulings.md)). `docs/change-execution-rationale.md` retains observations, costs, and rejected alternatives behind `docs/change-execution.md`, pruning obsolete rationale. Roles are prompt-dispatched by naming their `docs/roles/` contract without harness copies or adapters; `docs/agent-harnesses.md` owns dispatch templates and tier-to-model bindings.
 

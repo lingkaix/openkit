@@ -14,7 +14,7 @@ Read `README.md` first. This file contains only local agent execution rules for 
 - Keep or add an explicit owns / does-not-own boundary near the top of each aspect file when making substantial edits.
 - Preserve distinct sections or equivalent content for purpose, principles, boundaries and non-goals, invariants, relationships to other core aspects, and abstract realization notes.
 - Do not add `Open Points`, `Open Questions`, `Related Specs`, or direct `docs/specs/` references to core documents.
-- Resolve stable decisions directly in core text; move unresolved or implementation-facing questions to specs, change records, roadmap, or uncommitted working space.
+- Resolve stable decisions directly in core text; move unresolved or implementation-facing questions to specs, change records, GitHub issues, or uncommitted working space.
 - Keep product-level mission, positioning, audience, and broad product direction in `docs/product-vision.md`; core aspect files should contain module-level principles only.
 - When a spec promotes durable semantics, update the owning core aspect or record why the idea remains spec-only.
 - Promote ideas into this folder only after the concept is clear enough to become part of the core model.

@@ -478,7 +478,7 @@ Ordered by how the D-010 roadmap prioritizes them.
 
 ## 11. Build scope — project accepted contracts, gate what the kernel can't back yet
 
-Product-surface admission comes from accepted owning specifications, not from the presence or absence of a Claude Design board. The board inventory below is a bounded audit of the visual references and internal review surfaces present when this guide was reconciled; it is intentionally non-exhaustive and is not a functional-completeness checklist. The UI must stay **honest** (Principle 8): a surface whose kernel/protocol contract is not yet stable remains available only as an internal review implementation and is absent from published navigation and routing, never presented as inactive product UI or wired as if it were live. When its contract stabilizes, the surface moves to Tier A and receives its intended navigation placement as one coherent change. Traceability of each surface to its contract is owned by [`docs/specs/20260628-web_product_surface_projection.md`](docs/specs/20260628-web_product_surface_projection.md); deferral rationale is in [`docs/roadmap.md`](docs/roadmap.md).
+Product-surface admission comes from accepted owning specifications, not from the presence or absence of a Claude Design board. The board inventory below is a bounded audit of the visual references and internal review surfaces present when this guide was reconciled; it is intentionally non-exhaustive and is not a functional-completeness checklist. The UI must stay **honest** (Principle 8): a surface whose kernel/protocol contract is not yet stable remains available only as an internal review implementation and is absent from published navigation and routing, never presented as inactive product UI or wired as if it were live. When its contract stabilizes, the surface moves to Tier A and receives its intended navigation placement as one coherent change. Traceability of each surface to its contract is owned by [`docs/specs/20260628-web_product_surface_projection.md`](docs/specs/20260628-web_product_surface_projection.md); the [Web delivery issue](https://github.com/lingkaix/openkit/issues/954) tracks deferred surfaces.
 
 The current 24 reference boards (01–22, with 05b/05c) and their audited build tier:
 
@@ -567,7 +567,7 @@ The rebuilt `apps/web` is React + Vite, with **React Aria Components** for acces
 - Work model and NanoCore-first / end-user Agent Skill + CLI-first posture — [`README.md`](README.md)
 - Implementation stack + token bridge — [`docs/specs/20260710-web_ui_rebuild_stack.md`](docs/specs/20260710-web_ui_rebuild_stack.md)
 - Product-surface projection / traceability — [`docs/specs/20260628-web_product_surface_projection.md`](docs/specs/20260628-web_product_surface_projection.md)
-- Deferral roadmap — [`docs/roadmap.md`](docs/roadmap.md)
+- Deferred Web surfaces — [Web delivery](https://github.com/lingkaix/openkit/issues/954)
 - Design→code workflow — [`docs/cookbooks/claude-design-web-ui-loop.md`](docs/cookbooks/claude-design-web-ui-loop.md)
 - Decision record (rationale, internalized) — §18 of this guide
 - Living visual canvas — Claude Design project `7579f69f-4474-492b-bf09-b85e2ac9f56c`

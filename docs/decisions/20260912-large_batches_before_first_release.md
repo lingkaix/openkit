@@ -26,5 +26,5 @@ The premise was dated: fewer than one week before the first release, as of 2026-
 
 ## Affected Owners
 
-- docs/roadmap.md
+- First-release roadmap (historical)
 - docs/specs/20260711-evaluation_harness_design.md

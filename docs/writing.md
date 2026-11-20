@@ -46,7 +46,7 @@ Apply these five sweep rules across every document ([DOC-FINAL Question Rulings]
 - **Numbers (`R-NUM`)**: Every number is either a fixed contract constant or marked `"current default"` and equals the code value ([decision](decisions/20261002-specification_numeric_values_are_defaults.md)). When an experiential numeric limit, timeout, window, count, or size is stated as a current default or left to the implementation, state the property it protects; a number that defines a wire or retained-data format stays with its contract and evolution obligations. Remove any number that is neither.
 - **Labels (`R-LABEL`)**: Include no tracker, plan, phase, or finding label unless the same document defines it; replace external labels with the owner link or the GitHub issue number.
 - **Digests (`R-DIGEST`)**: `docs/specs/20261021-protocol_identifiers_and_enums.md` owns the single canonical digest form (RFC 8785 JSON + SHA-256). Each other owner lists only its inputs and links that specification; where code uses another form for a retained value, the owner specification states that form as a named exception.
-- **Release timing labels (`R-TIME`)**: Core documents carry no release staging label. Staging lives in specification `Implementation Gaps` or `docs/roadmap.md`; only a release label that a decision record names as a contract boundary (such as `v0.1.0`) stays in Core.
+- **Release timing labels (`R-TIME`)**: Core documents carry no release staging label. Staging lives in specification `Implementation Gaps` or the linked GitHub issue; only a release label that a decision record names as a contract boundary (such as `v0.1.0`) stays in Core.
 
 ### Sentences And Words
 

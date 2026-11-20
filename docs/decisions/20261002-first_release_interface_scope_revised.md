@@ -49,6 +49,6 @@ The first-release schedule cannot absorb the mechanical migration or the Goal re
 - docs/specs/20260713-openkit_agent_skill_interface.md
 - docs/specs/20260910-agent_operator_skill.md
 - docs/specs/20261002-goal.md
-- docs/roadmap.md
+- First-release roadmap (historical)
 - docs/specs/20260703-workspace_synchronization.md
 - docs/specs/20260930-pending_requests.md

@@ -44,6 +44,6 @@ The engineer stated no revisit trigger.
 - docs/specs/20260628-web_product_surface_projection.md
 - docs/specs/20260704-git_write_workflow.md
 - docs/core/storage.md
-- docs/roadmap.md
+- First-release roadmap (historical)
 - docs/decisions/20261002-first_release_interface_scope.md
 - docs/decisions/20260930-first_accepted_base_by_baseline_scan.md
