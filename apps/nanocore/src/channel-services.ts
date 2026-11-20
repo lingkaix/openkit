@@ -83,6 +83,8 @@ export function createChannelServices(input: {
         source.workspaceId,
         source.threadId
       );
+      // Publication decisions and their captured bodies are App-only, including DM denial.
+      if (record.governedIntent?.operation === 'channel.publish') return null;
       return (options.pendingOnly === false || record.state === 'pending') &&
         record.responsibleUserId === actor.userId &&
         (options.includeArchived === true ||

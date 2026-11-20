@@ -12,12 +12,16 @@ import type { Actor } from './auth/identity.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { createChannelServices, type DiscordAttentionTransport } from './channel-services.js';
 import type { DiscordReply } from './channels/discord.js';
+import { prepareDiscordPublication } from './channels/discord-publication-intent.js';
+import { raiseDiscordPublicationFallback } from './channels/discord-publication-pending.js';
 import { FsStore } from './lib/store.js';
 import { type AttentionDelivery, AttentionNotifications } from './notifications/attention.js';
 import { createOperationInvocation } from './operation-composition.js';
+import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import {
   raiseRecordedPendingRequest,
   requireUsableRecord,
+  resolveCommandIntentApproval,
   setPendingRequestAttentionObserver,
 } from './runtime/pending-request-flow.js';
 import { readPendingRequest } from './runtime/pending-requests.js';
@@ -107,7 +111,8 @@ function text(reply: DiscordReply): string {
 /** Composes real signed channel input, Core authority, native invocation and Pending storage. */
 async function fixture(
   kind: 'approval' | 'user-input' = 'approval',
-  requesterKind: 'person' | 'automation' = 'person'
+  requesterKind: 'person' | 'automation' = 'person',
+  publication = false
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'channel-pending-seam-'));
   directories.push(dataRoot);
@@ -171,7 +176,40 @@ async function fixture(
   const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
   applyScopedMigrations(workspaceDb);
   try {
-    if (kind === 'approval') {
+    if (publication) {
+      const proposal = prepareDiscordPublication({
+        originId: 'origin-fixture',
+        botUserId: '101',
+        guildId: '102',
+        channelId: '103',
+        audienceRef: 'audience-fixture',
+        authorityRevisionRefs: ['binding:1'],
+        influenceDigest: 'influence-fixture',
+        renderedBodyRef: 'body-fixture',
+        content: `${'a'.repeat(1750)} final citation`,
+        review: {
+          principal: { kind: 'agent', id: 'reports-fixture' },
+          onBehalfOf: null,
+          target: {
+            kind: 'container',
+            container: {
+              kind: 'workspace',
+              id: DEMO_WORKSPACE_ID,
+              owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+            },
+          },
+          influenceSources: ['origin-fixture'],
+        },
+      });
+      if (proposal.kind !== 'proposal') throw new Error('Expected a publication proposal.');
+      await raiseDiscordPublicationFallback({
+        store,
+        sqlite: workspaceDb.sqlite,
+        proposal,
+        request: common,
+        stillAuthorized: () => true,
+      });
+    } else if (kind === 'approval') {
       await store.createItem({
         id: itemId,
         owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
@@ -328,6 +366,21 @@ async function fixture(
     envelope,
     target,
     record,
+    async grantInApp() {
+      const db = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+      try {
+        return await resolveCommandIntentApproval({
+          store,
+          sqlite: db.sqlite,
+          record: record(),
+          decision: 'granted',
+          actor,
+          coreDb,
+        });
+      } finally {
+        db.sqlite.close();
+      }
+    },
     get coreDb() {
       return coreDb;
     },
@@ -439,6 +492,35 @@ afterEach(async () => {
 });
 
 describe('Discord to native Pending Request seam', () => {
+  it('retains the person publication request and fences App and Discord disclosure without its exact body', async () => {
+    const f = await fixture('approval', 'person', true);
+    const first = f.record();
+    expect(first).toMatchObject({
+      requesterKind: 'person',
+      responsibleUserId: actor.userId,
+      state: 'pending',
+      governedIntent: { operation: 'channel.publish' },
+    });
+    expect(
+      f.store.getTurn(first.workspaceId, first.threadId, first.raisingTurnId).items
+    ).toContainEqual(
+      expect.objectContaining({ id: first.requestItemId, approvalRequestId: first.requestId })
+    );
+    expect(projectApprovalEffect({ store: f.store, actor, record: first })).toEqual({
+      status: 'unavailable',
+      reason: 'The exact Discord publication body is unavailable.',
+    });
+    await expect(f.grantInApp()).rejects.toMatchObject({ code: 'approval_preview_unavailable' });
+    await f.pair();
+    const view = text(await f.send('inspect', f.target));
+    expect(view).not.toContain('Disclosure:');
+    expect(view).not.toContain('final citation');
+    for (const command of ['deny', 'approve'])
+      await f.send(command, { ...f.target, disclosure: 'untrusted-token' });
+    expect(f.nativeCalls).toEqual([]);
+    await f.restart();
+    expect(f.record()).toEqual(first);
+  });
   it('keeps automation inspection and answers in the App without a disclosure or native answer', async () => {
     const f = await fixture('user-input', 'automation');
     await f.pair();

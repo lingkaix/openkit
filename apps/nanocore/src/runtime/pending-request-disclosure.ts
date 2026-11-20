@@ -58,6 +58,13 @@ export function projectApprovalEffect(input: {
   )
     return { status: 'unavailable', reason: 'Current Thread access is unavailable.' };
   try {
+    // Never use the shortened card to approve a publication. The exact retained
+    // body owner must provide the current, digest-verified dispatch before approval.
+    if (record.governedIntent?.operation === 'channel.publish')
+      return {
+        status: 'unavailable',
+        reason: 'The exact Discord publication body is unavailable.',
+      };
     if (record.governedIntent?.operation === 'mcp.definition.approve') {
       // Reuse the actual command service's current authority/catalog check; absence cannot approve.
       if (!input.sqlite || !input.checkCommandIntent)
