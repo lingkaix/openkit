@@ -25,7 +25,10 @@ import type { CoreDb } from '../storage/db.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { externalTriggerTurnPublicationComplete } from './external-trigger-source.js';
-import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
+import {
+  enterRecurringTurnPublication,
+  recurringTurnPublicationIssue,
+} from './recurring-turn-publication.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 /** Joins scheduler views and mutations without changing queue or audit ownership. */
 export function createSchedulerAdmissionOperationImplementations(
@@ -183,6 +186,7 @@ export function createSchedulerAdmissionOperationImplementations(
     },
     'scheduler.cancel': async (input, context) => {
       const actor = context.actorRef;
+      let releasePublication: (() => void) | null = null;
       try {
         const workspaceId = input.workspaceId;
         const queueEntryId = input.queueEntryId;
@@ -200,6 +204,15 @@ export function createSchedulerAdmissionOperationImplementations(
         );
 
         const source = findAcceptedRecurringOccurrenceForQueue(coreDb, queueEntryId);
+        if (source) {
+          releasePublication = enterRecurringTurnPublication(coreDb.dataRoot, queueEntryId);
+          if (!releasePublication)
+            throw new OperationError(
+              'recovery_required',
+              'The original scheduled Turn publication is still settling. Retry cancellation after it settles.',
+              409
+            );
+        }
         const eventSource = findExternalTriggerAdmissionForQueue(coreDb, queueEntryId);
         const publicationIssue = source
           ? recurringTurnPublicationIssue(
@@ -277,6 +290,8 @@ export function createSchedulerAdmissionOperationImplementations(
             { cause: error }
           );
         throw error;
+      } finally {
+        releasePublication?.();
       }
     },
   } satisfies Pick<OperationImplementations, keyof typeof SCHEDULER_OPERATION_DEFINITIONS>;

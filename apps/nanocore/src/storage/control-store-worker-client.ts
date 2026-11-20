@@ -7513,7 +7513,8 @@ class ControlStoreWorkerClient {
             ? new PendingRequestCommandError(
                 value.domain.code,
                 value.domain.message,
-                value.domain.status
+                value.domain.status,
+                { cause: new ControlStoreWorkerError(value.code, value.commit, value.domain) }
               )
             : new ControlStoreWorkerError(value.code, value.commit, value.domain)
       );

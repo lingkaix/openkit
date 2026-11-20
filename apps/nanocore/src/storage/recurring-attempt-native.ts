@@ -15,6 +15,7 @@ import {
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import {
+  findAcceptedRecurringOccurrenceForQueue,
   RecurringAdmissionPayloadSchema,
   type RecurringOccurrence,
   readRecurringOccurrence,
@@ -112,12 +113,13 @@ export function finishRecurringOccurrenceInDb(
   });
   return updated;
 }
-/** One complete recurring attempt, original queue acceptance and terminal Audit on the native savepoint. */
-export function applyNativeRecurringAttempt(
+/** Decides an exact recurring attempt or its accepted publication proof on the native savepoint. */
+export function applyNativeRecurringWork(
   coreDb: CoreDb,
-  input: Extract<CoreSchedulerInput, { mode: 'recurring-attempt' }>
+  input: Extract<CoreSchedulerInput, { mode: 'recurring-attempt' | 'recurring-publication' }>
 ): RecurringOccurrence | null {
   assertControlProductWriter(coreDb.sqlite);
+  if (input.mode === 'recurring-publication') return applyNativeRecurringPublication(coreDb, input);
   const { occurrenceId, definitionRevision, preparation } = input;
   return coreDb.sqlite
     .transaction(() => {
@@ -249,4 +251,25 @@ export function applyNativeRecurringAttempt(
       return occurrence;
     })
     .immediate();
+}
+
+/** Records a definite busy deferral or consumes its permission for one publication attempt. */
+function applyNativeRecurringPublication(
+  coreDb: CoreDb,
+  input: Extract<CoreSchedulerInput, { mode: 'recurring-publication' }>
+): RecurringOccurrence | null {
+  const occurrence = findAcceptedRecurringOccurrenceForQueue(coreDb, input.queueEntryId);
+  if (!occurrence || requireSchedulerAdmissionEntry(coreDb, input.queueEntryId).status !== 'queued')
+    return null;
+  const { publicationDeferred, ...record } = occurrence;
+  if (input.action === 'defer-busy') {
+    if (publicationDeferred) return null;
+    const deferred = { ...record, publicationDeferred: 'thread_busy' as const };
+    writeRecurringOccurrenceInDb(coreDb, deferred);
+    return deferred;
+  }
+  if (!publicationDeferred) return null;
+  // Consume before the Workspace write so a crash or lost ACK cannot authorize another attempt.
+  writeRecurringOccurrenceInDb(coreDb, record);
+  return record;
 }

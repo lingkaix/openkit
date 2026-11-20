@@ -85,7 +85,7 @@ import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { insertExternalTriggerAdmission } from './external-trigger-admissions.js';
 import {
-  applyNativeRecurringAttempt,
+  applyNativeRecurringWork,
   findRecurringAutomationFromDb,
 } from './recurring-attempt-native.js';
 import { StoredItemV1Schema } from './retained-work-items-v1.js';
@@ -880,8 +880,8 @@ function admitCoreSchedulerWork(db: CoreDb, raw: CoreSchedulerInput): CoreSchedu
       throw error;
     }
   }
-  if (input.mode === 'recurring-attempt')
-    return { kind: 'occurrence', occurrence: applyNativeRecurringAttempt(db, input) };
+  if (input.mode === 'recurring-attempt' || input.mode === 'recurring-publication')
+    return { kind: 'occurrence', occurrence: applyNativeRecurringWork(db, input) };
   if (input.mode === 'create') {
     if (input.external) {
       const { source, scheduleId } = input.external;

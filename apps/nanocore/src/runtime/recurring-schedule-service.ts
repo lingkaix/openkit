@@ -3,13 +3,27 @@ import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { AutomationStore } from '../lib/automation-store.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
-import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
+  type CoreSchedulerQueueEntry,
+  listQueuedSchedulerAdmissionEntries,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
+import { admitCoreScheduler } from '../storage/control-store-admission.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import {
+  findAcceptedRecurringOccurrenceForQueue,
   RecurringAdmissionPayloadSchema,
   type RecurringOccurrence,
   type RecurringPreparation,
 } from '../storage/recurring-records.js';
+import { PendingRequestCommandError } from './pending-request-error.js';
+import {
+  enterRecurringTurnPublication,
+  recurringTurnPublicationIssue,
+} from './recurring-turn-publication.js';
 
 /** Dependencies restricted to bounded Core-local preparation and durable queue acceptance. */
 export interface RecurringScheduleServiceInput {
@@ -46,6 +60,8 @@ export function startRecurringScheduleService(
   let running: Promise<void> | undefined;
   const scan = async () => {
     if (input.agentWorkPaused?.()) return;
+    await publishDeferredTurns();
+    if (stopped || input.agentWorkPaused?.()) return;
     const candidates = await input.schedules.collectScanCandidates(now(), input.onError);
     for (const occurrence of candidates) {
       if (stopped || input.agentWorkPaused?.()) return;
@@ -74,8 +90,7 @@ export function startRecurringScheduleService(
           }
         }
         if (stopped || input.agentWorkPaused?.()) return;
-        // Existing queue acceptance can be reconciled, but cannot authorize another initial publication attempt.
-        // The unique data-root scanner and held source admission exclude a second publisher for this occurrence.
+        // Existing queue acceptance alone cannot authorize another initial publication attempt.
         const queueAlreadyAccepted = db.sqlite
           .prepare('SELECT 1 FROM scheduler_admission_entries WHERE request_id = ? LIMIT 1')
           .get(occurrence.requestId);
@@ -90,26 +105,7 @@ export function startRecurringScheduleService(
           accepted?.state === 'admission-accepted' &&
           accepted.queueEntryId
         ) {
-          // Attempt initial file publication once while this source admission holds the
-          // Workspace fence. Acceptance stays terminal if publication is interrupted.
-          const entry = requireSchedulerAdmissionEntry(db, accepted.queueEntryId);
-          await input.store.createTurn(
-            entry.workspaceId,
-            entry.threadId,
-            entry.turnInput,
-            entry.triggerActor,
-            null,
-            {
-              turnId: entry.turnId,
-              status: 'pending',
-              agentId: entry.requestedAgentId,
-              executorKind: 'worker',
-              triggerSource: { kind: 'automation', summary: 'Recurring schedule admission.' },
-              ...(entry.reasoningEffort !== undefined
-                ? { reasoningEffort: entry.reasoningEffort }
-                : {}),
-            }
-          );
+          await publishAcceptedTurn(requireSchedulerAdmissionEntry(db, accepted.queueEntryId));
         }
       } catch (error) {
         // Only committed outcomes count. An unexpected Core/preparation result is inspected
@@ -151,11 +147,124 @@ export function startRecurringScheduleService(
     },
   };
 
+  /** Selects at most the existing bounded queue's proved deferrals on each scan. */
+  async function publishDeferredTurns(): Promise<void> {
+    for (const entry of listQueuedSchedulerAdmissionEntries(db)) {
+      if (stopped || input.agentWorkPaused?.()) return;
+      try {
+        const occurrence = findAcceptedRecurringOccurrenceForQueue(db, entry.queueEntryId);
+        if (!occurrence?.publicationDeferred) continue;
+        const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+          db.dataRoot,
+          entry.workspaceId
+        );
+        if (!release) continue;
+        try {
+          await publishAcceptedTurn(entry, occurrence);
+        } finally {
+          release();
+        }
+      } catch (error) {
+        input.onError?.(error);
+      }
+    }
+  }
+
+  /** Publishes only the accepted queue's reserved Turn. A definite busy refusal can defer it. */
+  async function publishAcceptedTurn(
+    entry: CoreSchedulerQueueEntry,
+    deferred?: RecurringOccurrence
+  ): Promise<void> {
+    const release = enterRecurringTurnPublication(db.dataRoot, entry.queueEntryId);
+    if (!release) return;
+    try {
+      if (requireSchedulerAdmissionEntry(db, entry.queueEntryId).status !== 'queued') return;
+      if (!deferred) return await publishWorkspaceTurn(entry);
+      if (deferredPublicationState(entry, deferred) !== 'ready') return;
+      const consumed = await admitCoreScheduler(db, {
+        mode: 'recurring-publication',
+        queueEntryId: entry.queueEntryId,
+        action: 'consume-busy',
+      });
+      if (consumed.kind !== 'occurrence' || !consumed.occurrence) return;
+      const occurrence = consumed.occurrence;
+      await input.schedules.withSchedulePublication(occurrence.scheduleId, async () => {
+        const state = deferredPublicationState(entry, occurrence);
+        if (state === 'busy') await deferAcceptedTurn(entry);
+        if (state === 'ready') await publishWorkspaceTurn(entry);
+      });
+    } finally {
+      release();
+    }
+  }
+
+  /** Only a definite native rollback can grant or restore deferred publication proof. */
+  async function publishWorkspaceTurn(entry: CoreSchedulerQueueEntry): Promise<void> {
+    try {
+      await input.store.createTurn(
+        entry.workspaceId,
+        entry.threadId,
+        entry.turnInput,
+        entry.triggerActor,
+        null,
+        {
+          turnId: entry.turnId,
+          status: 'pending',
+          agentId: entry.requestedAgentId,
+          admitThreadInNativeWriter: true,
+          executorKind: 'worker',
+          triggerSource: { kind: 'automation', summary: 'Recurring schedule admission.' },
+          ...(entry.reasoningEffort !== undefined
+            ? { reasoningEffort: entry.reasoningEffort }
+            : {}),
+        }
+      );
+    } catch (error) {
+      if (
+        !(error instanceof PendingRequestCommandError) ||
+        error.code !== 'thread_busy' ||
+        !(error.cause instanceof ControlStoreWorkerError) ||
+        error.cause.commit !== 'not-committed' ||
+        error.cause.domain?.operation !== 'products' ||
+        error.cause.domain.code !== 'thread_busy'
+      )
+        throw error;
+      await deferAcceptedTurn(entry);
+    }
+  }
+
+  function deferAcceptedTurn(entry: CoreSchedulerQueueEntry) {
+    return admitCoreScheduler(db, {
+      mode: 'recurring-publication',
+      queueEntryId: entry.queueEntryId,
+      action: 'defer-busy',
+    });
+  }
+
+  /** Rechecks the original schedule, authority and target before a deferred publication. */
+  function deferredPublicationState(
+    entry: CoreSchedulerQueueEntry,
+    occurrence: RecurringOccurrence
+  ): 'blocked' | 'busy' | 'ready' {
+    if (stopped || input.agentWorkPaused?.() || validateCurrent(occurrence)) return 'blocked';
+    const thread = input.store.getThreadSegmentHead(entry.workspaceId, entry.threadId);
+    if (
+      thread.status !== 'active' ||
+      recurringTurnPublicationIssue(input.store, entry) !== 'turn_missing' ||
+      requireSchedulerAdmissionEntry(db, entry.queueEntryId).status !== 'queued'
+    )
+      return 'blocked';
+    return input.store.readThreadNavigationFacts(entry.workspaceId, thread.id).activeTurn
+      ? 'busy'
+      : 'ready';
+  }
+
   /** Fresh exact actor, membership and target checks precede preparation and the Core commit. */
   function validateCurrent(occurrence: RecurringOccurrence): RecurringPreparation | undefined {
     const schedule = input.schedules.getAutomation(occurrence.scheduleId);
     if (
       schedule.status !== 'active' ||
+      schedule.workspaceId !== occurrence.workspaceId ||
       schedule.actor.id !== occurrence.snapshot.actor.id ||
       schedule.actor.responsibleUserId !== occurrence.snapshot.actor.responsibleUserId
     )

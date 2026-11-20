@@ -9,6 +9,16 @@ import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.
 /** Canonical protocol Turn consumed by the publication checks. */
 type Turn = import('zod').infer<typeof TurnSchema>;
 
+const activePublications = new Set<string>();
+
+/** Keeps Core cancellation and the Workspace publication from passing each other across the two stores. */
+export function enterRecurringTurnPublication(dataRoot: string, queueEntryId: string) {
+  const key = JSON.stringify([dataRoot, queueEntryId]);
+  if (activePublications.has(key)) return null;
+  activePublications.add(key);
+  return () => activePublications.delete(key);
+}
+
 /** Checks the accepted source tuple against a canonical Turn without consulting derivative caches. */
 export function recurringCanonicalTurnPublicationIssue(
   entry: CoreSchedulerQueueEntry,

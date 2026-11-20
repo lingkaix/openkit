@@ -672,6 +672,13 @@ export const CoreSchedulerInputSchema = z.discriminatedUnion('mode', [
     .strict(),
   z
     .object({
+      mode: z.literal('recurring-publication'),
+      queueEntryId: z.string().min(1),
+      action: z.enum(['defer-busy', 'consume-busy']),
+    })
+    .strict(),
+  z
+    .object({
       mode: z.literal('recurring-attempt'),
       occurrenceId: z.string().min(1),
       definitionRevision: z.number().int().positive(),

@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AutomationStore } from '../lib/automation-store.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { RecurringPreparation } from '../storage/recurring-records.js';
@@ -15,6 +19,7 @@ import {
   type RecurringScheduleService,
   startRecurringScheduleService,
 } from './recurring-schedule-service.js';
+import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 
 const owned: { root: string; db: CoreDb; services: RecurringScheduleService[] }[] = [];
 const ready: Extract<RecurringPreparation, { kind: 'ready' }> = {
@@ -212,6 +217,256 @@ describe('serialized recurring scanner', () => {
       db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
     ).toEqual({ n: 1 });
   });
+
+  it.each(['committed', 'unknown'] as const)(
+    'uses a native busy refusal for one later publication attempt: %s',
+    async (result) => {
+      const { db, store, schedules, schedule, start } = await fixture();
+      const { workspaceId, threadId, responsibleUserId } = schedule;
+      const busy = await store.createTurn(workspaceId, threadId, 'Original active work.', {
+        kind: 'user',
+        id: responsibleUserId,
+      });
+      const publish = vi.spyOn(store, 'createTurn');
+      const prepare = vi.fn(async () => structuredClone(ready));
+      const { service, onError } = start(prepare);
+      await service.runOnce();
+      const accepted = schedules
+        .listHistory(schedule.id)
+        .items.find((item) => item.kind === 'occurrence')!.record;
+      expect(accepted).toMatchObject({
+        state: 'admission-accepted',
+        publicationDeferred: 'thread_busy',
+        attempts: [{ number: 1, code: 'accepted' }],
+      });
+      expect(onError).not.toHaveBeenCalled();
+      const entry = requireSchedulerAdmissionEntry(db, accepted.queueEntryId!);
+      expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_missing');
+      await expect(publish.mock.results[0]!.value).rejects.toMatchObject({
+        code: 'thread_busy',
+        cause: {
+          commit: 'not-committed',
+          domain: { operation: 'products', code: 'thread_busy' },
+        },
+      });
+      await service.runOnce();
+      expect(publish).toHaveBeenCalledTimes(1);
+
+      await store.completeTurn(busy.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      if (result === 'unknown')
+        publish.mockRejectedValueOnce(new ControlStoreWorkerError('unavailable', 'unknown'));
+      await service.runOnce();
+      await service.runOnce();
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(schedules.getOccurrence(accepted.id)).not.toHaveProperty('publicationDeferred');
+      expect(recurringTurnPublicationIssue(store, entry)).toBe(
+        result === 'committed' ? null : 'turn_missing'
+      );
+      expect(store.listThreadTurns(workspaceId, threadId).map((turn) => turn.id)).toEqual(
+        result === 'committed' ? [busy.id, entry.turnId] : [busy.id]
+      );
+    }
+  );
+
+  it.each([
+    'deleted before consume',
+    'deleted after consume',
+    'busy after consume',
+    'native busy rollback',
+  ] as const)('rechecks deferred publication when the target is %s', async (change) => {
+    const { db, store, schedules, schedule, start } = await fixture();
+    const { workspaceId, threadId, responsibleUserId } = schedule;
+    const create = store.createTurn.bind(store);
+    const ordinary = () =>
+      create(workspaceId, threadId, 'Ordinary active work.', {
+        kind: 'user',
+        id: responsibleUserId,
+      });
+    const finish = (id: string) =>
+      store.completeTurn(id, { status: 'completed', completedAt: new Date().toISOString() });
+    const revoke = () => schedules.deleteAutomation(responsibleUserId, schedule.id);
+    const first = await ordinary();
+    const prepare = vi.fn(async () => structuredClone(ready));
+    const { service, onError } = start(prepare);
+    await service.runOnce();
+    const occurrence = schedules.listHistory(schedule.id).items[0]!.record;
+    expect(occurrence.publicationDeferred).toBe('thread_busy');
+    const entry = requireSchedulerAdmissionEntry(db, occurrence.queueEntryId!);
+    await finish(first.id);
+
+    let second: Awaited<ReturnType<typeof ordinary>> | undefined;
+    const client = getControlStoreWorkerClient();
+    const transition = client.transition.bind(client);
+    const write = vi.spyOn(client, 'transition').mockImplementation(async (target, command) => {
+      const result = await transition(target, command);
+      if (
+        'kind' in command &&
+        command.kind === 'scheduler-work' &&
+        command.input.mode === 'recurring-publication' &&
+        command.input.action === 'consume-busy' &&
+        result &&
+        'kind' in result &&
+        result.kind === 'occurrence' &&
+        result.occurrence
+      ) {
+        if (change === 'deleted after consume') await revoke();
+        if (change === 'busy after consume' && !second) second = await ordinary();
+      }
+      return result;
+    });
+    const publish = vi.spyOn(store, 'createTurn');
+    try {
+      if (change === 'deleted before consume') await revoke();
+      if (change === 'native busy rollback') {
+        publish.mockImplementationOnce(async (...args) => {
+          second = await ordinary();
+          return create(...args);
+        });
+      }
+      await Promise.all([service.runOnce(), service.runOnce()]);
+      expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_missing');
+      expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('queued');
+      expect(publish).toHaveBeenCalledTimes(change === 'native busy rollback' ? 1 : 0);
+
+      if (second) {
+        expect(schedules.getOccurrence(occurrence.id).publicationDeferred).toBe('thread_busy');
+        await finish(second.id);
+      }
+      await service.runOnce();
+      await service.runOnce();
+
+      const revoked = change.startsWith('deleted');
+      expect(schedules.getAutomation(schedule.id).status).toBe(revoked ? 'deleted' : 'active');
+      expect(recurringTurnPublicationIssue(store, entry)).toBe(revoked ? 'turn_missing' : null);
+      expect(
+        store.listThreadTurns(workspaceId, threadId).filter(({ id }) => id === entry.turnId)
+      ).toHaveLength(revoked ? 0 : 1);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      publish.mockRestore();
+      write.mockRestore();
+    }
+  });
+
+  it.each(['completes', 'hangs'] as const)(
+    'orders definition changes while native deferred publication %s',
+    async (publication) => {
+      const { db, clock, store, schedules, schedule, start } = await fixture();
+      const { workspaceId, threadId, responsibleUserId } = schedule;
+      const busy = await store.createTurn(workspaceId, threadId, 'Original active work.', {
+        kind: 'user',
+        id: responsibleUserId,
+      });
+      const prepare = vi.fn(async () => structuredClone(ready));
+      const { service, onError } = start(prepare);
+      await service.runOnce();
+      const occurrence = schedules.listHistory(schedule.id).items[0]!.record;
+      expect(occurrence.publicationDeferred).toBe('thread_busy');
+      const entry = requireSchedulerAdmissionEntry(db, occurrence.queueEntryId!);
+      await store.completeTurn(busy.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+
+      const entered = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const client = getControlStoreWorkerClient();
+      const products = client.products.bind(client);
+      const events: string[] = [];
+      const write = vi
+        .spyOn(client, 'products')
+        .mockImplementation(async (database, transition) => {
+          if (
+            transition.products.some(
+              (product) => product.kind === 'turn' && product.record.id === entry.turnId
+            )
+          ) {
+            entered.resolve();
+            await resume.promise;
+            await products(database, transition);
+            events.push('turn committed');
+            return;
+          }
+          await products(database, transition);
+        });
+      const scan = service.runOnce();
+      let deletion: Promise<void> | undefined;
+      let timedChanges: Promise<PromiseSettledResult<unknown>[]> | undefined;
+      try {
+        await Promise.race([
+          entered.promise,
+          scan.then(() => {
+            throw new Error('The scan ended before Workspace publication entered.');
+          }),
+        ]);
+        const mutator = new AutomationStore(db, clock);
+        if (publication === 'hangs') {
+          vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+          try {
+            timedChanges = Promise.allSettled([
+              mutator.deleteAutomation(responsibleUserId, schedule.id),
+              mutator.updateAutomation(responsibleUserId, schedule.id, {
+                expectedRevision: schedule.revision,
+                status: 'paused',
+              }),
+            ]);
+            await vi.advanceTimersByTimeAsync(3_000);
+            const refusal = {
+              status: 'rejected',
+              reason: {
+                code: 'schedule_publication_in_progress',
+                status: 409,
+                details: { retryable: true },
+              },
+            };
+            expect(await Promise.race([timedChanges, Promise.resolve(null)])).toMatchObject([
+              refusal,
+              refusal,
+            ]);
+          } finally {
+            vi.useRealTimers();
+          }
+        } else {
+          deletion = mutator.deleteAutomation(responsibleUserId, schedule.id).then(() => {
+            events.push('schedule deleted');
+          });
+        }
+        // A separate definition can commit through the same native Core writer.
+        await mutator.createAutomation(responsibleUserId, {
+          workspaceId,
+          threadId,
+          name: 'Unrelated schedule',
+          intervalSeconds: 5,
+          prompt: 'Inspect status',
+        });
+        expect(schedules.getAutomation(schedule.id).status).toBe('active');
+        expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_missing');
+      } finally {
+        resume.resolve();
+        await scan;
+        write.mockRestore();
+        await deletion;
+        await timedChanges;
+      }
+      if (publication === 'hangs') {
+        expect(events).toEqual(['turn committed']);
+        expect(schedules.getAutomation(schedule.id).status).toBe('active');
+        await schedules.deleteAutomation(responsibleUserId, schedule.id);
+      } else {
+        expect(events).toEqual(['turn committed', 'schedule deleted']);
+      }
+      expect(schedules.getAutomation(schedule.id).status).toBe('deleted');
+      expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('queued');
+      expect(recurringTurnPublicationIssue(store, entry)).toBeNull();
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(onError).not.toHaveBeenCalled();
+    }
+  );
 
   it('keeps healthy admission and maintenance running after an admitted cadence exhausts the UTC range', async () => {
     const { schedules, schedule, start, setTime } = await fixture();

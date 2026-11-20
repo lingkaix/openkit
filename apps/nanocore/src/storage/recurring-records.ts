@@ -81,7 +81,9 @@ export function readRecurringOccurrence(json: string): RecurringOccurrence {
         Date.parse(record.scheduledAt)
       )) ||
     Date.parse(record.deadline) !== Date.parse(record.scheduledAt) + RECURRING_DEADLINE_MS ||
-    record.attempts.some((attempt, index) => attempt.number !== index + 1)
+    record.attempts.some((attempt, index) => attempt.number !== index + 1) ||
+    (record.publicationDeferred !== undefined &&
+      (record.state !== 'admission-accepted' || !record.queueEntryId || !record.turnId))
   )
     throw new Error('RecurringOccurrence violates its durable identity or attempt contract.');
   return record;

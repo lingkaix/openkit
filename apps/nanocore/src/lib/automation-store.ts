@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import {
   type AutomationRecord,
   type CreateAutomationRequest,
@@ -7,6 +8,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { allocateEntityId, readRetainedV1 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
+import { OperationError } from '../operation-error-core.js';
 import { selectAutomationScan } from '../storage/automation-scanner-selection.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
@@ -21,6 +23,8 @@ import {
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 
 const SCAN_LIMIT = 128;
+const DEFINITION_PUBLICATION_WAIT_MS = 3_000;
+const schedulePublicationWaiters = new Map<string, Set<() => void>>();
 
 export {
   AutomationMutationError,
@@ -71,6 +75,53 @@ export class AutomationStore {
     return record;
   }
 
+  /** Orders definition changes and deferred publication for this schedule in the Data Root owner. */
+  public async withSchedulePublication<T>(
+    id: string,
+    publish: () => Promise<T>,
+    waitMs?: number
+  ): Promise<T> {
+    const key = JSON.stringify([resolve(this.coreDb.dataRoot), id]);
+    const previous = schedulePublicationWaiters.get(key);
+    const waiters = previous ?? new Set<() => void>();
+    if (previous) {
+      await new Promise<void>((resolve, reject) => {
+        const grant = () => {
+          clearTimeout(timeout);
+          resolve();
+        };
+        const timeout =
+          waitMs === undefined
+            ? undefined
+            : setTimeout(() => {
+                if (!waiters.delete(grant)) return;
+                reject(
+                  new OperationError(
+                    'schedule_publication_in_progress',
+                    'The schedule is busy publishing a change. Retry the definition change.',
+                    409,
+                    { details: { retryable: true } }
+                  )
+                );
+              }, waitMs);
+        waiters.add(grant);
+      });
+    } else {
+      schedulePublicationWaiters.set(key, waiters);
+    }
+    try {
+      return await publish();
+    } finally {
+      const next = waiters.values().next().value;
+      if (next) {
+        waiters.delete(next);
+        next();
+      } else {
+        schedulePublicationWaiters.delete(key);
+      }
+    }
+  }
+
   /** Creates the exact paused definition through the existing native Core publisher. */
   public async createAutomation(
     userId: string,
@@ -96,11 +147,16 @@ export class AutomationStore {
     authorization?: { readonly actor: Actor; readonly revalidate?: () => Promise<void> }
   ): Promise<AutomationRecord> {
     const input = UpdateAutomationRequestSchema.strict().parse(value);
-    const result = await this.publishDefinition(
-      userId,
-      this.getAutomation(automationId).workspaceId,
-      { action: 'update', id: automationId, input },
-      authorization
+    const result = await this.withSchedulePublication(
+      automationId,
+      () =>
+        this.publishDefinition(
+          userId,
+          this.getAutomation(automationId).workspaceId,
+          { action: 'update', id: automationId, input },
+          authorization
+        ),
+      DEFINITION_PUBLICATION_WAIT_MS
     );
     if (!result) throw new Error('Native definition update returned no record.');
     return result;
@@ -112,11 +168,16 @@ export class AutomationStore {
     automationId: string,
     authorization?: { readonly actor: Actor; readonly revalidate?: () => Promise<void> }
   ): Promise<void> {
-    await this.publishDefinition(
-      userId,
-      this.getAutomation(automationId).workspaceId,
-      { action: 'delete', id: automationId },
-      authorization
+    await this.withSchedulePublication(
+      automationId,
+      () =>
+        this.publishDefinition(
+          userId,
+          this.getAutomation(automationId).workspaceId,
+          { action: 'delete', id: automationId },
+          authorization
+        ),
+      DEFINITION_PUBLICATION_WAIT_MS
     );
   }
 

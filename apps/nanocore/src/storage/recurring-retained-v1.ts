@@ -140,6 +140,7 @@ export const StoredRecurringOccurrenceV1Schema = z.object({
     .max(3),
   requestId: z.string().uuid(),
   queueEntryId: z.string().min(1).nullable(),
+  publicationDeferred: z.literal('thread_busy').optional(),
   turnId: TurnIdSchema.nullable(),
   createdAt: z.iso.datetime(),
   terminalAt: z.iso.datetime().nullable(),

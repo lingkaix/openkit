@@ -846,6 +846,8 @@ interface CreateTurnOptions {
   startedAt?: string;
   /** Admission-time capture pair when the caller already resolved the effective setting. */
   captureCoverage?: CaptureCoverageBinding;
+  /** Recurring publication needs a definite native busy refusal before it can retain deferral proof. */
+  admitThreadInNativeWriter?: true;
   /** Initial status. Ordinary turns start running. Outcome turns may start pending. */
   status?: 'pending' | 'running';
   /** Agent bound at admission. */
@@ -5340,7 +5342,10 @@ export class FsStore {
     options: CreateTurnOptions = {}
   ): Promise<Turn> {
     const thread = this.getThread(workspaceId, threadId);
-    if (!isSealedTurnTerminal(options.status ?? 'running'))
+    if (
+      !isSealedTurnTerminal(options.status ?? 'running') &&
+      (!options.admitThreadInNativeWriter || !this.dataRoot)
+    )
       this.assertThreadIdle(workspaceId, threadId);
     // Task Mode addresses its receiving Thread; checkpoints deliberately retain no Task record id.
     const taskId =

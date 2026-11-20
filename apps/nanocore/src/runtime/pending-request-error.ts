@@ -13,8 +13,8 @@ export class PendingRequestCommandError extends Error {
    * @param message Product-safe message.
    * @param status HTTP status.
    */
-  public constructor(code: string, message: string, status: number) {
-    super(message);
+  public constructor(code: string, message: string, status: number, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'PendingRequestCommandError';
     this.code = code;
     this.status = status;
