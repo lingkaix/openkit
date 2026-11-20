@@ -1,9 +1,14 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GOAL_OPERATION_DEFINITIONS, OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
+import { createConversationService } from '../mode-entry-routes.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { admitOperation } from '../operation-resolvers.js';
 import { createPendingRequestOperationImplementations } from '../pending-request-operations.js';
@@ -11,6 +16,7 @@ import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -1771,41 +1777,61 @@ describe('Coordinator intent authority', () => {
       }) as never,
     });
     expect(tools.map((tool) => tool.name)).not.toContain('goal.intent.revise');
-    const modeEntry = readFileSync(new URL('../mode-entry-routes.ts', import.meta.url), 'utf8');
-    const reviseAt = modeEntry.indexOf("'goal.intent.revise'");
-    const call = modeEntry.slice(reviseAt, reviseAt + 450);
-    expect(call).toContain('{ actor: actor }');
-    expect(call).not.toMatch(/coordinatorTurnId/);
     const coreDb = openCoreDb(root);
     onTestFinished(() => coreDb.sqlite.close());
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      workspaceId: workspace.id,
-      ownerUserId: person.actor.userId,
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
     });
-    const invoke = createOperationInvocation({
+    const submitted = await createConversationService({
       coreDb,
-      store,
       inflightCommands: new WeakMap(),
+      llmGatewayDispatcher: {
+        createChatCompletion: async () => {
+          throw new Error('Addressed Goal revision must not call a model.');
+        },
+        createResponses: async () => {
+          throw new Error('Addressed Goal revision must not call a model.');
+        },
+      },
       repositoryWorkspaceDb: (workspaceId) => {
         const opened = openWorkspaceDb(root, workspaceId);
         applyScopedMigrations(opened);
         return opened;
       },
-    });
-    const revised = await invoke(
-      'goal.intent.revise',
+      resolveGatewayProvider: () => {
+        throw new Error('Addressed Goal revision must not resolve a provider.');
+      },
+      runtimeConfig: () => snapshot,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot: null,
+        initialSnapshot: snapshot,
+      }),
+      startModeWorkerTurn: async () => {
+        throw new Error('Addressed Goal revision must not start a Worker.');
+      },
+      workerCoordinatorCandidates: () => [],
+    }).submit(
+      store,
       {
         workspaceId: workspace.id,
         threadId: goal.threadId,
-        goalId: goal.goalId,
         requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        expectedRevision: 0,
-        intent: 'The person revised this',
+        input: 'The person revised this',
+        targetRef: `goal-coordinator:${goal.goalId}`,
+        artifactRefs: [],
       },
-      { kind: 'public', actor: person.actor }
+      person.actor
     );
-    expect(revised.goal?.intentHistory.at(-1)).toMatchObject({
+    expect(submitted.status).toBe(202);
+    const retained = readGoalView(store, db, goal.goalId).goal;
+    expect(retained).toMatchObject({
+      intentRevision: 1,
+      intent: 'The person revised this',
+      responsibleUserId: person.actor.userId,
+    });
+    expect(retained?.intentHistory.at(-1)).toMatchObject({
+      revision: 1,
       actorId: person.actor.userId,
       intent: 'The person revised this',
     });
