@@ -35,7 +35,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.1-rc.5",
-    "@openai/codex": "0.166.0",
+    "@openai/codex": "0.169.0",
     "@opencode/cli": "2.2.5",
     "@opencode/client": "2.2.5",
     "@types/node": "^26.6.6",

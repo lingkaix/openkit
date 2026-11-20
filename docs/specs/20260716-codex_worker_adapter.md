@@ -7,7 +7,7 @@ aspect: agent-session
 
 # Codex Worker Adapter
 
-This specification owns the Codex 0.166.0 App Server delta. Shared adapter rules live in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md).
+This specification owns the Codex 0.169.0 App Server delta. Shared adapter rules live in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md).
 
 ## Scope
 

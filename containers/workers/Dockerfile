@@ -250,7 +250,7 @@ USER 1000:1000
 FROM worker-common AS worker-runtimes
 
 ARG TARGETARCH
-ARG CODEX_CLI_VERSION="0.166.0"
+ARG CODEX_CLI_VERSION="0.169.0"
 ARG OPENCODE_VERSION="2.2.5"
 ARG DEEPSEEK_VERSION="0.2.1-rc.5"
 
@@ -272,8 +272,8 @@ RUN export CODEX_HOME=/tmp/codex-home \
   set -eux; \
   mkdir -p "${CODEX_HOME}"; \
   case "${TARGETARCH:-amd64}" in \
-    amd64) codex_npm_tag="linux-x64"; codex_target="x86_64-unknown-linux-musl"; codex_sha512="0b10e6dfe0f57296c625e1eb77320da06fb7c27f4156770fe2aa5969a3589317bc88fb5124e6320899e73e8563591201bc8f6f3ca6d1a227ec312039c43694a7" ;; \
-    arm64) codex_npm_tag="linux-arm64"; codex_target="aarch64-unknown-linux-musl"; codex_sha512="c3449c02c06bf5a64ab4816b87a1cde8a536ca328a7920b361f6dbec307409c8f80583f3799b54790a6b6f270b0b0b97dc015075b7636a998b868da2a2def88d" ;; \
+    amd64) codex_npm_tag="linux-x64"; codex_target="x86_64-unknown-linux-musl"; codex_sha512="a34e4dc803820f28123d1a35ca29f3c6f91149d9ac672043f44ee66e99a345a9d27ccf25ca9a96b50804a385df364c21b82476685bbc9a518eb101855d56d5c3" ;; \
+    arm64) codex_npm_tag="linux-arm64"; codex_target="aarch64-unknown-linux-musl"; codex_sha512="359fc36905297109b19aa79eed9f6e0b5af3c371a149ba286b071a4ded4b379624f969629d42867535c98029514fff6881010433d4d6c58cefc4f7e3e46ff116" ;; \
     *) echo "Unsupported Codex Docker target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
   esac; \
   curl --proto '=https' --tlsv1.2 -fsSL "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_CLI_VERSION}-${codex_npm_tag}.tgz" -o /tmp/codex.tgz; \

@@ -957,7 +957,7 @@ describe('Codex App Server adapter', () => {
         {
           ordinal: 0,
           type: 'session_meta',
-          payload: { id: NATIVE_THREAD, history_mode: 'paginated', cli_version: '0.166.0' },
+          payload: { id: NATIVE_THREAD, history_mode: 'paginated', cli_version: '0.169.0' },
         },
         { ordinal: 1, type: 'turn_context', payload: { turn_id: 'controlled-turn' } },
         {
@@ -1616,7 +1616,7 @@ describe('Codex App Server adapter', () => {
       true
     );
     const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
-    expect(version.stdout).toContain('codex-cli 0.166.0');
+    expect(version.stdout).toContain('codex-cli 0.169.0');
     expect(codexLaunchArguments()[0]).toBe('app-server');
     expect(codexLaunchArguments()).toContain('model_provider="openkit-worker-inference"');
     expect(codexLaunchArguments()).toContain(
@@ -5828,7 +5828,7 @@ it.each(['drain', 'crash'] as const)(
       runtimeCapture: {
         ...input.runtimeCapture,
         captureCoverage: { scope: 'task', value: 'on' },
-        ...{ nativeLogMaxBytes: 7, authoredVersion: '0.166.0' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '0.169.0' },
         emit: async (record, body) => {
           received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
         },

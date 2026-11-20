@@ -17,7 +17,7 @@ const frames = [
   {
     ordinal: 0,
     type: 'session_meta',
-    payload: { id: THREAD, history_mode: 'paginated', cli_version: '0.166.0' },
+    payload: { id: THREAD, history_mode: 'paginated', cli_version: '0.169.0' },
   },
   { ordinal: 1, type: 'turn_context', payload: { turn_id: terminal.id } },
   {
@@ -395,7 +395,7 @@ describe('Codex retaining close context proof', () => {
   });
 });
 
-describe('Codex 0.166.0 retaining close with native usage metadata', () => {
+describe('Codex 0.169.0 retaining close with native usage metadata', () => {
   // One response in the first Turn has equal response, Turn and Thread usage totals.
   const usage = {
     input_tokens: 11,
