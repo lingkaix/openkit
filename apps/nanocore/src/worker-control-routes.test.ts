@@ -910,6 +910,7 @@ describe('worker control routes', () => {
       false,
       null,
       null,
+      false,
     ],
     [
       'different process key',
@@ -919,6 +920,7 @@ describe('worker control routes', () => {
       false,
       null,
       null,
+      false,
     ],
     [
       'original process key before RuntimeTarget readiness returns',
@@ -928,6 +930,7 @@ describe('worker control routes', () => {
       false,
       503,
       'worker_control_reconnect_required',
+      false,
     ],
     [
       'original process key after backend cleanup starts',
@@ -937,10 +940,21 @@ describe('worker control routes', () => {
       true,
       403,
       'worker_control_lease_not_live',
+      false,
+    ],
+    [
+      'original process key after the last heartbeat committed without its ACK',
+      createHash('sha256').update('route-process-key').digest('base64url'),
+      false,
+      false,
+      false,
+      409,
+      'worker_control_heartbeat_already_accepted',
+      true,
     ],
   ] as const)(
     'accepts restart heartbeat only for the %s',
-    async (_case, reconnectKey, accepted, clearRuntimeTargetReadiness, beginBackendCleanup, expectedStatus, expectedErrorCode) => {
+    async (_case, reconnectKey, accepted, clearRuntimeTargetReadiness, beginBackendCleanup, expectedStatus, expectedErrorCode, committedBeforeRestart) => {
       const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-reconnect-route-')));
       const originalKey = createHash('sha256').update('route-process-key').digest('base64url');
       const processKeyHash = createHash('sha256')
@@ -981,34 +995,57 @@ describe('worker control routes', () => {
         });
         await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
         const absoluteDeadline = absoluteAttemptDeadline(coreDb, fixture.lineage.turnId);
-        const firstGateway = createDefaultWorkerControlGateway(coreDb);
-        registerDurableWorkerControlSession(firstGateway, fixture.environmentPackage, binding);
-        const firstApp = createApp({
-          coreDb,
-          mode: 'server',
-          store: fixture.store,
-          workerControlGateway: firstGateway,
-        });
-        const firstHeartbeat = await firstApp.request('/api/worker-control/heartbeat', {
-          body: JSON.stringify(
-            heartbeatEnvelope(fixture.lineage, 0, 'starting', null, processKeyHash)
-          ),
-          headers: {
-            authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
-            'content-type': 'application/json',
-          },
-          method: 'POST',
-        });
-        expect(firstHeartbeat.status).toBe(200);
+        const makeApp = () => {
+          const gateway = createDefaultWorkerControlGateway(coreDb);
+          registerDurableWorkerControlSession(gateway, fixture.environmentPackage, binding);
+          return createApp({
+            coreDb,
+            mode: 'server',
+            store: fixture.store,
+            workerControlGateway: gateway,
+          });
+        };
+        const postHeartbeat = (
+          app: ReturnType<typeof makeApp>,
+          sequence: number,
+          key?: string,
+          message = 'Worker survived NanoCore restart.'
+        ) =>
+          app.request('/api/worker-control/heartbeat', {
+            body: JSON.stringify({
+              ...heartbeatEnvelope(
+                fixture.lineage,
+                sequence,
+                sequence === 0 ? 'starting' : 'running',
+                sequence === 0 ? null : message,
+                sequence === 0 ? processKeyHash : undefined
+              ),
+              ...(key ? { reconnectKey: key } : {}),
+            }),
+            headers: {
+              authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
+              'content-type': 'application/json',
+            },
+            method: 'POST',
+          });
+        const restart = () => {
+          coreDb.sqlite
+            .prepare(
+              `UPDATE scheduler_execution_attempts
+                 SET recovery_state = 'awaiting-reconnect', recovery_deadline = ?
+                 WHERE attempt_id = ?`
+            )
+            .run('2099-01-01T00:00:00.000Z', attemptId);
+          return makeApp();
+        };
+        const firstApp = makeApp();
+        expect((await postHeartbeat(firstApp, 0)).status).toBe(200);
+        if (committedBeforeRestart) {
+          // Core retains this exact record even though the Worker never receives the ACK.
+          expect((await postHeartbeat(firstApp, 1)).status).toBe(200);
+        }
         expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
-        coreDb.sqlite
-          .prepare(
-            `UPDATE scheduler_execution_attempts
-           SET recovery_state = 'awaiting-reconnect',
-               recovery_deadline = '2099-01-01T00:00:00.000Z'
-           WHERE attempt_id = '${testEntityId('attempt', 'lease_process_key_reconnect')}'`
-          )
-          .run();
+        const restartedApp = restart();
         if (clearRuntimeTargetReadiness) {
           await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
             authoritativeGeneration: null,
@@ -1025,34 +1062,10 @@ describe('worker control routes', () => {
           });
         }
 
-        const restartedGateway = createDefaultWorkerControlGateway(coreDb);
-        registerDurableWorkerControlSession(restartedGateway, fixture.environmentPackage, binding);
-        const restartedApp = createApp({
-          coreDb,
-          mode: 'server',
-          store: fixture.store,
-          workerControlGateway: restartedGateway,
-        });
-        const reconnect = await restartedApp.request('/api/worker-control/heartbeat', {
-          body: JSON.stringify({
-            ...heartbeatEnvelope(
-              fixture.lineage,
-              1,
-              'running',
-              'Worker survived NanoCore restart.'
-            ),
-            reconnectKey,
-          }),
-          headers: {
-            authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
-            'content-type': 'application/json',
-          },
-          method: 'POST',
-        });
-        const lease = requireNanoHostExecutionAttempt(
-          coreDb,
-          testEntityId('attempt', 'lease_process_key_reconnect')
-        );
+        const readLease = () => requireNanoHostExecutionAttempt(coreDb, attemptId);
+        const awaiting = readLease();
+        const reconnect = await postHeartbeat(restartedApp, 1, reconnectKey);
+        const lease = readLease();
         const durableWorkerControl = JSON.stringify(
           coreDb.sqlite
             .prepare(
@@ -1078,13 +1091,44 @@ describe('worker control routes', () => {
           accepted
             ? { lastWorkerSequence: 1, recoveryDeadline: null, recoveryState: null }
             : {
-                lastWorkerSequence: 0,
+                lastWorkerSequence: committedBeforeRestart ? 1 : 0,
                 recoveryDeadline: '2099-01-01T00:00:00.000Z',
                 recoveryState: 'awaiting-reconnect',
               }
         );
         expect(await reconnect.text()).not.toContain(reconnectKey);
         expect(durableWorkerControl).not.toContain(reconnectKey);
+
+        if (committedBeforeRestart) {
+          expect(lease).toEqual(awaiting);
+          const changed = await postHeartbeat(restartedApp, 1, reconnectKey, 'Changed heartbeat.');
+          expect(changed.status).toBe(409);
+          expect(await changed.json()).toMatchObject({ code: 'worker_control_sequence_stale' });
+          const wrongKey = await postHeartbeat(
+            restartedApp,
+            1,
+            createHash('sha256').update('wrong-route-process-key').digest('base64url')
+          );
+          expect(wrongKey.status).toBe(409);
+          expect(await wrongKey.json()).toMatchObject({ code: 'worker_control_identity_conflict' });
+          const gap = await postHeartbeat(restartedApp, 3, reconnectKey);
+          expect(gap.status).toBe(409);
+          expect(await gap.json()).toMatchObject({ code: 'worker_control_sequence_stale' });
+          expect(readLease()).toEqual(awaiting);
+
+          expect((await postHeartbeat(restartedApp, 2, reconnectKey)).status).toBe(200);
+          expect(readLease()).toMatchObject({ lastWorkerSequence: 2, recoveryState: null });
+
+          const secondRestart = restart();
+          const awaitingAgain = readLease();
+          const replay = await postHeartbeat(secondRestart, 2, reconnectKey);
+          expect(replay.status).toBe(409);
+          expect(await replay.json()).toMatchObject({
+            code: 'worker_control_heartbeat_already_accepted',
+          });
+          expect(readLease()).toEqual(awaitingAgain);
+          expect((await postHeartbeat(secondRestart, 3)).status).toBe(503);
+        }
       } finally {
         coreDb.sqlite.close();
       }

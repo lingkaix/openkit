@@ -448,6 +448,13 @@ export class WorkerControlClient {
           this.nextHeartbeatSequence = Math.max(this.nextHeartbeatSequence, sequence + 1);
           return result;
         } catch (error) {
+          if (
+            presentReconnectKey &&
+            error instanceof WorkerControlError &&
+            error.status === 409 &&
+            error.code === 'worker_control_heartbeat_already_accepted'
+          )
+            return await this.confirmReconnect(sequence + 1, signal);
           this.requireRetryable(error);
           if (!retrying) {
             retrying = true;
@@ -459,6 +466,25 @@ export class WorkerControlClient {
       }
     } finally {
       if (retrying) this.retryingRequests -= 1;
+    }
+  }
+
+  /** A confirmed old heartbeat permits one fresh proof. A second refusal terminates recovery. */
+  private async confirmReconnect(sequence: number, signal?: AbortSignal): Promise<unknown> {
+    try {
+      const result = await this.postHeartbeat({ ...PERIODIC_HEARTBEAT, sequence }, true, signal);
+      this.nextHeartbeatSequence = Math.max(this.nextHeartbeatSequence, sequence + 1);
+      return result;
+    } catch (error) {
+      this.disablePostLaunchRecovery();
+      signal?.throwIfAborted();
+      if (!isRetryableFailure(error)) throw error;
+      // The request owner must not re-enter reconnect through its ordinary retry budget.
+      throw new WorkerControlError(
+        'worker_control_reconnect_confirmation_failed',
+        409,
+        'Worker reconnect could not confirm the fresh heartbeat.'
+      );
     }
   }
 

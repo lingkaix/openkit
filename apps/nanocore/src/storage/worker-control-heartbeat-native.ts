@@ -62,6 +62,7 @@ export function applyControlWorkerHeartbeat(
     throw new ControlProductPreconditionError();
   const acceptedAt = payload.acceptedAt ?? new Date().toISOString();
   assertWorkerControlHash(db, input);
+  const fingerprint = canonicalJsonText(payload.request);
   try {
     if (payload.reconnectProcessKeyHash)
       adoptNanoHostAttemptReconnectHash(db, {
@@ -70,6 +71,7 @@ export function applyControlWorkerHeartbeat(
         sandboxBindingRef: input.sandboxBindingRef,
         workerSequence: payload.request.sequence,
         processKeyHash: payload.reconnectProcessKeyHash,
+        heartbeatFingerprint: fingerprint,
       });
     const resolution = resolveNanoHostAttemptTokenBinding(db, {
       lineage: input.lineage,
@@ -81,7 +83,7 @@ export function applyControlWorkerHeartbeat(
       lineage: input.lineage,
       operation: 'heartbeat',
       sequence: payload.request.sequence,
-      fingerprint: canonicalJsonText(payload.request),
+      fingerprint,
     });
     if (sequence.status !== 'accepted')
       throw new WorkerHeartbeatRefusal(sequence.code, sequence.message, 409);
@@ -102,6 +104,12 @@ export function applyControlWorkerHeartbeat(
     };
   } catch (error) {
     if (!(error instanceof NanoHostAttemptHeartbeatRejectedError)) throw error;
+    if (error.reason === 'heartbeat-already-accepted')
+      throw new WorkerHeartbeatRefusal(
+        'worker_control_heartbeat_already_accepted',
+        error.message,
+        409
+      );
     if (error.reason === 'sequence-stale')
       throw new WorkerHeartbeatRefusal(
         'worker_control_sequence_stale',

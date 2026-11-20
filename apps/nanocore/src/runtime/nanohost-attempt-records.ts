@@ -8,6 +8,7 @@ import {
 } from './execution-attempt-records.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import { getWorkerBackendSession } from './worker-backend-session-records.js';
+import { matchesAcceptedWorkerControlSequence } from './worker-control-sequences.js';
 
 /** Adapter-private native liveness and credentials extend the generic attempt, never its phases. */
 export interface NanoHostExecutionAttemptRecord extends SchedulerExecutionAttemptRecord {
@@ -105,7 +106,7 @@ export interface AdoptNanoHostAttemptReconnectInput {
   readonly reconnectKey: string;
   /** Non-secret durable sandbox binding reference. */
   readonly sandboxBindingRef: string;
-  /** Exact next heartbeat sequence. */
+  /** Presented heartbeat sequence. */
   readonly workerSequence: number;
 }
 
@@ -148,6 +149,7 @@ export class NanoHostAttemptHeartbeatRejectedError extends Error {
   public readonly reason:
     | 'attempt-not-live'
     | 'sequence-stale'
+    | 'heartbeat-already-accepted'
     | 'attempt-changed'
     | 'reconnect-required';
 
@@ -350,6 +352,8 @@ export function adoptNanoHostAttemptReconnectHash(
   coreDb: CoreDb,
   input: Omit<AdoptNanoHostAttemptReconnectInput, 'reconnectKey'> & {
     readonly processKeyHash: string;
+    /** The original heartbeat envelope without the reconnect proof. */
+    readonly heartbeatFingerprint?: string;
   }
 ): NanoHostExecutionAttemptRecord {
   const row = coreDb.sqlite
@@ -372,9 +376,11 @@ export function adoptNanoHostAttemptReconnectHash(
   ) {
     throwReconnectRejected('attempt-not-live', 'Worker reconnect deadline or attempt is not live.');
   }
+  const readbackFingerprint =
+    input.workerSequence === attempt.lastWorkerSequence ? input.heartbeatFingerprint : undefined;
   if (
     attempt.lastWorkerSequence === null ||
-    input.workerSequence !== attempt.lastWorkerSequence + 1
+    (readbackFingerprint === undefined && input.workerSequence !== attempt.lastWorkerSequence + 1)
   ) {
     throwReconnectRejected('sequence-stale', 'Worker reconnect must use the exact next sequence.');
   }
@@ -420,6 +426,22 @@ export function adoptNanoHostAttemptReconnectHash(
   }
   if (runtimeTarget.physicalEpoch !== backendSession.originPhysicalEpoch) {
     throwReconnectRejected('attempt-changed', 'Worker reconnect physical Epoch identity changed.');
+  }
+
+  if (readbackFingerprint !== undefined) {
+    if (
+      matchesAcceptedWorkerControlSequence(coreDb, {
+        lineage: input.lineage,
+        operation: 'heartbeat',
+        sequence: input.workerSequence,
+        fingerprint: readbackFingerprint,
+      }) === true
+    )
+      throwReconnectRejected(
+        'heartbeat-already-accepted',
+        'Worker reconnect heartbeat was already accepted.'
+      );
+    throwReconnectRejected('sequence-stale', 'Worker reconnect must use the exact next sequence.');
   }
   const update = coreDb.sqlite
     .prepare(
