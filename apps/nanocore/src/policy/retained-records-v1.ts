@@ -5,6 +5,7 @@ import {
   AutomationIdSchema,
   CapabilityCallIdSchema,
   ItemIdSchema,
+  KernelAuditEvidenceSchema,
   PermissionDecisionIdSchema,
   PolicyDecisionV1Schema,
   PolicyDigestV1Schema,
@@ -100,6 +101,7 @@ const AuditEventRetainedV1Schema = z.object({
   notebookAdmission: notebookAdmissionV1.optional(),
   policyInvocation: historicalInvocation.optional(),
   policyWriteOutcome: PolicyWriteOutcomeV1Schema.optional(),
+  kernelEvidence: KernelAuditEvidenceSchema.optional(),
   outcome: z.enum(['succeeded', 'failed', 'denied', 'cancelled', 'unknown']),
   severity: z.enum(['info', 'warning', 'error']),
   summary: z.string().min(1),
@@ -218,6 +220,9 @@ export function readAuditEventRowV1(input: unknown): z.infer<typeof AuditEventRe
         : {}),
       ...(row.policy_write_outcome_json != null
         ? { policyWriteOutcome: JSON.parse(String(row.policy_write_outcome_json)) }
+        : {}),
+      ...(row.kernel_evidence_json != null
+        ? { kernelEvidence: JSON.parse(String(row.kernel_evidence_json)) }
         : {}),
       outcome: row.outcome,
       severity: row.severity,

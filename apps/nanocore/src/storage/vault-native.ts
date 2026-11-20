@@ -1043,7 +1043,10 @@ export function applyControlVault(
       occurredAt: new Date(occurredAt),
     });
     if (db.scope === 'workspace') {
-      if (request.record.workspaceId !== db.workspaceId)
+      if (
+        request.record.workspaceId !== db.workspaceId ||
+        request.record.kernelEvidence !== undefined
+      )
         throw new ControlProductPreconditionError();
       recordWorkspaceAuditEvent({ ...input, workspaceDb: db, workspaceId: db.workspaceId });
     } else recordServerAuditEvent({ ...input, coreDb: db });
@@ -1156,12 +1159,20 @@ export function applyControlVault(
         break;
       }
       case 'reviewed-grant-issue': {
-        const { grant, admin, audit } = request.record;
+        const { grant, audit, authority } = request.record;
         assertReviewedGrantAuthority(db, request.record);
-        if (admin.auditEventId !== audit.id || audit.vaultGrantId !== grant.grantId)
+        if (
+          audit.action !== 'vault.grant-issue' ||
+          audit.outcome !== 'succeeded' ||
+          audit.kernelEvidence?.kind !== 'vault.admin' ||
+          audit.vaultGrantId !== grant.grantId ||
+          audit.workspaceId !== authority.workspaceId ||
+          audit.actor?.kind !== 'user' ||
+          audit.actor.id !== authority.issuer.userId ||
+          audit.authentication?.credentialKind !== authority.issuer.kind
+        )
           throw new ControlProductPreconditionError();
         const value = createVaultGrant(db, withClock(grant));
-        insertVaultAdminAudit(db, admin);
         applyControlVault(db, { kind: 'audit-insert', record: audit });
         result = { kind: request.kind, value };
         break;
@@ -1174,19 +1185,21 @@ export function applyControlVault(
           throw new ControlProductPreconditionError();
         const value = narrowVaultGrant(db, withClock(grant));
         if (request.kind === 'workspace-grant-narrow') {
-          if (request.record.admin.auditEventId !== audit.id)
+          const { publicMutation } = request.record;
+          if (
+            audit.action !== 'vault.workspace_narrow-grant' ||
+            audit.workspaceId !== publicMutation.workspaceId ||
+            audit.actor?.kind !== 'user' ||
+            audit.actor.id !== publicMutation.actor.userId ||
+            audit.authentication?.credentialKind !== publicMutation.actor.kind
+          )
             throw new ControlProductPreconditionError();
-          insertVaultAdminAudit(db, request.record.admin);
         }
         applyControlVault(db, { kind: 'audit-insert', record: audit });
         result = { kind: request.kind, value };
         break;
       }
 
-      case 'admin-event-insert':
-        insertVaultAdminAudit(db, request.record);
-        result = { kind: request.kind, value: null };
-        break;
       case 'reference-create':
         result = {
           kind: request.kind,
@@ -1359,29 +1372,6 @@ function withClock<T extends { readonly now?: string | undefined }>(
 ): { [P in keyof Omit<T, 'now'>]: Exclude<T[P], undefined> } & { readonly now?: () => string } {
   const { now, ...record } = input;
   return { ...definedFields(record), ...(now === undefined ? {} : { now: () => now }) };
-}
-
-/** Inserts only the original admin-table row; the caller retains its next separate general Audit stage. */
-function insertVaultAdminAudit(
-  db: CoreDb,
-  input: import('./vault-native-codecs.js').VaultAdminAuditRecord
-): void {
-  db.sqlite
-    .prepare(`INSERT INTO vault_admin_audit_events (
-    audit_event_id,actor_user_id,actor_kind,action,outcome,severity,summary,error_code,backend_kind,created_at
-  ) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .run(
-      input.auditEventId,
-      input.actorUserId,
-      input.actorKind,
-      input.action,
-      input.outcome,
-      input.severity,
-      input.summary,
-      input.errorCode,
-      input.backendKind,
-      input.createdAt
-    );
 }
 
 /** Zod preserves optional undefined properties; original exact-optional record APIs receive only present facts. */

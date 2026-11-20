@@ -717,7 +717,9 @@ describe('remote MCP App endpoint', () => {
     const rows = () => ({
       references: f.coreDb.sqlite.prepare('SELECT * FROM vault_references').all(),
       grants: f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all(),
-      audit: f.coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all(),
+      audit: f.coreDb.sqlite
+        .prepare('SELECT * FROM audit_events WHERE kernel_evidence_json IS NOT NULL')
+        .all(),
     });
     const before = rows();
     readiness = { ...readiness, acceptingProductWork: false };

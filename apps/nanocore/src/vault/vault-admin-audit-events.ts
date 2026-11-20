@@ -5,6 +5,7 @@ import {
   type RecordServerAuditEventInput,
   type RecordWorkspaceAuditEventInput,
 } from '../audit-events.js';
+import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { Actor } from '../auth/identity.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, UserDb } from '../storage/db.js';
@@ -51,31 +52,22 @@ export interface RecordVaultAdminAuditEventInput {
 export async function recordVaultAdminAuditEvent(
   input: RecordVaultAdminAuditEventInput
 ): Promise<void> {
-  const evidence = prepareVaultAdminAudit(input);
-  const client = getControlStoreWorkerClient();
-  await client.vault(input.coreDb, 'admin-event-insert', evidence.admin);
-  await client.vault(input.coreDb, 'audit-insert', evidence.audit);
+  await getControlStoreWorkerClient().vault(
+    input.coreDb,
+    'audit-insert',
+    prepareVaultAdminAudit(input).audit
+  );
 }
 
-/** Prepares the same admin and general Audit facts for either their original separate commits or an existing outer tuple. */
+/** Prepares the original Core Audit fact for a standalone or enclosing Vault transaction. */
 export function prepareVaultAdminAudit(input: Omit<RecordVaultAdminAuditEventInput, 'coreDb'>) {
   const auditEventId = input.auditEventId ?? allocateEntityId('aud');
   const severity = input.severity ?? (input.outcome === 'succeeded' ? 'info' : 'warning');
   const now = input.now ?? new Date();
-  const admin = {
-    auditEventId,
-    actorUserId: input.actor?.userId ?? null,
-    actorKind: input.actor?.kind ?? null,
-    action: input.action,
-    outcome: input.outcome,
-    severity,
-    summary: input.summary,
-    errorCode: input.errorCode ?? null,
-    backendKind: input.backendKind,
-    createdAt: now.toISOString(),
-  };
   const audit = prepareAuditEvent({
     actor: input.actor ? { kind: 'user', id: input.actor.userId } : null,
+    authentication: input.actor ? auditAuthenticationFromActor(input.actor) : undefined,
+    kernelEvidence: { kind: 'vault.admin', backendKind: input.backendKind },
     action: input.action,
     auditEventId,
     category: 'system',
@@ -89,7 +81,7 @@ export function prepareVaultAdminAudit(input: Omit<RecordVaultAdminAuditEventInp
     severity,
     summary: input.summary,
   });
-  return { admin, audit };
+  return { audit };
 }
 
 /** Prepares the original Vault event on Main, then awaits its actual Core, Workspace or User evidence owner. */

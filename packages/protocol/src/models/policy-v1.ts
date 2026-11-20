@@ -239,8 +239,7 @@ const PolicyMaintenanceBinaryV1Schema = z
     'Expected a canonical absolute binary path.'
   );
 
-/** Native grant constraints extend the shared scope without another subject or expiry. */
-export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
+const sharedPolicyGrantSchemas = [
   z.object({ kind: z.literal('ordinary') }).strict(),
   z.object({ kind: z.literal('agent-process'), agentId: AgentIdSchema }).strict(),
   z
@@ -264,7 +263,22 @@ export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
       validFrom: z.iso.datetime({ precision: 3 }),
     })
     .strict(),
+] as const;
+
+/** Native grant constraints extend the shared scope without another subject or expiry. */
+export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
+  ...sharedPolicyGrantSchemas,
+  z.strictObject({
+    kind: z.literal('repair.model-call'),
+    scope: z.literal('server'),
+    unit: z.literal('model-call'),
+    window: z.literal('utc-day'),
+    limit: z.number().int().positive().default(10),
+  }),
 ]);
+const permissionDescription =
+  'Finite maintenance permissions require lifetime.notAfter; validFrom precedes it. Use canonical Zod validation for cross-field rules.';
+
 /** Permission conditions include the existing approval-required Tool rule. */
 export const PolicyPermissionV1Schema = z
   .object({
@@ -293,9 +307,7 @@ export const PolicyPermissionV1Schema = z
         message: 'Maintenance validity must be a nonempty finite interval.',
       });
   })
-  .describe(
-    'Finite maintenance permissions require lifetime.notAfter; validFrom precedes it. Use canonical Zod validation for cross-field rules.'
-  );
+  .describe(permissionDescription);
 /** A managed boundary adds a required Policy class without granting any subject a right. */
 export const PolicyManagedBoundaryV1Schema = z
   .object({
@@ -390,6 +402,21 @@ export const PolicyDocumentV1Schema = z
       maintenanceTuples.add(key);
     }
   });
+/** Workspace resource access keeps its settled authored document shape. */
+export const WorkspaceResourcePolicyDocumentV1Schema = PolicyDocumentV1Schema.safeExtend({
+  statements: z.array(
+    z.union([
+      PolicyBindingV1Schema,
+      PolicyPermissionV1Schema.safeExtend({
+        grant: z.discriminatedUnion('kind', sharedPolicyGrantSchemas),
+      }).describe(permissionDescription),
+      PolicyDelegationV1Schema,
+      PolicyManagedBoundaryV1Schema,
+      PolicyAgentPrincipalV1Schema,
+    ])
+  ),
+});
+
 /** Exact admitted process; direct human requests explicitly have no Turn. */
 export const PolicySubjectV1Schema = z
   .object({

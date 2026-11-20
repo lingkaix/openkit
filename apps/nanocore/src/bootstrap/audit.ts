@@ -1,7 +1,9 @@
-import { deriveEntityId } from '@openkit/protocol';
+import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
+import { deriveEntityId, KernelAuditEvidenceSchema } from '@openkit/protocol';
 import { prepareAuditEvent } from '../audit-events.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import type { DataRootLockAcquisition } from './lock.js';
 import type { BootPhaseRunResult } from './phases.js';
 
 /** Input for recording one boot start audit event. */
@@ -13,7 +15,7 @@ export interface RecordBootStartAuditEventInput {
   /** DATA_ROOT layout version accepted by this boot. */
   layoutVersion?: number;
   /** Data-root lock acquisition summary. */
-  lockAcquisition?: unknown;
+  lockAcquisition?: DataRootLockAcquisition;
   /** Known migration ids after the migration phase reaches writable storage. */
   migrationIds: string[];
   /** Storage recovery events produced before migrations ran. */
@@ -50,33 +52,62 @@ export interface RecordShutdownAuditEventInput {
   now?: Date;
 }
 
-/**
- * Records one durable server-scope boot lifecycle audit row.
- *
- * @param input Boot start audit event input.
- */
+type BootReason = BootReadinessSnapshot['subsystems']['config']['reasons'][number];
+type BootStartEvidence = Extract<
+  NonNullable<Parameters<typeof prepareAuditEvent>[0]['kernelEvidence']>,
+  { kind: 'boot.start' }
+>;
+
+/** Keeps machine-readable diagnostics and operation blocks without retaining arbitrary messages. */
+function redactedReason({ code, blocks }: BootReason) {
+  return { code, blocks };
+}
+
+/** The lock's previous holder is untrusted metadata, never replayed as an opaque object. */
+function redactedLock(lock: DataRootLockAcquisition | undefined): BootStartEvidence['lock'] {
+  if (!lock) return null;
+  const stale = lock.staleHolder as Record<string, unknown> | null;
+  const staleHolder =
+    lock.status === 'stale_broken' &&
+    typeof stale?.bootId === 'string' &&
+    stale.bootId.length > 0 &&
+    typeof stale.pid === 'number' &&
+    Number.isSafeInteger(stale.pid) &&
+    stale.pid > 0
+      ? {
+          bootId: stale.bootId,
+          pid: stale.pid,
+          ...(typeof stale.hostname === 'string' && stale.hostname.length > 0
+            ? { hostname: stale.hostname }
+            : {}),
+        }
+      : null;
+  return { status: lock.status, staleHolder };
+}
+
+/** Records one durable Server boot start in Core Audit. */
 export async function recordBootStartAuditEvent(
   input: RecordBootStartAuditEventInput
 ): Promise<void> {
-  const createdAt = (input.now ?? new Date()).toISOString();
-
-  await getControlStoreWorkerClient().coreBootAudit(input.coreDb, {
-    bootEventId: `${input.bootId}_start`,
+  const now = input.now ?? new Date();
+  const kernelEvidence = KernelAuditEvidenceSchema.parse({
+    kind: 'boot.start',
     bootId: input.bootId,
-    eventType: 'boot.start',
-    outcome: 'started',
-    acceptingProductWork: false,
-    phaseOutcomesJson: JSON.stringify([]),
-    readinessJson: JSON.stringify({
-      bootId: input.bootId,
-      ...(input.layoutVersion ? { layoutVersion: input.layoutVersion } : {}),
-      ...(input.lockAcquisition ? { lockAcquisition: input.lockAcquisition } : {}),
-      migrationIds: input.migrationIds,
-      storageRecoveryEvents: input.storageRecoveryEvents ?? [],
-      indexRebuildEvents: input.indexRebuildEvents ?? [],
+    layoutVersion: input.layoutVersion ?? null,
+    migrationIds: input.migrationIds,
+    lock: redactedLock(input.lockAcquisition),
+    indexRebuilds: (input.indexRebuildEvents ?? []).map((entry) => {
+      const event = entry as Record<string, unknown>;
+      return { workspaceId: event.workspaceId, itemCount: event.itemCount };
     }),
-    createdAt,
-    audit: prepareAuditEvent({
+    storageRecovery: (input.storageRecoveryEvents ?? []).map((entry) => {
+      const event = entry as Record<string, unknown>;
+      return { scope: event.scope, reason: event.reason };
+    }),
+  });
+  await getControlStoreWorkerClient().coreBootAudit(
+    input.coreDb,
+    prepareAuditEvent({
       action: 'boot.start',
       auditEventId: deriveEntityId('aud', [input.bootId, 'start']),
       category: 'system',
@@ -85,32 +116,43 @@ export async function recordBootStartAuditEvent(
       resource: `server:boot:${input.bootId}`,
       severity: 'info',
       summary: 'NanoCore boot started.',
-      ...(input.now ? { now: input.now, occurredAt: input.now } : {}),
-    }),
-  });
+      now,
+      occurredAt: now,
+      kernelEvidence,
+    })
+  );
 }
 
-/**
- * Records one durable server-scope boot outcome audit row.
- *
- * @param input Boot audit event input.
- */
+/** Records the original ordered phase and readiness facts under the boot outcome's Audit ID. */
 export async function recordBootAuditEvent(input: RecordBootAuditEventInput): Promise<void> {
-  const createdAt = (input.now ?? new Date()).toISOString();
+  const now = input.now ?? new Date();
   const readiness = input.result.readiness;
   const failed = readiness.overall === 'failed';
   const degraded = readiness.overall === 'degraded';
-
-  await getControlStoreWorkerClient().coreBootAudit(input.coreDb, {
-    bootEventId: `${readiness.bootId}_outcome`,
+  const kernelEvidence = KernelAuditEvidenceSchema.parse({
+    kind: 'boot.outcome',
     bootId: readiness.bootId,
-    eventType: 'boot.outcome',
-    outcome: readiness.overall,
     acceptingProductWork: readiness.acceptingProductWork,
-    phaseOutcomesJson: JSON.stringify(input.result.outcomes),
-    readinessJson: JSON.stringify(readiness),
-    createdAt,
-    audit: prepareAuditEvent({
+    overall: readiness.overall,
+    subsystems: Object.fromEntries(
+      Object.entries(readiness.subsystems).map(([subsystem, status]) => [
+        subsystem,
+        { state: status.state, reasons: status.reasons.map(redactedReason) },
+      ])
+    ),
+    phases: input.result.outcomes.map(({ name, subsystem, critical, outcome }) => ({
+      name,
+      subsystem,
+      critical,
+      status: outcome.status,
+      reasons: (outcome.status === 'ok' ? (outcome.reasons ?? []) : [outcome.reason]).map(
+        redactedReason
+      ),
+    })),
+  });
+  await getControlStoreWorkerClient().coreBootAudit(
+    input.coreDb,
+    prepareAuditEvent({
       action: 'boot.outcome',
       auditEventId: deriveEntityId('aud', [readiness.bootId, 'outcome']),
       category: 'system',
@@ -124,35 +166,21 @@ export async function recordBootAuditEvent(input: RecordBootAuditEventInput): Pr
         : degraded
           ? 'NanoCore boot completed with degraded readiness.'
           : 'NanoCore boot completed.',
-      ...(input.now ? { now: input.now, occurredAt: input.now } : {}),
-    }),
-  });
+      now,
+      occurredAt: now,
+      kernelEvidence,
+    })
+  );
 }
 
-/**
- * Records one durable server-scope orderly shutdown audit row.
- *
- * @param input Shutdown audit event input.
- */
+/** Records ordered shutdown completion in Core Audit under the original boot ID. */
 export async function recordShutdownAuditEvent(
   input: RecordShutdownAuditEventInput
 ): Promise<void> {
-  const createdAt = (input.now ?? new Date()).toISOString();
-
-  await getControlStoreWorkerClient().coreBootAudit(input.coreDb, {
-    bootEventId: `${input.bootId}_shutdown`,
-    bootId: input.bootId,
-    eventType: 'boot.shutdown',
-    outcome: input.deadlineForcedExit ? 'forced_exit' : 'ok',
-    acceptingProductWork: false,
-    phaseOutcomesJson: JSON.stringify(input.stepsCompleted),
-    readinessJson: JSON.stringify({
-      bootId: input.bootId,
-      deadlineForcedExit: input.deadlineForcedExit,
-      shutdownReason: input.reason,
-    }),
-    createdAt,
-    audit: prepareAuditEvent({
+  const now = input.now ?? new Date();
+  await getControlStoreWorkerClient().coreBootAudit(
+    input.coreDb,
+    prepareAuditEvent({
       action: 'boot.shutdown',
       auditEventId: deriveEntityId('aud', [input.bootId, 'shutdown']),
       category: 'system',
@@ -164,7 +192,15 @@ export async function recordShutdownAuditEvent(
       summary: input.deadlineForcedExit
         ? 'NanoCore shutdown deadline forced exit.'
         : 'NanoCore shutdown completed.',
-      ...(input.now ? { now: input.now, occurredAt: input.now } : {}),
-    }),
-  });
+      now,
+      occurredAt: now,
+      kernelEvidence: {
+        kind: 'boot.shutdown',
+        bootId: input.bootId,
+        reason: input.reason,
+        stepsCompleted: input.stepsCompleted,
+        deadlineForcedExit: input.deadlineForcedExit,
+      },
+    })
+  );
 }

@@ -1349,6 +1349,41 @@
                           "validFrom"
                         ],
                         "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "repair.model-call"
+                          },
+                          "scope": {
+                            "type": "string",
+                            "const": "server"
+                          },
+                          "unit": {
+                            "type": "string",
+                            "const": "model-call"
+                          },
+                          "window": {
+                            "type": "string",
+                            "const": "utc-day"
+                          },
+                          "limit": {
+                            "default": 10,
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "scope",
+                          "unit",
+                          "window",
+                          "limit"
+                        ],
+                        "additionalProperties": false
                       }
                     ]
                   }

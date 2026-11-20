@@ -2,9 +2,11 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   AuditAuthenticationSchema,
   type AuditEvent,
-  AuditEventSchema,
   allocateEntityId,
   compareCodeUnits,
+  type KernelAuditEvent,
+  KernelAuditEventSchema,
+  KernelAuditEvidenceSchema,
   type KnowledgeOwnerScope,
   PolicyInvocationV1Schema,
   PolicyWriteOutcomeV1Schema,
@@ -63,6 +65,8 @@ export interface RecordServerAuditEventInput {
   policyInvocation?: AuditEvent['policyInvocation'];
   /** Exact Policy write persistence and activation outcome. */
   policyWriteOutcome?: AuditEvent['policyWriteOutcome'];
+  /** Exact redacted lifecycle facts owned by the Core Audit store. */
+  kernelEvidence?: KernelAuditEvent['kernelEvidence'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -285,41 +289,12 @@ export function listSqliteAuditEvents(
   sqlite: CoreDb['sqlite'],
   workspaceId?: string,
   portableRecurringOnly = false
-): AuditEvent[] {
+): KernelAuditEvent[] {
   if (portableRecurringOnly && workspaceId === undefined)
     throw new Error('Portable recurring Audit requires a Workspace selector.');
   return sqlite
     .prepare(
-      `SELECT
-        audit_event_id,
-        schema_version,
-        workspace_id,
-        protocol_version,
-        thread_id,
-        turn_id,
-        item_id,
-        capability_call_id,
-        permission_decision_id,
-        vault_grant_id,
-        request_id,
-        actor_json,
-        authentication_json,
-        subject_json,
-        agent_id,
-        agent_session_id,
-        category,
-        action,
-        resource,
-        resource_revision,
-        notebook_admission_json,
-        policy_invocation_json,
-        policy_write_outcome_json,
-        outcome,
-        severity,
-        summary,
-        error_code,
-        created_at,
-        occurred_at
+      `SELECT event.*
       FROM audit_events event
       ${workspaceId === undefined ? '' : 'WHERE workspace_id = ?'}
       ${
@@ -379,44 +354,8 @@ export function hasAppUpdateStartHandoff(coreDb: CoreDb, requestId: string): boo
  * @param coreDb Server database that owns the events.
  * @returns Protocol audit events in stable storage order.
  */
-export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
-  return coreDb.sqlite
-    .prepare(
-      `SELECT
-        audit_event_id,
-        schema_version,
-        workspace_id,
-        protocol_version,
-        thread_id,
-        turn_id,
-        item_id,
-        capability_call_id,
-        permission_decision_id,
-        vault_grant_id,
-        request_id,
-        actor_json,
-        authentication_json,
-        subject_json,
-        agent_id,
-        agent_session_id,
-        category,
-        action,
-        resource,
-        resource_revision,
-        notebook_admission_json,
-        policy_invocation_json,
-        policy_write_outcome_json,
-        outcome,
-        severity,
-        summary,
-        error_code,
-        created_at,
-        occurred_at
-      FROM audit_events
-      ORDER BY created_at, audit_event_id`
-    )
-    .all()
-    .map(auditEventFromRow);
+export function listServerAuditEvents(coreDb: CoreDb): KernelAuditEvent[] {
+  return listSqliteAuditEvents(coreDb.sqlite);
 }
 
 /**
@@ -444,13 +383,13 @@ function recordAuditEvent(
  * @returns Audit value for the caller's owning transaction.
  */
 export function prepareAuditEvent(
-  input: Omit<RecordWorkspaceAuditEventInput, 'workspaceDb' | 'workspaceId'> & {
+  input: Omit<RecordServerAuditEventInput, 'coreDb' | 'workspaceId'> & {
     workspaceId: string | null;
   }
-): AuditEvent & { createdAt: string; occurredAt: string } {
+): KernelAuditEvent & { createdAt: string; occurredAt: string } {
   const createdAt = (input.now ?? new Date()).toISOString();
   const occurredAt = (input.occurredAt ?? input.now ?? new Date()).toISOString();
-  const event = AuditEventSchema.parse({
+  const event = KernelAuditEventSchema.parse({
     id: input.auditEventId ?? allocateEntityId('aud'),
     workspaceId: input.workspaceId,
     protocolVersion: input.protocolVersion,
@@ -475,6 +414,7 @@ export function prepareAuditEvent(
     ...(input.policyWriteOutcome === undefined
       ? {}
       : { policyWriteOutcome: input.policyWriteOutcome }),
+    ...(input.kernelEvidence === undefined ? {} : { kernelEvidence: input.kernelEvidence }),
     outcome: input.outcome,
     severity: input.severity ?? 'info',
     summary: input.summary,
@@ -508,10 +448,10 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
  * @returns Trusted insertion for the existing savepoint and covering FULL ACK.
  */
 export function prepareAuditEventStatement(
-  input: AuditEvent
+  input: KernelAuditEvent
 ): Extract<ControlSqlStatement, { mode: 'run' }> {
   assertNoUnsafeAuditValue(input);
-  const event = AuditEventSchema.parse(input);
+  const event = KernelAuditEventSchema.parse(input);
   // Omit unknown optional authentication so snapshot rollback keeps its captured native format.
   const values = {
     audit_event_id: event.id,
@@ -542,6 +482,9 @@ export function prepareAuditEventStatement(
       event.policyWriteOutcome === undefined ? null : JSON.stringify(event.policyWriteOutcome),
     notebook_admission_json:
       event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
+    ...(event.kernelEvidence === undefined
+      ? {}
+      : { kernel_evidence_json: JSON.stringify(event.kernelEvidence) }),
     outcome: event.outcome,
     severity: event.severity,
     summary: event.summary,
@@ -559,8 +502,16 @@ export function prepareAuditEventStatement(
 }
 
 /** Projects the frozen retained Audit core after validating its independent format marker. */
-export function auditEventFromRow(row: unknown): AuditEvent {
+export function auditEventFromRow(row: unknown): KernelAuditEvent {
   return readAuditEventRowV1(row);
+}
+
+/** Projects a native Audit event into the settled App read shape. */
+export function projectPublicAuditEvent({
+  kernelEvidence: _evidence,
+  ...event
+}: KernelAuditEvent): AuditEvent {
+  return event;
 }
 
 /**
@@ -569,14 +520,13 @@ export function auditEventFromRow(row: unknown): AuditEvent {
  * @param value Value to inspect recursively.
  */
 function assertNoUnsafeAuditValue(value: unknown): void {
-  const { policyInvocation, policyWriteOutcome, authentication, ...ordinary } = value as Record<
-    string,
-    unknown
-  >;
+  const { policyInvocation, policyWriteOutcome, authentication, kernelEvidence, ...ordinary } =
+    value as Record<string, unknown>;
   // The closed typed payload admits credential kind, never credential material or arbitrary bodies.
   if (policyInvocation !== undefined) PolicyInvocationV1Schema.parse(policyInvocation);
   if (policyWriteOutcome !== undefined) PolicyWriteOutcomeV1Schema.parse(policyWriteOutcome);
   if (authentication !== undefined) AuditAuthenticationSchema.parse(authentication);
+  if (kernelEvidence !== undefined) KernelAuditEvidenceSchema.parse(kernelEvidence);
   if (findUnsafeAuditKey(ordinary)) {
     throw new Error('Audit event values must be redacted before recording.');
   }

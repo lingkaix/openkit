@@ -5,8 +5,8 @@ import {
 } from '@openkit/config-schema';
 import {
   ActorRefSchema,
-  AuditEventSchema,
   isEntityId,
+  KernelAuditEventSchema,
   PolicyDigestV1Schema,
   PolicyDocumentV1Schema,
   PolicyResourceV1Schema,
@@ -1792,28 +1792,31 @@ const vaultAuditActions = new Set<string>([
   'provider_subscription.reset.weekly',
   'provider_subscription.reset.expiring',
 ]);
-/** One original prepared general Audit, admitted only for existing Vault and subscription producers. */
-export const VaultAuditEventSchema = AuditEventSchema.extend({
+const vaultAdminActions = new Set<string>(VAULT_ADMIN_ACTIONS);
+
+/** One original prepared Audit, admitted only for existing Vault and subscription producers. */
+export const VaultAuditEventSchema = KernelAuditEventSchema.extend({
   createdAt: z.string().datetime(),
   occurredAt: z.string().datetime(),
-}).refine((event) => vaultAuditActions.has(event.action));
-/** One original admin-table row; its general Audit is a distinct stage except in existing outer tuples. */
-export const VaultAdminAuditRecordSchema = z
-  .object({
-    auditEventId: z.string(),
-    actorUserId: z.string().nullable(),
-    actorKind: z.enum(['local', 'session', 'token']).nullable(),
-    action: z.enum(VAULT_ADMIN_ACTIONS),
-    outcome: z.enum(['succeeded', 'failed', 'denied']),
-    severity: z.enum(['info', 'warning', 'error']),
-    summary: z.string(),
-    errorCode: z.string().nullable(),
-    backendKind: z.literal('encrypted-file'),
-    createdAt: z.string(),
-  })
-  .strict();
-/** Complete original admin-row facts without a database capability. */
-export type VaultAdminAuditRecord = z.infer<typeof VaultAdminAuditRecordSchema>;
+}).refine((event) => {
+  if (!vaultAuditActions.has(event.action)) return false;
+  if (event.kernelEvidence === undefined)
+    return (
+      !vaultAdminActions.has(event.action) ||
+      (event.action === 'vault.grant-issue' &&
+        event.outcome === 'failed' &&
+        event.vaultGrantId === null)
+    );
+  return (
+    vaultAdminActions.has(event.action) &&
+    event.kernelEvidence.kind === 'vault.admin' &&
+    event.category === 'system' &&
+    ['succeeded', 'failed', 'denied'].includes(event.outcome) &&
+    (event.actor === null
+      ? event.authentication === undefined
+      : event.actor.kind === 'user' && event.authentication !== undefined)
+  );
+});
 /** Complete original general Audit with prepared clocks and identity. */
 export type VaultAuditEvent = z.infer<typeof VaultAuditEventSchema>;
 
@@ -2160,7 +2163,6 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
       record: z
         .object({
           grant: z.object(grantFields).strict(),
-          admin: VaultAdminAuditRecordSchema,
           audit: VaultAuditEventSchema,
           authority: reviewedGrantAuthority,
         })
@@ -2174,7 +2176,6 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
         .object({
           grant: z.object(narrowingFields).strict(),
           publicMutation: publicMutationAuthority,
-          admin: VaultAdminAuditRecordSchema,
           audit: VaultAuditEventSchema,
         })
         .strict(),
@@ -2193,7 +2194,6 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
 
-  z.object({ kind: z.literal('admin-event-insert'), record: VaultAdminAuditRecordSchema }).strict(),
   z.object({ kind: z.literal('audit-insert'), record: VaultAuditEventSchema }).strict(),
   z
     .object({
@@ -2401,7 +2401,6 @@ export const ControlVaultResultSchema = z.discriminatedUnion('kind', [
         .strict(),
     })
     .strict(),
-  z.object({ kind: z.literal('admin-event-insert'), value: z.null() }).strict(),
   z.object({ kind: z.literal('audit-insert'), value: VaultAuditEventSchema }).strict(),
   z
     .object({
@@ -2449,7 +2448,6 @@ export interface ControlVaultResultMap {
   'reviewed-grant-issue': VaultGrantRecord;
   'workspace-grant-narrow': { revokedGrant: VaultGrantRecord; grant: VaultGrantRecord };
   'server-mcp-grant-narrow': { revokedGrant: VaultGrantRecord; grant: VaultGrantRecord };
-  'admin-event-insert': null;
   'audit-insert': VaultAuditEvent;
   'reference-create': CreateVaultReferenceResult;
   'reference-writer': VaultReferenceRecord;
@@ -2512,7 +2510,6 @@ export interface ControlVaultMainInputMap {
     ControlVaultInput,
     { kind: 'server-mcp-grant-narrow' }
   >['record'];
-  'admin-event-insert': VaultAdminAuditRecord;
   'audit-insert': VaultAuditEvent;
   'reference-create': CreateVaultReferenceInput &
     ServerMcpAuthorityInput &

@@ -3,7 +3,6 @@ export { artifactReviews } from './artifact-reviews.js';
 export type { AuditEventCategory, AuditEventOutcome, AuditEventSeverity } from './audit-events.js';
 export { auditEvents } from './audit-events.js';
 export * from './better-auth/index.js';
-export { bootAuditEvents } from './boot-audit-events.js';
 export type {
   CapabilityCallFamily,
   CapabilityCallLedgerStatus,
@@ -62,11 +61,6 @@ export {
   securityTriggerState,
 } from './security-trigger.js';
 export { serverSettings } from './server-settings.js';
-export type {
-  VaultAdminAuditOutcome,
-  VaultAdminAuditSeverity,
-} from './vault-admin-audit-events.js';
-export { vaultAdminAuditEvents } from './vault-admin-audit-events.js';
 export type {
   VaultGrantLifetime,
   VaultGrantOwnerScope,

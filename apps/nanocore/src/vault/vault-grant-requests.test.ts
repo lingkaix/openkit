@@ -3193,6 +3193,24 @@ describe('reviewed grant issue mediated producer migration', () => {
             expect(issued.status).toBeGreaterThanOrEqual(400);
             expect(listVaultGrants(f.coreDb)).toEqual([]);
             expect(calls.filter((call) => call.binding.mode === 'observe')).toEqual([]);
+            if (outcome === 'deny' && referenceOwner === 'workspace') {
+              expect(issued.status).toBe(409);
+              const failure = listSqliteAuditEvents(f.coreDb.sqlite).filter(
+                (event) =>
+                  event.action === 'vault.grant-issue' &&
+                  event.requestId === request.approvalRequestId
+              );
+              expect(failure).toEqual([
+                expect.objectContaining({
+                  actor: { kind: 'user', id: callerId },
+                  workspaceId: source.workspaceId,
+                  resource: `workspace:${source.workspaceId}`,
+                  outcome: 'failed',
+                  vaultGrantId: null,
+                }),
+              ]);
+              expect(failure[0]?.kernelEvidence).toBeUndefined();
+            }
             if (outcome === 'deny')
               expect(finals[0]).toMatchObject({
                 result: 'deny',

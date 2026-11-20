@@ -2,10 +2,10 @@ import { WorkspacePolicyResourceSchema } from '@openkit/config-schema/workspace-
 import {
   ApprovalRequestIdSchema,
   ApprovalRequestSchema,
-  PolicyDocumentV1Schema,
   RequestIdSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
+  WorkspaceResourcePolicyDocumentV1Schema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
@@ -15,7 +15,7 @@ import { RuntimeConfigReloadResponseSchema } from './runtime-config.js';
 export const WorkspaceResourcePolicyTermsSchema = z
   .object({
     resource: WorkspacePolicyResourceSchema,
-    replacement: PolicyDocumentV1Schema.nullable(),
+    replacement: WorkspaceResourcePolicyDocumentV1Schema.nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {

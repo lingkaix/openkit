@@ -3352,24 +3352,7 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'boot-audit') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const row = request.input;
-            sqlite
-              .prepare(`INSERT INTO boot_audit_events (
-              schema_version, boot_event_id, boot_id, event_type, outcome,
-              accepting_product_work, phase_outcomes_json, readiness_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-              .run(
-                writeRetainedV1({}).schemaVersion,
-                row.bootEventId,
-                row.bootId,
-                row.eventType,
-                row.outcome,
-                row.acceptingProductWork ? 1 : 0,
-                row.phaseOutcomesJson,
-                row.readinessJson,
-                row.createdAt
-              );
-            const audit = prepareAuditEventStatement(row.audit);
+            const audit = prepareAuditEventStatement(request.input);
             sqlite.prepare(audit.sql).run(...audit.parameters);
             outcome = {
               version: CONTROL_WORKER_VERSION,

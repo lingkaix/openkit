@@ -1,4 +1,5 @@
 import { canonicalIdentifierName } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 
 /** Server-side owners with a typed handle for the v0.2.0 cutover. */
@@ -42,11 +43,13 @@ export interface StorageOccurrence<Owner extends string, Verb extends string> {
   readonly occurrenceKey: string;
 }
 
+const storageReceiptVersion = 'openkit:storage-receipt:v1';
+
 /** A8 receipt key. Target, generation and digest are compared separately on replay. */
 export function storageRequestId(occurrence: StorageOccurrence<string, string>): string {
   return uuidv5(
     canonicalIdentifierName([
-      'openkit:storage-receipt:v1',
+      storageReceiptVersion,
       occurrence.deploymentId,
       occurrence.sourceOwner,
       occurrence.verb,
@@ -64,14 +67,35 @@ export interface StorageIntent<Owner extends string, Verb extends string, Target
   readonly inputDigest: string;
 }
 
+type StorageReceiptOutcome<Result> =
+  | { readonly disposition: 'applied'; readonly result: Result }
+  | { readonly disposition: 'refused'; readonly reason: string };
+
 /** The deciding transaction commits the receipt with the transition and its Audit or step. */
 export type StorageReceipt<Intent, Result> = {
   readonly intent: Intent;
   readonly receiptDigest: string;
-} & (
-  | { readonly disposition: 'applied'; readonly result: Result }
-  | { readonly disposition: 'refused'; readonly reason: string }
-);
+} & StorageReceiptOutcome<Result>;
+
+/** Binds an applied or refused result to the complete original, canonical request. */
+export function storageReceipt<
+  Intent extends StorageOccurrence<string, string> & { readonly requestId: string },
+  Outcome extends StorageReceiptOutcome<unknown>,
+>(
+  intent: Intent,
+  outcome: Outcome
+): Outcome & {
+  readonly intent: Intent;
+  readonly receiptDigest: string;
+} {
+  if (intent.requestId !== storageRequestId(intent))
+    throw new TypeError('Storage receipt requires its canonical request identity.');
+  const body = { ...outcome, intent };
+  return {
+    ...body,
+    receiptDigest: `sha256:${sha256Hex(canonicalIdentifierName([storageReceiptVersion, body]))}`,
+  };
+}
 
 /** An identical replay returns the original receipt under current read authority. */
 export type StorageDecision<Receipt> =

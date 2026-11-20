@@ -3,15 +3,21 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { listServerAuditEvents } from '../audit-events.js';
 import { controlStoreFor } from '../storage/control-store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
+  admitRepairCallEntryInDb,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+  CORE_REPAIR_EXECUTION_DEFINITION,
+  commitRepairReservationStep,
+  commitRepairTerminalAuditInDb,
   createExecutionStepJournalReader,
+  inspectRepairReservationStep,
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from './execution-journal.js';
@@ -377,6 +383,292 @@ describe('persisted execution journal contracts', () => {
         (step) => step.ref.stepId === child.stepId
       )
     ).toStrictEqual(unknown);
+  });
+
+  it('deducts one repair slot and atomically settles the original terminal Audit', async () => {
+    const f = journalFixture();
+    const allocation = {
+      kind: 'repair.model-call',
+      scope: 'server',
+      unit: 'model-call',
+      window: 'utc-day',
+      limit: 1,
+    } as const;
+    const prepare = (n: number) => {
+      const draft = f.intent(n);
+      const execution = {
+        ...draft.execution,
+        ref: { ...draft.execution.ref, executionId: `repair-${n}` },
+        definitionVersion: CORE_REPAIR_EXECUTION_DEFINITION,
+      };
+      const entry: ExecutionJournalIntent = {
+        ...draft,
+        execution,
+        control: {
+          ...draft.control,
+          definitionVersion: execution.definitionVersion,
+          kind: 'admit',
+          attemptId: `repair-attempt-${n}`,
+          permittingDecisionRef: testEntityId('pd', `repair-decision-${n}`),
+          authorityRefs: ['role:repair'],
+        },
+        carriage: { ...draft.carriage, operation: 'repair.model-call' },
+      };
+      const choice = {
+        callId: `repair-call-${n}`,
+        routeRef: 'route:repair',
+        allocationRef: 'allocation:server',
+        policyRevision: `sha256:${'b'.repeat(64)}`,
+        inputDigest: 'a'.repeat(64),
+      };
+      const open = (qualified: boolean) =>
+        controlStoreFor(f.db.sqlite).write(() =>
+          admitRepairCallEntryInDb(f.db, entry, choice, () => qualified)
+        );
+      expect(open(false)).toEqual({ state: 'unknown' });
+      const admitted = open(true);
+      if (admitted.state !== 'settled')
+        throw new Error('Fixture did not admit the original repair.');
+      expect(open(false)).toEqual(admitted);
+      const intent = admitted.receipt;
+      const proposal: ExecutionJournalIntent = {
+        ...entry,
+        stepId: `reserve-${n}`,
+        inspectedStep: intent.target.entryStep,
+        control: { ...entry.control, kind: 'reserve', invocationId: intent.requestId },
+        span: {
+          ...openSpan(n + 20),
+          parentSpanId: execution.span.spanId,
+          links: [
+            {
+              traceId: entry.span.traceId,
+              spanId: entry.span.spanId,
+              flags: 0,
+              attributes: [],
+              droppedAttributesCount: 0,
+            },
+          ],
+        },
+      };
+      return { intent, proposal, entry, choice };
+    };
+    const prepared = [prepare(1), prepare(2)] as const;
+    const [{ intent: original, proposal: originalProposal, entry, choice }] = prepared;
+    f.reopen();
+    const admit = (draft = entry, input = choice, qualified = true) =>
+      controlStoreFor(f.db.sqlite).write(() =>
+        admitRepairCallEntryInDb(f.db, draft, input, () => qualified)
+      );
+    expect(admit(entry, choice, false)).toEqual({ state: 'settled', receipt: original });
+    expect(
+      admit({
+        ...entry,
+        execution: {
+          ...entry.execution,
+          ref: { ...entry.execution.ref, executionId: 'substituted-repair' },
+        },
+        stepId: 'substituted-entry',
+        control: {
+          ...entry.control,
+          attemptId: 'substituted-attempt',
+          invocationId: 'substituted-invocation',
+        },
+      })
+    ).toEqual({ state: 'conflict' });
+    const otherActor = { kind: 'user' as const, id: testEntityId('usr', 'different-repair-user') };
+    expect(admit({ ...entry, control: { ...entry.control, actor: otherActor } })).toEqual({
+      state: 'conflict',
+    });
+    expect(admit(entry, { ...choice, routeRef: 'route:replacement' })).toEqual({
+      state: 'conflict',
+    });
+    expect(admit(entry, { ...choice, inputDigest: 'c'.repeat(64) })).toEqual({ state: 'conflict' });
+    expect(
+      f.db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id=?').get('substituted-repair')
+    ).toBeUndefined();
+    expect(
+      controlStoreFor(f.db.sqlite).write(() =>
+        commitRepairReservationStep(f.db, original, originalProposal, () => null, true)
+      )
+    ).toEqual({ state: 'unknown' });
+    expect(
+      controlStoreFor(f.db.sqlite).write(() =>
+        commitRepairReservationStep(
+          f.db,
+          original,
+          originalProposal,
+          () => ({
+            allocationRef: original.target.allocationRef,
+            policyRevision: `sha256:${'c'.repeat(64)}`,
+            allocation,
+          }),
+          true
+        )
+      )
+    ).toEqual({ state: 'unknown' });
+    expect(inspectRepairReservationStep(f.db, original, true)).toEqual({ state: 'absent' });
+    const results = await Promise.all(
+      prepared.map(async ({ intent, proposal }) =>
+        controlStoreFor(f.db.sqlite).write(() =>
+          commitRepairReservationStep(
+            f.db,
+            intent,
+            proposal,
+            (entry) => ({
+              allocationRef: entry.target.allocationRef,
+              policyRevision: entry.expectedGeneration,
+              allocation,
+            }),
+            true
+          )
+        )
+      )
+    );
+    const winner = results[0];
+    expect(winner).toMatchObject({ state: 'reserved-now' });
+    expect(results[1]).toEqual({ state: 'refused', reason: 'budget' });
+
+    f.reopen();
+    expect(inspectRepairReservationStep(f.db, original, true)).toEqual({
+      ...winner,
+      state: 'reserved',
+    });
+    expect(
+      inspectRepairReservationStep(f.db, { ...original, inputDigest: 'changed' }, true)
+    ).toEqual({ state: 'conflict' });
+    expect(inspectRepairReservationStep(f.db, prepared[1]!.intent, false)).toEqual({
+      state: 'refused',
+      reason: 'budget',
+    });
+    const endedBeforeTerminal = await f.reader.readEndedSteps(original.target.entryStep.execution);
+    expect(endedBeforeTerminal.map(({ control }) => control.kind)).toEqual(['admit', 'reserve']);
+    if (winner?.state !== 'reserved-now') throw new Error('Repair fixture did not reserve.');
+    const { reservation } = winner;
+    const reserveSpan = prepared[0]!.proposal.span;
+    const terminal: ExecutionJournalIntent = {
+      ...prepared[0]!.proposal,
+      stepId: 'candidate-terminal',
+      inspectedStep: reservation.result.step,
+      control: { ...prepared[0]!.proposal.control, kind: 'terminal-publication' },
+      span: {
+        ...openSpan(50),
+        parentSpanId: prepared[0]!.proposal.execution.span.spanId,
+        links: [
+          {
+            traceId: reserveSpan.traceId,
+            spanId: reserveSpan.spanId,
+            flags: 0,
+            attributes: [],
+            droppedAttributesCount: 0,
+          },
+        ],
+      },
+    };
+    const outcome = { disposition: 'unknown', inputTokens: 18 } as const;
+    const settle = (draft = terminal) =>
+      f.db.sqlite.transaction(() =>
+        commitRepairTerminalAuditInDb(f.db, reservation, draft, outcome)
+      )();
+    const contradictory = [
+      { ...terminal, control: { ...terminal.control, actor: otherActor } },
+      { ...terminal, control: { ...terminal.control, attemptId: 'substituted-attempt' } },
+      {
+        ...terminal,
+        control: {
+          ...terminal.control,
+          permittingDecisionRef: testEntityId('pd', 'different-repair-decision'),
+        },
+      },
+      { ...terminal, execution: prepared[1]!.proposal.execution },
+      { ...terminal, inspectedStep: original.target.entryStep },
+    ];
+    for (const draft of contradictory) expect(settle(draft)).toEqual({ state: 'conflict' });
+    f.db.sqlite.exec(`CREATE TRIGGER fixture_refuse_terminal BEFORE INSERT ON control_execution_steps
+      WHEN NEW.step_id LIKE 'repair-terminal:%' BEGIN SELECT RAISE(ABORT, 'fixture refuse terminal'); END`);
+    expect(settle).toThrow('fixture refuse terminal');
+    expect(listServerAuditEvents(f.db)).toEqual([]);
+    expect(inspectRepairReservationStep(f.db, original, false).state).toBe('reserved');
+    f.db.sqlite.exec('DROP TRIGGER fixture_refuse_terminal');
+
+    const recorded = settle();
+    expect(recorded.state).toBe('settled');
+    expect(settle()).toEqual(recorded);
+    const divergent = f.db.sqlite.transaction(() =>
+      commitRepairTerminalAuditInDb(f.db, reservation, terminal, {
+        disposition: 'succeeded',
+        inputTokens: 18,
+      })
+    )();
+    expect(divergent).toEqual({ state: 'conflict' });
+    f.reopen();
+    if (recorded.state !== 'settled') throw new Error('Fixture did not persist terminal Audit.');
+    expect(settle()).toEqual(recorded);
+    for (const draft of contradictory) expect(settle(draft)).toEqual({ state: 'conflict' });
+    expect(inspectRepairReservationStep(f.db, original, false)).toEqual({
+      state: 'terminal',
+      auditEventId: recorded.receipt,
+    });
+    expect(listServerAuditEvents(f.db)).toEqual([
+      expect.objectContaining({
+        id: recorded.receipt,
+        action: 'repair.model-call',
+        outcome: 'unknown',
+        resource: `repair-call:${original.target.callId}`,
+        permissionDecisionId: terminal.control.permittingDecisionRef,
+      }),
+    ]);
+    const terminalStep = await f.reader.readInvocation({
+      execution: original.target.entryStep.execution,
+      stepId: `repair-terminal:${original.requestId}`,
+    });
+    expect(terminalStep.carriage.repairTerminal).toEqual({ version: 1, outcome });
+    expect(terminalStep.control.outputRefs).toContain(recorded.receipt);
+
+    const originalReserve = await f.reader.readInvocation(reservation.result.step);
+    const midnight = new Date(Number(originalReserve.clock.admittedUnixNano / 1_000_000n));
+    midnight.setUTCHours(24, 0, 0, 0);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(midnight);
+      const reserve = ({ intent, proposal }: ReturnType<typeof prepare>) =>
+        controlStoreFor(f.db.sqlite).write(() =>
+          commitRepairReservationStep(
+            f.db,
+            intent,
+            proposal,
+            (originalEntry) => ({
+              allocationRef: originalEntry.target.allocationRef,
+              policyRevision: originalEntry.expectedGeneration,
+              allocation,
+            }),
+            true
+          )
+        );
+      const nextDay = reserve(prepare(3));
+      if (nextDay.state !== 'reserved-now') throw new Error('The UTC allowance did not roll over.');
+      const { execution, stepId } = nextDay.reservation.result.step;
+      const trigger = f.db.sqlite
+        .prepare("SELECT sql FROM sqlite_schema WHERE name='control_execution_steps_settle_once'")
+        .pluck()
+        .get();
+      if (typeof trigger !== 'string') throw new Error('Fixture needs the immutable step trigger.');
+      f.db.sqlite.transaction(() => {
+        f.db.sqlite.exec('DROP TRIGGER control_execution_steps_settle_once');
+        f.db.sqlite
+          .prepare(`UPDATE control_execution_steps
+            SET invocation_json=json_set(invocation_json, '$.clock.admittedUnixNano', 'unreadable')
+            WHERE execution_id=? AND step_id=?`)
+          .run(execution.executionId, stepId);
+        f.db.sqlite.exec(trigger);
+      })();
+      f.reopen();
+      expect(f.db.sqlite.pragma('integrity_check', { simple: true })).toBe('ok');
+      const blocked = prepare(4);
+      expect(reserve(blocked)).toEqual({ state: 'unknown' });
+      expect(inspectRepairReservationStep(f.db, blocked.intent, true)).toEqual({ state: 'absent' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reads original intent after a fresh process opens Core without granting a restarted allowance', () => {

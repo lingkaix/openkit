@@ -72,18 +72,7 @@ CREATE TABLE `audit_events` (
 	`created_at` text NOT NULL,
 	`occurred_at` text NOT NULL
 , `permission_decision_id` text, `vault_grant_id` text, `actor_json` text, `subject_json` text, `resource_revision` integer
-CHECK (`resource_revision` IS NULL OR (typeof(`resource_revision`) = 'integer' AND `resource_revision` > 0)), `notebook_admission_json` text, `schema_version` integer NOT NULL, `policy_invocation_json` text, `policy_write_outcome_json` text, `authentication_json` text);
---> statement-breakpoint
-CREATE TABLE `boot_audit_events` (
-	`boot_event_id` text PRIMARY KEY NOT NULL,
-	`boot_id` text NOT NULL,
-	`event_type` text NOT NULL,
-	`outcome` text NOT NULL,
-	`accepting_product_work` integer NOT NULL,
-	`phase_outcomes_json` text NOT NULL,
-	`readiness_json` text NOT NULL,
-	`created_at` text NOT NULL
-, `schema_version` integer DEFAULT 1 NOT NULL);
+CHECK (`resource_revision` IS NULL OR (typeof(`resource_revision`) = 'integer' AND `resource_revision` > 0)), `notebook_admission_json` text, `schema_version` integer NOT NULL, `policy_invocation_json` text, `policy_write_outcome_json` text, `authentication_json` text, `kernel_evidence_json` text);
 --> statement-breakpoint
 CREATE TABLE `capability_calls` (
 	`call_id` text PRIMARY KEY NOT NULL,
@@ -636,19 +625,6 @@ CHECK (`status` IN ('active', 'disabled')), `disabled_at` text, `personal_worksp
   UNIQUE(`email`)
 );
 --> statement-breakpoint
-CREATE TABLE `vault_admin_audit_events` (
-	`audit_event_id` text PRIMARY KEY NOT NULL,
-	`actor_user_id` text,
-	`actor_kind` text,
-	`action` text NOT NULL,
-	`outcome` text NOT NULL,
-	`severity` text NOT NULL,
-	`summary` text NOT NULL,
-	`error_code` text,
-	`backend_kind` text NOT NULL,
-	`created_at` text NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE `vault_grants` (
 	`grant_id` text PRIMARY KEY NOT NULL,
 	`issuance` text NOT NULL CONSTRAINT `vault_grants_issuance_check` CHECK (`issuance` IN ('target', 'imported-history')),
@@ -970,8 +946,6 @@ CREATE INDEX `audit_events_vault_grant_idx` ON `audit_events` (`vault_grant_id`)
 --> statement-breakpoint
 CREATE INDEX `audit_events_workspace_idx` ON `audit_events` (`workspace_id`,`category`,`created_at`);
 --> statement-breakpoint
-CREATE INDEX `boot_audit_events_boot_idx` ON `boot_audit_events` (`boot_id`,`created_at`);
---> statement-breakpoint
 CREATE UNIQUE INDEX `capability_calls_idempotency_idx` ON `capability_calls` (`request_id`,`family`,`operation`);
 --> statement-breakpoint
 CREATE INDEX `capability_calls_thread_idx` ON `capability_calls` (`thread_id`,`turn_id`,`started_at`);
@@ -1148,10 +1122,6 @@ CREATE INDEX `usage_records_capability_call_idx` ON `usage_records` (`capability
 CREATE INDEX `usage_records_thread_idx` ON `usage_records` (`thread_id`,`turn_id`,`recorded_at`);
 --> statement-breakpoint
 CREATE UNIQUE INDEX `users_personal_workspace_id_unique` ON `users` (`personal_workspace_id`);
---> statement-breakpoint
-CREATE INDEX `vault_admin_audit_events_action_idx` ON `vault_admin_audit_events` (`action`,`outcome`,`created_at`);
---> statement-breakpoint
-CREATE INDEX `vault_admin_audit_events_actor_idx` ON `vault_admin_audit_events` (`actor_user_id`,`created_at`);
 --> statement-breakpoint
 CREATE INDEX `vault_grants_lifetime_idx` ON `vault_grants` (`lifetime`,`status`);
 --> statement-breakpoint

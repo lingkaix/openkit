@@ -12,7 +12,11 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { listServerAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
+import {
+  listServerAuditEvents,
+  listWorkspaceAuditEvents,
+  projectPublicAuditEvent,
+} from './audit-events.js';
 import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import {
@@ -183,7 +187,7 @@ export function createGovernanceOperationImplementations(
           const last = auditEvents.at(-1);
           return {
             workspaceId,
-            auditEvents,
+            auditEvents: auditEvents.map(projectPublicAuditEvent),
             nextCursor:
               last && auditEvents.length < remaining.length
                 ? Buffer.from(
@@ -223,7 +227,7 @@ export function createGovernanceOperationImplementations(
         const auditEvents = input.limit === undefined ? remaining : remaining.slice(0, input.limit);
         const last = auditEvents.at(-1);
         return {
-          auditEvents,
+          auditEvents: auditEvents.map(projectPublicAuditEvent),
           nextCursor:
             last && auditEvents.length < remaining.length
               ? Buffer.from(

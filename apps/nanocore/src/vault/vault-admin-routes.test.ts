@@ -257,7 +257,7 @@ describe('vault admin app API', () => {
       expect(
         coreDb.sqlite
           .prepare(
-            "SELECT COUNT(*) AS count FROM vault_admin_audit_events WHERE action = 'vault.workspace_narrow-grant'"
+            "SELECT COUNT(*) AS count FROM audit_events WHERE action = 'vault.workspace_narrow-grant'"
           )
           .get()
       ).toEqual({ count: 1 });
@@ -421,7 +421,9 @@ describe('vault admin app API', () => {
         ).status
       ).toBe(409);
       const audit = JSON.stringify(
-        coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all()
+        coreDb.sqlite
+          .prepare('SELECT * FROM audit_events WHERE kernel_evidence_json IS NOT NULL')
+          .all()
       );
       expect(audit).not.toContain(secret);
       expect(audit).not.toContain('replacement-canary');
@@ -1727,7 +1729,9 @@ describe('vault admin app API', () => {
  */
 function latestVaultAdminAuditEvent(coreDb: CoreDb): Record<string, unknown> {
   return coreDb.sqlite
-    .prepare('SELECT * FROM vault_admin_audit_events ORDER BY rowid DESC LIMIT 1')
+    .prepare(
+      'SELECT * FROM audit_events WHERE kernel_evidence_json IS NOT NULL ORDER BY rowid DESC LIMIT 1'
+    )
     .get() as Record<string, unknown>;
 }
 
@@ -1823,7 +1827,6 @@ describe('human acquisition trusted refresh refusal', () => {
         expect(backend.listReferences()).toEqual(beforeInventory);
         const evidence = JSON.stringify([
           body,
-          coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all(),
           coreDb.sqlite.prepare('SELECT * FROM audit_events').all(),
         ]);
         for (const raw of [

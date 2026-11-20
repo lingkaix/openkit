@@ -72,6 +72,47 @@ const proposal = {
 };
 
 describe('native Policy statement owner', () => {
+  it('admits one exact Server repair grant with an adjustable UTC-day Call limit', () => {
+    const server = { owner: { kind: 'server' }, kind: 'server', id: 'server' };
+    const grant = {
+      id: 'repair-allocation',
+      kind: 'permission',
+      state: 'active',
+      effect: 'allow',
+      author: principal,
+      authority: { kind: 'human', userId },
+      authoredAt: binding.authoredAt,
+      scope: {
+        subjects: [principal],
+        actions: ['repair.model-call'],
+        resources: [{ kind: 'container', container: server }],
+      },
+      lifetime: { anchor: server },
+      grant: { kind: 'repair.model-call', scope: 'server', unit: 'model-call', window: 'utc-day' },
+    };
+    expect(
+      validatePolicyDocument({ schemaVersion: 1, statements: [grant] }).statements[0]
+    ).toMatchObject({ grant: { limit: 10 } });
+    const adjusted = { ...grant, grant: { ...grant.grant, limit: 1 } };
+    expect(
+      validatePolicyDocument({ schemaVersion: 1, statements: [adjusted] }).statements[0]
+    ).toMatchObject({ grant: { limit: 1 } });
+    expect(() =>
+      validatePolicyDocument({
+        schemaVersion: 1,
+        statements: [grant, { ...adjusted, id: 'parallel-allocation' }],
+      })
+    ).toThrow('Only one Server repair allocation can be active.');
+    expect(() =>
+      validatePolicyDocument({
+        schemaVersion: 1,
+        statements: [
+          { ...grant, scope: { ...grant.scope, actions: ['repair.model-call', 'tool.use'] } },
+        ],
+      })
+    ).toThrow('Repair allocation requires its exact human-authored Server Policy scope.');
+  });
+
   it('recognizes an author reducing or withdrawing passive observation disclosure', () => {
     const secondPrincipal = {
       kind: 'human' as const,

@@ -3,7 +3,6 @@ import {
   ApplyKnowledgeSchemaRequestSchema,
   type ApplyKnowledgeSchemaResponse,
   ApplyKnowledgeSchemaResponseSchema,
-  BootReadinessSnapshotSchema,
   GoalViewSchema,
   PreviewKnowledgeSchemaResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -12,11 +11,13 @@ import {
   AuditEventSchema,
   deriveEntityId,
   ItemSchema,
+  KernelAuditEvidenceSchema,
   KnowledgeBaseIdSchema,
   PolicyDigestV1Schema,
   PolicyDocumentV1Schema,
   RequestIdSchema,
   SseEventEnvelopeSchema,
+  TimestampSchema,
   UserActorRefSchema,
   UserIdSchema,
   WorkspaceIdSchema,
@@ -575,37 +576,29 @@ export function readControlSchemaApplicationInput(
   return input;
 }
 
-/** The original boot row and Server Audit, committed on the existing Core native lifetime. */
-export const ControlBootAuditInputSchema = z
-  .object({
-    bootEventId: z.string().min(1),
-    bootId: z.string().min(1),
-    eventType: z.enum(['boot.start', 'boot.outcome', 'boot.shutdown']),
-    outcome: z.union([
-      BootReadinessSnapshotSchema.shape.overall,
-      z.enum(['started', 'ok', 'forced_exit']),
-    ]),
-    acceptingProductWork: z.boolean(),
-    phaseOutcomesJson: z.string(),
-    readinessJson: z.string(),
-    createdAt: z.iso.datetime(),
-    audit: AuditEventSchema,
-  })
-  .strict()
-  .refine((input) => {
-    const phase = input.eventType.slice('boot.'.length);
-    return (
-      input.bootEventId === `${input.bootId}_${phase}` &&
-      input.audit.id === deriveEntityId('aud', [input.bootId, phase]) &&
-      input.audit.action === input.eventType &&
-      input.audit.category === 'system' &&
-      input.audit.workspaceId === null &&
-      input.audit.resource === `server:boot:${input.bootId}`
-    );
-  });
+/** The original prepared boot event under its exact Core Audit identity. */
+export const ControlBootAuditInputSchema = AuditEventSchema.extend({
+  category: z.literal('system'),
+  workspaceId: z.null(),
+  turnId: z.null(),
+  createdAt: TimestampSchema,
+  occurredAt: TimestampSchema,
+  kernelEvidence: KernelAuditEvidenceSchema,
+}).refine((event) => {
+  const evidence = event.kernelEvidence;
+  return (
+    'bootId' in evidence &&
+    event.action === evidence.kind &&
+    event.resource === `server:boot:${evidence.bootId}` &&
+    event.id === deriveEntityId('aud', [evidence.bootId, evidence.kind.slice('boot.'.length)])
+  );
+});
 
 /** Validated lifecycle facts; this wire carries neither SQL nor a new durable record. */
-export type ControlBootAuditInput = z.infer<typeof ControlBootAuditInputSchema>;
+export type ControlBootAuditInput = z.infer<typeof AuditEventSchema> & {
+  readonly createdAt: string;
+  readonly occurredAt: string;
+};
 
 /** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
 export const ControlPhysicalForecastSchema = z

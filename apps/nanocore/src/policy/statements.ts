@@ -224,6 +224,7 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
   const positions = new Set<string>();
   const exposureGroups = new Set<string>();
   const contextPresets = new Set<string>();
+  let activeRepairAllocation = false;
   for (const statement of document.statements) {
     const scopes =
       statement.kind === 'binding'
@@ -234,6 +235,35 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       (statement.kind !== 'permission' || statement.effect !== 'prohibit')
     )
       throw new Error('Process selectors are only available for prohibitions.');
+    if (statement.kind === 'permission' && statement.grant.kind === 'repair.model-call') {
+      const anchor = statement.lifetime.anchor;
+      const resource = statement.scope.resources[0];
+      if (
+        statement.effect !== 'allow' ||
+        statement.author.kind !== 'human' ||
+        statement.authority.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId ||
+        statement.scope.subjects.some((subject) => subject.kind !== 'human') ||
+        statement.scope.actions.length !== 1 ||
+        statement.scope.actions[0] !== 'repair.model-call' ||
+        statement.scope.resources.length !== 1 ||
+        resource?.kind !== 'container' ||
+        resource.container.owner.kind !== 'server' ||
+        resource.container.kind !== 'server' ||
+        resource.container.id !== 'server' ||
+        anchor.owner.kind !== 'server' ||
+        anchor.kind !== 'server' ||
+        anchor.id !== 'server' ||
+        statement.lifetime.uses !== undefined
+      )
+        throw new Error('Repair allocation requires its exact human-authored Server Policy scope.');
+      if (statement.state === 'active') {
+        if (activeRepairAllocation)
+          throw new Error('Only one Server repair allocation can be active.');
+        activeRepairAllocation = true;
+      }
+      continue;
+    }
     const quarantine = statement.lifetime.anchor.kind === 'quarantine';
     if (
       quarantine &&

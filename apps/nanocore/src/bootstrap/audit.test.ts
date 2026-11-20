@@ -29,7 +29,11 @@ describe('boot audit recorder', () => {
         layoutVersion: 1,
         lockAcquisition: {
           lockPath: '/tmp/openkit/server/runtime/nanocore.lock',
-          staleHolder: { bootId: 'boot_dead', pid: 999_999_999 },
+          staleHolder: {
+            bootId: 'boot_dead',
+            pid: 999_999_999,
+            discarded: 'synthetic-stale-metadata',
+          },
           status: 'stale_broken',
         },
         migrationIds: ['core_0000_baseline'],
@@ -52,55 +56,23 @@ describe('boot audit recorder', () => {
         now: new Date('2026-07-05T00:00:00.000Z'),
       });
 
-      const row = coreDb.sqlite
-        .prepare('SELECT * FROM boot_audit_events WHERE boot_event_id = ?')
-        .get('boot_start_test_start') as {
-        accepting_product_work: number;
-        boot_id: string;
-        created_at: string;
-        event_type: string;
-        outcome: string;
-        phase_outcomes_json: string;
-        readiness_json: string;
-      };
-
-      expect(row).toMatchObject({
-        schema_version: 1,
-        accepting_product_work: 0,
-        boot_id: 'boot_start_test',
-        created_at: '2026-07-05T00:00:00.000Z',
-        event_type: 'boot.start',
-        outcome: 'started',
-      });
-      expect(JSON.parse(row.phase_outcomes_json)).toEqual([]);
-      expect(JSON.parse(row.readiness_json)).toEqual({
-        bootId: 'boot_start_test',
-        layoutVersion: 1,
-        lockAcquisition: {
-          lockPath: '/tmp/openkit/server/runtime/nanocore.lock',
-          staleHolder: { bootId: 'boot_dead', pid: 999_999_999 },
-          status: 'stale_broken',
-        },
-        migrationIds: ['core_0000_baseline'],
-        indexRebuildEvents: [
-          {
-            indexPath: 'workspaces/ws_00000000-0000-7000-8000-000000000001/indexes/search.json',
-            itemCount: 2,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-        ],
-        storageRecoveryEvents: [
-          {
-            contentDigest: 'abc123',
-            originalPath: '/tmp/openkit/server/db/core.sqlite',
-            quarantinePath: '/tmp/openkit/server/quarantine/1-core.sqlite',
-            reason: 'database_integrity_check_failed',
-            scope: 'server',
-          },
-        ],
-      });
       expect(listServerAuditEvents(coreDb)).toEqual([
         expect.objectContaining({
+          createdAt: '2026-07-05T00:00:00.000Z',
+          kernelEvidence: {
+            kind: 'boot.start',
+            bootId: 'boot_start_test',
+            layoutVersion: 1,
+            lock: {
+              staleHolder: { bootId: 'boot_dead', pid: 999_999_999 },
+              status: 'stale_broken',
+            },
+            migrationIds: ['core_0000_baseline'],
+            indexRebuilds: [
+              { itemCount: 2, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+            ],
+            storageRecovery: [{ reason: 'database_integrity_check_failed', scope: 'server' }],
+          },
           action: 'boot.start',
           category: 'system',
           id: 'aud_d4426a3f-e83e-5c97-9471-b87b74bd0e72',
@@ -155,35 +127,37 @@ describe('boot audit recorder', () => {
         now: new Date('2026-07-05T00:00:00.000Z'),
       });
 
-      const row = coreDb.sqlite
-        .prepare('SELECT * FROM boot_audit_events WHERE boot_id = ?')
-        .get('boot_audit_test') as {
-        accepting_product_work: number;
-        boot_event_id: string;
-        created_at: string;
-        event_type: string;
-        outcome: string;
-        phase_outcomes_json: string;
-        readiness_json: string;
-      };
-
-      expect(row).toMatchObject({
-        accepting_product_work: 1,
-        boot_event_id: 'boot_audit_test_outcome',
-        created_at: '2026-07-05T00:00:00.000Z',
-        event_type: 'boot.outcome',
-        outcome: 'degraded',
-      });
-      expect(JSON.parse(row.phase_outcomes_json)).toMatchObject([
-        { name: 'policy-kernel', outcome: { status: 'ok' } },
-        { name: 'vault', outcome: { status: 'degraded' } },
-      ]);
-      expect(JSON.parse(row.readiness_json)).toMatchObject({
-        bootId: 'boot_audit_test',
-        overall: 'degraded',
-      });
       expect(listServerAuditEvents(coreDb)).toEqual([
         expect.objectContaining({
+          createdAt: '2026-07-05T00:00:00.000Z',
+          kernelEvidence: expect.objectContaining({
+            kind: 'boot.outcome',
+            bootId: 'boot_audit_test',
+            overall: 'degraded',
+            acceptingProductWork: true,
+            subsystems: expect.objectContaining({
+              vault: {
+                state: 'degraded',
+                reasons: [{ code: 'vault.locked', blocks: ['vault.use'] }],
+              },
+            }),
+            phases: [
+              {
+                name: 'policy-kernel',
+                critical: true,
+                subsystem: 'policy',
+                status: 'ok',
+                reasons: [],
+              },
+              {
+                name: 'vault',
+                critical: false,
+                subsystem: 'vault',
+                status: 'degraded',
+                reasons: [{ code: 'vault.locked', blocks: ['vault.use'] }],
+              },
+            ],
+          }),
           action: 'boot.outcome',
           category: 'system',
           errorCode: 'boot_degraded',
@@ -217,36 +191,16 @@ describe('boot audit recorder', () => {
         now: new Date('2026-07-05T00:00:01.000Z'),
       });
 
-      const row = coreDb.sqlite
-        .prepare('SELECT * FROM boot_audit_events WHERE boot_event_id = ?')
-        .get('boot_shutdown_test_shutdown') as {
-        accepting_product_work: number;
-        boot_id: string;
-        created_at: string;
-        event_type: string;
-        outcome: string;
-        phase_outcomes_json: string;
-        readiness_json: string;
-      };
-
-      expect(row).toMatchObject({
-        accepting_product_work: 0,
-        boot_id: 'boot_shutdown_test',
-        created_at: '2026-07-05T00:00:01.000Z',
-        event_type: 'boot.shutdown',
-        outcome: 'ok',
-      });
-      expect(JSON.parse(row.phase_outcomes_json)).toEqual([
-        'http-server.close',
-        'data-root-lock.release',
-      ]);
-      expect(JSON.parse(row.readiness_json)).toEqual({
-        bootId: 'boot_shutdown_test',
-        deadlineForcedExit: false,
-        shutdownReason: 'SIGTERM',
-      });
       expect(listServerAuditEvents(coreDb)).toEqual([
         expect.objectContaining({
+          createdAt: '2026-07-05T00:00:01.000Z',
+          kernelEvidence: {
+            kind: 'boot.shutdown',
+            bootId: 'boot_shutdown_test',
+            deadlineForcedExit: false,
+            reason: 'SIGTERM',
+            stepsCompleted: ['http-server.close', 'data-root-lock.release'],
+          },
           action: 'boot.shutdown',
           category: 'system',
           id: 'aud_4c53f7f6-e79d-580a-b6f0-fb1cf968b333',

@@ -32,6 +32,92 @@ export const AuditAuthenticationSchema = z
   })
   .strict();
 
+const BootAuditReasonSchema = z
+  .object({ code: z.string().min(1), blocks: z.array(z.string().min(1)) })
+  .strict();
+const BootAuditReadinessSchema = z.enum(['ready', 'degraded', 'failed']);
+const BootAuditSubsystemSchema = z.enum([
+  'config',
+  'storage',
+  'policy',
+  'vault',
+  'scheduler',
+  'llmGateway',
+  'knowledgeIndex',
+]);
+const BootAuditSubsystemStateSchema = z
+  .object({ state: BootAuditReadinessSchema, reasons: z.array(BootAuditReasonSchema) })
+  .strict();
+
+/** Required redacted evidence for the existing Core Audit family. */
+export const KernelAuditEvidenceSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('boot.start'),
+      bootId: z.string().min(1),
+      layoutVersion: z.number().int().positive().nullable(),
+      migrationIds: z.array(z.string().min(1)),
+      lock: z
+        .object({
+          status: z.enum(['acquired', 'stale_broken']),
+          staleHolder: z
+            .object({
+              bootId: z.string().min(1),
+              pid: z.number().int().positive(),
+              hostname: z.string().min(1).optional(),
+            })
+            .strict()
+            .nullable(),
+        })
+        .strict()
+        .nullable(),
+      indexRebuilds: z.array(
+        z
+          .object({ workspaceId: WorkspaceIdSchema, itemCount: z.number().int().nonnegative() })
+          .strict()
+      ),
+      storageRecovery: z.array(
+        z
+          .object({
+            scope: z.enum(['server', 'workspace', 'user', 'app']),
+            reason: z.string().min(1),
+          })
+          .strict()
+      ),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('boot.outcome'),
+      bootId: z.string().min(1),
+      acceptingProductWork: z.boolean(),
+      overall: BootAuditReadinessSchema,
+      subsystems: z.record(BootAuditSubsystemSchema, BootAuditSubsystemStateSchema),
+      phases: z.array(
+        z
+          .object({
+            name: z.string().min(1),
+            subsystem: BootAuditSubsystemSchema,
+            critical: z.boolean(),
+            status: z.enum(['ok', 'degraded', 'failed']),
+            reasons: z.array(BootAuditReasonSchema),
+          })
+          .strict()
+      ),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('boot.shutdown'),
+      bootId: z.string().min(1),
+      reason: z.string().min(1),
+      stepsCompleted: z.array(z.string().min(1)),
+      deadlineForcedExit: z.boolean(),
+    })
+    .strict(),
+  z.object({ kind: z.literal('vault.admin'), backendKind: z.literal('encrypted-file') }).strict(),
+]);
+
 /**
  * Product-visible audit event without secret or adapter-native payloads.
  */
@@ -74,3 +160,10 @@ export const AuditEventSchema = z
  * Product-visible audit event without secret or adapter-native payloads.
  */
 export type AuditEvent = z.infer<typeof AuditEventSchema>;
+
+/** Native Audit carriage for required kernel lifecycle facts, independent of the App read contract. */
+export const KernelAuditEventSchema = AuditEventSchema.extend({
+  kernelEvidence: KernelAuditEvidenceSchema.optional(),
+});
+
+export type KernelAuditEvent = z.infer<typeof KernelAuditEventSchema>;

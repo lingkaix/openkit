@@ -1,4 +1,5 @@
 import type { ActorRef, WorkOwner } from '@openkit/protocol';
+import type { RepairCallOutcome } from '../storage/control-kernel-port.js';
 
 /** Owner-qualified existing execution identity; this reference grants no authority. */
 export interface ExecutionJournalRef {
@@ -81,6 +82,10 @@ export interface ExecutionInvocationCarriage {
   readonly requestId: string;
   readonly sequence: number | null;
   readonly bindingRef: string | null;
+  /** Bounded terminal usage joined to the original repair Call and Audit by the kernel step. */
+  readonly repairTerminal?:
+    | { readonly version: 1; readonly outcome: RepairCallOutcome }
+    | undefined;
 }
 
 /** Original local clock anchor; a missing process witness after restart cannot authorize a fresh allowance. */

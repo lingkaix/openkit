@@ -1,9 +1,36 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
-import { ActorRefSchema, type WorkOwner, WorkOwnerSchema } from '@openkit/protocol';
+import {
+  ActorRefSchema,
+  canonicalIdentifierName,
+  deriveEntityId,
+  PermissionDecisionIdSchema,
+  PolicyDigestV1Schema,
+  type PolicyGrantV1Schema,
+  type WorkOwner,
+  WorkOwnerSchema,
+} from '@openkit/protocol';
+import { sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
 import { z } from 'zod';
+import {
+  auditEventFromRow,
+  prepareAuditEvent,
+  prepareAuditEventStatement,
+} from '../audit-events.js';
+import type {
+  RepairCallInspection,
+  RepairCallIntent,
+  RepairCallOutcome,
+  RepairCallReservation,
+} from '../storage/control-kernel-port.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import {
+  type StorageDecision,
+  storageReceipt,
+  storageRequestId,
+} from '../storage/storage-owner.js';
 import type {
   EndedExecutionStep,
   ExecutionInvocation,
@@ -35,6 +62,9 @@ export const CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION = 'core-workspace-reco
 
 /** Exact suspect-only Core consumer; this definition never grants an effect by itself. */
 export const CORE_CONTAINMENT_EXECUTION_DEFINITION = 'containment';
+
+/** Kernel-only governed model-call lineage and single-Call accounting. */
+export const CORE_REPAIR_EXECUTION_DEFINITION = 'core-repair/v1';
 
 /** Observed Core identity/revision; selection must reread its owning rows before advancement. */
 export interface ExecutionCandidate {
@@ -298,6 +328,7 @@ const definition = z.enum([
   CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
   CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
+  CORE_REPAIR_EXECUTION_DEFINITION,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 ]);
 const controlSchema = z.object({
@@ -341,6 +372,20 @@ const controlSchema = z.object({
   deadlineUnixNano: nano.nullable(),
   physicalFenceRefs: z.array(text),
 });
+const repairOutcomeSchema = z
+  .strictObject({
+    disposition: z.enum(['succeeded', 'failed', 'unknown']),
+    inputTokens: count.optional(),
+    outputTokens: count.optional(),
+  })
+  .transform(
+    ({ disposition, inputTokens, outputTokens }): RepairCallOutcome => ({
+      disposition,
+      ...(inputTokens === undefined ? {} : { inputTokens }),
+      ...(outputTokens === undefined ? {} : { outputTokens }),
+    })
+  );
+
 const invocationSchema = z.object({
   parent: z.object({ ref: stepRefSchema, deadlineUnixNano: nano.nullable() }).nullable(),
   carriage: z.object({
@@ -348,6 +393,9 @@ const invocationSchema = z.object({
     requestId: text,
     sequence: count.nullable(),
     bindingRef: text.nullable(),
+    repairTerminal: z
+      .strictObject({ version: z.literal(1), outcome: repairOutcomeSchema })
+      .optional(),
   }),
   clock: z.object({ processWitness: text, admittedUnixNano: nano, admittedMonotonicNano: nano }),
 });
@@ -578,7 +626,8 @@ function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
         value === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
         value === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION ||
         value === CORE_CONTAINMENT_EXECUTION_DEFINITION ||
-        value === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION
+        value === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION ||
+        value === CORE_REPAIR_EXECUTION_DEFINITION
       : value === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION;
   if (!admitted) throw new Error('Execution definition conflicts with its physical owner.');
 }
@@ -650,6 +699,7 @@ function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
     throw new Error('Workspace execution step has no admitted producer.');
   }
   const invocation = decode(invocationSchema, row.invocation_json);
+  requireRepairExecutionCarriage(root.definitionVersion, control, invocation.carriage);
   const span = decode(spanSchema, row.span_json);
   if (
     control.invocationId !== row.invocation_id ||
@@ -787,6 +837,8 @@ export function createExecutionStepJournalReader(
   };
 }
 
+const verifiedKernelStep = Symbol('verified-kernel-step');
+
 /**
  * Persists one immutable intent before any queue or external wait in the caller's owning transaction.
  * @param db Existing owning Core or Workspace connection inside its write transaction.
@@ -797,13 +849,21 @@ export function createExecutionStepJournalReader(
 export function writeExecutionJournalIntent(
   db: CoreDb | WorkspaceDb,
   input: ExecutionJournalIntent,
-  producerProcessWitness?: string
+  producerProcessWitness?: string,
+  authority?: typeof verifiedKernelStep
 ): ExecutionInvocation {
   requireWriter(db, input.execution.ref);
   const admission = input.execution;
   const control = controlSchema.parse(input.control);
   requireContainmentControl(control);
   const span = spanSchema.parse(input.span);
+  if (
+    (admission.definitionVersion === CORE_REPAIR_EXECUTION_DEFINITION ||
+      input.carriage.repairTerminal) &&
+    authority !== verifiedKernelStep
+  )
+    throw new Error('A kernel proof step requires its verifying native writer.');
+  requireRepairExecutionCarriage(admission.definitionVersion, control, input.carriage);
   const rootSpan = spanSchema.parse(admission.span);
   definition.parse(admission.definitionVersion);
   requireDefinition(db, admission.definitionVersion);
@@ -1103,4 +1163,463 @@ export function settleExecutionJournalStep(
     );
   if (advanced.changes !== 1) throw new Error('Execution revision conflicts.');
   return endedStep(db, input.ref);
+}
+
+function requireRepairExecutionCarriage(
+  definitionVersion: string,
+  control: ExecutionStepControl,
+  carriage: ExecutionJournalIntent['carriage']
+): void {
+  if (
+    (definitionVersion === CORE_REPAIR_EXECUTION_DEFINITION &&
+      !['admit', 'reserve', 'observe', 'terminal-publication'].includes(control.kind)) ||
+    (carriage.repairTerminal &&
+      (definitionVersion !== CORE_REPAIR_EXECUTION_DEFINITION ||
+        control.kind !== 'terminal-publication'))
+  )
+    throw new Error('Repair outcome is outside its original kernel step.');
+}
+
+/** Commits the local decision step. Physical effect authorization stays with the original operation CAS. */
+function commitKernelDecisionStep(
+  db: CoreDb,
+  proposal: ExecutionJournalIntent,
+  outputRefs: readonly string[]
+): ExecutionStepRef {
+  const admitted = writeExecutionJournalIntent(db, proposal, undefined, verifiedKernelStep);
+  const root = readRoot(db, admitted.ref.execution);
+  const end = admitted.clock.admittedUnixNano;
+  settleExecutionJournalStep(db, {
+    ref: admitted.ref,
+    expectedExecutionRevision: root.revision,
+    state: 'completed',
+    outputRefs,
+    span: {
+      ...proposal.span,
+      endTimeUnixNano:
+        end > proposal.span.startTimeUnixNano ? end : proposal.span.startTimeUnixNano,
+      status: { code: 'OK' },
+    },
+    nextPhase: root.phase,
+    terminalCause: root.terminalCause,
+    exclusionRefs: root.exclusionRefs,
+  });
+  return admitted.ref;
+}
+
+type RepairPolicyAllocation = Extract<
+  z.infer<typeof PolicyGrantV1Schema>,
+  { kind: 'repair.model-call' }
+>;
+
+const repairEntryInput = z.strictObject({
+  callId: z.string().min(1).max(128),
+  routeRef: z
+    .string()
+    .min(1)
+    .max(128)
+    .regex(/^[a-zA-Z0-9_.:-]+$/),
+  allocationRef: z.string().min(1).max(512),
+  policyRevision: PolicyDigestV1Schema,
+  inputDigest: z.string().regex(/^(?:sha256:)?[a-f0-9]{64}$/),
+});
+
+/** The trusted planner supplies the original actor, classified role and pinned redacted route. */
+export function admitRepairCallEntryInDb(
+  db: CoreDb,
+  proposal: ExecutionJournalIntent,
+  input: z.input<typeof repairEntryInput>,
+  verifyCurrentEntry: (original: RepairCallIntent) => boolean
+): StorageDecision<RepairCallIntent> {
+  const { execution, control } = proposal;
+  requireWriter(db, execution.ref);
+  const parsed = repairEntryInput.safeParse(input);
+  if (
+    !parsed.success ||
+    execution.definitionVersion !== CORE_REPAIR_EXECUTION_DEFINITION ||
+    control.kind !== 'admit' ||
+    !control.attemptId ||
+    !PermissionDecisionIdSchema.safeParse(control.permittingDecisionRef).success ||
+    !control.authorityRefs.includes('role:repair') ||
+    control.retryPermitted
+  )
+    return { state: 'conflict' };
+  const { callId, routeRef, allocationRef, policyRevision, inputDigest } = parsed.data;
+  const occurrence = {
+    deploymentId: readDataRootLayoutMarker(db.dataRoot).deploymentId,
+    sourceOwner: 'control-kernel',
+    verb: 'repair.model-call',
+    occurrenceKey: callId,
+  } as const;
+  const ref = { execution: execution.ref, stepId: proposal.stepId };
+  const intent: RepairCallIntent = {
+    ...occurrence,
+    requestId: storageRequestId(occurrence),
+    target: {
+      entryStep: ref,
+      attemptId: control.attemptId,
+      invocationId: control.invocationId,
+      callId,
+      routeRef,
+      allocationRef,
+    },
+    expectedGeneration: policyRevision,
+    inputDigest,
+  };
+  const fingerprint = repairReservationFingerprint(intent);
+  const previous = db.sqlite
+    .prepare(`SELECT execution_id AS executionId, step_id AS stepId FROM control_execution_steps
+      WHERE (execution_id = ? AND step_id = ?)
+        OR (json_extract(control_json, '$.definitionVersion') = ?
+          AND json_extract(control_json, '$.kind') = 'admit'
+          AND json_extract(invocation_json, '$.carriage.requestId') = ?)
+      LIMIT 2`)
+    .all(
+      ref.execution.executionId,
+      ref.stepId,
+      CORE_REPAIR_EXECUTION_DEFINITION,
+      intent.requestId
+    ) as { executionId: string; stepId: string }[];
+  if (previous.length > 1) return { state: 'conflict' };
+  const [binding] = previous;
+  if (binding) {
+    if (binding.executionId !== ref.execution.executionId || binding.stepId !== ref.stepId)
+      return { state: 'conflict' };
+    const original = storedStep(db, ref);
+    return original.row.state === 'completed' &&
+      original.control.definitionVersion === CORE_REPAIR_EXECUTION_DEFINITION &&
+      original.control.kind === 'admit' &&
+      original.root.workId === execution.workId &&
+      original.root.fingerprint === execution.fingerprint &&
+      original.control.fingerprint === inputDigest &&
+      isDeepStrictEqual(original.control.actor, control.actor) &&
+      original.control.permittingDecisionRef === control.permittingDecisionRef &&
+      original.invocation.carriage.operation === intent.verb &&
+      original.invocation.carriage.requestId === intent.requestId &&
+      isDeepStrictEqual(original.control.outputRefs, [fingerprint])
+      ? { state: 'settled', receipt: intent }
+      : { state: 'conflict' };
+  }
+  if (!verifyCurrentEntry(intent)) return { state: 'unknown' };
+  commitKernelDecisionStep(
+    db,
+    {
+      ...proposal,
+      control: {
+        ...control,
+        fingerprint: inputDigest,
+        inputRefs: [...new Set([...control.inputRefs, `repair-call:${callId}`])],
+        authorityRefs: [...new Set([...control.authorityRefs, routeRef, allocationRef])],
+      },
+      carriage: { ...proposal.carriage, operation: intent.verb, requestId: intent.requestId },
+    },
+    [fingerprint]
+  );
+  return { state: 'settled', receipt: intent };
+}
+
+function repairReservationFingerprint(intent: RepairCallIntent): string {
+  return `sha256:${sha256Hex(canonicalIdentifierName(intent))}`;
+}
+
+/** Inspects only the original committed deduction. Replaying it grants no provider contact. */
+function inspectRepairDeduction(
+  db: CoreDb,
+  intent: RepairCallIntent,
+  completeHistory: boolean
+): RepairCallInspection {
+  if (
+    intent.verb !== 'repair.model-call' ||
+    intent.occurrenceKey !== intent.target.callId ||
+    intent.sourceOwner !== 'control-kernel' ||
+    intent.requestId !== storageRequestId(intent)
+  )
+    return { state: 'conflict' };
+  const previous = db.sqlite
+    .prepare(
+      'SELECT execution_id AS executionId, step_id AS stepId FROM control_execution_steps WHERE invocation_id = ?'
+    )
+    .get(intent.requestId) as { executionId: string; stepId: string } | undefined;
+  if (!previous) return { state: completeHistory ? 'absent' : 'unknown' };
+  const step = { execution: intent.target.entryStep.execution, stepId: previous.stepId };
+  if (previous.executionId !== step.execution.executionId) return { state: 'conflict' };
+  const retained = storedStep(db, step);
+  if (
+    retained.control.kind !== 'reserve' ||
+    retained.control.definitionVersion !== CORE_REPAIR_EXECUTION_DEFINITION ||
+    retained.control.fingerprint !== repairReservationFingerprint(intent)
+  )
+    return { state: 'conflict' };
+  if (retained.row.state === 'failed') {
+    const refusal = storageReceipt(intent, { disposition: 'refused', reason: 'budget' });
+    return isDeepStrictEqual(retained.control.outputRefs, [refusal.receiptDigest])
+      ? { state: 'refused', reason: 'budget' }
+      : { state: 'unknown' };
+  }
+  const reservation = storageReceipt(intent, { disposition: 'applied', result: { step } });
+  if (
+    retained.row.state !== 'completed' ||
+    !isDeepStrictEqual(retained.control.outputRefs, [reservation.receiptDigest])
+  )
+    return { state: 'unknown' };
+  return { state: 'reserved', reservation };
+}
+
+function repairTerminalStepId(requestId: string): string {
+  return `repair-terminal:${requestId}`;
+}
+
+function readRepairTerminalAudit(db: CoreDb, reservation: RepairCallReservation) {
+  const { intent } = reservation;
+  const ref = {
+    execution: intent.target.entryStep.execution,
+    stepId: repairTerminalStepId(intent.requestId),
+  };
+  const exists = db.sqlite
+    .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+    .get(ref.execution.executionId, ref.stepId);
+  if (!exists) return null;
+  const step = storedStep(db, ref);
+  const auditEventId = deriveEntityId('aud', [intent.requestId, 'repair.model-call/v1']);
+  const row = db.sqlite
+    .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
+    .get(auditEventId);
+  if (!row) throw new Error('Original repair terminal Audit is unavailable.');
+  const audit = auditEventFromRow(row);
+  if (
+    step.row.state !== 'completed' ||
+    step.control.kind !== 'terminal-publication' ||
+    step.row.inspected_execution_id !== reservation.result.step.execution.executionId ||
+    step.row.inspected_step_id !== reservation.result.step.stepId ||
+    !isDeepStrictEqual(step.control.outputRefs, [
+      auditEventId,
+      `sha256:${sha256CanonicalJson(audit)}`,
+      reservation.receiptDigest,
+    ]) ||
+    audit.action !== 'repair.model-call' ||
+    audit.requestId !== intent.requestId ||
+    audit.resource !== `repair-call:${intent.target.callId}` ||
+    !step.invocation.carriage.repairTerminal ||
+    audit.outcome !== step.invocation.carriage.repairTerminal.outcome.disposition
+  )
+    throw new Error('Original repair terminal Audit conflicts.');
+  return { audit, evidence: step.invocation.carriage.repairTerminal.outcome };
+}
+
+/** Reads the original admission deduction, or its covering terminal Audit after a lost ACK. */
+export function inspectRepairReservationStep(
+  db: CoreDb,
+  intent: RepairCallIntent,
+  completeHistory: boolean
+): RepairCallInspection {
+  const deduction = inspectRepairDeduction(db, intent, completeHistory);
+  if (deduction.state !== 'reserved') return deduction;
+  try {
+    const terminal = readRepairTerminalAudit(db, deduction.reservation);
+    return terminal ? { state: 'terminal', auditEventId: terminal.audit.id } : deduction;
+  } catch {
+    return { state: 'unknown' };
+  }
+}
+
+/** Joins the redacted original repair outcome and the covering Core terminal step. */
+export function commitRepairTerminalAuditInDb(
+  db: CoreDb,
+  reservation: RepairCallReservation,
+  proposal: ExecutionJournalIntent,
+  outcome: RepairCallOutcome
+): StorageDecision<string> {
+  const parsed = repairOutcomeSchema.safeParse(outcome);
+  if (!parsed.success) return { state: 'conflict' };
+  const { intent } = reservation;
+  const target = intent.target;
+  requireWriter(db, target.entryStep.execution);
+  const deduction = inspectRepairDeduction(db, intent, false);
+  if (deduction.state !== 'reserved')
+    return { state: deduction.state === 'conflict' ? 'conflict' : 'unknown' };
+  if (!isDeepStrictEqual(reservation, deduction.reservation)) return { state: 'conflict' };
+  const entry = storedStep(db, target.entryStep);
+  const decision = PermissionDecisionIdSchema.safeParse(entry.control.permittingDecisionRef);
+  if (
+    !decision.success ||
+    !entry.control.authorityRefs.includes('role:repair') ||
+    !isDeepStrictEqual(proposal.execution.ref, target.entryStep.execution) ||
+    proposal.execution.definitionVersion !== entry.root.definitionVersion ||
+    proposal.execution.workId !== entry.root.workId ||
+    proposal.execution.fingerprint !== entry.root.fingerprint ||
+    !isDeepStrictEqual(proposal.inspectedStep, reservation.result.step) ||
+    !isDeepStrictEqual(proposal.control.actor, entry.control.actor) ||
+    proposal.control.kind !== 'terminal-publication' ||
+    proposal.control.definitionVersion !== entry.control.definitionVersion ||
+    proposal.control.attemptId !== target.attemptId ||
+    proposal.control.permittingDecisionRef !== decision.data ||
+    proposal.control.retryPermitted
+  )
+    return { state: 'conflict' };
+  const terminal = readRepairTerminalAudit(db, reservation);
+  if (terminal)
+    return terminal.audit.outcome === parsed.data.disposition &&
+      terminal.evidence.inputTokens === parsed.data.inputTokens &&
+      terminal.evidence.outputTokens === parsed.data.outputTokens
+      ? { state: 'settled', receipt: terminal.audit.id }
+      : { state: 'conflict' };
+  const now = new Date();
+  const audit = prepareAuditEvent({
+    action: 'repair.model-call',
+    auditEventId: deriveEntityId('aud', [intent.requestId, 'repair.model-call/v1']),
+    actor: entry.control.actor,
+    category: 'capability',
+    workspaceId: null,
+    turnId: null,
+    requestId: intent.requestId,
+    permissionDecisionId: decision.data,
+    resource: `repair-call:${target.callId}`,
+    now,
+    outcome: parsed.data.disposition,
+    severity: parsed.data.disposition === 'succeeded' ? 'info' : 'warning',
+    summary: 'Kernel repair model Call settled.',
+  });
+  const statement = prepareAuditEventStatement(audit);
+  db.sqlite.prepare(statement.sql).run(...statement.parameters);
+  const stepId = repairTerminalStepId(intent.requestId);
+  commitKernelDecisionStep(
+    db,
+    {
+      ...proposal,
+      stepId,
+      control: { ...proposal.control, invocationId: stepId },
+      carriage: {
+        ...proposal.carriage,
+        operation: intent.verb,
+        requestId: intent.requestId,
+        repairTerminal: { version: 1, outcome: parsed.data },
+      },
+    },
+    [audit.id, `sha256:${sha256CanonicalJson(audit)}`, reservation.receiptDigest]
+  );
+  return { state: 'settled', receipt: audit.id };
+}
+
+/**
+ * Deducts one Server Call with the original repair entry and current verified Policy/Vault authority.
+ * The native owner verifies its current Policy publication and Vault authority inside this decision.
+ */
+export function commitRepairReservationStep(
+  db: CoreDb,
+  intent: RepairCallIntent,
+  proposal: ExecutionJournalIntent,
+  verifyCurrentAuthority: (original: RepairCallIntent) => {
+    readonly allocationRef: string;
+    readonly policyRevision: string;
+    readonly allocation: RepairPolicyAllocation;
+  } | null,
+  completeHistory: boolean
+):
+  | { readonly state: 'reserved-now'; readonly reservation: RepairCallReservation }
+  | RepairCallInspection {
+  const target = intent.target;
+  requireWriter(db, target.entryStep.execution);
+  const prior = inspectRepairReservationStep(db, intent, completeHistory);
+  if (prior.state !== 'absent') return prior;
+  const entry = storedStep(db, target.entryStep);
+  const control = proposal.control;
+  if (
+    entry.control.kind !== 'admit' ||
+    entry.control.definitionVersion !== CORE_REPAIR_EXECUTION_DEFINITION ||
+    entry.control.attemptId !== target.attemptId ||
+    entry.control.invocationId !== target.invocationId ||
+    entry.control.fingerprint !== intent.inputDigest ||
+    !isDeepStrictEqual(entry.control.outputRefs, [repairReservationFingerprint(intent)]) ||
+    !entry.control.inputRefs.includes(`repair-call:${target.callId}`) ||
+    entry.invocation.carriage.operation !== intent.verb ||
+    entry.root.phase !== 'open' ||
+    !entry.control.permittingDecisionRef ||
+    !entry.control.authorityRefs.includes('role:repair') ||
+    !entry.control.authorityRefs.includes(target.allocationRef) ||
+    !entry.control.authorityRefs.includes(target.routeRef) ||
+    control.kind !== 'reserve' ||
+    control.definitionVersion !== CORE_REPAIR_EXECUTION_DEFINITION ||
+    control.invocationId !== intent.requestId ||
+    control.attemptId !== target.attemptId ||
+    control.permittingDecisionRef !== entry.control.permittingDecisionRef ||
+    !isDeepStrictEqual(control.actor, entry.control.actor) ||
+    !isDeepStrictEqual(proposal.execution.ref, target.entryStep.execution) ||
+    !isDeepStrictEqual(proposal.inspectedStep, target.entryStep)
+  )
+    return { state: 'conflict' };
+
+  const authority = verifyCurrentAuthority(intent);
+  if (
+    !authority ||
+    authority.allocationRef !== target.allocationRef ||
+    authority.policyRevision !== intent.expectedGeneration
+  )
+    return { state: 'unknown' };
+  const { allocation } = authority;
+  if (
+    allocation.kind !== 'repair.model-call' ||
+    allocation.scope !== 'server' ||
+    allocation.unit !== 'model-call' ||
+    allocation.window !== 'utc-day' ||
+    !Number.isSafeInteger(allocation.limit) ||
+    allocation.limit <= 0
+  )
+    return { state: 'unknown' };
+  const windowStart = new Date();
+  windowStart.setUTCHours(0, 0, 0, 0);
+  const start = BigInt(windowStart.getTime()) * 1_000_000n;
+  const end = start + 86_400_000_000_000n;
+  const clocks = db.sqlite
+    .prepare(`SELECT json_extract(invocation_json, '$.clock.admittedUnixNano')
+      FROM control_execution_steps
+      WHERE state = 'completed'
+        AND json_extract(control_json, '$.definitionVersion') = ?
+        AND json_extract(control_json, '$.kind') = 'reserve'`)
+    .pluck()
+    .iterate(CORE_REPAIR_EXECUTION_DEFINITION);
+  let reserved = 0;
+  for (const clock of clocks) {
+    if (typeof clock !== 'string' || clock.length > 20) return { state: 'unknown' };
+    const admittedAt = nano.safeParse(clock);
+    if (!admittedAt.success) return { state: 'unknown' };
+    if (admittedAt.data >= start && admittedAt.data < end) reserved += 1;
+  }
+  const allowed = reserved < allocation.limit;
+
+  const admitted = writeExecutionJournalIntent(
+    db,
+    {
+      ...proposal,
+      control: { ...control, fingerprint: repairReservationFingerprint(intent) },
+    },
+    undefined,
+    verifiedKernelStep
+  );
+  if (admitted.clock.admittedUnixNano < start || admitted.clock.admittedUnixNano >= end)
+    throw new Error('Repair Call crossed the UTC Budget decision window.');
+  const reservation = storageReceipt(intent, {
+    disposition: 'applied',
+    result: { step: admitted.ref },
+  });
+  const receiptDigest = allowed
+    ? reservation.receiptDigest
+    : storageReceipt(intent, { disposition: 'refused', reason: 'budget' }).receiptDigest;
+  const root = readRoot(db, target.entryStep.execution);
+  let endedAt = admitted.clock.admittedUnixNano;
+  if (endedAt < proposal.span.startTimeUnixNano) endedAt = proposal.span.startTimeUnixNano;
+  settleExecutionJournalStep(db, {
+    ref: admitted.ref,
+    expectedExecutionRevision: root.revision,
+    state: allowed ? 'completed' : 'failed',
+    outputRefs: [receiptDigest],
+    span: {
+      ...proposal.span,
+      endTimeUnixNano: endedAt,
+      status: { code: allowed ? 'OK' : 'ERROR' },
+    },
+    nextPhase: root.phase,
+    terminalCause: root.terminalCause,
+    exclusionRefs: root.exclusionRefs,
+  });
+  return allowed ? { state: 'reserved-now', reservation } : { state: 'refused', reason: 'budget' };
 }
