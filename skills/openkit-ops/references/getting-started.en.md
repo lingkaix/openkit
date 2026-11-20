@@ -39,7 +39,7 @@ sha256sum --check --ignore-missing SHA256SUMS
 
 Use the NanoHost archive's bundled host profile and installer. From its extracted directory, run `./install.sh --check-host` with the privileges its static checks require. Accept only a fresh `requirements-met` result bound to this archive, profile, machine and observation. `requirements-unmet`, `cannot-check` or stale evidence stops installation. Provision missing prerequisites only under separate operator authorization and rerun the complete check. [Deployment Host Requirements](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260909-deployment_host_requirements.md) distinguishes this result from installation and runtime readiness.
 
-Reserve one fresh persistent Data Root, one protected App-secret directory, one protected NanoHost credential directory, and unused App/private-transport ports. Confirm the selected host has no conflicting NanoHost service or installation. Preserve existing bytes; do not clear directories to make a first-install check pass. NanoHost additionally needs the profile's Docker, systemd, namespace, network and OpenShell prerequisites. The archive supplies its target-matched Gateway; an arbitrary separately installed OpenShell CLI does not replace it.
+Reserve one fresh persistent Data Root and its protected sibling backup directory with the `.backups` suffix. Reserve one protected App-secret directory, one protected NanoHost credential directory, and unused App/private-transport ports. Confirm the selected host has no conflicting NanoHost service or installation. Preserve existing bytes; do not clear directories to make a first-install check pass. NanoHost additionally needs the profile's Docker, systemd, namespace, network and OpenShell prerequisites. The archive supplies its target-matched Gateway; an arbitrary separately installed OpenShell CLI does not replace it.
 
 Through protected operator input, create the server authentication secret and an exact 32-byte `0600` Vault key outside the Data Root. Create only absent files and keep the Vault key for this deployment. Prepare a certificate and private key for the exact NanoHost rendezvous name or address, plus the matching trusted public CA when platform roots do not trust it. Never print secret bytes, place them in command arguments or use TLS verification overrides.
 
@@ -66,12 +66,15 @@ OPENKIT_APP_REFERENCE='<published-app-repository>@sha256:<published-index-digest
 OPENKIT_INSTALL_CONTAINER='<explicit-new-container-name>'
 docker pull "$OPENKIT_APP_REFERENCE"
 docker run --detach --name "$OPENKIT_INSTALL_CONTAINER" --restart unless-stopped \
+  --network bridge --runtime runc \
+  --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 \
   --publish 127.0.0.1:18080:8080 \
   --publish 127.0.0.1:18443:18443 \
   --env OPENKIT_CORE_MODE=server \
   --env OPENKIT_BIND_HOST=127.0.0.1 \
   --env-file /absolute/protected/app.env \
   --mount type=bind,src=/absolute/fresh-data-root,dst=/data/openkit \
+  --mount type=bind,src=/absolute/fresh-data-root.backups,dst=/data/openkit.backups \
   --mount type=bind,src=/absolute/protected/app-secrets,dst=/run/openkit-secrets,readonly \
   --mount type=bind,src=/absolute/protected/nanohost-slots,dst=/run/openkit-enrollment \
   "$OPENKIT_APP_REFERENCE"
@@ -109,6 +112,8 @@ Observe authenticated diagnostics, current NanoHost readiness and public retaine
 ### Optional App-Update Helper
 
 The operations archive may include `scripts/docker/app-update-helper.py` outside its Skill subtree. Verify its release/checksum binding before the separately authorized [helper installation and restricted transport setup](nanocore-operations.en.md#restricted-host-helper). Configure only this exact deployment, protected host trust and the fixed command. If the payload is missing, unsupported or unverified, report App update unavailable and finish the basic installation without enabling it. Do not fetch an arbitrary helper, use a source build or invent host-update authority.
+
+The Getting Started bridge deployment can use the helper with its existing Data Root, App-secret directory, enrollment directory, and two loopback ports. Use the [Getting Started bridge settings](nanocore-operations.en.md#getting-started-bridge-settings) to enable it on a new or existing published installation, including v0.1.0. Then follow [Update NanoCore And Web](nanocore-operations.en.md#update-nanocore-and-web) for each release.
 
 Retain the installation and deciding non-secret evidence. A failed stage stops its dependent stage; unavailable observations remain unknown. Preserve the Data Root, Vault key, credentials, installed services and retained work. Neither this guide nor an unsuccessful first attempt grants teardown or reset authority.
 
