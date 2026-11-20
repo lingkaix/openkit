@@ -36,8 +36,8 @@
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.1-rc.5",
     "@openai/codex": "0.169.0",
-    "@opencode/cli": "2.2.5",
-    "@opencode/client": "2.2.5",
+    "@opencode/cli": "2.3.0",
+    "@opencode/client": "2.3.0",
     "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "5.1.0",
     "vitest": "^5.1.0"

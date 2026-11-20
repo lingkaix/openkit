@@ -54,8 +54,8 @@ export const OPENCODE_LISTS_TOOLS_AT_TURN_START = false;
 /** Native permission reply used when an ask still arrives. The shortest-lived grant is `once`. */
 export const OPENCODE_PERMISSION_REPLY = 'once';
 
-const CLIENT_PACKAGE = '@opencode/client@2.2.5';
-const CLI_PACKAGE = '@opencode/cli@2.2.5';
+const CLIENT_PACKAGE = '@opencode/client@2.3.0';
+const CLI_PACKAGE = '@opencode/cli@2.3.0';
 const CLI_NAME = '@opencode/cli';
 const RESULT_BYTE_LIMIT = 16 * 1024 * 1024;
 const DIAGNOSTIC_BYTE_LIMIT = 16 * 1024;

@@ -59,7 +59,7 @@ and are not listed here.
 - `docs/specs/20260704-agent_session_continuity.md` — Accepted, Partial — Owns durable AgentSession continuity for one Thread: exact reconnect, later-Turn reuse, and internal successor replacement.
 - `docs/specs/20260704-session_static_workspace_materialization.md` — Accepted, Partial — Owns the session-static workspace layout, the Turn materialization slots, and the Session compatibility key.
 - `docs/specs/20260716-codex_worker_adapter.md` — Accepted, Partial — Owns the Codex 0.169.0 App Server delta.
-- `docs/specs/20260716-opencode_worker_adapter.md` — Accepted, Partial — Owns the OpenCode 2.2.5 delta.
+- `docs/specs/20260716-opencode_worker_adapter.md` — Accepted, Partial — Owns the OpenCode 2.3.0 delta.
 - `docs/specs/20260716-pi_worker_adapter.md` — Accepted, Partial — Owns the Pi 1.5.2 SDK delta.
 - `docs/specs/20260930-deepseek_worker_adapter.md` — Accepted, Partial — Owns the DeepSeek 0.2.1-rc.5 native ACP delta.
 

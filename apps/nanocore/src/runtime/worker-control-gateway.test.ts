@@ -88,7 +88,7 @@ async function createWorkerControlFixture(
   agentSetup.manifest.runtime.version = {
     codex: '0.153.4',
     deepseek: '0.2.1-rc.5',
-    opencode: '2.2.5',
+    opencode: '2.3.0',
     pi: '1.5.2',
   }[adapter];
   const environmentPackage = await resolveAgentEnvironmentPackage({

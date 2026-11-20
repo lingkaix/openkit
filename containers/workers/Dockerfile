@@ -251,7 +251,7 @@ FROM worker-common AS worker-runtimes
 
 ARG TARGETARCH
 ARG CODEX_CLI_VERSION="0.169.0"
-ARG OPENCODE_VERSION="2.2.5"
+ARG OPENCODE_VERSION="2.3.0"
 ARG DEEPSEEK_VERSION="0.2.1-rc.5"
 
 LABEL org.openkit.image="worker-runtimes"

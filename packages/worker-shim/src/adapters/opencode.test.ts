@@ -2557,7 +2557,7 @@ describe('OpenCode resident adapter', () => {
       },
     });
     await expect(missingClient.openSession(input)).rejects.toThrow(
-      /@opencode\/client@2\.2\.5[\s\S]*worker-runtimes/
+      /@opencode\/client@2\.3\.0[\s\S]*worker-runtimes/
     );
   });
 

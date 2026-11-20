@@ -7,7 +7,7 @@ aspect: agent-session
 
 # OpenCode Worker Adapter
 
-This specification owns the OpenCode 2.2.5 delta. Shared adapter rules live in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md).
+This specification owns the OpenCode 2.3.0 delta. Shared adapter rules live in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md).
 
 ## Scope
 
@@ -25,7 +25,7 @@ Core: [AgentSession](../core/agent-session.md), [Sandbox](../core/sandbox.md).
 
 ## Runtime
 
-The pin uses the OpenCode V2 CLI and `@opencode/client` at 2.2.5, one supervised Sandbox server, and no `opencode run`, ACP, embedded SDK, or extra IPC interface ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)). The image deploys the glibc Linux arm64 and x64 CLI and client on the shim resolution path, the generic shim entrypoint, and a non-root user. The Effect graph stays out of `worker-common`.
+The pin uses the OpenCode V2 CLI and `@opencode/client` at 2.3.0, one supervised Sandbox server, and no `opencode run`, ACP, embedded SDK, or extra IPC interface ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)). The image deploys the glibc Linux arm64 and x64 CLI and client on the shim resolution path, the generic shim entrypoint, and a non-root user. The Effect graph stays out of `worker-common`.
 
 ## Launch And Session Mapping
 
@@ -57,7 +57,7 @@ Cancel acknowledgement is a boolean, correlated with the terminal outcome. A com
 
 This pin has no expected-execution guard. Idle `delivery:steer` can start new work. The adapter exposes no steer hook and refuses without native effects.
 
-OpenCode 2.2.5 is unsupported for live steer before native contact. Qualify a future pin only if it can fence the selected native Turn against idle new-work creation and correlate each original input through processing, including equal-text steers, lost ACK, restart and successor races. Start input uses the common obligation and reports unknown when exact target-Turn read-back is unavailable. [Retained Delivery Proof](20260703-worker_control_protocol.md#retained-delivery-proof) owns the disposition.
+The shipped OpenCode pin 2.3.0 has no qualified steer hook before native contact. OpenCode 2.2.5 remains labelled unsupported for live steer before native contact. Qualify a future pin only if it can fence the selected native Turn against idle new-work creation and correlate each original input through processing, including equal-text steers, lost ACK, restart and successor races. Start input uses the common obligation and reports unknown when exact target-Turn read-back is unavailable. [Retained Delivery Proof](20260703-worker_control_protocol.md#retained-delivery-proof) owns the disposition.
 
 ## Event Mapping
 
@@ -106,7 +106,7 @@ A future steer mapping proves native same-Turn inbox acceptance, the exact initi
 
 ## Implementation Gaps
 
-- A future steer mapping proves native same-Turn inbox acceptance, the exact initial and steering user lineage, idle-race closure, and no restart or successor spill - On main, 2.2.5 has no qualified steer hook - #771
+- A future steer mapping proves native same-Turn inbox acceptance, the exact initial and steering user lineage, idle-race closure, and no restart or successor spill - On main, the shipped OpenCode pin 2.3.0 has no qualified steer hook before native contact; 2.2.5 remains the labelled original evidence - #771
 
 ## Decisions
 
