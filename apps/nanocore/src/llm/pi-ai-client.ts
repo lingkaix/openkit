@@ -1567,6 +1567,7 @@ export class PiAiGatewayClient {
     bridgeNames?: ResponsesBridgeNames
   ): StreamOptions & Record<string, unknown> {
     const options: StreamOptions & Record<string, unknown> = { env: {} };
+    if (transport.singleAttempt) options.maxRetries = 0;
     const cacheRetention = this.cacheRetention(request.prompt_cache_retention);
     const reasoning = readRecord(request.reasoning);
     const text = readRecord(request.text);

@@ -11,6 +11,7 @@ import {
   ResourceDigestSchema,
 } from '@openkit/config-schema';
 import {
+  RETAINED_FORMAT_VERSION,
   ReasoningEffortSchema,
   readRetainedV1,
   SystemPromptDigestSchema,
@@ -26,8 +27,14 @@ import {
   workObservationBodyBundleId,
 } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
-import { type ControlProductOwner, decode } from './control-store-product-records.js';
+import type { ControlProductOwner } from './control-store-product-records.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
+import {
+  NATIVE_THREAD_LOGIN_FEATURE,
+  NativeThreadRequiredFeaturesSchema,
+  registerNativeThreadLoginValidity,
+} from './native-thread-login.js';
+import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 
@@ -399,7 +406,7 @@ export function readWorkObservationTurnBinding(
           'turns',
           input.turnId
         );
-  return { root, turn: binding.turn, raw: binding.raw, coverage: binding.coverage };
+  return { root, turn: binding.turn, coverage: binding.coverage };
 }
 
 /** Reads complete ordered native pages; malformed or missing authority fails closed. */
@@ -568,65 +575,102 @@ interface ControlObservationRow {
   record_json: string;
 }
 
-/** Native retained binding; descriptive bytes remain available for the observation manifest update. */
-export interface ControlWorkObservationTurnBinding {
-  readonly turn: z.infer<typeof StoredTurnV1Schema>;
-  readonly raw: Record<string, unknown>;
-  readonly revision: number;
-  readonly coverage: NonNullable<z.infer<typeof StoredTurnV1Schema>['captureCoverage']> | null;
+const threadBindingSchema = z.object({
+  id: StoredThreadSnapshotV1Schema.shape.id,
+  owner: StoredWorkOwnerV1Schema,
+  status: StoredThreadSnapshotV1Schema.shape.status,
+  entryPath: StoredThreadSnapshotV1Schema.shape.entryPath,
+  visibility: StoredThreadSnapshotV1Schema.shape.visibility,
+  privateOwnerUserId: StoredThreadSnapshotV1Schema.shape.privateOwnerUserId,
+  parentThreadId: StoredThreadSnapshotV1Schema.shape.parentThreadId,
+  requiredFeatures: NativeThreadRequiredFeaturesSchema.optional(),
+});
+const turnBindingSchema = StoredTurnV1Schema.pick({
+  id: true,
+  owner: true,
+  threadId: true,
+  agentSessionId: true,
+  status: true,
+  startedAt: true,
+  completedAt: true,
+  captureCoverage: true,
+  requiredFeatures: true,
+  reasoningEffort: true,
+});
+
+/** Whitelist metadata before any row crosses the SQLite boundary. */
+function bindingProjection(fields: Record<string, unknown>): string {
+  const keys = ['schemaVersion', ...Object.keys(fields)].map((key) => `'${key}'`).join(', ');
+  return `(SELECT json_group_object(key, json(record_json -> fullkey)) FROM json_each(record_json)
+    WHERE key IN (${keys})) AS metadata`;
 }
 
-/** Reads native Thread/Turn authority in one short snapshot; no file fallback or current-policy inference. */
+interface ObservationOwnerRow {
+  readonly schema_version: number;
+  readonly revision: number;
+  readonly bytes: number;
+  readonly legacy_owner_absent: number;
+  readonly status: string;
+  readonly metadata: string;
+}
+
+function validObservationOwnerRow(
+  row: ObservationOwnerRow | undefined
+): row is ObservationOwnerRow {
+  return (
+    row !== undefined &&
+    row.schema_version === RETAINED_FORMAT_VERSION &&
+    row.bytes <= 64 * 1024 &&
+    row.legacy_owner_absent === 1 &&
+    Number.isSafeInteger(row.revision) &&
+    row.revision >= 1
+  );
+}
+
+/** Reads native Thread/Turn authority without materializing titles, descriptions or Item bodies. */
 export function readControlWorkObservationTurnBinding(
   sqlite: Database.Database,
   owner: ControlProductOwner,
   input: { readonly threadId: string; readonly turnId: string }
-): ControlWorkObservationTurnBinding {
+): {
+  readonly turn: z.infer<typeof turnBindingSchema>;
+  readonly revision: number;
+  readonly coverage: NonNullable<z.infer<typeof turnBindingSchema>['captureCoverage']> | null;
+} {
   if (!sqlite.inTransaction)
     return sqlite.transaction(() => readControlWorkObservationTurnBinding(sqlite, owner, input))();
   controlObservationSelectorSchema.parse(input);
   if (!isDeepStrictEqual(owner, StoredWorkOwnerV1Schema.parse(owner)))
     throw new Error('Observation database owner is invalid');
+  registerNativeThreadLoginValidity(sqlite);
   const threadRow = sqlite
-    .prepare('SELECT * FROM control_threads WHERE id=?')
+    .prepare(`SELECT schema_version, revision, workspace_id, status,
+      length(CAST(record_json AS BLOB)) AS bytes,
+      json_type(record_json, '$.workspaceId') IS NULL AS legacy_owner_absent,
+      native_thread_login_valid(record_json -> '$.login') AS login_valid,
+      ${bindingProjection(threadBindingSchema.shape)} FROM control_threads WHERE id=?`)
     .get(input.threadId) as
-    | {
-        schema_version: number;
-        revision: number;
-        workspace_id: string | null;
-        status: string;
-        record_json: string;
-      }
+    | (ObservationOwnerRow & { workspace_id: string | null; login_valid: number | null })
     | undefined;
-  const turnRow = sqlite.prepare('SELECT * FROM control_turns WHERE id=?').get(input.turnId) as
-    | {
-        schema_version: number;
-        revision: number;
-        thread_id: string;
-        agent_session_id: string | null;
-        status: string;
-        record_json: string;
-      }
+  const turnRow = sqlite
+    .prepare(`SELECT schema_version, revision, thread_id, agent_session_id, status,
+      length(CAST(record_json AS BLOB)) AS bytes,
+      json_type(record_json, '$.workspaceId') IS NULL AS legacy_owner_absent,
+      ${bindingProjection(turnBindingSchema.shape)}
+      FROM control_turns WHERE id=?`)
+    .get(input.turnId) as
+    | (ObservationOwnerRow & { thread_id: string; agent_session_id: string | null })
     | undefined;
-  if (
-    !threadRow ||
-    !turnRow ||
-    threadRow.schema_version !== 1 ||
-    turnRow.schema_version !== 1 ||
-    Buffer.byteLength(threadRow.record_json) > 64 * 1024 ||
-    Buffer.byteLength(turnRow.record_json) > 64 * 1024 ||
-    !Number.isSafeInteger(threadRow.revision) ||
-    threadRow.revision < 1 ||
-    !Number.isSafeInteger(turnRow.revision) ||
-    turnRow.revision < 1
-  )
+  if (!validObservationOwnerRow(threadRow) || !validObservationOwnerRow(turnRow))
     throw new Error('recovery_required: missing or invalid native observation owner');
-  // Canonical native Threads may retain private Login meaning that public snapshots exclude.
-  const thread = decode('thread', JSON.parse(threadRow.record_json), owner);
-  const raw = JSON.parse(turnRow.record_json) as Record<string, unknown>;
-  const turn = readRetainedV1(raw, () => StoredTurnV1Schema.parse(raw));
+
+  const threadMetadata: unknown = JSON.parse(threadRow.metadata);
+  const turnMetadata: unknown = JSON.parse(turnRow.metadata);
+  const thread = readRetainedV1(threadMetadata, () => threadBindingSchema.parse(threadMetadata));
+  const turn = readRetainedV1(turnMetadata, () => turnBindingSchema.parse(turnMetadata));
   if (
     thread.id !== input.threadId ||
+    thread.parentThreadId === thread.id ||
     turn.id !== input.turnId ||
     turn.threadId !== input.threadId ||
     turnRow.thread_id !== input.threadId ||
@@ -635,10 +679,18 @@ export function readControlWorkObservationTurnBinding(
     turnRow.status !== turn.status ||
     threadRow.workspace_id !== (owner.kind === 'workspace' ? owner.workspaceId : null) ||
     !isDeepStrictEqual(thread.owner, owner) ||
-    !isDeepStrictEqual(turn.owner, owner)
+    !isDeepStrictEqual(turn.owner, owner) ||
+    (thread.visibility === 'server') !== (owner.kind === 'server') ||
+    (thread.visibility === 'private') !== (thread.privateOwnerUserId !== undefined) ||
+    (thread.entryPath === 'administration' &&
+      owner.kind === 'workspace' &&
+      thread.visibility !== 'private') ||
+    threadRow.login_valid === 0 ||
+    (threadRow.login_valid === 1) !==
+      (thread.requiredFeatures?.includes(NATIVE_THREAD_LOGIN_FEATURE) === true)
   )
     throw new Error('recovery_required: native observation owner lineage mismatch');
-  return { turn, raw, revision: turnRow.revision, coverage: turn.captureCoverage ?? null };
+  return { turn, revision: turnRow.revision, coverage: turn.captureCoverage ?? null };
 }
 
 /** Checks native row version, known semantics and indexed identity without rewriting descriptive additions. */
@@ -1221,17 +1273,15 @@ export function applyControlWorkObservation(
       .run(input.turnId, record.seq, record.id, text);
   };
   if (!binding.turn.requiredFeatures?.includes('openkit.work-observations.v1')) {
-    const turnJson = JSON.stringify({
-      ...binding.raw,
-      requiredFeatures: [...(binding.turn.requiredFeatures ?? []), 'openkit.work-observations.v1'],
-    });
-    if (Buffer.byteLength(turnJson) > 64 * 1024)
-      throw new Error('Observation Turn metadata exceeds the native bound');
+    const requiredFeatures = JSON.stringify(['openkit.work-observations.v1']);
     const changed = sqlite
       .prepare(
-        'UPDATE control_turns SET revision=revision+1,record_json=? WHERE id=? AND revision=?'
+        `UPDATE control_turns SET revision=revision+1,
+         record_json=json_set(record_json, '$.requiredFeatures', json(?))
+         WHERE id=? AND revision=?
+         AND length(CAST(json_set(record_json, '$.requiredFeatures', json(?)) AS BLOB)) <= 65536`
       )
-      .run(turnJson, input.turnId, binding.revision);
+      .run(requiredFeatures, input.turnId, binding.revision, requiredFeatures);
     if (changed.changes !== 1)
       throw new Error('recovery_required: observation Turn revision conflict');
   }

@@ -174,6 +174,8 @@ export async function executeGatewayPlan<T>(input: {
         context: Pick<GatewayAttemptContext, 'signal' | 'deadline'>
       ) => Promise<readonly GatewaySelection[]>);
   autoFailover: boolean;
+  /** Once attempted, return the observed failure before any replay or recovery. */
+  singleAttempt?: true;
   signal: AbortSignal;
   attempt(selection: GatewaySelection, context: GatewayAttemptContext): Promise<T>;
   /** Read-only eligibility prevents an unrecoverable member from discarding a recoverable failure. */
@@ -285,6 +287,7 @@ export async function executeGatewayPlan<T>(input: {
           lastFailure = failure;
           const decision = gatewayFailureDecision(failure.kind, input.autoFailover);
           if (
+            input.singleAttempt ||
             input.signal.aborted ||
             committed ||
             !failure.settled ||

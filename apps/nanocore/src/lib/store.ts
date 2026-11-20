@@ -1563,7 +1563,7 @@ export class FsStore {
   }
 
   /** Refuses stale Workspace state after a failed canonical directory commit; only reopen clears it. */
-  private assertWorkspacePublicationAcknowledged(workspaceId: string): void {
+  public assertWorkspacePublicationAcknowledged(workspaceId: string): void {
     if (this.dataRoot)
       assertScopeAdmitted(this.dataRoot, 'workspace', workspaceId, this.suppliedScopeRefusals);
     if (this.unacknowledgedWorkspaces.has(workspaceId)) {

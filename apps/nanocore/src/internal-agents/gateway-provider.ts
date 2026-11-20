@@ -79,6 +79,8 @@ export interface InternalAgentGatewayProviderOptions {
     readonly workspaceId?: string;
   };
   readonly usageEndpoint: 'quick_chat' | 'responses';
+  /** A failed attempt consumes the run budget at both Gateway and stock transport. */
+  readonly singleAttempt?: true;
   readonly onDispatch?: (result: {
     readonly id: string;
     readonly providerId: string;
@@ -167,6 +169,7 @@ export function createInternalAgentGatewayProvider(
             }),
         ...(options.logicalModel.contract ? { pinnedLimits: options.logicalModel.contract } : {}),
         signal: request.signal,
+        ...(options.singleAttempt ? { singleAttempt: true } : {}),
         onAttemptStart: (correlation) => {
           // Resolution can fail before the producer runs; evidence belongs to this member only.
           failurePhase = 'pre-transport';
@@ -257,6 +260,7 @@ export function createInternalAgentGatewayProvider(
                     );
                 },
                 transport: {
+                  ...(options.singleAttempt ? { singleAttempt: true } : {}),
                   finalRequestAdmission: async (final) => {
                     try {
                       assertPhysicalContextFits(
