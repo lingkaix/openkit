@@ -22,7 +22,7 @@ export const steerCopy = {
   unknown: 'Delivery unknown',
   unknownDetail: "We can't confirm the worker took this note. Check before trying again.",
   ended: 'The run ended before this note arrived.',
-  busy: 'The worker is already taking another note.',
+  busy: 'The worker can’t take another note right now.',
   conflict: 'This note does not match the one already sent.',
   inapplicable:
     'This note can only include text. Remove the other choices, or stop the run and send them as a new run.',

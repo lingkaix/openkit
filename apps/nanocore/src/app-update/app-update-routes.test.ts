@@ -391,14 +391,12 @@ describe('app-update routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const inner = createMemoryTransport(Date.now, () => 'aB123456-cDeF-4123-8aBc-Def012345678');
-    let releaseStart: (() => void) | undefined;
+    const startRelease = Promise.withResolvers<void>();
     let receiptsMissing = false;
     const transport: AppUpdateHostTransport = {
       async invoke(command) {
         if (command.op === 'start') {
-          await new Promise<void>((resolve) => {
-            releaseStart = resolve;
-          });
+          await startRelease.promise;
         }
         if (command.op === 'status' && receiptsMissing) {
           return {
@@ -455,7 +453,7 @@ describe('app-update routes', () => {
       });
       expect(listServerAuditEvents(coreDb)[0]?.summary).not.toMatch(/handed/);
 
-      releaseStart?.();
+      startRelease.resolve();
       const started = await startPromise;
       expect(started.status).toBe(200);
       expect(listServerAuditEvents(coreDb).map((event) => event.action)).toEqual([

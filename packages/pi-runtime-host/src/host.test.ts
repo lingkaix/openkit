@@ -255,6 +255,36 @@ const toolThenText = (n: number): InferenceReply =>
     : { text: `answer-${n}` };
 
 describe('Pi runtime host', () => {
+  it('delivers an admitted Knowledge ask result after 303 seconds', async () => {
+    const f = await fixture((n, request) => {
+      if (n !== 1) return { text: 'knowledge complete' };
+      const name = request.body.tools?.find(
+        (tool) => tool.function.name === 'mcp__openkit_work__knowledge_ask'
+      )?.function.name;
+      if (!name) throw new Error('The native Knowledge ask tool is missing.');
+      return { toolCall: { name, arguments: { text: 'case' } } };
+    });
+    const plane = await admittedPlane(f, {
+      targetSentinel: true,
+      tools: [
+        {
+          name: 'knowledge_ask',
+          description: 'Read current Knowledge.',
+          inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
+        },
+      ],
+      toolDelayMs: { knowledge_ask: 303_000 },
+    });
+    const host = f.start();
+    expect(await f.open(host, { capabilityBaseUrl: plane.base })).toMatchObject({ ok: true });
+    await turn(host, 'knowledge-deadline', 'Ask Knowledge for one fact.');
+    expect(requestTexts(f.inference.requests.at(-1)!).join('\n')).toContain(
+      'openkit-work:knowledge_ask:case'
+    );
+    expect(plane.log.filter(({ method }) => method === 'tools/call')).toHaveLength(1);
+    expect(plane.log.filter(({ method }) => method === 'notifications/cancelled')).toHaveLength(0);
+  }, 340_000);
+
   it(
     'holds the fixed discovery prefix and prior tool history across native Turns',
     async () => {

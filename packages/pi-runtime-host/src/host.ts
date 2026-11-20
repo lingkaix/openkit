@@ -518,10 +518,16 @@ export class PiRuntimeHost {
       turn.turnId !== turnId ||
       this.#state !== 'active' ||
       turn.interrupted ||
-      turn.failure ||
-      turn.settingUp ||
-      !session?.isStreaming
+      turn.failure
     ) {
+      respond('refused', 'stale');
+      return;
+    }
+    if (turn.settingUp) {
+      respond('refused', 'busy');
+      return;
+    }
+    if (!session?.isStreaming) {
       respond('refused', 'stale');
       return;
     }
@@ -769,6 +775,7 @@ export class PiRuntimeHost {
             loadConfig: () =>
               gate.loadConfig(resourceLoader.getExtensions().runtime.mcpServers.list()),
             onConnectionState: (connection) => gate.connectionState(connection),
+            toolTimeoutMs: (server, tool) => gate.knowledgeToolTimeoutMs(server, tool),
           }),
           name: 'mcp',
           replaceable: false,

@@ -4,7 +4,8 @@ const state = vi.hoisted(() => ({ client: undefined as any, failChannel: false }
 vi.mock('../storage/control-store-worker-client.js', () => ({
   getControlStoreWorkerClient: () => state.client,
 }));
-vi.mock('node:worker_threads', () => ({
+vi.mock('node:worker_threads', async (load) => ({
+  ...(await load<typeof import('node:worker_threads')>()),
   BroadcastChannel: class {
     onmessage?: (event: { data: unknown }) => void;
     unref() {}

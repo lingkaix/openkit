@@ -838,13 +838,14 @@ describe('quick chat app API', () => {
           );
         const requests = failure === 'interrupt receipt' ? [stop(), stop()] : [stop()];
         const [stopped, concurrent] = await Promise.all(requests);
-        // Both original commands settle in the same terminal transaction.
-        expect(terminal).toHaveBeenCalledTimes(1);
-        // Observe the real native rejection, not a Promise treated as proof of a write.
-        await expect(terminal.mock.results[0]!.value).rejects.toMatchObject({
-          code: 'constraint',
-          commit: 'not-committed',
-        });
+        // A definite refusal permits one repeat of the original terminal publication.
+        expect(terminal).toHaveBeenCalledTimes(2);
+        for (const result of terminal.mock.results) {
+          await expect(result.value).rejects.toMatchObject({
+            code: 'constraint',
+            commit: 'not-committed',
+          });
+        }
         expect(store.getTurnById(turn.id).status).toBe('running');
         expect(signal.aborted).toBe(true);
         expect(stopped.status).toBe(409);
@@ -959,8 +960,15 @@ describe('quick chat app API', () => {
               }
             )
           );
-          expect(stopReplay.status).toBe(409);
-          await expect(stopReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+          expect(stopReplay.status).toBe(200);
+          expect(store.getTurnById(turn.id).status).toBe('interrupted');
+          expect(
+            store.getCommandRequest('turn.interrupt', '00000000-0000-4000-8000-000000000902', {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: turn.id,
+            })
+          ).not.toBeNull();
         }
         expect(createResponses).toHaveBeenCalledTimes(1);
         expect(

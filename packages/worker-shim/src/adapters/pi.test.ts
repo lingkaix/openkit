@@ -2821,11 +2821,20 @@ describe('Pi resident host', () => {
       await waitFor(() => hung.capability.log.some((entry) => entry.method === 'initialize'));
       expect(await sessionJsonlFiles(hung.dirs.stateRoot)).toEqual([]);
       expect((await early.nativeHandle()).state).toBe('pending');
+      const note = {
+        input: 'keep this draft during setup',
+        inputDigest: digestOf('keep this draft during setup'),
+        inputItemId: allocateEntityId('it'),
+      };
+      expect(hung.inference.requests).toHaveLength(0);
+      expect(await opening.steer!(note)).toEqual({ disposition: 'refused', reasonCode: 'busy' });
       await opening.interrupt();
       expect(await opening.settled).toMatchObject({
         status: 'interrupted',
         stopReason: 'worker-interrupted',
       });
+      expect(await opening.steer!(note)).toEqual({ disposition: 'refused', reasonCode: 'stale' });
+      expect(hung.inference.requests).toHaveLength(0);
       expect(await sessionJsonlFiles(hung.dirs.stateRoot)).toEqual([]);
       expect((await early.nativeHandle()).state).toBe('unknown');
       await expect(

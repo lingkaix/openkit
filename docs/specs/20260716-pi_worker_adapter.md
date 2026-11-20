@@ -83,6 +83,8 @@ Explicit text is concatenated in native order without separators, trimmed once, 
 
 Native MCP stays on protocol `2025-11-25` because pinned `pi-mcp` supports that set.
 
+On the host-managed `openkit-work` server, Pi gives the `knowledge_ask` and `knowledge_tell` native call timer and HTTP response wait the default Knowledge Manager deadline plus 15 seconds for admission and settlement. Those HTTP requests use both the native call and session cancellation signals. Pi's ordinary MCP timeouts apply to other calls and setup. A custom Knowledge Manager profile can exceed this wait.
+
 Startup selects the current native settings and defaults, with builtin suppression and additive modifiers. It does not load a retained transcript loadout. Registrations are preserved. There is no custom merge, reset, or eager rediscovery. Resident Turns keep activation.
 
 An exact successor rebuilds the current native and direct-plus-search selection. A previously searched inactive tool returns native unavailable with zero effect. An eligible tool may be searched again. It is never replayed, retried, or restored from history.

@@ -16,6 +16,7 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -24,7 +25,7 @@ import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-no
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
-import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
+import { parseOkfDocument, stringListFrontmatterField, updateOkfFrontmatter } from './okf.js';
 import { readSourcePointers } from './source-pointers.js';
 
 const emptyIndex = '---\nokf_version: "0.2"\n---\n# Notebook\n';
@@ -192,6 +193,7 @@ async function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = '
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {
+    coreDb,
     dataRoot,
     store,
     workspace,
@@ -230,6 +232,16 @@ describe('public Workspace tell intake framing', () => {
         'review.md': page(f.workspace.id, 'Review policy', 'Human Review remains required.', [
           supplied.reference,
         ]),
+        'scratch.md': updateOkfFrontmatter({
+          path: 'scratch.md',
+          content: page(
+            f.workspace.id,
+            'Unresolved note',
+            'An intentional draft about the release label.',
+            [supplied.reference]
+          ),
+          updates: { openkit_status: 'draft', status: 'draft' },
+        }),
       };
       const script = Object.entries(expectedPages)
         .map(([path, content]) => `cat > ${path} <<'PAGE'\n${content}PAGE`)
@@ -315,6 +327,25 @@ describe('public Workspace tell intake framing', () => {
     expect(candidate.files['index.md']).toContain('[Review policy](review.md)');
     const proposal = f.store.projectKnowledgeProposalDraft(f.workspace.id, result.proposalId!);
     expect(proposal).toMatchObject({ baseRevision: base, candidateRevision: candidate.revision });
+    for (const [path, lifecycle] of [
+      ['labels.md', 'active'],
+      ['scratch.md', 'draft'],
+    ] as const) {
+      const preview = await f.invoke(
+        'knowledge.proposal.read',
+        { workspaceId: f.workspace.id, proposalId: proposal.id, path, offset: 0 },
+        f.context
+      );
+      expect(preview).toMatchObject({
+        candidateRevision: candidate.revision,
+        after: candidate.files[path],
+        nextOffset: null,
+      });
+      expect(
+        parseOkfDocument({ path, content: preview.after! }).document?.frontmatter.openkit_status
+      ).toBe(lifecycle);
+    }
+    expect.soft(assembled.instructions).toMatch(/openkit_status: active/);
     const accepted = await f.invoke(
       'knowledge.proposal.decide',
       {
@@ -331,6 +362,27 @@ describe('public Workspace tell intake framing', () => {
     expect(accepted.review.actor).toEqual({ kind: 'user', id: f.context.actor.userId });
     expect(f.notebook.publishedRevision()).toBe(candidate.revision);
     expect(f.notebook.readRevision(candidate.revision).files).toEqual(candidate.files);
+    const visible = await retrieveWorkspaceKnowledge({
+      dataRoot: f.dataRoot,
+      workspaceId: f.workspace.id,
+      caller: 'app-api',
+      query: 'release label',
+      access: {
+        store: f.store,
+        coreDb: f.coreDb,
+        requestActor: f.context.actor,
+        actor: { kind: 'user', id: f.context.actor.userId },
+      },
+    });
+    expect(visible.selected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reference: expect.objectContaining({ objectId: 'labels' }),
+          sourceReferences: [supplied.reference],
+        }),
+      ])
+    );
+    expect(visible.excluded.map(({ reference }) => reference.objectId)).toContain('scratch');
     expect(await f.invoke('knowledge.tell', request, f.context)).toEqual(result);
     expect(f.run).toHaveBeenCalledTimes(1);
 
