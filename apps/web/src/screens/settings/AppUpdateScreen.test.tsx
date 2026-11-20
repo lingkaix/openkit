@@ -459,6 +459,7 @@ describe('App update administration', () => {
     expect(screen.getByText('Source match: Yes')).toBeInTheDocument();
     expect(screen.getByText('NanoHost ready: Not applicable')).toBeInTheDocument();
     expect(screen.getByText('Web assets: Not applicable')).toBeInTheDocument();
+    expect(screen.getByText('Readiness verified: Yes')).toBeInTheDocument();
   });
 
   it('inspects the same request after an uncertain start without replaying the effect', async () => {

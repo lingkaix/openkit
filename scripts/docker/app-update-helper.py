@@ -658,8 +658,13 @@ class AppUpdateHelper:
                         "Prepared source does not match the configured compatibility candidate.",
                     )
                 receipt["previousImageId"] = current_identity["id"]
-                receipt["previousBoot"] = self._boot_from_diagnostics(current_identity["id"], None)
-                self._require_previous_boot(receipt["previousBoot"])
+                previous = self._observe_boot(current_identity["id"], None)
+                if previous is None:
+                    raise HelperError(
+                        "app_update_unavailable",
+                        "Previous App boot observation is missing or malformed.",
+                    )
+                receipt["previousBoot"], previous_readiness = previous
                 self._snapshot_nanohost(receipt)
                 self._snapshot_retained_auth(receipt)
                 applied = self._live_applied_migrations()
@@ -717,7 +722,7 @@ class AppUpdateHelper:
                     raise HelperError("app_update_unavailable", stderr or "Candidate App failed to start.")
                 set_stage(receipt, "verifying")
                 self._write_receipt(receipt)
-                boot = self._verify(receipt, candidate)
+                boot = self._verify(receipt, candidate, previous_readiness)
                 receipt["candidateBoot"] = boot
                 if not isinstance(boot, dict) or not BOOT_ID_RE.match(str(boot.get("bootId") or "")):
                     raise HelperError(
@@ -1338,8 +1343,8 @@ class AppUpdateHelper:
         if not isinstance(subsystems, dict) or set(subsystems) != set(BOOT_SUBSYSTEM_NAMES):
             return None
         codes: List[str] = []
-        has_nonempty_blocks = False
-        has_critical_failure = False
+        readiness_blocks: Set[Tuple[str, str, str]] = set()
+        failed_subsystems: Set[str] = set()
         has_nonready = False
         for name in BOOT_SUBSYSTEM_NAMES:
             item = subsystems[name]
@@ -1350,8 +1355,8 @@ class AppUpdateHelper:
                 return None
             if state != "ready":
                 has_nonready = True
-            if name in CRITICAL_SUBSYSTEM_NAMES and state == "failed":
-                has_critical_failure = True
+            if state == "failed":
+                failed_subsystems.add(name)
             reasons = item.get("reasons")
             if not isinstance(reasons, list):
                 return None
@@ -1371,11 +1376,11 @@ class AppUpdateHelper:
                     not isinstance(entry, str) or not entry for entry in blocks
                 ):
                     return None
-                if blocks:
-                    has_nonempty_blocks = True
+                readiness_blocks.update((name, code, block) for block in blocks)
                 if len(codes) >= 32:
                     return None
                 codes.append(code)
+        has_critical_failure = not CRITICAL_SUBSYSTEM_NAMES.isdisjoint(failed_subsystems)
         expected_overall = "failed" if has_critical_failure else ("degraded" if has_nonready else "ready")
         if overall != expected_overall:
             return None
@@ -1385,9 +1390,8 @@ class AppUpdateHelper:
             "acceptingProductWork": accepting,
             "blockingReasons": codes,
             "bootId": boot_id,
-            "noBlockingReadiness": (
-                not has_nonempty_blocks and not has_critical_failure and overall in {"degraded", "ready"}
-            ),
+            "failedSubsystems": failed_subsystems,
+            "readinessBlocks": readiness_blocks,
         }
 
     def _observe_boot(
@@ -1411,25 +1415,6 @@ class AppUpdateHelper:
             },
             parsed,
         )
-
-    def _boot_from_diagnostics(self, image_id: Optional[str], source_commit: Optional[str]) -> Optional[Dict[str, Any]]:
-        """Projects boot readiness plus independently verified image/source identities."""
-        observed = self._observe_boot(image_id, source_commit)
-        if observed is None:
-            return None
-        return observed[0]
-
-    def _require_previous_boot(self, previous: Any) -> None:
-        if not isinstance(previous, dict) or not BOOT_ID_RE.match(str(previous.get("bootId") or "")):
-            raise HelperError(
-                "app_update_unavailable",
-                "Previous App boot observation is missing or malformed.",
-            )
-        if not DIGEST_RE.match(str(previous.get("imageId") or "")):
-            raise HelperError(
-                "app_update_unavailable",
-                "Previous App boot observation is missing or malformed.",
-            )
 
     def _positive_int(self, value: Any) -> Optional[int]:
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -1599,7 +1584,10 @@ class AppUpdateHelper:
             return False
         return observed == receipt.get("retainedAuthSnapshot")
 
-    def _verify(self, receipt: Dict[str, Any], candidate: Mapping[str, Any]) -> Dict[str, Any]:
+    def _verify(
+        self, receipt: Dict[str, Any], candidate: Mapping[str, Any], previous_readiness: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Require candidate identity, retained data and readiness without new capability blocks."""
         previous = receipt.get("previousBoot")
         previous_boot_id = (
             previous.get("bootId")
@@ -1655,13 +1643,18 @@ class AppUpdateHelper:
             web_ok = digest_tree(os.path.realpath(live)) == receipt.get("webStagedDigest")
         else:
             web_ok = None
+        accepting = boot["acceptingProductWork"] is True
         predicates = {
-            "acceptingProductWork": boot["acceptingProductWork"] is True,
+            "acceptingProductWork": accepting,
             "helperReachable": helper_ok,
             "imageMatch": image_match,
             "nanohostReady": nanohost_ok,
             "newBoot": previous_boot_id is not None and boot["bootId"] != previous_boot_id,
-            "noBlockingReadiness": parsed["noBlockingReadiness"] is True,
+            "noBlockingReadiness": (
+                accepting
+                and parsed["readinessBlocks"].issubset(previous_readiness["readinessBlocks"])
+                and parsed["failedSubsystems"].issubset(previous_readiness["failedSubsystems"])
+            ),
             "retainedAuthRead": retained_ok,
             "sourceMatch": source_match,
             "webAssets": web_ok,

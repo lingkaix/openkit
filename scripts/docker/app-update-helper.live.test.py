@@ -669,7 +669,7 @@ class FixtureAdmissionTests(unittest.TestCase):
             self.assertIsNotNone(parsed_ready)
             self.assertEqual(parsed_ready["bootId"], CURRENT_BOOT)
             self.assertEqual(parsed_ready["acceptingProductWork"], True)
-            self.assertTrue(parsed_ready["noBlockingReadiness"])
+            self.assertEqual(parsed_ready["readinessBlocks"], set())
             self.assertEqual(
                 tuple((diag_body or {}).get("boot", {}).get("subsystems") or {}),
                 FIXTURE_BOOT_SUBSYSTEM_NAMES,
@@ -724,7 +724,9 @@ class FixtureAdmissionTests(unittest.TestCase):
             parsed_fail = helper._parse_boot_readiness(cand_diag)
             self.assertIsNotNone(parsed_fail)
             self.assertEqual(parsed_fail["bootId"], CANDIDATE_BOOT)
-            self.assertFalse(parsed_fail["noBlockingReadiness"])
+            self.assertEqual(
+                parsed_fail["readinessBlocks"], {("scheduler", "fixture.candidate_not_ready", "product_work")}
+            )
             self.assertIn("fixture.candidate_not_ready", parsed_fail["blockingReasons"])
             self.assertEqual(
                 tuple((cand_diag or {}).get("boot", {}).get("subsystems") or {}),

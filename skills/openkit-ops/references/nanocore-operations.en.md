@@ -169,6 +169,8 @@ Container replacement replays only environment entries that differ from the old 
 
 The helper's retained-auth observation compares nonempty persistent token metadata through the existing administrator endpoint, ignoring last-use fields. It does not establish private Workspace continuity. Use a separately authorized Workspace credential to verify the relevant retained product records after replacement.
 
+The readiness check compares the candidate with the previous running App. An existing Gateway block can remain during the update and stays visible in authenticated diagnostics. A new readiness block, a newly failed subsystem, a critical failure, or missing or malformed readiness evidence fails verification.
+
 ## Replace An Installed NanoHost Release
 
 For NanoHost upgrades, use an external Agent with this `openkit-ops` Skill and the user's authorized host administrator tools. Ask it to inspect the existing host and prepare the exact release transition, then carry out the authorized maintenance window and report the deciding evidence. For example: “Use openkit-ops to replace NanoHost on my selected execution host with this exact release, preserving its identity, enrollment, credential slots, configuration, images and Worker data; inspect compatibility and affected work before interruption.” The Skill and its administrator CLI grant no host access; an Agent without that capability reports it unavailable.
