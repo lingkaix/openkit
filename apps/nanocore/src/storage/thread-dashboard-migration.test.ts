@@ -73,12 +73,7 @@ it.each(['core', 'workspace'] as const)(
     try {
       expect(listAppliedNativeMigrationIds(target.sqlite, kind)).toEqual(
         kind === 'core'
-          ? [
-              'core_0000_baseline',
-              'core_0001_discord_reports_bindings',
-              'core_0002_discord_reports_delivery',
-              'core_0003_discord_reports_ambient',
-            ]
+          ? ['core_0000_baseline']
           : ['workspace_0000_baseline', 'workspace_0001_agent_session_current_thread']
       );
       const rows = target.sqlite

@@ -7,12 +7,7 @@ import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { type CoreDb, openCoreReadDb, openWorkspaceReadDb, type WorkspaceDb } from './db.js';
 
 const journalTags = {
-  core: [
-    '0000_baseline',
-    '0001_discord_reports_bindings',
-    '0002_discord_reports_delivery',
-    '0003_discord_reports_ambient',
-  ],
+  core: ['0000_baseline'],
   workspace: ['0000_baseline', '0001_agent_session_current_thread'],
 } as const;
 

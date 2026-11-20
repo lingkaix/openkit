@@ -7,12 +7,6 @@ import { openCoreDb, openUserDb, openWorkspaceDb } from './db.js';
 import { createStorageLayoutReport } from './layout-report.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 
-const coreMigrations = [
-  'core_0000_baseline',
-  'core_0001_discord_reports_bindings',
-  'core_0002_discord_reports_delivery',
-  'core_0003_discord_reports_ambient',
-];
 const dataRoots: string[] = [];
 
 afterEach(() => {
@@ -55,7 +49,7 @@ describe('storage layout report', () => {
         'workspace_0000_baseline',
         'workspace_0001_agent_session_current_thread',
       ]);
-      expect(report.serverDb.appliedMigrations).toEqual(coreMigrations);
+      expect(report.serverDb.appliedMigrations).toEqual(['core_0000_baseline']);
       expect(report.serverDb.appliedMigrations).not.toContain('workspace_0000_baseline');
       expect(workspace.sqlite.serialize().equals(before)).toBe(true);
     } finally {
@@ -78,7 +72,7 @@ describe('storage layout report', () => {
       const report = await createStorageLayoutReport(dataRoot);
 
       expect(report.serverDb.exists).toBe(true);
-      expect(report.serverDb.appliedMigrations).toEqual(coreMigrations);
+      expect(report.serverDb.appliedMigrations).toEqual(['core_0000_baseline']);
       expect(report.users).toEqual(
         expect.arrayContaining([
           {
