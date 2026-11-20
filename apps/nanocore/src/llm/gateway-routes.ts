@@ -68,6 +68,7 @@ import {
   GatewayAttemptFailure,
   type GatewayClock,
   type GatewaySelection,
+  isGatewayCancellation,
   LogicalModelRoutesExhaustedError,
   planLogicalModel,
   planLogicalModelAsync,
@@ -1438,10 +1439,11 @@ function normalizeGatewayTerminalStream(
   let released = false;
   let terminal = false;
   let terminalFailureCode: string | undefined;
+  let responseCompleted = false;
   let frames = '';
   const decoder = new TextDecoder();
 
-  /** Carries an already released terminal failure into logical closeout, without classifying Provider evidence. */
+  /** Retains terminal frames after delivery checks so disconnect does not replace their outcome. */
   function observeTerminalFrames(chunk: Uint8Array): void {
     frames += decoder.decode(chunk, { stream: true });
     let boundary = /\r?\n\r?\n/.exec(frames);
@@ -1475,9 +1477,11 @@ function normalizeGatewayTerminalStream(
               )?.[0] ?? 'unknown';
             options.onFailure?.({ failure: { kind, settled: false } });
           }
+        } else if (endpoint === 'responses' && event?.type === 'response.completed') {
+          responseCompleted = true;
         }
       } catch {
-        /* Non-JSON comments and DONE carry no failed outcome. */
+        /* Non-JSON comments and DONE carry no Responses outcome. */
       }
       frames = frames.slice(boundary.index + boundary[0].length);
       boundary = /\r?\n\r?\n/.exec(frames);
@@ -1506,8 +1510,11 @@ function normalizeGatewayTerminalStream(
         try {
           await finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
-            terminalFailureCode ? 'failed' : 'aborted',
-            terminalFailureCode ?? options.cancellationCode ?? 'llm_gateway_cancelled'
+            terminalFailureCode ? 'failed' : responseCompleted ? 'succeeded' : 'aborted',
+            terminalFailureCode ??
+              (responseCompleted
+                ? undefined
+                : (options.cancellationCode ?? 'llm_gateway_cancelled'))
           );
         } finally {
           releaseReader();
@@ -1538,6 +1545,15 @@ function normalizeGatewayTerminalStream(
         }
         terminal = true;
         const cancelled = isGatewayCancellation(error, options.signal);
+        if (cancelled && responseCompleted && terminalFailureCode === undefined) {
+          try {
+            await finishDurableLlmGatewayStreamCall(options.durableCall ?? null, 'succeeded');
+          } finally {
+            releaseReader();
+          }
+          controller.close();
+          return;
+        }
         const envelopeFailureCode = options.failureCode ?? 'llm_gateway_stream_failed';
         if (!cancelled && terminalFailureCode === undefined) options.onFailure?.(error);
         try {
@@ -1604,23 +1620,6 @@ function normalizeGatewayTerminalStream(
       controller.enqueue(result.value);
     },
   });
-}
-
-/**
- * Checks whether a provider stream ended because request cancellation won.
- *
- * @param error Upstream stream failure.
- * @param signal Request cancellation signal.
- * @returns True when the failure represents cancellation.
- */
-function isGatewayCancellation(error: unknown, signal?: AbortSignal): boolean {
-  return Boolean(
-    signal?.aborted &&
-      (error === signal.reason ||
-        (error instanceof GatewayAttemptFailure &&
-          error.failure.kind === 'cancelled' &&
-          error.cause === signal.reason))
-  );
 }
 
 /**
