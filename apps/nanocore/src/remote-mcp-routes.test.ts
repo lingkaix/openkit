@@ -486,15 +486,11 @@ describe('remote MCP App endpoint', () => {
         });
       }
       const guide = await f.call('openkit_guide', {}, admin.secret);
-      expect(guide.content[0].text).toContain('knowledge.package.export');
-      expect(guide.content[0].text).toContain('knowledge.package.import');
-      expect(guide.content[0].text).toContain('authenticated native App API');
-      expect(guide.content[0].text).toContain('ordinary users use their Web file controls');
+      expect(guide.content[0].text).toContain('use a streaming binding');
+      expect(guide.content[0].text).toContain('existing authenticated streaming App API binding');
+      expect(guide.content[0].text).toContain('authorized Web file controls');
       expect(guide.content[0].text).toContain(
-        'Workspace archives and Artifact import/download are streaming-only'
-      );
-      expect(guide.content[0].text).toContain(
-        'File bytes never enter a JSON MCP argument or result'
+        'Bytes from streaming-only operations do not enter JSON MCP arguments or results.'
       );
       expect(guide.content[0].text).toContain('administrator CLI');
     } finally {
@@ -1185,7 +1181,7 @@ describe('remote MCP App endpoint', () => {
       expect(result.isError).not.toBe(true);
       expect(native).toHaveBeenCalledWith('workspace.list', {}, expect.any(Object));
       const guide = await f.call('openkit_guide', {}, token.secret);
-      expect(guide.content[0].text).toContain('Use openkit_search');
+      expect(guide.content[0].text).toContain('use openkit_search');
       expect(guide.content[0].text).toContain('openkit_read');
       expect(guide.content[0].text).toContain('openkit_describe');
       expect(guide.content[0].text).toContain('openkit_call');
@@ -1767,16 +1763,31 @@ describe('remote MCP App endpoint', () => {
     const f = await fixture();
     const token = f.token();
     const guide = await f.call('openkit_guide', {}, token.secret);
-    expect(guide.content[0].text.split('\n\n')[2]).toBe(
+    expect(guide.content[0].text.split('\n\n')[3]).toBe(
       'Follow the product loop: select a Workspace, inspect authorized resources and data sources, select or create a Thread, and read its durable state. Inspect repositories only when a Git source or code host is selected. Use Chat for a lightweight answer, Task for bounded delegated work, or Goal for a continuous outcome with immutable Plan approval and completion acceptance. Describe Goal operations before use; card and intent edits do not steer running workers, and there is no Goal step, pause or resume. Formal Task/Goal Threads use workspace visibility explicitly. Read Action Center, the exact receiving Thread and Turn, artifacts, evidence, audit and usage before reporting completion. Command acceptance and configured Worker health do not prove Worker success. Private audiences and credential limits remain enforced even when operation metadata is visible.'
     );
-    expect(guide.content[0].text.split('\n\n')[3]).toBe(
+    expect(guide.content[0].text.split('\n\n')[4]).toBe(
       'Read durable state after a mutation. A transport failure does not prove that an effect did not happen. Inspect the owner outcome before retrying; reuse the exact requestId only for an exact replay with unchanged input. Never claim cancellation from a disconnected client. Follow long work through bounded reads with a deadline. For recovery_required, stale lineage, denied admission or contradictory evidence, retain the typed refusal and inspect the owning records; do not manufacture receipts, edit storage, silently substitute Worker storage or automatically rerun work. Worker storage selection is an eligibility preview, not attachment or retained work-slot recovery. Preserve exact storage revisions and predecessor work-slot lineage. Administrator-originated Tasks retain the presented credential for later effect revalidation.'
     );
     expect(guide.content[0].text).toContain('Ask the user');
-    expect(guide.content[0].text).toContain('allow only selected reads and ask on mutations');
+    expect(guide.content[0].text).toContain(
+      'allow only the read tools you intend to trust and ask on mutations'
+    );
+    expect(guide.content[0].text).toMatch(
+      /Deposit —.*material_create.*material\.revision-save.*expectedRevisionId.*material\.revision-read.*compare content and digest/
+    );
+    expect(guide.content[0].text).toMatch(
+      /Hand-off —.*task_start.*acceptance is not completion.*turn_read.*bounded polling deadline/
+    );
+    const malformedGuide = await f.call(
+      'openkit_guide',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      token.secret
+    );
+    expect(malformedGuide.isError).toBe(true);
+    expect(JSON.parse(malformedGuide.content[0].text).code).toBe('invalid_request');
     expect(guide.content[0].text).not.toContain('default_tools_approval_mode');
-    expect(guide.content[0].text).toContain('Search OpenKit Skills before acting.');
+    expect(guide.content[0].text).toContain('Search OpenKit Skills before acting:');
     expect(guide.content[0].text).not.toMatch(
       /not yet migrated|Goal execution remains unavailable/
     );
@@ -1811,6 +1822,78 @@ describe('remote MCP App endpoint', () => {
     expect(
       (await f.app.request('http://127.0.0.1/.well-known/oauth-protected-resource')).status
     ).toBe(404);
+  });
+
+  it('deposits local text through create and revision save, then reads back the exact revision', async () => {
+    const f = await fixture();
+    const token = f.token();
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const content = 'Independent readback of the deposited result.\n';
+    const contentDigest = materialDigest(content);
+    try {
+      const created = await f.call(
+        'material_create',
+        {
+          workspaceId,
+          title: 'Local result',
+          kind: 'text',
+          sensitivity: 'internal',
+          requestId: randomUUID(),
+        },
+        token.secret
+      );
+      expect(created.isError).not.toBe(true);
+      const { materialId } = JSON.parse(created.content[0].text);
+      expect(typeof materialId).toBe('string');
+      expect(JSON.parse(created.content[0].text)).toEqual({ materialId });
+      const input = {
+        workspaceId,
+        materialId,
+        content,
+        contentDigest,
+        expectedRevisionId: null,
+        requestId: randomUUID(),
+      };
+      const saved = await f.call(
+        'openkit_call',
+        { operation: 'material.revision-save', input },
+        token.secret
+      );
+      expect(saved.isError).not.toBe(true);
+      const { revisionId } = JSON.parse(saved.content[0].text);
+      expect(typeof revisionId).toBe('string');
+      const read = () =>
+        f.call(
+          'openkit_read',
+          {
+            operation: 'material.revision-read',
+            input: { workspaceId, materialId, revisionId },
+          },
+          token.secret
+        );
+      const observed = await read();
+      expect(observed.isError).not.toBe(true);
+      expect(JSON.parse(observed.content[0].text).revision).toMatchObject({
+        revisionId,
+        materialId,
+        content,
+        contentDigest,
+      });
+      const stale = await f.call(
+        'openkit_call',
+        {
+          operation: 'material.revision-save',
+          input: { ...input, requestId: randomUUID() },
+        },
+        token.secret
+      );
+      expect(stale.isError).toBe(true);
+      expect(JSON.parse(stale.content[0].text)).toMatchObject({ code: 'conflict', status: 409 });
+      expect(await read()).toEqual(observed);
+    } finally {
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('invokes natively as the Token user and records server-owned channel and credential attribution', async () => {

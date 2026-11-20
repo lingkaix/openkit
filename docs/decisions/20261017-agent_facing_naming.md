@@ -7,7 +7,7 @@ decider: Engineer
 
 ## Decision
 
-[Operation Definition](../specs/20261002-operation_definition.md#names) owns one naming rule for release-owned agent-facing operations and Tools. Canonical IDs are lowercase dotted paths; words within a segment use hyphens. Model names replace dots with underscores only. Operation projections use the operation's actual ID. The Agent Interface's own Tools use the `openkit` namespace; its four Server MCP Tools are `openkit_search`, `openkit_describe`, `openkit_guide` and `openkit_call`. A repository check enforces grammar, projected length at most 40 and uniqueness after also folding hyphens to underscores. The owner documents verified compatibility facts and explicit limits.
+[Operation Definition](../specs/20261002-operation_definition.md#names) owns one naming rule for release-owned agent-facing operations and Tools. Canonical IDs are lowercase dotted paths; words within a segment use hyphens. Model names replace dots with underscores only. Operation projections use the operation's actual ID. The Agent Interface's fixed tools use the `openkit` namespace; promoted tools use the operation's own derived name. Operation Definition owns the remote projection. A repository check enforces grammar, projected length at most 40 and uniqueness after also folding hyphens to underscores. The owner documents verified compatibility facts and explicit limits.
 
 ## Reason
 
