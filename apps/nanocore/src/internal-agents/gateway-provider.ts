@@ -19,7 +19,11 @@ import {
 } from '../llm/gateway-execution.js';
 import { dispatchLogicalModel, projectGatewayFailure } from '../llm/gateway-routes.js';
 import { recordInternalLlmGatewayUsage } from '../llm/gateway-usage.js';
-import { type ResolvedLogicalModel, resolveEffectiveModelMetadata } from '../llm/logical-models.js';
+import {
+  type LogicalModelSupply,
+  type ResolvedLogicalModel,
+  resolveEffectiveModelMetadata,
+} from '../llm/logical-models.js';
 import { type ModelCaptureContext, ModelCaptureError } from '../llm/model-capture.js';
 import {
   OpenAICompatibleProviderError,
@@ -30,7 +34,7 @@ import type { PiAiFailure, PiAiFailureKind } from '../llm/pi-ai-failure.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import { TurnStartValidationError } from '../operation-error.js';
-import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import type { RegistryGatewayProviderResolver } from '../providers/llm-config.js';
 import { openAdmittedWorkspaceReadDb, openCoreReadDb } from '../storage/db.js';
 import type {
   AgentAssistantMessage,
@@ -62,17 +66,14 @@ export interface InternalAgentGatewayProviderOptions {
   readonly logicalModel: ResolvedLogicalModel;
   /** Selected internal-role profile effort, pinned for ordinary and compaction requests. */
   readonly reasoningEffort?: ReasoningEffort;
-  /** Resolves the pinned ID from the current snapshot and live availability at each Provider call. */
-  readonly resolveLogicalModel: (logicalModelId: string) => ResolvedLogicalModel | null;
+  /** Captures the current route and its exact registry for each new Provider call. */
+  readonly resolveLogicalModelSupply: (logicalModelId: string) => LogicalModelSupply | null;
   /** Entry-owned attribution for each logical model invocation; Turn and database come from admitted capture. */
   readonly callContext?: GatewayCallContext | ServerGatewayCallContext;
   /** Entry-validated command context for audit only; never a call-start request key. */
   readonly auditLineage?: CapabilityAuditLineage;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
-  readonly resolveGatewayProvider: (
-    providerId: string,
-    model: string
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  readonly resolveGatewayProvider: RegistryGatewayProviderResolver;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly promptCacheScope: {
     readonly sessionId: string;
@@ -153,8 +154,9 @@ export function createInternalAgentGatewayProvider(
               })
             : undefined
         : undefined;
-      const logicalModel = options.resolveLogicalModel(options.logicalModel.id);
-      if (!logicalModel) throw new LogicalModelRoutesExhaustedError();
+      const selectedSupply = options.resolveLogicalModelSupply(options.logicalModel.id);
+      if (!selectedSupply) throw new LogicalModelRoutesExhaustedError();
+      const { logicalModel, registry } = selectedSupply;
       const selected = await dispatchLogicalModel({
         ...(call ? { ledger: { workspaceDb, call } } : {}),
         logicalModel,
@@ -176,7 +178,8 @@ export function createInternalAgentGatewayProvider(
           observedStatus = undefined;
           dispatchCorrelation = correlation;
         },
-        resolveGatewayProvider: options.resolveGatewayProvider,
+        resolveGatewayProvider: (id, model, context) =>
+          options.resolveGatewayProvider(id, model, context, registry),
         ...(options.providerSubscriptionAccountManager
           ? { providerSubscriptionAccountManager: options.providerSubscriptionAccountManager }
           : {}),

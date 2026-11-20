@@ -778,6 +778,7 @@ describe('OpenAI-compatible agent gateway', () => {
     'uses authored failover and keeps private routes hidden: %s',
     async (autoFailover) => {
       const attempts: Array<{ model: string; providerId: string }> = [];
+      const backupEndpoints: (string | null)[] = [];
       const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
       onTestFinished(async () => {
         await shutdownControlStoreWorkerClient();
@@ -785,7 +786,7 @@ describe('OpenAI-compatible agent gateway', () => {
         rmSync(storeRoot, { recursive: true, force: true });
       });
       const fixtureStore = createTestStore({ dataRoot: storeRoot });
-      const app = createApp({
+      const initial = createInMemoryRuntimeConfigSnapshot({
         gatewayConfig: {
           schemaVersion: 1,
           enabled: true,
@@ -816,6 +817,7 @@ describe('OpenAI-compatible agent gateway', () => {
             vendor: 'openai',
           },
           {
+            baseUrl: 'https://old-backup.example.test',
             displayName: 'Backup',
             id: 'openrouter-backup',
             kind: 'local',
@@ -823,14 +825,35 @@ describe('OpenAI-compatible agent gateway', () => {
             vendor: 'openrouter',
           },
         ]),
+      });
+      const manager = createRuntimeConfigManager({ dataRoot: storeRoot, initialSnapshot: initial });
+      const replacement = createInMemoryRuntimeConfigSnapshot({
+        ...initial,
+        version: initial.version + 1,
+        providerRegistry: new ProviderRegistry(
+          initial.providerRegistry
+            .list()
+            .map((profile) =>
+              profile.id === 'openrouter-backup'
+                ? { ...profile, baseUrl: 'https://new-backup.example.test' }
+                : profile
+            )
+        ),
+      });
+      let active = initial;
+      vi.spyOn(manager, 'current').mockImplementation(() => active);
+      const app = createApp({
+        runtimeConfigManager: manager,
         llmGatewayDispatcher: {
           createChatCompletion: async (provider, request) => {
             attempts.push({ model: request.model, providerId: provider.id });
             if (provider.id === 'openai-primary') {
+              active = replacement;
               throw attachPiAiFailure(
                 new OpenAICompatibleProviderError({ message: 'quota', status: 429 })
               ) as OpenAICompatibleProviderError;
             }
+            backupEndpoints.push(provider.baseUrl);
             return {
               id: 'chatcmpl_fallback',
               object: 'chat.completion',
@@ -849,22 +872,24 @@ describe('OpenAI-compatible agent gateway', () => {
         store: fixtureStore,
       });
 
-      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-      let res: Awaited<ReturnType<typeof app.request>>;
-      try {
-        res = await settleFakedBackoff(
-          app.request('/v1/chat/completions', {
-            method: 'POST',
-            body: JSON.stringify({
-              model: 'reasoning',
-              messages: [{ role: 'user', content: 'Hello' }],
-            }),
-            headers: { 'content-type': 'application/json' },
-          })
-        );
-      } finally {
-        vi.useRealTimers();
-      }
+      const request = async () => {
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+        try {
+          return await settleFakedBackoff(
+            app.request('/v1/chat/completions', {
+              method: 'POST',
+              body: JSON.stringify({
+                model: 'reasoning',
+                messages: [{ role: 'user', content: 'Hello' }],
+              }),
+              headers: { 'content-type': 'application/json' },
+            })
+          );
+        } finally {
+          vi.useRealTimers();
+        }
+      };
+      const res = await request();
 
       if (autoFailover === false) {
         expect(res.status).toBe(429);
@@ -881,6 +906,12 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(attempts).toEqual([
         ...Array.from({ length: 4 }, () => ({ model: 'gpt-5.1', providerId: 'openai-primary' })),
         { model: 'openai/gpt-5.1', providerId: 'openrouter-backup' },
+      ]);
+      expect(backupEndpoints).toEqual(['https://old-backup.example.test']);
+      expect((await request()).status).toBe(200);
+      expect(backupEndpoints).toEqual([
+        'https://old-backup.example.test',
+        'https://new-backup.example.test',
       ]);
     }
   );

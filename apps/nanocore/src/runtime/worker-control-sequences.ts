@@ -31,35 +31,8 @@ export function acceptWorkerControlSequence(
   coreDb: CoreDb,
   input: WorkerControlSequenceRecorderInput
 ): WorkerControlSequenceRecorderResult {
-  const existing = coreDb.sqlite
-    .prepare(
-      `
-      SELECT fingerprint
-      FROM worker_control_sequence_fingerprints
-      WHERE agent_session_id = ?
-        AND package_snapshot_id = ?
-        AND operation = ?
-        AND sequence = ?
-      `
-    )
-    .get(
-      input.lineage.agentSessionId,
-      input.lineage.packageSnapshotId,
-      input.operation,
-      input.sequence
-    ) as { fingerprint: string } | undefined;
-
-  if (existing) {
-    // Stored JSON is original evidence; replay compares its complete value without rewriting it.
-    let duplicate = false;
-    try {
-      duplicate = isDeepStrictEqual(
-        JSON.parse(existing.fingerprint),
-        JSON.parse(input.fingerprint)
-      );
-    } catch {
-      // A malformed retained fingerprint cannot establish an accepted replay.
-    }
+  const duplicate = matchesAcceptedWorkerControlSequence(coreDb, input);
+  if (duplicate !== null) {
     if (!duplicate) {
       return {
         code: 'worker_control_sequence_conflict',
@@ -121,6 +94,37 @@ export function acceptWorkerControlSequence(
     nextExpectedSequence: nextExpectedSequence(coreDb, input),
     status: 'accepted',
   };
+}
+
+/** Compares a retained observation without accepting a new sequence or changing liveness. */
+export function matchesAcceptedWorkerControlSequence(
+  coreDb: CoreDb,
+  input: WorkerControlSequenceRecorderInput
+): boolean | null {
+  const existing = coreDb.sqlite
+    .prepare(
+      `
+      SELECT fingerprint
+      FROM worker_control_sequence_fingerprints
+      WHERE agent_session_id = ?
+        AND package_snapshot_id = ?
+        AND operation = ?
+        AND sequence = ?
+      `
+    )
+    .get(
+      input.lineage.agentSessionId,
+      input.lineage.packageSnapshotId,
+      input.operation,
+      input.sequence
+    ) as { fingerprint: string } | undefined;
+  if (!existing) return null;
+  // Stored JSON is original evidence. Malformed data cannot prove an exact replay.
+  try {
+    return isDeepStrictEqual(JSON.parse(existing.fingerprint), JSON.parse(input.fingerprint));
+  } catch {
+    return false;
+  }
 }
 
 /**

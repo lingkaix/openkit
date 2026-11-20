@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { workerHeartbeatTick } from './control-client.js';
 import { WorkerControlClient, WorkerControlError, type WorkerControlFetch } from './index.js';
 
 const lineage: WorkerLineage = {
@@ -857,6 +858,82 @@ describe('WorkerControlClient', () => {
     await expect(second).rejects.toBe(abortReason);
     await expect(client.recordHeartbeat({ status: 'completed' })).resolves.toEqual(heartbeatAck);
     expect(sequences).toEqual([0, 1]);
+  });
+
+  it.each([
+    'readback accepted',
+    'ordinary stale',
+    'fresh proof refused',
+    'fresh proof ACK lost',
+  ] as const)('bounds exact-next adoption after a lost heartbeat ACK (%s)', async (outcome) => {
+    const requests: Array<{ sequence?: number; keyed: boolean; operation: string }> = [];
+    let noticeAttempts = 0;
+    const reply = (status: number, body: unknown) => ({
+      ok: status === 200,
+      status,
+      text: async () => JSON.stringify(body),
+    });
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      lineage,
+      token: 'control-fixture',
+      fetch: async (path, init) => {
+        const { sequence, reconnectKey } = JSON.parse(init.body);
+        const heartbeat = path.endsWith('/heartbeat');
+        requests.push({
+          ...(heartbeat ? { sequence } : {}),
+          keyed: reconnectKey !== undefined,
+          operation: heartbeat ? 'heartbeat' : 'artifact',
+        });
+        if (!heartbeat) {
+          noticeAttempts += 1;
+          return noticeAttempts === 1
+            ? reply(503, { code: 'worker_control_reconnect_required' })
+            : reply(200, { accepted: true });
+        }
+        if (sequence === 2 && reconnectKey === undefined) throw new TypeError('ACK lost.');
+        if (sequence === 2)
+          return reply(409, {
+            code:
+              outcome === 'ordinary stale'
+                ? 'worker_control_sequence_stale'
+                : 'worker_control_heartbeat_already_accepted',
+          });
+        if (sequence === 3 && outcome === 'fresh proof refused')
+          return reply(503, { code: 'worker_control_reconnect_required' });
+        if (sequence === 3 && outcome === 'fresh proof ACK lost')
+          throw new TypeError('Fresh proof ACK lost.');
+        return reply(200, heartbeatAck);
+      },
+    });
+    const signal = new AbortController().signal;
+    await client.recordHeartbeat({ status: 'starting' });
+    client.enablePostLaunchRecovery();
+    await expect(client[workerHeartbeatTick](signal, signal, () => {})).resolves.toBe(true);
+    await expect(client[workerHeartbeatTick](signal, signal, () => {})).resolves.toBe(false);
+
+    const blocked = client.recordArtifactNotice(notice);
+    if (outcome === 'readback accepted') await expect(blocked).resolves.toEqual({ accepted: true });
+    else {
+      await expect(blocked).rejects.toMatchObject({
+        code:
+          outcome === 'ordinary stale'
+            ? 'worker_control_sequence_stale'
+            : 'worker_control_reconnect_confirmation_failed',
+      });
+    }
+
+    expect(requests).toEqual([
+      { sequence: 0, keyed: false, operation: 'heartbeat' },
+      { sequence: 1, keyed: false, operation: 'heartbeat' },
+      { sequence: 2, keyed: false, operation: 'heartbeat' },
+      { keyed: false, operation: 'artifact' },
+      { sequence: 2, keyed: true, operation: 'heartbeat' },
+      ...(outcome === 'ordinary stale'
+        ? []
+        : [{ sequence: 3, keyed: true, operation: 'heartbeat' }]),
+      ...(outcome === 'readback accepted' ? [{ keyed: false, operation: 'artifact' }] : []),
+    ]);
   });
 
   it('stops retrying retryable failures after disablePostLaunchRecovery is called', async () => {

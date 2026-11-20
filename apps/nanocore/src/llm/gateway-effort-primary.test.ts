@@ -42,6 +42,8 @@ import {
   LLMGatewayProviderDispatcher,
 } from './provider-dispatcher.js';
 
+const fixtureGatewayRegistry = new ProviderRegistry([]);
+
 const WORKER_LOGICAL_MODEL_ID = 'worker-reasoning';
 const WORKER_PROVIDER_ID = 'agent-openai';
 const WORKER_PROVIDER_MODEL = 'gpt-5.4';
@@ -439,7 +441,10 @@ async function postQuickChat(): Promise<{ sent: unknown; entry: ReturnType<typeo
     capture: { workspaceDb, threadId: thread.id, turnId: turn.id },
     logicalModel: quickChatLogicalModel,
     reasoningEffort: 'high',
-    resolveLogicalModel: () => quickChatLogicalModel,
+    resolveLogicalModelSupply: () => ({
+      logicalModel: quickChatLogicalModel,
+      registry: fixtureGatewayRegistry,
+    }),
     resolveGatewayProvider: () => config,
     dispatcher,
     promptCacheScope: { sessionId: 'quick-chat' },

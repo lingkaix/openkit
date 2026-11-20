@@ -18,11 +18,14 @@ import { OpenAICompatibleProviderError } from '../llm/openai-compatible-client.j
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestStore } from '../test-support/store.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
+
+const fixtureGatewayRegistry = new ProviderRegistry([]);
 
 const roots: string[] = [];
 const databases: WorkspaceDb[] = [];
@@ -124,7 +127,10 @@ async function bindProvider(
   const provider = createInternalAgentGatewayProvider({
     capture,
     logicalModel,
-    resolveLogicalModel: () => logicalModel,
+    resolveLogicalModelSupply: () => ({
+      logicalModel: logicalModel,
+      registry: fixtureGatewayRegistry,
+    }),
     dispatcher: new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient({ models }) }),
     resolveGatewayProvider: resolve,
     promptCacheScope: {

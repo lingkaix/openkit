@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { commandRequestValues, parseCommandScope } from './command-request-codecs.js';
 import { commandRequestKey } from './command-request-records.js';
+import { reconcileDiscordGuildReceipts } from './discord-guild-receipts.js';
 
 const EVENT_COMMAND = 'channel.discord.inbound' as const;
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -115,9 +116,14 @@ export function settleDiscordInboundCommand(
 /** Marks every dispatch left open by a stopped process as unknown; nothing is retried. */
 export function reconcileDiscordInboundCommands(sqlite: Database.Database): number {
   return sqlite
-    .prepare(
-      `UPDATE idempotency_requests SET response_json = json_set(response_json,'$.state','response-unknown')
-       WHERE ${DISPATCHING}`
-    )
-    .run().changes;
+    .transaction(() => {
+      const direct = sqlite
+        .prepare(
+          `UPDATE idempotency_requests SET response_json = json_set(response_json,'$.state','response-unknown')
+       WHERE ${DISPATCHING} AND request_id NOT GLOB '[[]*'`
+        )
+        .run().changes;
+      return direct + reconcileDiscordGuildReceipts(sqlite);
+    })
+    .immediate();
 }

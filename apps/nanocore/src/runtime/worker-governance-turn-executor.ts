@@ -154,6 +154,7 @@ import {
   recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
+  withSchedulerPreparationPublication,
 } from './execution-attempts.js';
 import { requireExecutionCredentialReceipts } from './execution-backend.js';
 import {
@@ -1483,7 +1484,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     input: CommitPreparedAgentSessionForTurnInput
   ): Promise<SchedulerWorkerStorageChoice | undefined> {
     const { prepared } = input;
-    if (!this.coreDb) throw new Error('Attempt preparation requires Core storage.');
+    const coreDb = this.coreDb;
+    if (!coreDb) throw new Error('Attempt preparation requires Core storage.');
     this.recheckPreparedLogin(
       {
         ...input.preparation,
@@ -1493,7 +1495,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       },
       prepared.agentSessionId
     );
-    await bindNanoHostAttemptPreparation(this.coreDb, {
+    await bindNanoHostAttemptPreparation(coreDb, {
       attemptId: input.attemptId,
       agentSessionId: prepared.agentSessionId,
       inputRef: `aepsnap_${input.preparation.turn.id}_${prepared.agentSessionId}`,
@@ -1519,8 +1521,34 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         : {}),
       ...(workerStorageChoice ? { workerStorageChoice } : {}),
     };
-    const checkLogin = () => this.recheckPreparedLogin(preparation, prepared.agentSessionId);
-    checkLogin();
+    const workspaceId = workspaceIdForOwner(preparation.turn.owner);
+    const expired = new TurnStartValidationError(
+      'worker_preparation_failed',
+      'Worker preparation deadline expired.',
+      409
+    );
+    const assertPreparationCurrent = () => {
+      const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+      if (attempt.terminalCause === 'preparation-deadline') throw expired;
+      if (
+        attempt.phase !== 'open' ||
+        attempt.deadline !== null ||
+        attempt.agentSessionId !== prepared.agentSessionId ||
+        attempt.workspaceId !== workspaceId ||
+        attempt.threadId !== preparation.turn.threadId ||
+        attempt.turnId !== preparation.turn.id
+      )
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'AgentSession preparation lost its original execution attempt.',
+          409
+        );
+    };
+    const checkPreparation = () => {
+      assertPreparationCurrent();
+      this.recheckPreparedLogin(preparation, prepared.agentSessionId);
+    };
+    checkPreparation();
     const loginReplacement = !!prepared.harnessLoginSelection && prepared.replacementRequired;
     const currentSessions = store
       .listThreadAgentSessions(
@@ -1542,7 +1570,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       reuseAllowed: boolean
     ) => {
       try {
-        checkLogin();
+        checkPreparation();
         const result = await this.backend.prepareAgentSessionContinuity!({
           admissionAgentSessionId: prepared.agentSessionId,
           admissionAttemptId: input.attemptId,
@@ -1557,7 +1585,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               }
             : {}),
           recordNativeHandleDigest: (digest, retainedStorage) =>
-            this.recordNativeHandleDigest(store, agentSessionId, digest, retainedStorage),
+            withSchedulerPreparationPublication(coreDb, input.attemptId, async () => {
+              assertPreparationCurrent();
+              await this.recordNativeHandleDigest(store, agentSessionId, digest, retainedStorage);
+            }),
           reuseAllowed,
           ...(preparation.workerStorageChoice
             ? { workerStorageChoice: preparation.workerStorageChoice }
@@ -1565,11 +1596,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           threadId: preparation.turn.threadId,
           workspaceId: workspaceIdForOwner(preparation.turn.owner),
         });
-        checkLogin();
+        checkPreparation();
         return result;
       } catch (error) {
         // Explicit selection is checked during retirement too; preserve its owner's typed refusal.
         if (
+          error === expired ||
           error instanceof WorkerGovernanceCapacityUnavailableError ||
           error instanceof WorkerStorageBindingError
         )
@@ -1816,11 +1848,30 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
     }
     if (!predecessorIsTerminal) {
-      await store.updateAgentSession(current.id, {
-        message: 'Replaced before a Turn with incompatible or unproved runtime continuity.',
-        status: 'closed',
-        updatedAt: this.currentTime(),
-      });
+      await withSchedulerPreparationPublication(coreDb, input.attemptId, () =>
+        store.updateAgentSession(
+          current.id,
+          {
+            message: 'Replaced before a Turn with incompatible or unproved runtime continuity.',
+            status: 'closed',
+            updatedAt: this.currentTime(),
+          },
+          (predecessor) => {
+            checkPreparation();
+            if (
+              predecessor.workspaceId !== workspaceId ||
+              predecessor.threadId !== preparation.turn.threadId ||
+              predecessor.status !== 'idle' ||
+              predecessor.stale
+            )
+              throw new TurnStartValidationError(
+                'recovery_required',
+                'The predecessor AgentSession changed before replacement publication.',
+                409
+              );
+          }
+        )
+      );
     }
     if (
       store
@@ -1836,7 +1887,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    checkLogin();
+    checkPreparation();
     return committedWorkerStorageChoice;
   }
 

@@ -388,6 +388,23 @@ async function withGatewayCancellation<T>(
   }
 }
 
+/**
+ * Checks whether a provider stream ended because request cancellation won.
+ *
+ * @param error Upstream stream failure.
+ * @param signal Request cancellation signal.
+ * @returns True when the failure represents cancellation.
+ */
+export function isGatewayCancellation(error: unknown, signal?: AbortSignal): boolean {
+  return Boolean(
+    signal?.aborted &&
+      (error === signal.reason ||
+        (error instanceof GatewayAttemptFailure &&
+          error.failure.kind === 'cancelled' &&
+          error.cause === signal.reason))
+  );
+}
+
 /** Released stream facts; unknown EOF is never successful terminal evidence. */
 export type GatewayStreamState =
   | 'output'
@@ -522,6 +539,7 @@ export async function prepareGatewayStream(
   let releasedFrames = '';
   const releasedDecoder = new TextDecoder();
   let terminalObserved = false;
+  let cancelled = false;
   const release = async (chunk: Uint8Array) => {
     releasedFrames += releasedDecoder.decode(chunk, { stream: true });
     let boundary = /\r?\n\r?\n/.exec(releasedFrames);
@@ -540,12 +558,13 @@ export async function prepareGatewayStream(
         if (index < held.length) {
           const chunk = held[index++]!;
           await release(chunk);
-          controller.enqueue(chunk);
+          if (!cancelled) controller.enqueue(chunk);
           return;
         }
         try {
           const result = await (pending ?? reader.read());
           pending = undefined;
+          if (cancelled) return;
           if (result.done) {
             reader.releaseLock();
             if (!terminalObserved) {
@@ -558,17 +577,21 @@ export async function prepareGatewayStream(
             } else controller.close();
           } else {
             await release(result.value);
-            controller.enqueue(result.value);
+            if (!cancelled) controller.enqueue(result.value);
           }
         } catch (error) {
-          await observe?.('failed', error);
+          if (cancelled) return;
+          if (!terminalObserved || !isGatewayCancellation(error, signal))
+            await observe?.('failed', error);
           reader.releaseLock();
           controller.error(error);
         }
       },
       async cancel(reason) {
+        // Cancelling the reader can settle its pending read while closeout is in progress.
+        cancelled = true;
         try {
-          await observe?.('interrupted');
+          if (!terminalObserved) await observe?.('interrupted');
           await reader.cancel(reason);
         } finally {
           reader.releaseLock();

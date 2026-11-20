@@ -14738,6 +14738,10 @@ describe('createConfiguredTurnExecutor', () => {
         ...initial,
         openKitConfig: { ...initial.openKitConfig, nanohost: { maxActiveTurnsPerSandbox: 1 } },
       });
+      const raised = createInMemoryRuntimeConfigSnapshot({
+        ...initial,
+        openKitConfig: { ...initial.openKitConfig, nanohost: { maxActiveTurnsPerSandbox: 4 } },
+      });
       let configuration = initial;
       const config = createRuntimeConfigManager({
         dataRoot: coreDb.dataRoot,
@@ -14811,7 +14815,7 @@ describe('createConfiguredTurnExecutor', () => {
           const result = await commit(...args);
           if (args[1].preparation.turn.threadId === threadIds[1]) {
             secondCommitted = true;
-            if (scenario === 'late-capacity') configuration = reduced;
+            if (scenario === 'late-capacity' && staleObservation) configuration = reduced;
           }
           return result;
         });
@@ -14952,7 +14956,10 @@ describe('createConfiguredTurnExecutor', () => {
           await expect(materialized[0]).rejects.toBeInstanceOf(
             WorkerGovernanceCapacityUnavailableError
           );
-        if (scenario === 'late-capacity') expect(configuration).toBe(reduced);
+        if (scenario === 'late-capacity') {
+          expect(configuration).toBe(reduced);
+          expect(native.runtime.readNanoHostResidentTurnLimit()).toBe(2);
+        }
         expect(materializationCapacity).toEqual(finalGuard ? ['capacity-saturated'] : []);
         if (finalGuard)
           expect(configuration.openKitConfig.nanohost?.maxActiveTurnsPerSandbox).toBe(2);
@@ -15029,7 +15036,9 @@ describe('createConfiguredTurnExecutor', () => {
           expect(['session.open', 'session.inspect', 'turn.start']).toContain(command.operation);
         expect(executor.releaseResults).toEqual([]);
         staleObservation = false;
-        configuration = initial;
+        configuration = scenario === 'late-capacity' ? raised : initial;
+        if (scenario === 'late-capacity')
+          expect(native.runtime.readNanoHostResidentTurnLimit()).toBe(2);
         release.resolve();
         firstWork.completion.resolve();
         await firstWork.execution;
@@ -15067,6 +15076,8 @@ describe('createConfiguredTurnExecutor', () => {
           requestId: requestIds[1],
           agentSessionId,
         });
+        if (scenario === 'late-capacity')
+          expect(native.runtime.readNanoHostResidentTurnLimit()).toBe(4);
         expect((await admitted.complete()).startedTurns).toHaveLength(1);
         await Promise.all(
           admissions.mock.results

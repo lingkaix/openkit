@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -5,7 +6,7 @@ import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
@@ -20,8 +21,14 @@ import {
 import { listLightApps } from './generative-kernel/commands.js';
 import { uuidv5 } from './generative-kernel/uuid.js';
 import * as assistantCommandOwners from './internal-agents/assistant-command-run.js';
+import { recoverWorkspaceAssistantTurns } from './mode-entry-routes.js';
 import * as privateInvocationOwners from './operation-invocation.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
+import { workspaceDbPath } from './storage/fs-layout.js';
 import * as observationOwners from './storage/work-observations.js';
 import {
   readThreadRuntimeActivity,
@@ -440,6 +447,167 @@ describe('#144 real Assistant command wiring', () => {
     } finally {
       await f.close();
     }
+  });
+
+  it('fails the original Turn when the Store refuses the answer closeout', async ({
+    onTestFinished,
+  }) => {
+    const f = await assistantWiringFixture();
+    onTestFinished(() => f.close());
+    const workspaceId = workspaceIdForOwner(f.thread.owner);
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
+    const sql = (statement: string) =>
+      client.write(database, [{ mode: 'run', sql: statement, parameters: [] }]);
+    // Refuse the real transaction before it publishes the answer. The failed Turn can still commit.
+    await sql(
+      "CREATE TEMP TRIGGER refuse_assistant_answer BEFORE UPDATE OF status ON control_turns WHEN NEW.status='completed' BEGIN SELECT RAISE(ABORT, 'fixture terminal refusal'); END"
+    );
+    try {
+      const response = await f.submit();
+      const [original] = f.store.listThreadTurns(workspaceId, f.thread.id);
+      expect(original).toMatchObject({
+        status: 'failed',
+        error: { code: 'chat_mode_persistence_failed' },
+      });
+      expect(original?.items.some((item) => item.type === 'assistant-message')).toBe(false);
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ code: 'chat_mode_persistence_failed' });
+    } finally {
+      await sql('DROP TRIGGER refuse_assistant_answer');
+    }
+
+    const replay = await f.submit();
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toMatchObject({ code: 'recovery_required' });
+    expect(f.dispatchCount()).toBe(1);
+    expect((await f.submit(randomUUID())).status).toBe(200);
+    expect(f.dispatchCount()).toBe(2);
+  });
+
+  it.each(['fresh submission', 'Stop'] as const)(
+    'settles the original Turn through %s after both closeout writes are refused',
+    async (recovery) => {
+      const f = await assistantWiringFixture();
+      onTestFinished(() => f.close());
+      const workspaceId = workspaceIdForOwner(f.thread.owner);
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
+      const sql = (statement: string) =>
+        client.write(database, [{ mode: 'run', sql: statement, parameters: [] }]);
+      await sql(
+        "CREATE TEMP TRIGGER refuse_assistant_closeout BEFORE UPDATE OF status ON control_turns WHEN NEW.status IN ('completed','failed') BEGIN SELECT RAISE(ABORT, 'fixture terminal refusal'); END"
+      );
+      const terminal = vi.spyOn(client, 'terminal');
+      let turnId: string;
+      try {
+        const response = await f.submit();
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ code: 'recovery_required' });
+        expect(terminal).toHaveBeenCalledTimes(2);
+        const [original] = f.store.listThreadTurns(workspaceId, f.thread.id);
+        expect(original).toMatchObject({ status: 'running', agentId: 'quick-chat' });
+        turnId = original!.id;
+
+        const whileRefused = await f.submit(randomUUID());
+        expect(whileRefused.status).toBe(409);
+        expect(await whileRefused.json()).toMatchObject({ code: 'recovery_required' });
+        expect(terminal).toHaveBeenCalledTimes(3);
+        expect(f.dispatchCount()).toBe(1);
+      } finally {
+        terminal.mockRestore();
+        await sql('DROP TRIGGER refuse_assistant_closeout');
+      }
+
+      if (recovery === 'Stop') {
+        const response = await f.app.request(
+          ...operationRequest(
+            'turn.interrupt',
+            { workspaceId, threadId: f.thread.id, turnId },
+            { body: JSON.stringify({ requestId: randomUUID() }) }
+          )
+        );
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ code: 'turn_not_interruptible' });
+        expect(f.dispatchCount()).toBe(1);
+      }
+      expect((await f.submit(randomUUID())).status).toBe(200);
+      const original = f.store.getTurnById(turnId);
+      expect(original).toMatchObject({
+        status: 'failed',
+        error: { code: 'chat_mode_persistence_failed' },
+      });
+      expect(original.items.some((item) => item.type === 'assistant-message')).toBe(false);
+      expect(f.dispatchCount()).toBe(2);
+    }
+  );
+
+  it('publishes Assistant ownership with the first native Turn record', async ({
+    onTestFinished,
+  }) => {
+    const f = await assistantWiringFixture();
+    onTestFinished(() => f.close());
+    const createTurn = f.store.createTurn.bind(f.store);
+    const observed = vi.spyOn(f.store, 'createTurn').mockImplementationOnce(async (...args) => {
+      const turn = await createTurn(...args);
+      expect(f.store.getTurnById(turn.id)).toMatchObject({
+        status: 'running',
+        agentId: 'quick-chat',
+      });
+      return turn;
+    });
+    try {
+      expect((await f.submit()).status).toBe(200);
+      expect(observed).toHaveBeenCalledTimes(1);
+    } finally {
+      observed.mockRestore();
+    }
+  });
+
+  it('keeps an uncertain Assistant closeout inspect-only until restart recovery', async ({
+    onTestFinished,
+  }) => {
+    const f = await assistantWiringFixture();
+    onTestFinished(() => f.close());
+    const workspaceId = workspaceIdForOwner(f.thread.owner);
+    const client = getControlStoreWorkerClient();
+    const terminalWrite = vi
+      .spyOn(client, 'terminal')
+      .mockRejectedValueOnce(new ControlStoreWorkerError('unavailable', 'unknown'));
+    try {
+      const response = await f.submit();
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'recovery_required' });
+      expect(terminalWrite).toHaveBeenCalledTimes(1);
+    } finally {
+      terminalWrite.mockRestore();
+    }
+    const [original] = f.store.listThreadTurns(workspaceId, f.thread.id);
+    expect(original?.status).toBe('running');
+    const workerThread = await f.store.createThread(workspaceId, 'Worker');
+    const worker = await f.store.createTurn(
+      workspaceId,
+      workerThread.id,
+      'Ready work.',
+      { kind: 'user', id: f.actorUserId },
+      1,
+      { agentId: 'fixture-worker', status: 'pending' }
+    );
+
+    await recoverWorkspaceAssistantTurns(f.store);
+    const terminal = f.store.getTurnById(original!.id);
+    expect(terminal).toMatchObject({ status: 'interrupted', error: { code: 'recovery_required' } });
+    expect(f.store.getTurnById(worker.id).status).toBe('pending');
+
+    // A later boot keeps the original immutable terminal result.
+    await recoverWorkspaceAssistantTurns(f.store);
+    expect(f.store.getTurnById(original!.id)).toEqual(terminal);
+    const replay = await f.submit();
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toMatchObject({ code: 'recovery_required' });
+    expect(f.dispatchCount()).toBe(1);
+    expect((await f.submit(randomUUID())).status).toBe(200);
+    expect(f.dispatchCount()).toBe(2);
   });
 
   it('retains exact empty selection before dispatch with full model I/O off', async () => {

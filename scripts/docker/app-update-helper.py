@@ -33,6 +33,9 @@ RECEIPT_LIMIT_BYTES = 64 * 1024
 RECEIPT_CAPACITY = 1000
 # Current default: ~1.15 GB uncompressed App plus pull/extraction headroom and receipts.
 RELEASE_MIN_FREE_BYTES = 3 * 1024 ** 3
+# Match the four shipped journals checked by release preflight.
+MIGRATION_SCOPES = ("app", "core", "user", "workspace")
+MIGRATION_JOURNAL_LIMIT_BYTES = 64 * 1024
 PREPARE_TTL_SECONDS = 600
 LAUNCH_UNKNOWN_AFTER_SECONDS = 30
 JOB_TIMEOUT_SECONDS = 1800
@@ -281,23 +284,31 @@ def main(
     environ = os.environ if environ is None else environ
     if argv[1:2] == ["--convert-getting-started"]:
         return convert_getting_started(argv[2:], stdout, effects, now)
+    stage_target = argv[1:] == ["--stage-target"]
     try:
-        apply_id, config_path = _parse_argv(argv)
-        command = read_command(stdin, now) if apply_id is None else None
-        status_only = command is not None and command["op"] == "status"
-        config = load_config(config_path, require_compatibility=not status_only)
-        helper = AppUpdateHelper(config, effects, now, initialize_receipts=not status_only)
-        if apply_id is not None:
-            result = helper.apply(apply_id)
+        if stage_target:
+            # Local operator command. The restricted SSH protocol has no staging operation.
+            config = load_config(PRODUCTION_CONFIG_PATH)
+            helper = AppUpdateHelper(config, effects, now)
+            candidate = helper._acquire_candidate(config["compatibility"]["candidate"])
+            result = {"staged": True, "appDigest": candidate["published_digest"]}
         else:
-            result = helper.handle(command)
+            apply_id, config_path = _parse_argv(argv)
+            command = read_command(stdin, now) if apply_id is None else None
+            status_only = command is not None and command["op"] == "status"
+            config = load_config(config_path, require_compatibility=not status_only)
+            helper = AppUpdateHelper(config, effects, now, initialize_receipts=not status_only)
+            if apply_id is not None:
+                result = helper.apply(apply_id)
+            else:
+                result = helper.handle(command)
     except HelperError as error:
         result = host_error(error.code, error.message)
     except Exception:
         result = host_error("app_update_unavailable", "App-update helper could not complete.")
     stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True) + "\n")
     stdout.flush()
-    return 0
+    return 1 if stage_target and "error" in result else 0
 
 
 def convert_getting_started(paths: Sequence[str], stdout: Any, effects: Any, now: Callable[[], float]) -> int:
@@ -320,11 +331,11 @@ def convert_getting_started(paths: Sequence[str], stdout: Any, effects: Any, now
     return exit_code
 
 
-def _decode_bounded_json(raw: bytes) -> Any:
+def _decode_bounded_json(raw: bytes, *, parse_number: Optional[Callable[[str], float]] = None) -> Any:
     if not raw or len(raw) > RECEIPT_LIMIT_BYTES:
         return None
     try:
-        return json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8"), parse_int=parse_number, parse_float=parse_number)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
 
@@ -776,6 +787,7 @@ class AppUpdateHelper:
             prepared_at=prepared_at,
         )
         preflight = self._idle_preflight()
+        self._assert_migration_free(inspect, self._local_candidate_image_id(command["source"]))
         receipt["preparedHelperSha256"] = HELPER_SHA256
         receipt["approvalSummary"] = {
             "targetRelease": dict(command["source"]),
@@ -788,7 +800,7 @@ class AppUpdateHelper:
                 "No automatic rollback across data migrations.",
                 "No automatic resume or replay of interrupted product work.",
                 "The final preflight is not an admission barrier; work may arrive before shutdown closes admission.",
-                "Candidate acquisition, smoke, retained-auth and NanoHost verification remain apply-time checks.",
+                "Published release attribution, smoke, retained-auth and NanoHost verification remain apply-time checks.",
             ],
         }
         self._write_receipt(receipt, exclusive=True)
@@ -799,14 +811,23 @@ class AppUpdateHelper:
         receipt = self._maybe_mark_unknown(receipt)
         if receipt["stage"] != "prepared":
             return project_status(receipt)
-        age = self.now() - _parse_iso(receipt["preparedAt"])
-        if age > float(self.config["prepareTtlSeconds"]):
-            raise HelperError("app_update_expired", "Prepared App-update receipt expired.")
+        self._assert_unexpired_prepare(receipt, self.now())
         if self._busy_with_other(request_id):
             raise HelperError("app_update_busy", "An App update is already running for this target.")
+        # A receipt prepared by an older helper does not prove the target journals were checked.
+        inspect = self._inspect_container(self.config["containerName"])
+        self._assert_migration_free(inspect, self._local_candidate_image_id(receipt["source"]))
+        # Docker reads can take time. Observe any launch that happened during the check.
+        receipt = self._maybe_mark_unknown(self._load_receipt(request_id, missing_code="app_update_recovery_required"))
+        if receipt["stage"] != "prepared":
+            return project_status(receipt)
+        if self._busy_with_other(request_id):
+            raise HelperError("app_update_busy", "An App update is already running for this target.")
+        started_at = self.now()
+        self._assert_unexpired_prepare(receipt, started_at)
         job_id = "openkit-app-update-%s.service" % request_id
         set_stage(receipt, "launching")
-        receipt["startedAt"] = isoformat(self.now())
+        receipt["startedAt"] = isoformat(started_at)
         receipt["jobId"] = job_id
         self._write_receipt(receipt)
         code, _, stderr = self.effects.run(
@@ -831,6 +852,12 @@ class AppUpdateHelper:
             self._write_receipt(receipt)
             return project_status(receipt)
         return project_status(receipt)
+
+    def _assert_unexpired_prepare(self, receipt: Mapping[str, Any], observed_at: float) -> None:
+        """Require recent preparation at the actual launch intent time."""
+        age = observed_at - _parse_iso(receipt["preparedAt"])
+        if age > float(self.config["prepareTtlSeconds"]):
+            raise HelperError("app_update_expired", "Prepared App-update receipt expired.")
 
     def status(self, request_id: str) -> Dict[str, Any]:
         receipt = self._load_receipt(request_id, missing_code="app_update_not_found")
@@ -889,6 +916,7 @@ class AppUpdateHelper:
                     )
                 self._write_receipt(receipt)
                 candidate = self._acquire_candidate(receipt["source"])
+                self._assert_migration_free(inspect, candidate["image_id"])
                 receipt["candidateLocalImageId"] = candidate["image_id"]
                 receipt["candidateImageId"] = candidate["published_digest"]
                 receipt["candidateRef"] = candidate["ref"]
@@ -1005,6 +1033,74 @@ class AppUpdateHelper:
         if not idle:
             raise HelperError("app_update_work_active", "Deployment work is active; running, pending, queued or in-flight work prevents the App update.")
         return body
+
+    def _local_candidate_image_id(self, source: Mapping[str, Any]) -> str:
+        """Resolve the staged digest within the short prepare/start SSH deadline."""
+        reference = "%s@%s" % (self.config["imageRepository"], source["appDigest"])
+        try:
+            identity = self._image_identity(reference)
+        except HelperError as error:
+            raise HelperError(
+                "app_update_unavailable",
+                "Target image is unavailable locally. Ask the host operator to run the installed App-update helper with --stage-target before preparing or starting.",
+            ) from error
+        if source["appDigest"] not in identity["repo_digest_ids"]:
+            raise HelperError("app_update_invalid_request", "Local image RepoDigests do not contain the published release digest.")
+        return identity["id"]
+
+    def _assert_migration_free(self, current: Mapping[str, Any], candidate_image_id: str) -> None:
+        """Require identical shipped journals before any replacement can start."""
+        current_id = str(current.get("Id") or "")
+        if not CONTAINER_ID_RE.fullmatch(current_id) or (current.get("State") or {}).get("Running") is not True:
+            raise HelperError("app_update_unavailable", "Cannot identify the running App for the migration journal check.")
+        code, output, _ = self.effects.run(
+            ["docker", "create", "--pull", "never", "--network", "none", candidate_image_id], timeout=15,
+        )
+        candidate_id = output.strip()
+        if code != 0 or not CONTAINER_ID_RE.fullmatch(candidate_id) or candidate_id == current_id:
+            raise HelperError("app_update_unavailable", "Could not create the stopped target journal inspection container.")
+        try:
+            with tempfile.TemporaryDirectory(prefix="openkit-app-journals-") as directory:
+                for scope in MIGRATION_SCOPES:
+                    running = self._copy_migration_journal(
+                        current_id, scope, os.path.join(directory, scope + "-running"),
+                    )
+                    target = self._copy_migration_journal(
+                        candidate_id, scope, os.path.join(directory, scope + "-target"),
+                    )
+                    if target != running:
+                        raise HelperError(
+                            "app_update_invalid_request",
+                            "Target %s migration journal differs from the running App. Use the stopped-App forward migration procedure. Make a verified cold Data Root backup before starting the target." % scope,
+                        )
+        finally:
+            code, _, _ = self.effects.run(["docker", "rm", "-v", candidate_id], timeout=15)
+        if code != 0:
+            raise HelperError("app_update_unavailable", "Could not remove the stopped target journal inspection container.")
+
+    def _copy_migration_journal(self, container_id: str, scope: str, path: str) -> str:
+        """Read one shipped journal and canonicalize object keys while preserving entry order."""
+        remote = "%s:/app/nanocore/drizzle/%s/meta/_journal.json" % (container_id, scope)
+        message = "Could not read the %s migration journal." % scope
+        code, _, _ = self.effects.run(["docker", "cp", remote, path], timeout=15)
+        if code != 0:
+            raise HelperError("app_update_unavailable", message)
+        try:
+            metadata = os.lstat(path)
+            if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= MIGRATION_JOURNAL_LIMIT_BYTES:
+                raise HelperError("app_update_unavailable", message)
+            with open(path, "rb") as journal:
+                raw = journal.read(MIGRATION_JOURNAL_LIMIT_BYTES + 1)
+            # Release preflight treats all JSON numbers as JavaScript numbers, including signed zero.
+            def parse_number(value: str) -> float:
+                return float(value) or 0.0
+
+            data = _decode_bounded_json(raw, parse_number=parse_number)
+            if not isinstance(data, dict) or not isinstance(data.get("entries"), list) or not data["entries"]:
+                raise HelperError("app_update_unavailable", message)
+            return json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        except (OSError, ValueError, RecursionError) as error:
+            raise HelperError("app_update_unavailable", message) from error
 
     def _acquire_candidate(self, source: Mapping[str, Any]) -> Dict[str, Any]:
         """Pull the verified published digest only after checking host capacity."""

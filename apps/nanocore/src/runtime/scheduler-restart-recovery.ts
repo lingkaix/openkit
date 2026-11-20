@@ -7,6 +7,7 @@ import type { CoreDb } from '../storage/db.js';
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithoutEffects,
+  EXECUTION_ATTEMPT_BUDGET_MS,
   listOpenSchedulerExecutionAttempts,
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
@@ -15,6 +16,7 @@ import {
 } from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
+import { releaseExpiredSchedulerPreparation } from './scheduler-dispatch-loop.js';
 
 /** Product outcome established by its existing recovery owner. */
 export type RecoveredTurnStatus = 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'missing';
@@ -112,32 +114,52 @@ export async function runSchedulerRecoveryMaintenance(
         'runtime.launch',
         true
       );
-      const expired = attempt.deadline !== null && attempt.deadline <= timestamp;
-      if (attempt.phase === 'open' && (revoked || expired)) {
-        const closing = await markSchedulerExecutionAttemptClosing(coreDb, {
+      const preparationExpired =
+        attempt.deadline === null &&
+        Date.parse(timestamp) - Date.parse(attempt.createdAt) >= EXECUTION_ATTEMPT_BUDGET_MS;
+      const executionExpired = attempt.deadline !== null && attempt.deadline <= timestamp;
+      let current = attempt;
+      if (attempt.phase === 'open' && (revoked || executionExpired || preparationExpired)) {
+        const preparationFence = preparationExpired && !revoked;
+        current = await markSchedulerExecutionAttemptClosing(coreDb, {
           attemptId: attempt.attemptId,
-          cause: revoked ? 'authority-revoked' : 'execution-deadline',
+          cause: revoked
+            ? 'authority-revoked'
+            : preparationFence
+              ? 'preparation-deadline'
+              : 'execution-deadline',
+          ...(preparationFence ? { requireUnsubmitted: true } : {}),
           ...(input.now ? { now: input.now } : {}),
         });
-        if (!closing.operationId) {
-          await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
-            attemptId: closing.attemptId,
-            noOutstandingEffects: true,
-            cause: closing.terminalCause!,
-            ...(input.now ? { now: input.now } : {}),
-          });
-          await input.projectRecoveredTurn({ ...closing, packageSnapshotId: closing.inputRef });
-        } else
+        // The native submission intent might have won while the expiry check awaited the writer.
+        if (preparationFence && current.terminalCause !== 'preparation-deadline') continue;
+        if (current.operationId)
           await acceptSchedulerExecutionObservation(
             coreDb,
-            await input.executionBackend.cancel(schedulerExecutionCorrelation(closing))
+            await input.executionBackend.cancel(schedulerExecutionCorrelation(current))
           );
+        else if (!preparationFence) {
+          await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+            attemptId: current.attemptId,
+            noOutstandingEffects: true,
+            cause: current.terminalCause!,
+            ...(input.now ? { now: input.now } : {}),
+          });
+          await input.projectRecoveredTurn({ ...current, packageSnapshotId: current.inputRef });
+        }
       }
-      if (!attempt.operationId) continue;
-      await acceptSchedulerExecutionObservation(
-        coreDb,
-        await input.executionBackend.inspect(schedulerExecutionCorrelation(attempt))
-      );
+      if (current.operationId)
+        await acceptSchedulerExecutionObservation(
+          coreDb,
+          await input.executionBackend.inspect(schedulerExecutionCorrelation(current))
+        );
+      else if (current.phase === 'closing' && current.terminalCause === 'preparation-deadline')
+        await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+          attemptId: current.attemptId,
+          noOutstandingEffects: true,
+          cause: 'preparation-deadline',
+          ...(input.now ? { now: input.now } : {}),
+        });
     } catch (error) {
       logRecoveryMaintenanceFailure('attempt-recovery', attempt);
       errors.push(error);
@@ -149,7 +171,7 @@ export async function runSchedulerRecoveryMaintenance(
     .prepare(`SELECT attempt_id AS attemptId, workspace_id AS workspaceId, thread_id AS threadId,
       turn_id AS turnId, agent_session_id AS agentSessionId FROM scheduler_execution_attempts
     WHERE phase = 'closed' AND disposition = 'not_accepted' AND operation_id IS NULL
-      AND terminal_cause IN ('restart-before-effects', 'authority-revoked', 'execution-deadline')
+      AND terminal_cause IN ('restart-before-effects', 'authority-revoked', 'execution-deadline', 'preparation-deadline')
     ORDER BY rowid`)
     .all() as Array<
     Pick<
@@ -161,6 +183,9 @@ export async function runSchedulerRecoveryMaintenance(
     try {
       const attempt = requireSchedulerExecutionAttempt(coreDb, failure.attemptId);
       if (attempt.backendId !== input.executionBackend.id) continue;
+      // Readback also releases a waiter whose native close committed with a lost reply.
+      if (attempt.terminalCause === 'preparation-deadline')
+        releaseExpiredSchedulerPreparation(coreDb, attempt.attemptId);
       if (input.isTurnExecutionActive?.(attempt.turnId)) continue;
       await input.projectRecoveredTurn({ ...attempt, packageSnapshotId: attempt.inputRef });
     } catch (error) {

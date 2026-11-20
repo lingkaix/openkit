@@ -41,7 +41,10 @@ import {
 } from '../context/model-request-admission.js';
 import type { FsStore } from '../lib/store.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
-import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import type {
+  RegistryGatewayProviderResolver,
+  ResolvedLLMProviderConfig,
+} from '../providers/llm-config.js';
 import type {
   ProviderCredentialConfigured,
   ProviderCredentialUseContext,
@@ -68,6 +71,7 @@ import {
   GatewayAttemptFailure,
   type GatewayClock,
   type GatewaySelection,
+  isGatewayCancellation,
   LogicalModelRoutesExhaustedError,
   planLogicalModel,
   planLogicalModelAsync,
@@ -79,10 +83,11 @@ export { LogicalModelRoutesExhaustedError } from './gateway-execution.js';
 
 import { parseUsage } from './gateway-usage.js';
 import {
+  type LogicalModelSupply,
   type ResolvedLogicalModel,
   resolveEffectiveModelMetadata,
-  resolveLogicalModel,
   resolveLogicalModelCatalog,
+  resolveLogicalModelSupply,
   resolveProviderModelDiagnostic,
 } from './logical-models.js';
 import type { ModelCaptureContext } from './model-capture.js';
@@ -1438,10 +1443,11 @@ function normalizeGatewayTerminalStream(
   let released = false;
   let terminal = false;
   let terminalFailureCode: string | undefined;
+  let responseCompleted = false;
   let frames = '';
   const decoder = new TextDecoder();
 
-  /** Carries an already released terminal failure into logical closeout, without classifying Provider evidence. */
+  /** Retains terminal frames after delivery checks so disconnect does not replace their outcome. */
   function observeTerminalFrames(chunk: Uint8Array): void {
     frames += decoder.decode(chunk, { stream: true });
     let boundary = /\r?\n\r?\n/.exec(frames);
@@ -1475,9 +1481,11 @@ function normalizeGatewayTerminalStream(
               )?.[0] ?? 'unknown';
             options.onFailure?.({ failure: { kind, settled: false } });
           }
+        } else if (endpoint === 'responses' && event?.type === 'response.completed') {
+          responseCompleted = true;
         }
       } catch {
-        /* Non-JSON comments and DONE carry no failed outcome. */
+        /* Non-JSON comments and DONE carry no Responses outcome. */
       }
       frames = frames.slice(boundary.index + boundary[0].length);
       boundary = /\r?\n\r?\n/.exec(frames);
@@ -1506,8 +1514,11 @@ function normalizeGatewayTerminalStream(
         try {
           await finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
-            terminalFailureCode ? 'failed' : 'aborted',
-            terminalFailureCode ?? options.cancellationCode ?? 'llm_gateway_cancelled'
+            terminalFailureCode ? 'failed' : responseCompleted ? 'succeeded' : 'aborted',
+            terminalFailureCode ??
+              (responseCompleted
+                ? undefined
+                : (options.cancellationCode ?? 'llm_gateway_cancelled'))
           );
         } finally {
           releaseReader();
@@ -1538,6 +1549,15 @@ function normalizeGatewayTerminalStream(
         }
         terminal = true;
         const cancelled = isGatewayCancellation(error, options.signal);
+        if (cancelled && responseCompleted && terminalFailureCode === undefined) {
+          try {
+            await finishDurableLlmGatewayStreamCall(options.durableCall ?? null, 'succeeded');
+          } finally {
+            releaseReader();
+          }
+          controller.close();
+          return;
+        }
         const envelopeFailureCode = options.failureCode ?? 'llm_gateway_stream_failed';
         if (!cancelled && terminalFailureCode === undefined) options.onFailure?.(error);
         try {
@@ -1604,23 +1624,6 @@ function normalizeGatewayTerminalStream(
       controller.enqueue(result.value);
     },
   });
-}
-
-/**
- * Checks whether a provider stream ended because request cancellation won.
- *
- * @param error Upstream stream failure.
- * @param signal Request cancellation signal.
- * @returns True when the failure represents cancellation.
- */
-function isGatewayCancellation(error: unknown, signal?: AbortSignal): boolean {
-  return Boolean(
-    signal?.aborted &&
-      (error === signal.reason ||
-        (error instanceof GatewayAttemptFailure &&
-          error.failure.kind === 'cancelled' &&
-          error.cause === signal.reason))
-  );
 }
 
 /**
@@ -1865,11 +1868,7 @@ export function registerWorkerInferenceRoutes({
   /** Live API-key presence without Vault material resolution. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   /** Resolves a private Provider route selected by the current Gateway config. */
-  readonly resolveGatewayProvider: (
-    providerId: string,
-    model: string,
-    context?: ProviderCredentialUseContext
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  readonly resolveGatewayProvider: RegistryGatewayProviderResolver;
   /** Returns the current hot-reloadable Gateway configuration snapshot. */
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Worker token and durable lease authority. */
@@ -1985,18 +1984,16 @@ export function registerWorkerInferenceRoutes({
         assertExposureAvailable();
       };
       assertAuthority();
-      let logicalModel: ResolvedLogicalModel | null = null;
+      let admittedRoute: LogicalModelSupply | null = null;
       try {
-        const snapshot = runtimeConfig();
-        logicalModel = resolveLogicalModel(
-          snapshot.gatewayConfig,
-          snapshot.providerRegistry,
+        admittedRoute = resolveLogicalModelSupply(
+          runtimeConfig(),
           route.model,
           providerSubscriptionAccountManager,
           providerCredentialConfigured
         );
       } catch {
-        logicalModel = null;
+        admittedRoute = null;
       }
       const scope = environmentPackage.scope;
       const rawKey = JSON.stringify([scope.workspaceId, scope.threadId, scope.turnId]);
@@ -2276,13 +2273,14 @@ export function registerWorkerInferenceRoutes({
             'admission'
           );
         }
-        if (!logicalModel) {
+        if (!admittedRoute) {
           throw new WorkerInferenceRouteError(
             'worker_inference_provider_unavailable',
             'Worker inference provider is unavailable.',
             503
           );
         }
+        const { logicalModel, registry } = admittedRoute;
         const requestedEffort =
           endpoint === 'chat_completions'
             ? (input as z.infer<typeof GatewayChatCompletionRequestSchema>).reasoning_effort
@@ -2310,7 +2308,8 @@ export function registerWorkerInferenceRoutes({
             : {}),
           requiredCapabilities: endpoint === 'responses' ? ['responses'] : ['chat-completions'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-          resolveGatewayProvider,
+          resolveGatewayProvider: (id, model, context) =>
+            resolveGatewayProvider(id, model, context, registry),
           signal: rawSignal,
           onAttemptStart: (context) => {
             correlation = context;
@@ -3256,11 +3255,7 @@ export function registerLlmGatewayRoutes({
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Live API-key presence without Vault material resolution. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
-  readonly resolveGatewayProvider: (
-    providerId: string,
-    model: string,
-    context?: ProviderCredentialUseContext
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  readonly resolveGatewayProvider: RegistryGatewayProviderResolver;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }): void {
   /**
@@ -3337,20 +3332,15 @@ export function registerLlmGatewayRoutes({
     }
   }
 
-  function requireLogicalModel(logicalModelId: string): {
-    logicalModel: ResolvedLogicalModel;
-    snapshot: RuntimeConfigSnapshot;
-  } {
+  function requireLogicalModel(logicalModelId: string): LogicalModelSupply {
     try {
-      const snapshot = runtimeConfig();
-      const logicalModel = resolveLogicalModel(
-        snapshot.gatewayConfig,
-        snapshot.providerRegistry,
+      const supply = resolveLogicalModelSupply(
+        runtimeConfig(),
         logicalModelId,
         providerSubscriptionAccountManager,
         providerCredentialConfigured
       );
-      if (logicalModel) return { logicalModel, snapshot };
+      if (supply) return supply;
     } catch {
       throw new OpenAICompatibleProviderError({
         code: 'gateway_not_configured',
@@ -3365,18 +3355,6 @@ export function registerLlmGatewayRoutes({
       status: 400,
       type: 'invalid_request_error',
     });
-  }
-
-  /** Rechecks the existing loaded configuration without treating account availability as config. */
-  function assertGatewayConfigurationCurrent(admitted: RuntimeConfigSnapshot): void {
-    const current = runtimeConfig();
-    if (current.version !== admitted.version || current.contentHash !== admitted.contentHash)
-      throw new OpenAICompatibleProviderError({
-        code: 'gateway_not_configured',
-        message: 'Gateway logical model configuration changed.',
-        status: 503,
-        type: 'provider_error',
-      });
   }
 
   app.get('/v1/models', async (c) => {
@@ -3467,7 +3445,7 @@ export function registerLlmGatewayRoutes({
 
       const assertAuthority = () =>
         assertPublicAuthority(c, authorityActor, (input as { metadata?: unknown }).metadata);
-      const { logicalModel, snapshot: admittedConfiguration } = requireLogicalModel(input.model);
+      const { logicalModel, registry } = requireLogicalModel(input.model);
 
       const request = {
         ...input,
@@ -3496,7 +3474,6 @@ export function registerLlmGatewayRoutes({
           route: '/v1/chat/completions',
         });
         assertAuthority();
-        assertGatewayConfigurationCurrent(admittedConfiguration);
         const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),
@@ -3508,7 +3485,8 @@ export function registerLlmGatewayRoutes({
           logicalModel,
           requiredCapabilities: ['chat-completions'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-          resolveGatewayProvider,
+          resolveGatewayProvider: (id, model, context) =>
+            resolveGatewayProvider(id, model, context, registry),
           signal: c.req.raw.signal,
           attempt: async ({
             provider,
@@ -3659,7 +3637,7 @@ export function registerLlmGatewayRoutes({
 
       const assertAuthority = () =>
         assertPublicAuthority(c, authorityActor, (input as { metadata?: unknown }).metadata);
-      const { logicalModel, snapshot: admittedConfiguration } = requireLogicalModel(input.model);
+      const { logicalModel, registry } = requireLogicalModel(input.model);
 
       const request = {
         ...input,
@@ -3685,7 +3663,6 @@ export function registerLlmGatewayRoutes({
           route: '/v1/responses',
         });
         assertAuthority();
-        assertGatewayConfigurationCurrent(admittedConfiguration);
         const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),
@@ -3699,7 +3676,8 @@ export function registerLlmGatewayRoutes({
           logicalModel,
           requiredCapabilities: ['responses'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-          resolveGatewayProvider,
+          resolveGatewayProvider: (id, model, context) =>
+            resolveGatewayProvider(id, model, context, registry),
           signal: c.req.raw.signal,
           attempt: async ({
             provider,

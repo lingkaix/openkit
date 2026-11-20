@@ -2689,93 +2689,167 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(store.getAgentSession('as_00000000-0000-7cba-9aba-f054b08da113').status).toBe('idle');
   });
 
-  it('commits replacement only after fresh compatibility and runtime revalidation', async () => {
-    const coreDb = openCommitFixtureCore();
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turn = await createAssignedTurn(
-      store,
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Commit current replacement'
-    );
-    const currentCompatibilityKey = `sha256:${'c'.repeat(64)}`;
-    const freshCompatibilityKey = `sha256:${'d'.repeat(64)}`;
-    await store.createAgentSession({
-      agentId: 'agent_codex_host',
-      createdAt: '2026-08-21T00:00:00.000Z',
-      id: 'as_00000000-0000-75a9-97fd-a29b9a328dc9',
-      message: null,
-      policySnapshotId: 'worker_turn_launch_policy',
-      sessionCompatibilityKey: `sha256:${'e'.repeat(64)}`,
-      status: 'idle',
-      threadId: turn.threadId,
-      updatedAt: '2026-08-21T00:00:00.000Z',
-      workspaceId: workspaceIdForOwner(turn.owner),
-    });
-    const events: string[] = [];
-    const backend = new FakeWorkerGovernanceBackend();
-    Object.assign(backend, {
-      prepareAgentSessionContinuity: vi.fn(async (input: { readonly reuseAllowed: boolean }) => {
-        events.push(input.reuseAllowed ? 'runtime-inspect' : 'runtime-close');
-        return input.reuseAllowed ? ('replacement-required' as const) : ('closed' as const);
-      }),
-    });
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      now: () => '2026-08-21T00:00:05.000Z',
-    });
-    Object.assign(executor, {
-      previewAgentSessionCompatibilityKey: (agentSessionId: string) => {
-        if (agentSessionId === 'as_00000000-0000-711f-a15e-8795d586ac33') {
-          events.push('fresh-preview');
-          return freshCompatibilityKey;
+  it.each(['normal', 'expiry first', 'publication first'] as const)(
+    'orders replacement after fresh compatibility and runtime revalidation: %s',
+    async (order) => {
+      const coreDb = openCommitFixtureCore();
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const turn = await createAssignedTurn(
+        store,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Commit current replacement'
+      );
+      const currentCompatibilityKey = `sha256:${'c'.repeat(64)}`;
+      const freshCompatibilityKey = `sha256:${'d'.repeat(64)}`;
+      const predecessorId = 'as_00000000-0000-75a9-97fd-a29b9a328dc9';
+      await store.createAgentSession({
+        agentId: 'agent_codex_host',
+        createdAt: '2026-08-21T00:00:00.000Z',
+        id: predecessorId,
+        message: null,
+        policySnapshotId: 'worker_turn_launch_policy',
+        sessionCompatibilityKey: `sha256:${'e'.repeat(64)}`,
+        status: 'idle',
+        threadId: turn.threadId,
+        updatedAt: '2026-08-21T00:00:00.000Z',
+        workspaceId: workspaceIdForOwner(turn.owner),
+      });
+      const events: string[] = [];
+      const inspected = Promise.withResolvers<void>();
+      const continueInspection = Promise.withResolvers<void>();
+      let committing = false;
+      const backend = new FakeWorkerGovernanceBackend();
+      Object.assign(backend, {
+        prepareAgentSessionContinuity: vi.fn(async (input: { readonly reuseAllowed: boolean }) => {
+          if (committing && order !== 'normal') {
+            inspected.resolve();
+            if (order === 'expiry first') await continueInspection.promise;
+            return 'absent' as const;
+          }
+          events.push(input.reuseAllowed ? 'runtime-inspect' : 'runtime-close');
+          return input.reuseAllowed ? ('replacement-required' as const) : ('closed' as const);
+        }),
+      });
+      const executor = new WorkerGovernanceTurnExecutor({
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+        now: () => '2026-08-21T00:00:05.000Z',
+      });
+      Object.assign(executor, {
+        previewAgentSessionCompatibilityKey: (agentSessionId: string) => {
+          if (agentSessionId === 'as_00000000-0000-711f-a15e-8795d586ac33') {
+            events.push('fresh-preview');
+            return freshCompatibilityKey;
+          }
+          return currentCompatibilityKey;
+        },
+      });
+      const preparation = {
+        agentSetup: createTestAgentSetup(),
+        freshAgentSessionId: 'as_00000000-0000-711f-a15e-8795d586ac33',
+        requestId: 'req-commit-replacement',
+        turn,
+        turnInput: 'Commit current replacement',
+        workspaceCwd: null,
+        workspaceRoots: [],
+      };
+      const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
+      const historyBeforeCommit = store.listThreadTurns(
+        workspaceIdForOwner(turn.owner),
+        turn.threadId
+      );
+
+      expect(store.getAgentSession(predecessorId).status).toBe('idle');
+      const attemptId = 'attempt_00000000-0000-74a5-b1b6-1b22c61c5626';
+      acquireCommitFixtureAttempt(coreDb, preparation, attemptId);
+      const sweep = () =>
+        runSchedulerRecoveryMaintenance(coreDb, {
+          store,
+          executionBackend: executor.executionBackend,
+          now: () => new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+          projectRecoveredTurn: async () => ({ status: 'failed' }),
+        });
+      const enteredWrite = Promise.withResolvers<void>();
+      const continueWrite = Promise.withResolvers<void>();
+      const update = store.updateAgentSession.bind(store);
+      const write = vi.spyOn(store, 'updateAgentSession');
+      if (order === 'publication first')
+        write.mockImplementationOnce(async (...args) => {
+          enteredWrite.resolve();
+          await continueWrite.promise;
+          return update(...args);
+        });
+      committing = true;
+      const commit = executor.commitPreparedAgentSessionForTurn(store, {
+        attemptId,
+        prepared,
+        preparation,
+      });
+      const result = commit.catch((error: unknown) => error);
+      try {
+        if (order === 'expiry first') {
+          await inspected.promise;
+          await sweep();
+          expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+            phase: 'closed',
+            disposition: 'not_accepted',
+            operationId: null,
+            terminalCause: 'preparation-deadline',
+          });
+          continueInspection.resolve();
+          expect(await result).toMatchObject({ code: 'worker_preparation_failed' });
+          expect(write).not.toHaveBeenCalled();
+          expect(store.getAgentSession(predecessorId).status).toBe('idle');
+          return;
         }
-        return currentCompatibilityKey;
-      },
-    });
-    const preparation = {
-      agentSetup: createTestAgentSetup(),
-      freshAgentSessionId: 'as_00000000-0000-711f-a15e-8795d586ac33',
-      requestId: 'req-commit-replacement',
-      turn,
-      turnInput: 'Commit current replacement',
-      workspaceCwd: null,
-      workspaceRoots: [],
-    };
-    const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
-    const historyBeforeCommit = store.listThreadTurns(
-      workspaceIdForOwner(turn.owner),
-      turn.threadId
-    );
+        if (order === 'publication first') {
+          await enteredWrite.promise;
+          const expiryStarted = Promise.withResolvers<void>();
+          const mark = nativeExecutionAttempts.markSchedulerExecutionAttemptClosing;
+          const closing = vi
+            .spyOn(nativeExecutionAttempts, 'markSchedulerExecutionAttemptClosing')
+            .mockImplementationOnce((...args) => {
+              expiryStarted.resolve();
+              return mark(...args);
+            });
+          const expiring = sweep();
+          try {
+            await expiryStarted.promise;
+            expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase).toBe('open');
+            expect(store.getAgentSession(predecessorId).status).toBe('idle');
+          } finally {
+            continueWrite.resolve();
+            await expiring;
+            closing.mockRestore();
+          }
+          expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase).toBe('closed');
+        } else {
+          await commit;
+          expect(events.indexOf('fresh-preview')).toBeLessThan(events.indexOf('runtime-close'));
+        }
 
-    expect(store.getAgentSession('as_00000000-0000-75a9-97fd-a29b9a328dc9').status).toBe('idle');
-    acquireCommitFixtureAttempt(
-      coreDb,
-      preparation,
-      'attempt_00000000-0000-74a5-b1b6-1b22c61c5626'
-    );
-    await executor.commitPreparedAgentSessionForTurn(store, {
-      attemptId: 'attempt_00000000-0000-74a5-b1b6-1b22c61c5626',
-      prepared,
-      preparation,
-    });
-
-    expect(events.indexOf('fresh-preview')).toBeLessThan(events.indexOf('runtime-close'));
-    expect(store.getAgentSession('as_00000000-0000-75a9-97fd-a29b9a328dc9')).toMatchObject({
-      status: 'closed',
-      updatedAt: '2026-08-21T00:00:05.000Z',
-    });
-    expect(store.listThreadTurns(workspaceIdForOwner(turn.owner), turn.threadId)).toEqual(
-      historyBeforeCommit
-    );
-  });
+        expect(store.getAgentSession(predecessorId)).toMatchObject({
+          status: 'closed',
+          updatedAt: '2026-08-21T00:00:05.000Z',
+        });
+        expect(store.listThreadTurns(workspaceIdForOwner(turn.owner), turn.threadId)).toEqual(
+          historyBeforeCommit
+        );
+      } finally {
+        continueInspection.resolve();
+        continueWrite.resolve();
+        await result;
+        write.mockRestore();
+      }
+    }
+  );
 
   it('selects a fresh AgentSession without local close for restart-unproved Sandbox continuity', async () => {
     const coreDb = openCommitFixtureCore();

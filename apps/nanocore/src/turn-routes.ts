@@ -331,6 +331,12 @@ export async function interruptProductTurn(input: {
             409
           );
         }
+        if (isSealedTurnTerminal(store.getTurn(workspaceId, threadId, turnId).status))
+          throw new TurnStartValidationError(
+            'turn_not_interruptible',
+            `Turn is already terminal: ${turnId}.`,
+            409
+          );
       }
 
       if (coreDb) {

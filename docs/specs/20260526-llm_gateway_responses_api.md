@@ -116,6 +116,8 @@ With `autoFailover: false`, only the primary is selected. An unavailable or fail
 
 One request-local planner turns the resolved logical model, the request, and current eligibility into an ordered candidate list with selection reasons. The Gateway executor runs that list under the retry, commit, and failure rules below. A later accepted dynamic or helper-model strategy adds fields to `routing` and replaces the planner without replacing the route list or Provider executor. No strategy enum, registry, plugin interface, or durable routing state exists now.
 
+Public Gateway, Worker inference, internal role and title calls resolve an admitted logical route and its Provider registry from one runtime snapshot. Transcription captures its separate route chain and registry in the same way. All attempts of that call use that registry, including failover and retry. Current Gateway exposure, actor authority, subscription account state and credential availability still apply at their existing boundaries.
+
 `gateway.jsonc` remains the unique durable routing authority. Routing is created, changed, or removed through its existing revision-checked write and reload lifecycle; stale writes and invalid candidates retain the last-known-good snapshot. Restart resolves the current validated configuration. Plans end with their request, are never recovered or retried as state, and require no durable creation, update, termination, or recovery lifecycle. Dependency failure is classified at selection or attempt time rather than repaired by the planner. Each Provider call restarts from the first available member, so a recovered primary is used again; there is no cooldown, health score, or sticky member.
 
 ### Unavailable Members

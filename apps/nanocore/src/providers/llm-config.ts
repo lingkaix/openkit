@@ -11,7 +11,12 @@ import {
   type ProviderGatewayCapabilities,
   providerRequiresCredentials,
 } from './profile-capabilities.js';
-import { type ProviderCredentialResolver, resolveProviderSecretRef } from './registry.js';
+import {
+  type ProviderCredentialResolver,
+  type ProviderCredentialUseContext,
+  type ProviderRegistry,
+  resolveProviderSecretRef,
+} from './registry.js';
 
 /** Secret-bearing provider configuration used by internal LLM callers. */
 export interface ResolvedLLMProviderConfig {
@@ -40,6 +45,14 @@ export interface ResolvedLLMProviderConfig {
   /** Exact provider-scoped account slot for strict OAuth account profiles. */
   readonly accountSlotId?: string;
 }
+
+/** Resolves live credentials for one Provider from an already admitted registry. */
+export type RegistryGatewayProviderResolver = (
+  providerId: string,
+  model: string,
+  context: ProviderCredentialUseContext | undefined,
+  registry: ProviderRegistry
+) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
 
 /**
  * Converts a runtime provider profile into the secret-bearing config used by LLM clients.

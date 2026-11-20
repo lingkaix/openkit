@@ -269,9 +269,10 @@ async function fixture(
         db.sqlite.close();
       }
     },
-    post: (stream: boolean, endpoint = 'responses') =>
+    post: (stream: boolean, endpoint = 'responses', signal?: AbortSignal) =>
       app.request(`/api/worker-inference/v1/${endpoint}`, {
         method: 'POST',
+        ...(signal ? { signal } : {}),
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
         body: JSON.stringify({
           model: 'worker-model',
@@ -1588,6 +1589,62 @@ it.each(['responses', 'chat/completions'])(
     await response.text();
     expect(warn).not.toHaveBeenCalled();
     expect(f.calls()).toMatchObject([{ status: 'succeeded' }]);
+  }
+);
+
+it.each([
+  { completed: true, disconnect: 'cancel reader', status: 'succeeded', errorCode: null },
+  { completed: true, disconnect: 'abort request', status: 'succeeded', errorCode: null },
+  {
+    completed: false,
+    disconnect: 'cancel reader',
+    status: 'aborted',
+    errorCode: 'worker_inference_cancelled',
+  },
+])(
+  'records Responses $disconnect after completed=$completed as $status',
+  async ({ completed, disconnect, status, errorCode }) => {
+    const f = await fixture();
+    const encoder = new TextEncoder();
+    const delta = 'data: {"type":"response.output_text.delta","delta":"ok"}\n\n';
+    const terminal = 'data: {"type":"response.completed","response":{"status":"completed"}}\n\n';
+    const abort = new AbortController();
+    const cancelSource = vi.fn();
+    f.dispatch.mockResolvedValue(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          abort.signal.addEventListener('abort', () => controller.error(abort.signal.reason), {
+            once: true,
+          });
+          controller.enqueue(encoder.encode(delta));
+          if (completed) {
+            controller.enqueue(encoder.encode(terminal.slice(0, 19)));
+            controller.enqueue(encoder.encode(terminal.slice(19)));
+          }
+          // Leave the source open so the consumer closes before EOF.
+        },
+        cancel: cancelSource,
+      })
+    );
+    const response = await f.post(true, 'responses', abort.signal);
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    expect(await reader.read()).toEqual({ done: false, value: encoder.encode(delta) });
+    if (completed)
+      expect(await reader.read()).toEqual({ done: false, value: encoder.encode(terminal) });
+    if (disconnect === 'abort request') {
+      abort.abort();
+      expect((await reader.read()).done).toBe(true);
+    } else {
+      await reader.cancel();
+      await vi.waitFor(() => expect(cancelSource).toHaveBeenCalledOnce());
+    }
+
+    expect(f.ledgerCalls()).toMatchObject([{ status, errorCode }]);
+    if (completed)
+      expect(f.ledgerCalls()[0]?.extensions?.['openkit.gateway/routeLineage']).toMatchObject({
+        entries: [{ outputBegan: true, terminalResult: 'succeeded' }],
+      });
   }
 );
 

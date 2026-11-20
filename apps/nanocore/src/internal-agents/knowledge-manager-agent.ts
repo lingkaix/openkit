@@ -9,11 +9,11 @@ import {
 } from '@openkit/protocol';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore, TerminalTurnPublication } from '../lib/store.js';
-import { resolveLogicalModel } from '../llm/logical-models.js';
+import { resolveLogicalModelSupply } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
-import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import type { RegistryGatewayProviderResolver } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import type { TurnCommandRuntimeContext } from '../runtime/types.js';
 import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
@@ -67,10 +67,7 @@ export interface KnowledgeManagerAgentDependencies {
   readonly store: FsStore;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
-  readonly resolveGatewayProvider: (
-    providerId: string,
-    model: string
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  readonly resolveGatewayProvider: RegistryGatewayProviderResolver;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
 }
@@ -353,16 +350,13 @@ async function executeKnowledgeManagerAgent(
           ...(selection.profile?.reasoningEffort === undefined
             ? {}
             : { reasoningEffort: selection.profile.reasoningEffort }),
-          resolveLogicalModel: (id) => {
-            const current = dependencies.runtimeConfig();
-            return resolveLogicalModel(
-              current.gatewayConfig,
-              current.providerRegistry,
+          resolveLogicalModelSupply: (id) =>
+            resolveLogicalModelSupply(
+              dependencies.runtimeConfig(),
               id,
               dependencies.providerSubscriptionAccountManager,
               dependencies.providerCredentialConfigured
-            );
-          },
+            ),
           dispatcher: dependencies.dispatcher,
           resolveGatewayProvider: dependencies.resolveGatewayProvider,
           ...(dependencies.providerSubscriptionAccountManager

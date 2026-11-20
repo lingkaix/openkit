@@ -1559,15 +1559,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    *
    * @param providerId Provider id selected by Gateway defaults.
    * @param model Model selected for the pending dispatch.
+   * @param context Current credential-use attribution.
+   * @param registry Exact installed registry captured by this Gateway call.
    * @returns Secret-bearing provider config.
    * @throws OpenAICompatibleProviderError when the provider or model cannot be dispatched.
    */
   function resolveGatewayProvider(
     providerId: string,
     model: string,
-    context?: ProviderCredentialUseContext
+    context: ProviderCredentialUseContext | undefined,
+    registry: ProviderRegistry
   ) {
-    const profile = runtimeConfig().providerRegistry.get(providerId);
+    const profile = registry.get(providerId);
 
     if (!profile) {
       throw new OpenAICompatibleProviderError({

@@ -58,6 +58,7 @@ export const ControlWorkerHeartbeatRefusalSchema = z
       'worker_control_lease_not_live',
       'worker_control_sequence_conflict',
       'worker_control_sequence_stale',
+      'worker_control_heartbeat_already_accepted',
       'worker_control_identity_conflict',
     ]),
     message: z.string(),

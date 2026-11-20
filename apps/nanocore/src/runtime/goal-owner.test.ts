@@ -24,7 +24,11 @@ import {
   readGoalView,
 } from './goal-owner.js';
 import { commandInputHash } from './idempotent-command.js';
-import { raiseRecordedPendingRequest, respondRecordedApproval } from './pending-request-flow.js';
+import {
+  admitIfIdle,
+  raiseRecordedPendingRequest,
+  respondRecordedApproval,
+} from './pending-request-flow.js';
 import { type PendingRequestRecord, readPendingRequest } from './pending-requests.js';
 
 /** Initializes real native owners and closes the worker before deleting the private root. */
@@ -264,7 +268,7 @@ describe('Proposed Plan eligibility', () => {
       db
     );
     const card = cardView.cards[0]!;
-    async function propose() {
+    async function propose(by: 'human' | 'coordinator' = 'coordinator') {
       const current = await executeGoalOperation('goal.read', scope, human, store, db);
       const view = await executeGoalOperation(
         'goal.plan.propose',
@@ -288,7 +292,7 @@ describe('Proposed Plan eligibility', () => {
             boundaries: 'No deployment',
           },
         },
-        coordinator,
+        by === 'human' ? human : coordinator,
         store,
         db
       );
@@ -878,6 +882,108 @@ describe('Proposed Plan eligibility', () => {
       f.db.sqlite.close();
     }
   });
+  it.each(['exact', 'missing', 'contradictory', 'duplicate', 'damaged', 'incomplete-v1'] as const)(
+    'consumes a delivered Goal Plan grant only with its exact decision Item (%s)',
+    async (publication) => {
+      const f = await fixture();
+      await f.store.completeTurn(f.coordinator.coordinatorTurnId, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      const plan = await f.propose('human');
+      const pendingRequestId = plan.pendingRequestId;
+      const granted = await f.resolve(pendingRequestId);
+      expect(granted.goal!.activePlanVersionId).toBeNull();
+
+      const pendingServices = {
+        openWorkspace: (workspaceId: string) => openWorkspaceDb(f.root, workspaceId),
+        requesterAuthority: () => true,
+      };
+      f.store.startPendingRequestDelivery(pendingServices);
+      await admitIfIdle(f.store, pendingServices, f.scope.workspaceId, f.scope.threadId);
+      const frozen = readPendingRequest(f.db.sqlite, pendingRequestId)!;
+      expect(frozen.delivery).toBe('frozen');
+      const turnId = frozen.deliveryTurnId!;
+      expect(turnId).not.toBe(frozen.raisingTurnId);
+      const decision = f.store
+        .getTurnById(turnId)
+        .items.find((item) => item.type === 'approval-decision');
+      expect(decision).toMatchObject({ approvalRequestId: pendingRequestId, decision: 'granted' });
+      await f.store.applyPendingRequestCommand(f.scope.workspaceId, {
+        action: 'delivery-prove',
+        workspaceId: f.scope.workspaceId,
+        turnId,
+        now: new Date().toISOString(),
+      });
+      expect(readPendingRequest(f.db.sqlite, pendingRequestId)?.delivery).toBe('delivered');
+
+      if (publication === 'missing')
+        f.db.sqlite
+          .prepare("DELETE FROM control_product_entries WHERE kind='item' AND id=?")
+          .run(decision!.id);
+      if (publication === 'contradictory')
+        f.db.sqlite
+          .prepare('UPDATE pending_requests SET decided_at=? WHERE request_id=?')
+          .run(new Date(Date.parse(frozen.decidedAt!) - 1).toISOString(), pendingRequestId);
+      if (publication === 'duplicate')
+        await f.store.createItem({
+          ...decision!,
+          id: testEntityId('it', 'duplicate-goal-plan-decision'),
+        });
+      if (publication === 'damaged')
+        f.db.sqlite
+          .prepare(
+            `UPDATE control_product_entries
+             SET content_json=json_set(content_json,'$.byteLength',json_extract(content_json,'$.byteLength')+1)
+             WHERE kind='item' AND id=? AND is_current=1`
+          )
+          .run(decision!.id);
+      if (publication === 'incomplete-v1')
+        f.db.sqlite
+          .prepare(
+            `UPDATE control_product_entries
+             SET content_json=json_remove(content_json,'$.byteLength')
+             WHERE kind='item' AND id=? AND is_current=1`
+          )
+          .run(decision!.id);
+
+      const consume = executeGoalOperation(
+        'goal.plan.approve',
+        { ...f.scope, requestId: f.requestId(), pendingRequestId, decision: 'granted' },
+        { ...f.human, coordinatorTurnId: turnId },
+        f.store,
+        f.db,
+        { grantAuthority: () => true }
+      );
+      if (publication === 'exact') {
+        const result = await consume;
+        expect(result.goal!.activePlanVersionId).toBe(plan.planVersionId);
+        expect(result.versions[0]).toMatchObject({ bytes: plan.bytes, digest: plan.digest });
+        expect(result.requests).toMatchObject([
+          { requestId: pendingRequestId, claim: 'finished', disposition: 'approved-executed' },
+        ]);
+        expect(result.tasks).toEqual([]);
+      } else {
+        const reason =
+          'The pending request is contradictory. Read the current Goal and request a new approval.';
+        await expect(consume).rejects.toMatchObject({
+          code: 'grant_conflict',
+          message: reason,
+        });
+        const result = readGoalView(f.store, f.db, f.scope.goalId);
+        expect(result.goal!.activePlanVersionId).toBeNull();
+        expect(result.requests).toMatchObject([
+          {
+            requestId: pendingRequestId,
+            claim: 'unclaimed',
+            disposition: 'denied-not-executed',
+            reason,
+          },
+        ]);
+        expect(result.tasks).toEqual([]);
+      }
+    }
+  );
   it('records cancellation-before-claim as denied-not-executed and never activates', async () => {
     const f = await fixture();
     try {

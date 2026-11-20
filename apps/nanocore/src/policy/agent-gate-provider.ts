@@ -18,11 +18,11 @@ import {
 } from '../internal-agents/internal-agent-loop.js';
 import type { FsStore } from '../lib/store.js';
 import type { GatewayDecisionAction, GatewayDecisionResult } from '../llm/gateway-decision.js';
-import { resolveLogicalModel } from '../llm/logical-models.js';
+import { resolveLogicalModel, resolveLogicalModelSupply } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
-import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import type { RegistryGatewayProviderResolver } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import type { CoreDb } from '../storage/db.js';
@@ -36,10 +36,7 @@ export function createAgentPolicyParticipant(deps: {
   readonly store: FsStore;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly dispatcher: LLMGatewayProviderDispatcher;
-  readonly resolveGatewayProvider: (
-    providerId: string,
-    model: string
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  readonly resolveGatewayProvider: RegistryGatewayProviderResolver;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   /** Trusted Core decision service, not Provider transport or a route qualification claim. */
@@ -140,16 +137,13 @@ export function createAgentPolicyParticipant(deps: {
             assertAgentWorkNotPaused(deps.runtimeConfig().openKitConfig.security?.pauseAgentWork),
           capture,
           logicalModel,
-          resolveLogicalModel: (id) => {
-            const current = deps.runtimeConfig();
-            return resolveLogicalModel(
-              current.gatewayConfig,
-              current.providerRegistry,
+          resolveLogicalModelSupply: (id) =>
+            resolveLogicalModelSupply(
+              deps.runtimeConfig(),
               id,
               deps.providerSubscriptionAccountManager,
               deps.providerCredentialConfigured
-            );
-          },
+            ),
           dispatcher: deps.dispatcher,
           resolveGatewayProvider: deps.resolveGatewayProvider,
           ...(deps.providerSubscriptionAccountManager

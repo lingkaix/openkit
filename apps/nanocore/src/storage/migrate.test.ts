@@ -290,6 +290,7 @@ describe('database setup', () => {
         '0000_baseline.sql',
         '0001_discord_reports_bindings.sql',
         '0002_discord_reports_delivery.sql',
+        '0003_discord_reports_ambient.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -300,6 +301,7 @@ describe('database setup', () => {
         'core_0000_baseline',
         'core_0001_discord_reports_bindings',
         'core_0002_discord_reports_delivery',
+        'core_0003_discord_reports_ambient',
       ]);
       // Current private Login slots remain optional; absence never infers a Login.
       const loginColumns = coreDb.sqlite.pragma('table_info(vault_references)') as Array<{

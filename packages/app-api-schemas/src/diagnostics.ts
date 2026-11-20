@@ -241,7 +241,14 @@ export const SetupDiagnosticsResponseSchema = z
         }),
       })
     ),
-    runtimeConfig: RuntimeConfigStatusSchema,
+    runtimeConfig: RuntimeConfigStatusSchema.extend({
+      nanoHostTurnCapacity: z
+        .object({
+          desired: z.number().int().positive(),
+          effective: z.number().int().positive().nullable(),
+        })
+        .optional(),
+    }),
   })
   .superRefine((value, ctx) => {
     addRawSecretIssues(value, ctx, []);

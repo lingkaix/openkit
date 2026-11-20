@@ -328,12 +328,17 @@ export async function prepareKnowledgeMaintenance(
   const fail = async () => {
     try {
       const current = store.getTurnById(turn.id);
+      const retained = current.items.findLast(
+        (item) => item.type === 'status' && item.knowledgeMaintenanceResult
+      );
       const result =
         outcome ??
-        response(
-          'failed',
-          current.error?.message ?? 'Knowledge maintenance failed. Inspect its retained Turn.'
-        );
+        (retained?.type === 'status'
+          ? KnowledgeMaintenanceResponseSchema.parse(retained.knowledgeMaintenanceResult)
+          : response(
+              'failed',
+              current.error?.message ?? 'Knowledge maintenance failed. Inspect its retained Turn.'
+            ));
       if (!isSealedTurnTerminal(current.status)) {
         if (!outcomeStatusRecorded) await status(result.summary, true, result);
         await store.updateTurn(turn.id, {
@@ -982,6 +987,7 @@ export async function prepareKnowledgeMaintenance(
           turnId: turn.id,
           nativeAuthority,
         });
+        let submissionUnresolved = false;
         const tools: AgentTool[] = [
           history.tool,
           tool(
@@ -995,10 +1001,19 @@ export async function prepareKnowledgeMaintenance(
             'summary',
             'Submit prior knowledge.notebook-workspace.update edits for Knowledge publication or required Review. The summary describes the edits and is not page content. Literal Source capture is not Knowledge page integration. A native no_change outcome means the editor has no page changes.',
             async (value) => {
-              const result = await editor.notebookUpdate({ summary: value.summary! });
-              if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);
-              await recordOutcome();
-              return result;
+              const previousUnresolved = submissionUnresolved;
+              submissionUnresolved = true;
+              try {
+                const result = await editor.notebookUpdate({ summary: value.summary! });
+                if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);
+                await recordOutcome();
+                return result;
+              } catch (error) {
+                // A native refusal leaves the earlier result intact. An unknown effect needs inspection.
+                if (error instanceof NotebookError && error.code !== 'recovery_required')
+                  submissionUnresolved = previousUnresolved;
+                throw error;
+              }
             }
           ),
         ];
@@ -1087,6 +1102,32 @@ export async function prepareKnowledgeMaintenance(
           turn,
           workspaceDb,
           signal: input.signal,
+          terminalItems: ({ error }) => {
+            if (
+              error?.code !== 'knowledge_manager_timeout' ||
+              outcome ||
+              submissionUnresolved ||
+              !suppliedSource ||
+              input.signal.aborted
+            )
+              return [];
+            try {
+              const retained = currentPointers().get(suppliedSource.id)?.source;
+              if (
+                retained?.contentDigest !== suppliedSource.contentDigest ||
+                !knowledgeSourceLineageReadable(target, suppliedSource)
+              )
+                return [];
+            } catch {
+              return [];
+            }
+            const { id, contentDigest } = suppliedSource;
+            const result = response(
+              'failed',
+              `${error.message} Source retained as source:${id}@${contentDigest}. Continue with knowledge.maintain using sourceIds ["${id}"] and a new requestId.`
+            );
+            return [statusItem(result.summary, true, result)];
+          },
           inputs: {
             purpose: 'maintenance',
             ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },

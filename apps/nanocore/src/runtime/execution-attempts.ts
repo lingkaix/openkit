@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
@@ -15,6 +16,28 @@ export {
   type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
+
+const preparationPublicationTails = new Map<string, Promise<void>>();
+
+/** Orders exact predecessor publication and attempt closure in the Data Root owner process. */
+export async function withSchedulerPreparationPublication<T>(
+  db: CoreDb,
+  attemptId: string,
+  run: () => Promise<T>
+): Promise<T> {
+  const key = JSON.stringify([resolve(db.dataRoot), attemptId]);
+  const previous = preparationPublicationTails.get(key);
+  const release = Promise.withResolvers<void>();
+  preparationPublicationTails.set(key, release.promise);
+  try {
+    await previous;
+    return await run();
+  } finally {
+    release.resolve();
+    if (preparationPublicationTails.get(key) === release.promise)
+      preparationPublicationTails.delete(key);
+  }
+}
 
 /** Posts an immutable tuple after Core open; explicit caller clocks stay outside the wire. */
 async function publishAttempt(
@@ -108,16 +131,22 @@ export async function markSchedulerExecutionAttemptClosing(
   db: CoreDb,
   input: Parameters<typeof records.markSchedulerExecutionAttemptClosing>[1]
 ) {
-  return (await publishAttempt(
+  return withSchedulerPreparationPublication(
     db,
-    {
-      kind: 'closing',
-      attemptId: input.attemptId,
-      cause: input.cause,
-      outcomeRef: input.outcomeRef,
-    },
-    input.now
-  ))!;
+    input.attemptId,
+    async () =>
+      (await publishAttempt(
+        db,
+        {
+          kind: 'closing',
+          attemptId: input.attemptId,
+          cause: input.cause,
+          ...(input.requireUnsubmitted ? { requireUnsubmitted: true } : {}),
+          outcomeRef: input.outcomeRef,
+        },
+        input.now
+      ))!
+  );
 }
 
 /** Commits the original close-without-effects tuple before its dependent effect or handoff. */
@@ -125,17 +154,22 @@ export async function closeSchedulerExecutionAttemptWithoutEffects(
   db: CoreDb,
   input: Parameters<typeof records.closeSchedulerExecutionAttemptWithoutEffects>[1]
 ) {
-  return (await publishAttempt(
+  return withSchedulerPreparationPublication(
     db,
-    {
-      kind: 'close-without-effects',
-      attemptId: input.attemptId,
-      noOutstandingEffects: input.noOutstandingEffects,
-      cause: input.cause,
-      requeue: input.requeue,
-    },
-    input.now
-  ))!;
+    input.attemptId,
+    async () =>
+      (await publishAttempt(
+        db,
+        {
+          kind: 'close-without-effects',
+          attemptId: input.attemptId,
+          noOutstandingEffects: input.noOutstandingEffects,
+          cause: input.cause,
+          requeue: input.requeue,
+        },
+        input.now
+      ))!
+  );
 }
 
 /** Commits the original close-with-fence tuple before its dependent effect or handoff. */

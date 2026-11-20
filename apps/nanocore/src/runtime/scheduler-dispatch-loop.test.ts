@@ -63,7 +63,10 @@ import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import { getSchedulerPreparationClaims, runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
 import * as schedulerDispatchLoop from './scheduler-dispatch-loop.js';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service.js';
-import { runSchedulerRestartRecovery } from './scheduler-restart-recovery.js';
+import {
+  runSchedulerRecoveryMaintenance,
+  runSchedulerRestartRecovery,
+} from './scheduler-restart-recovery.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
   PrepareAgentSessionForTurnInput,
@@ -1801,6 +1804,135 @@ describe('scheduler dispatch loop', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it.each(['acknowledged', 'ack lost'] as const)(
+    'fences expired preparation and dispatches another Thread before its late result: %s',
+    async (closeReply) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
+      await seedLocalSchedulerTarget(coreDb);
+      const executor = new NativeCompletingTurnExecutor(coreDb);
+      const manifest = agentManifest();
+      const gate = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const returned = Promise.withResolvers<void>();
+      const heldTurnId = testEntityId('tu', 'preparation_deadline_held');
+      const readyTurnId = testEntityId('tu', 'preparation_deadline_ready');
+      const prepare = executor.prepareAgentSessionForTurn.bind(executor);
+      executor.prepareAgentSessionForTurn = async (owner, input) => {
+        if (input.turn.id !== heldTurnId) return prepare(owner, input);
+        entered.resolve();
+        await gate.promise;
+        try {
+          return await prepare(owner, input);
+        } finally {
+          returned.resolve();
+        }
+      };
+      let instant = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+      const clock = () => instant;
+      const dispatch = {
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [manifest],
+        providerRegistry: localProviderRegistry(),
+        gatewayConfig: createTestGatewayConfig(),
+        now: clock,
+      };
+      for (const [index, turnId] of [heldTurnId, readyTurnId].entries()) {
+        const thread = await store.createThread(DEMO_WORKSPACE_ID, `Deadline ${index}`);
+        await publishTestAdmission(
+          store,
+          createSchedulerAdmissionEntry(coreDb, {
+            backendId: executor.executionBackend.id,
+            queueEntryId: `queue_preparation_deadline_${index}`,
+            requestId: fixtureRequestId(`preparation_deadline_${index}`),
+            turnId,
+            workspaceId: DEMO_WORKSPACE_ID,
+            threadId: thread.id,
+            turnInput: `Input ${index}`,
+            requestedAgentId: manifest.id,
+            triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+          })
+        );
+      }
+      const first = runSchedulerDispatchLoop(dispatch).catch((error: unknown) => error);
+      try {
+        await Promise.race([
+          entered.promise,
+          first.then((error) => {
+            throw new Error('Dispatch ended before preparation entered.', { cause: error });
+          }),
+        ]);
+        expect(await runSchedulerDispatchLoop(dispatch)).toMatchObject({
+          terminalResult: { status: 'queued', reason: 'thread-busy' },
+        });
+        instant = new Date().toISOString();
+        const sweep = () =>
+          runSchedulerRecoveryMaintenance(coreDb, {
+            store,
+            executionBackend: executor.executionBackend,
+            now: clock,
+            projectRecoveredTurn: async ({ turnId }) => {
+              if (store.getTurnById(turnId).status === 'pending')
+                await store.completeTurn(turnId, { status: 'failed', completedAt: instant });
+              return { status: 'failed' };
+            },
+          });
+        if (closeReply === 'ack lost') {
+          const close = attemptCommands.closeSchedulerExecutionAttemptWithoutEffects;
+          const lostReply = vi
+            .spyOn(attemptCommands, 'closeSchedulerExecutionAttemptWithoutEffects')
+            .mockImplementationOnce(async (...args) => {
+              await close(...args);
+              throw new Error('The native close committed before its reply was lost.');
+            });
+          try {
+            await expect(sweep()).rejects.toThrow(
+              'Execution attempt recovery requires inspection.'
+            );
+          } finally {
+            lostReply.mockRestore();
+          }
+        }
+        await sweep();
+        expect(await first).toMatchObject({ code: 'worker_preparation_failed' });
+        expect(executionAttempts(coreDb)).toMatchObject([
+          {
+            phase: 'closed',
+            terminal_cause: 'preparation-deadline',
+            deadline: null,
+            operation_id: null,
+          },
+        ]);
+        expect(store.getTurnById(heldTurnId).status).toBe('failed');
+        expect(getSchedulerPreparationClaims(coreDb).has('queue_preparation_deadline_0')).toBe(
+          false
+        );
+        const second = await runSchedulerDispatchLoop(dispatch);
+        expect(second.startedTurns[0]?.dispatch.entry.turnId).toBe(readyTurnId);
+
+        gate.resolve();
+        await returned.promise;
+        expect(executor.calls.map((call) => call.turnId)).toEqual([readyTurnId]);
+        expect(store.getTurnById(heldTurnId).status).toBe('failed');
+      } finally {
+        gate.resolve();
+        await first;
+        await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+        await drainNativeCompletions(coreDb);
+        coreDb.sqlite.close();
+        rmSync(coreDb.dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('ends overlapping background passes and later dispatches queued admissions in FIFO order', async () => {
     const coreDb = createMigratedCoreDb(false);

@@ -285,6 +285,29 @@ function resolveLogicalModelCatalogForConnection(
   });
 }
 
+/** The logical route and all Provider profiles come from one installed snapshot. */
+export interface LogicalModelSupply {
+  readonly logicalModel: ResolvedLogicalModel;
+  readonly registry: ProviderRegistry;
+}
+
+/** Resolves one logical model and retains the exact registry for every attempt. */
+export function resolveLogicalModelSupply(
+  snapshot: { gatewayConfig: GatewayConfig; providerRegistry: ProviderRegistry },
+  logicalModelId: string | undefined,
+  subscriptions?: Parameters<typeof resolveLogicalModel>[3],
+  credentialConfigured?: ProviderCredentialConfigured
+): LogicalModelSupply | null {
+  const logicalModel = resolveLogicalModel(
+    snapshot.gatewayConfig,
+    snapshot.providerRegistry,
+    logicalModelId,
+    subscriptions,
+    credentialConfigured
+  );
+  return logicalModel ? { logicalModel, registry: snapshot.providerRegistry } : null;
+}
+
 /** Finds one configured logical model, using the Gateway default only when no ID was supplied. */
 export function resolveLogicalModel(
   config: GatewayConfig,

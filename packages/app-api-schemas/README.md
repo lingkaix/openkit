@@ -146,6 +146,8 @@ Conversation submission declares its existing alternate binary request media and
 
 Administration configuration payloads bind human confirmation to an immutable Artifact digest and report persistence separately from reload and restart requirements. Catalog changes are validated by the registered configuration owner; the request cannot supply actor authority or filesystem paths.
 
+The runtime config status in `diagnostics.setup` can include `nanoHostTurnCapacity` with the desired limit and the current effective bound. A null bound means the NanoHost admission owner has no comparable resident observation.
+
 The generic runtime config file contract includes `model-catalog` for the deployment-admin model extension file; authorization and restart behavior remain NanoCore-owned.
 
 `UpdateMcpBindingRequestSchema` carries optional `credentialBindings` from the browser-safe `@openkit/config-schema/mcp-credentials` entry. Omission preserves current bindings, a supplied array replaces them, and the shared schema keeps sink and raw/bearer presentation admission aligned with canonical configuration.

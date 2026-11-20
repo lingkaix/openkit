@@ -379,7 +379,7 @@ Raising a pending approval is not a provider abort and does not change the Turn'
 
 `chat_mode_persistence_failed` is reserved for a valid provider response whose assistant Item and completed Turn tuple could not be committed. The implementation MUST terminalize the same Turn as failed when that deterministic failure tuple can be written; it MUST NOT redispatch the provider under the same request, publish a completed assistant Item, or claim `answered`. A partial or contradictory assistant/Turn tuple, or failure to persist terminalization, returns `recovery_required`. The bounded availability compromise is that the user must use a new request id for another provider attempt rather than adding a settlement owner.
 
-Chat Mode does not resume the provider invocation after process failure. The caller reads the command and Thread state; replay of a completed request returns the original lineage, a started but incomplete provider attempt returns its terminal failure or `recovery_required`, and a user-requested new attempt uses a new request id and creates a new provider invocation. This deliberately favors no hidden duplicate call over automatic recovery and is not authorization for a Chat settlement or recovery workflow.
+Chat Mode does not resume the provider invocation after process failure. Before accepting new product work, boot uses the existing Turn owner to mark an orphaned command-initiated Assistant Turn interrupted. The caller reads the command and Thread state; replay of a completed request returns the original lineage, a started but incomplete provider attempt returns its terminal failure or `recovery_required`, and a user-requested new attempt uses a new request id and creates a new provider invocation. This deliberately favors no hidden duplicate call over automatic recovery and is not authorization for a Chat settlement or recovery workflow.
 
 ### Bounded Source Context
 
@@ -406,7 +406,7 @@ Local integration does not prove live Provider, host, or browser acceptance.
 - The Core Assistant is the only agent in a Chat Thread - New Composer queries use a Knowledge Manager Thread, but maintenance still admits new role Turns in retained conversation-entry maintenance Threads - #857
 - Repository inspection uses a selected Gateway vendor MCP read Tool - On main, the ordinary Assistant factory supplies no such Tool - #743
 - A request for another entry proposes a new Thread - On main, an unknown Tool returns an unavailable Tool result and does not propose that Thread - #630
-- A post-provider persistence failure returns chat_mode_persistence_failed - On main, that failure is generic HTTP 500 chat_mode_failed - #730
+- A post-provider persistence failure returns chat_mode_persistence_failed - The native Store refusal path maps a definite rollback to this code. Untyped persistence failures can still return generic HTTP 500 chat_mode_failed - #730
 - Creation of Workspace-shared conversation Threads is gated off - New Assistant admission on an unestablished shared conversation refuses, but public `thread.create` still persists `entryPath: "conversation"` with `visibility: "workspace"` - #752
 
 ## Decisions

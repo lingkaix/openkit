@@ -123,6 +123,17 @@ it('owns the accepted execution attempt lifecycle while the Main Core handle is 
       fenceRef: null,
     })
   ).toMatchObject({ disposition: 'accepted', phase: 'open' });
+  const beforeExpiry = db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').get();
+  expect(
+    await markSchedulerExecutionAttemptClosing(db, {
+      attemptId: attempt.attemptId,
+      cause: 'preparation-deadline',
+      requireUnsubmitted: true,
+    })
+  ).toMatchObject({ phase: 'open', deadline: submitted.deadline, terminalCause: null });
+  expect(db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').get()).toEqual(
+    beforeExpiry
+  );
   expect(
     await markSchedulerExecutionAttemptClosing(db, {
       attemptId: attempt.attemptId,

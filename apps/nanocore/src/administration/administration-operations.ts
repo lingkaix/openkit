@@ -41,14 +41,14 @@ import {
   StoreRecordNotFoundError,
   type TerminalTurnPublication,
 } from '../lib/store.js';
-import { resolveLogicalModel } from '../llm/logical-models.js';
+import { resolveLogicalModelSupply } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { createOperationInvocation } from '../operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import type { RegistryGatewayProviderResolver } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import {
   IdempotencyKeyConflictError,
@@ -152,10 +152,7 @@ interface AdministrationDependencies {
   readonly store: FsStore;
   readonly runtimeConfigFiles: (actor: Actor) => RuntimeConfigFileService;
   readonly reloadRuntimeConfig: () => ReturnType<RuntimeConfigManager['reload']>;
-  readonly resolveGatewayProvider: (
-    providerId: string,
-    model: string
-  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  readonly resolveGatewayProvider: RegistryGatewayProviderResolver;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }
 
@@ -684,16 +681,13 @@ export function createAdministrationOperationImplementations(input: Administrati
                     ...(selection.profile?.reasoningEffort === undefined
                       ? {}
                       : { reasoningEffort: selection.profile.reasoningEffort }),
-                    resolveLogicalModel: (logicalModelId) => {
-                      const snapshot = input.runtimeConfig();
-                      return resolveLogicalModel(
-                        snapshot.gatewayConfig,
-                        snapshot.providerRegistry,
+                    resolveLogicalModelSupply: (logicalModelId) =>
+                      resolveLogicalModelSupply(
+                        input.runtimeConfig(),
                         logicalModelId,
                         input.providerSubscriptionAccountManager,
                         input.providerCredentialConfigured
-                      );
-                    },
+                      ),
                     dispatcher: input.llmGatewayDispatcher,
                     resolveGatewayProvider: input.resolveGatewayProvider,
                     ...(input.providerSubscriptionAccountManager
