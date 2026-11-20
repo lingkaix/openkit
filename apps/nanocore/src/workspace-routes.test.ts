@@ -95,7 +95,7 @@ describe('workspace routes', () => {
     });
   });
 
-  it('reacknowledges the installed Workspace after an activation acknowledgement fails', async () => {
+  it('publishes the committed Workspace only after native activation succeeds', async () => {
     const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-publication-retry-')),
     });
@@ -105,6 +105,7 @@ describe('workspace routes', () => {
     ensureLocalUser(coreDb);
     const manager = createRuntimeConfigManager({ dataRoot: store.getDataRoot() });
     await manager.bindNativePolicyPublication(coreDb);
+    const previous = manager.current();
     const workspace = await store.createWorkspace('Committed before acknowledgement');
     const client = getControlStoreWorkerClient();
     const publish = client.runtimePolicyPublication.bind(client);
@@ -119,14 +120,16 @@ describe('workspace routes', () => {
       await expect(
         manager.publishWorkspaceConfiguration(workspace.id, workspace.name)
       ).rejects.toThrow('Controlled activation acknowledgement failure.');
-      expect(
-        manager.current().workspaceConfigs.some((entry) => entry.workspaceId === workspace.id)
-      ).toBe(true);
+      expect(manager.current()).toBe(previous);
       expect(await publish(coreDb, { kind: 'inspect' })).toMatchObject({ state: 'closed' });
     } finally {
       fault.mockRestore();
     }
     await manager.publishWorkspaceConfiguration(workspace.id, workspace.name);
+    expect(
+      manager.current().workspaceConfigs.find((entry) => entry.workspaceId === workspace.id)?.config
+        .workspace.name
+    ).toBe(workspace.name);
     expect(await publish(coreDb, { kind: 'inspect' })).toMatchObject({
       state: 'active',
       identity: runtimePolicyIdentityForSnapshot(manager.current()),

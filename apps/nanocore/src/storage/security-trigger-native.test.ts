@@ -496,17 +496,30 @@ describe('N1 real-native Server security trigger authority and alarms', () => {
       inflightCommands: new Map(),
       repositoryWorkspaceDb: (id) => openWorkspaceDb(f.dataRoot, id),
     });
-    await catalog['catalog.mcp-create'](
+    const expectedRevision = loadWorkspaceResourceCatalog(f.dataRoot, workspace.id).revision;
+    await assert.rejects(
+      catalog['catalog.mcp-create'](
+        {
+          workspaceId: workspace.id,
+          requestId,
+          expectedRevision,
+          id: 'n1-workspace-only',
+          displayName: 'N1 Workspace-only Audit witness',
+          allowedTools: ['probe'],
+          declaration: { kind: 'http', endpoint: 'https://fixture.example.invalid/mcp' },
+        },
+        context(s.admin, { kind: 'workspace', workspaceId: workspace.id })
+      ),
       {
-        workspaceId: workspace.id,
-        requestId,
-        expectedRevision: loadWorkspaceResourceCatalog(f.dataRoot, workspace.id).revision,
-        id: 'n1-workspace-only',
-        displayName: 'N1 Workspace-only Audit witness',
-        allowedTools: ['probe'],
-        declaration: { kind: 'http', endpoint: 'https://fixture.example.invalid/mcp' },
-      },
-      context(s.admin, { kind: 'workspace', workspaceId: workspace.id })
+        code: 'mcp_config_saved_activation_unknown',
+        status: 409,
+        details: {
+          savedRevision: expectedRevision + 1,
+          auditAcknowledged: true,
+          reloadStatus: 'unknown',
+          activeRuntimeVersion: null,
+        },
+      }
     );
     const db = openWorkspaceDb(f.dataRoot, workspace.id);
     let workspaceAuditId: string;

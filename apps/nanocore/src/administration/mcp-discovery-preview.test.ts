@@ -13,6 +13,7 @@ import {
 } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { loadResourceCatalog } from '../catalog/resource-catalog.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -136,6 +137,7 @@ function fixture() {
     store,
     repositoryWorkspaceDb,
     inflightCommands: new WeakMap(),
+    runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
     vaultUnlockState,
   });
   const call = (operation: string, input: unknown, currentActor = actor) =>

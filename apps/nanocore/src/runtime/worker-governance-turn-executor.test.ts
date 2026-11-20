@@ -18763,7 +18763,9 @@ describe('reviewed Login access through the neutral credential effect', () => {
           const originalVault = client.vault.bind(client);
           const originalPost = NativeWorker.prototype.postMessage;
           const coreAddress = `core:${nativeProductScope(fixture.coreDb.dataRoot, { kind: 'server' }).path}`;
-          const documentA = manager.current().openKitConfig.policy!.mediation!;
+          const snapshotA = manager.current();
+          const identityA = runtimePolicyIdentityForSnapshot(snapshotA);
+          const documentA = snapshotA.openKitConfig.policy!.mediation!;
           const selectedA = documentA.statements.find(
             (statement) => statement.id === 'reviewed-login-access'
           );
@@ -18771,9 +18773,7 @@ describe('reviewed Login access through the neutral credential effect', () => {
           policyOriginalRevision = policyDigest(documentA);
           const initiallyPublished = await publish(fixture.coreDb, { kind: 'inspect' });
           expect(initiallyPublished.state).toBe('active');
-          expect(initiallyPublished.identity).toEqual(
-            runtimePolicyIdentityForSnapshot(manager.current())
-          );
+          expect(initiallyPublished.identity).toEqual(identityA);
           expect(
             manager.current().workspaceConfigs.some((entry) => entry.workspaceId === workspaceId)
           ).toBe(true);
@@ -18854,9 +18854,12 @@ describe('reviewed Login access through the neutral credential effect', () => {
                 if (frame.input?.kind === 'close') policyEvents.push('close-post');
                 if (frame.input?.kind === 'activate') {
                   expect(policyCloseAcknowledged).toBe(true);
-                  expect(frame.input.identity).toEqual(
-                    runtimePolicyIdentityForSnapshot(manager.current())
+                  expect(manager.current()).toBe(snapshotA);
+                  const identityB = runtimePolicyIdentityForSnapshot(
+                    loadRuntimeConfig(fixture.coreDb.dataRoot)
                   );
+                  expect(identityB).not.toEqual(identityA);
+                  expect(frame.input.identity).toEqual(identityB);
                   if (ending === 'policy-closed-before-native-successor') {
                     if (forwardPolicyActivation)
                       throw new Error('Unexpected second Policy activation during the control.');
@@ -18963,7 +18966,10 @@ describe('reviewed Login access through the neutral credential effect', () => {
                 );
                 expect(policyIdentityMatched).toBe(true);
                 const currentDocument = manager.current().openKitConfig.policy!.mediation!;
-                expect(policyDigest(currentDocument) === policyOriginalRevision).toBe(false);
+                const beforeActivation = ending === 'policy-closed-before-native-successor';
+                expect(policyDigest(currentDocument) === policyOriginalRevision).toBe(
+                  beforeActivation
+                );
                 expect(
                   currentDocument.statements.find((statement) => statement.id === selectedA?.id)
                 ).toEqual(selectedA);
@@ -18971,7 +18977,7 @@ describe('reviewed Login access through the neutral credential effect', () => {
                   currentDocument.statements.find(
                     (statement) => statement.id === 'reviewed-login-inactive-publication-input'
                   )?.state
-                ).toBe('inactive');
+                ).toBe(beforeActivation ? undefined : 'inactive');
                 expect(
                   operationAuthorizer.authorizeWorkspace(
                     fixture.coreDb,
@@ -19227,6 +19233,13 @@ describe('reviewed Login access through the neutral credential effect', () => {
           expect(policyCloseAcknowledged).toBe(true);
           expect(policyActivationAcknowledged).toBe(true);
           expect(policyApplicationApplied).toBe(true);
+          expect(
+            manager
+              .current()
+              .openKitConfig.policy?.mediation?.statements.find(
+                (statement) => statement.id === 'reviewed-login-inactive-publication-input'
+              )?.state
+          ).toBe('inactive');
           expect(policyIdentityMatched).toBe(true);
           expect(policyMarkerState).toBe(
             ending === 'policy-closed-before-native-successor' ? 'closed' : 'active'

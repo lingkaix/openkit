@@ -13,10 +13,7 @@ import {
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
-import {
-  createInMemoryRuntimeConfigSnapshot,
-  createRuntimeConfigManager,
-} from '../config/runtime-config.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { type ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
@@ -130,20 +127,21 @@ async function fixture(missingKey = false, enabled = true, managedConfiguration 
     },
   };
   if (managedConfiguration) {
-    mkdirSync(join(dataRoot, 'config'), { recursive: true });
+    const providersDir = join(dataRoot, 'config', 'providers');
+    mkdirSync(providersDir, { recursive: true });
     writeFileSync(join(dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
     writeFileSync(join(dataRoot, 'config/gateway.jsonc'), JSON.stringify(options.gatewayConfig));
+    for (const profile of options.providerRegistry!.list()) {
+      writeFileSync(
+        join(providersDir, `${profile.id}.provider.jsonc`),
+        JSON.stringify({ schemaVersion: 1, ...profile })
+      );
+    }
   }
   const manager = managedConfiguration
     ? createRuntimeConfigManager({
         dataRoot,
         captureCoverage: store,
-        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
-          dataRoot,
-          openKitConfig: {},
-          providerRegistry: options.providerRegistry!,
-          gatewayConfig: options.gatewayConfig!,
-        }),
       })
     : undefined;
   const files = manager
