@@ -222,6 +222,12 @@ The generic `applyControlProducts` and `prepareControlEntries` paths still refus
 
 Standalone Workspace Thread archive starts a native batch after the already-ready prefix commits. Its current canonical Pending Item proof is prepared outside SQL, then rechecked in the archive savepoint with the current native Turns and original receipts. Claimed execution and active closeout retain their existing refusal codes; malformed rows remain inspect-only. Prepared closeout keeps its terminal owner, and exact receipt replay skips new admission checks. This uses the existing queue and FULL acknowledgement; it adds no retry or authority state.
 
+## v0.2.0 Owner Ports
+
+[Control Kernel](control-kernel-port.ts), [Server work](server-work-port.ts), [communication](communication-port.ts), [security trigger](security-trigger-port.ts), [NanoHost](nanohost-port.ts), and [OpenAI Agents](openai-agents-port.ts) declare the storage cutover interfaces. These interfaces describe typed handles and receipt boundaries for the owner switch. The existing serving path still opens its current files until the owner lanes integrate the ports.
+
+The source owner commits an intent before posting. Use [the shared request ID helper](storage-owner.ts) for internal cross-owner commands. Inspect the original intent after a lost acknowledgement. A verified complete history can return absence. A restored or incomplete history returns unknown and holds dependent effects. The source owner matches the receipt and digest before it settles or publishes. See [Cross-Owner Command Settlement](../../../../docs/specs/20261019-durable_execution_and_control_store.md#cross-owner-command-settlement).
+
 ## Prepared Core Execution Journal
 
 The Core baseline defines `control_executions` and `control_execution_steps` under the accepted [DX journal owner](../../../../docs/specs/20261019-durable_execution_and_control_store.md#step-journal-and-span-model). Root identity has no placement field; each step retains its declared control/target plus original `{parent, carriage, clock}` invocation JSON. `remainingMs` is derived, never stored or renewed. JSON encodes bigint nanoseconds and typed int64 values as exact decimal strings; consumers decode them to bigint, not floating-point timestamps or untyped diagnostic attributes.
