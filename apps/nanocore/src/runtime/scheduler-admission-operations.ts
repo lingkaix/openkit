@@ -205,7 +205,8 @@ export function createSchedulerAdmissionOperationImplementations(
 
         const source = findAcceptedRecurringOccurrenceForQueue(coreDb, queueEntryId);
         if (source) {
-          releasePublication = enterRecurringTurnPublication(coreDb.dataRoot, queueEntryId);
+          releasePublication =
+            enterRecurringTurnPublication(coreDb.dataRoot, queueEntryId)?.release ?? null;
           if (!releasePublication)
             throw new OperationError(
               'recovery_required',

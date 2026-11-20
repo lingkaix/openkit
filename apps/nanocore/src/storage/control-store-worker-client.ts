@@ -572,6 +572,13 @@ interface ProgressCopyCredit {
   itemUsed: boolean;
 }
 
+/** A caller may stop an unposted publication and observe actual settlement after posting. */
+export interface ControlStorePublicationGuard {
+  readonly signal: AbortSignal;
+  readonly deadline: number;
+  postedSettlement?: Promise<void>;
+}
+
 /** One finite in-flight message, not persisted work or an execution attempt. */
 interface Pending {
   readonly counted: boolean;
@@ -601,6 +608,11 @@ interface Pending {
   readonly closeout?: CapabilityCloseoutCredit | undefined;
   readonly policyCall?: PolicyCall;
   readonly progressCopy?: { readonly credit: ProgressCopyCredit; readonly bytes: number };
+  readonly productPublication?: {
+    readonly guard: ControlStorePublicationGuard;
+    readonly receipt: PromiseWithResolvers<void>;
+    readonly detach: () => void;
+  };
   cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
   readonly reject: (
@@ -2962,7 +2974,8 @@ class ControlStoreWorkerClient {
   ): Promise<ControlKnowledgeAdmissionResult>;
   async transition(
     database: string,
-    transition: Extract<ControlAdmissionInput, { kind: 'scheduler-work' }>
+    transition: Extract<ControlAdmissionInput, { kind: 'scheduler-work' }>,
+    publicationGuard?: ControlStorePublicationGuard
   ): Promise<CoreSchedulerResult>;
   async transition(
     database: string,
@@ -2970,7 +2983,8 @@ class ControlStoreWorkerClient {
   ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult | CoreSchedulerResult | null>;
   async transition(
     database: string,
-    transition: ControlAdmissionInput
+    transition: ControlAdmissionInput,
+    publicationGuard?: ControlStorePublicationGuard
   ): Promise<
     ControlAdmissionResult | ControlKnowledgeAdmissionResult | CoreSchedulerResult | null
   > {
@@ -2999,7 +3013,14 @@ class ControlStoreWorkerClient {
                   },
                   content: new ArrayBuffer(0),
                 },
-                [json!]
+                [json!],
+                undefined,
+                false,
+                undefined,
+                [],
+                undefined,
+                undefined,
+                publicationGuard
               )
             : json === undefined
               ? await this.request({
@@ -3067,8 +3088,22 @@ class ControlStoreWorkerClient {
   }
 
   /** Submits a whole non-command product/lifecycle transition; success follows outer FULL COMMIT, never a queued-write acknowledgement. */
-  async products(database: string, transition: ControlProductTransition): Promise<void> {
-    await this.request({ operation: 'products', database, transition });
+  async products(
+    database: string,
+    transition: ControlProductTransition,
+    guard?: ControlStorePublicationGuard
+  ): Promise<void> {
+    await this.request(
+      { operation: 'products', database, transition },
+      undefined,
+      undefined,
+      false,
+      undefined,
+      [],
+      undefined,
+      undefined,
+      guard
+    );
   }
 
   /** Publishes an addressed Item only after its native head checks, exact bytes and covering FULL commit. */
@@ -6411,8 +6446,11 @@ class ControlStoreWorkerClient {
     recovery?: ControlFrozenNativeCall,
     preparedCapacity: readonly NativeCapacityReservation[] = [],
     schemaApplicationFacts?: Pending['schemaApplicationFacts'],
-    policyCall?: PolicyCall
+    policyCall?: PolicyCall,
+    publicationGuard?: ControlStorePublicationGuard
   ): Promise<Success> {
+    if (publicationGuard?.signal.aborted)
+      return Promise.reject(new ControlStoreWorkerError('precondition', 'not-committed'));
     if (command.operation !== 'shutdown') {
       try {
         this.assertAccepting();
@@ -6707,6 +6745,16 @@ class ControlStoreWorkerClient {
         for (const reservation of capacity) host.capacity.add(reservation);
         for (const lease of workspaceLeases) host.capacity.add(lease);
         if (closeout) closeout.borrowing = true;
+        const cancelUnposted = publicationGuard
+          ? () => {
+              if (!this.pending.get(id)?.posted)
+                this.complete(
+                  id,
+                  undefined,
+                  new ControlStoreWorkerError('precondition', 'not-committed')
+                );
+            }
+          : undefined;
         const entry: Pending = {
           counted: !borrowed,
           host,
@@ -6723,6 +6771,16 @@ class ControlStoreWorkerClient {
           ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
           ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
           ...(policyCall ? { policyCall } : {}),
+          ...(publicationGuard && cancelUnposted
+            ? {
+                productPublication: {
+                  guard: publicationGuard,
+                  receipt: Promise.withResolvers<void>(),
+                  detach: () =>
+                    publicationGuard.signal.removeEventListener('abort', cancelUnposted),
+                },
+              }
+            : {}),
           resolve,
           reject,
         };
@@ -6731,6 +6789,8 @@ class ControlStoreWorkerClient {
         handedToPending = true;
         if (database !== undefined && !borrowed)
           this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
+        if (publicationGuard && cancelUnposted)
+          publicationGuard.signal.addEventListener('abort', cancelUnposted, { once: true });
         if (policyCall) {
           try {
             this.retainPolicyCall(policyCall);
@@ -6828,7 +6888,8 @@ class ControlStoreWorkerClient {
 
   /** Rechecks current holds and authority without an async gap before the original post. */
   private postChecked(entry: Pending): void {
-    if (entry.posted) return;
+    if (entry.posted || this.pending.get(entry.request.id) !== entry) return;
+    const publication = entry.productPublication;
     const opening =
       'database' in entry.command ? this.openings.get(entry.command.database) : undefined;
     try {
@@ -6888,6 +6949,14 @@ class ControlStoreWorkerClient {
         return;
       }
     }
+    if (publication && performance.now() >= publication.guard.deadline) {
+      this.complete(
+        entry.request.id,
+        undefined,
+        new ControlStoreWorkerError('precondition', 'not-committed')
+      );
+      return;
+    }
     for (const member of members) member.posted = true;
     try {
       const request = entry.request;
@@ -6904,7 +6973,13 @@ class ControlStoreWorkerClient {
           new ControlStoreWorkerError('invalid-request', 'not-committed')
         );
       }
+      return;
     }
+    if (publication)
+      publication.guard.postedSettlement = Promise.race([
+        publication.receipt.promise,
+        entry.host.exited.promise,
+      ]);
   }
 
   /** A held capture can start only after every previously posted message has settled. */
@@ -6936,6 +7011,7 @@ class ControlStoreWorkerClient {
     const entry = this.pending.get(id);
     if (entry === undefined) return;
     this.pending.delete(id);
+    entry.productPublication?.detach();
     if (releaseMaterialBytes) {
       const releasedInputBytes = entry.cohort
         ? --entry.cohort.remaining === 0
@@ -7471,6 +7547,7 @@ class ControlStoreWorkerClient {
       this.fail(host);
       return;
     }
+    entry.productPublication?.receipt.resolve();
     if (
       value.status === 'error' &&
       entry.policyCall?.resource &&

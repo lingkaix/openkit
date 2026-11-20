@@ -70,6 +70,7 @@ const portableOccurrence = AutomationOccurrenceSchema.omit({
   snapshot: true,
   schedulerStatus: true,
   publicationIssue: true,
+  publicationUncertainSince: true,
 }).extend({
   snapshot: portableSnapshot,
   resolvedSelection: AutomationOccurrenceSchema.shape.resolvedSelection

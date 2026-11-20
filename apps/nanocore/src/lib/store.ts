@@ -262,6 +262,7 @@ import {
   eventConflictsWithSealedTurnOutcome,
 } from '../storage/control-store-products.js';
 import {
+  type ControlStorePublicationGuard,
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
   nativeUserDatabasePath,
@@ -848,6 +849,8 @@ interface CreateTurnOptions {
   captureCoverage?: CaptureCoverageBinding;
   /** Recurring publication needs a definite native busy refusal before it can retain deferral proof. */
   admitThreadInNativeWriter?: true;
+  /** Restricts the one original deferred publication through the native posting boundary. */
+  publicationGuard?: ControlStorePublicationGuard;
   /** Initial status. Ordinary turns start running. Outcome turns may start pending. */
   status?: 'pending' | 'running';
   /** Agent bound at admission. */
@@ -3630,7 +3633,8 @@ export class FsStore {
     entries: ControlProductEntry[] = [],
     admission?: Pick<ControlAdmission, 'receipt' | 'audit'>,
     journalIntents?: readonly ExecutionJournalIntent[],
-    pending?: readonly ControlPendingCommandInput[]
+    pending?: readonly ControlPendingCommandInput[],
+    publicationGuard?: ControlStorePublicationGuard
   ): Promise<ControlAdmissionResult | undefined> {
     const release =
       scope.owner.kind === 'workspace'
@@ -3655,14 +3659,18 @@ export class FsStore {
           entries,
           ...(pending?.length ? { pending: [...pending] } : {}),
         });
-      await client.products(database, {
-        products,
-        entries,
-        ...(pending?.length ? { pending: [...pending] } : {}),
-        ...(journalIntents?.length
-          ? { journalIntents: journalIntents.map(encodeExecutionJournalValue) }
-          : {}),
-      });
+      await client.products(
+        database,
+        {
+          products,
+          entries,
+          ...(pending?.length ? { pending: [...pending] } : {}),
+          ...(journalIntents?.length
+            ? { journalIntents: journalIntents.map(encodeExecutionJournalValue) }
+            : {}),
+        },
+        publicationGuard
+      );
       return undefined;
     } finally {
       release();
@@ -5412,6 +5420,7 @@ export class FsStore {
         turn,
         options.executorKind
       );
+      options.publicationGuard?.signal.throwIfAborted();
       const pendingEntries = pendingAdmission.entries;
       let commandAdmission: Pick<ControlAdmission, 'receipt' | 'audit'> | undefined;
       if (options.commandReceipt) {
@@ -5505,7 +5514,8 @@ export class FsStore {
         pendingEntries,
         commandAdmission,
         undefined,
-        pendingAdmission?.pending
+        pendingAdmission?.pending,
+        options.publicationGuard
       );
       if (options.executorKind) this.turnExecutors.set(turn.id, options.executorKind);
       this.turnStream(turn.id);

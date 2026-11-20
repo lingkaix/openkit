@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { AutomationStore } from '../lib/automation-store.js';
@@ -10,6 +11,7 @@ import {
 } from '../scheduler-records.js';
 import { admitCoreScheduler } from '../storage/control-store-admission.js';
 import {
+  type ControlStorePublicationGuard,
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
@@ -22,6 +24,7 @@ import {
 import { PendingRequestCommandError } from './pending-request-error.js';
 import {
   enterRecurringTurnPublication,
+  inspectRecurringPublicationSettlements,
   recurringTurnPublicationIssue,
 } from './recurring-turn-publication.js';
 
@@ -46,6 +49,12 @@ export interface RecurringScheduleService {
   readonly stop: () => void;
 }
 const owners = new Set<string>();
+const DEFERRED_PUBLICATION_DEADLINE_MS = 30_000;
+type RecurringPublicationOwner = NonNullable<ReturnType<typeof enterRecurringTurnPublication>>;
+
+function publicationExpired(guard: ControlStorePublicationGuard): boolean {
+  return guard.signal.aborted || performance.now() >= guard.deadline;
+}
 
 /** Starts the one five-second scan only after the caller has completed storage and scheduler recovery. */
 export function startRecurringScheduleService(
@@ -59,6 +68,7 @@ export function startRecurringScheduleService(
   let stopped = false;
   let running: Promise<void> | undefined;
   const scan = async () => {
+    inspectRecurringPublicationSettlements(db.dataRoot, input.onError);
     if (input.agentWorkPaused?.()) return;
     await publishDeferredTurns();
     if (stopped || input.agentWorkPaused?.()) return;
@@ -175,31 +185,138 @@ export function startRecurringScheduleService(
     entry: CoreSchedulerQueueEntry,
     deferred?: RecurringOccurrence
   ): Promise<void> {
-    const release = enterRecurringTurnPublication(db.dataRoot, entry.queueEntryId);
-    if (!release) return;
+    const publication = enterRecurringTurnPublication(db.dataRoot, entry.queueEntryId);
+    if (!publication) return;
+    if (deferred) {
+      await publishDeferredTurn(entry, deferred, publication);
+      return;
+    }
     try {
       if (requireSchedulerAdmissionEntry(db, entry.queueEntryId).status !== 'queued') return;
-      if (!deferred) return await publishWorkspaceTurn(entry);
-      if (deferredPublicationState(entry, deferred) !== 'ready') return;
-      const consumed = await admitCoreScheduler(db, {
-        mode: 'recurring-publication',
-        queueEntryId: entry.queueEntryId,
-        action: 'consume-busy',
-      });
-      if (consumed.kind !== 'occurrence' || !consumed.occurrence) return;
-      const occurrence = consumed.occurrence;
-      await input.schedules.withSchedulePublication(occurrence.scheduleId, async () => {
-        const state = deferredPublicationState(entry, occurrence);
-        if (state === 'busy') await deferAcceptedTurn(entry);
-        if (state === 'ready') await publishWorkspaceTurn(entry);
-      });
+      if ((await publishWorkspaceTurn(entry)) === 'busy') await writeBusyProof(entry, 'defer-busy');
     } finally {
-      release();
+      publication.release();
     }
   }
 
-  /** Only a definite native rollback can grant or restore deferred publication proof. */
-  async function publishWorkspaceTurn(entry: CoreSchedulerQueueEntry): Promise<void> {
+  /** One deadline covers proof consumption, the schedule section, and actual native posting. */
+  async function publishDeferredTurn(
+    entry: CoreSchedulerQueueEntry,
+    deferred: RecurringOccurrence,
+    publication: RecurringPublicationOwner
+  ): Promise<void> {
+    const deadline = performance.now() + DEFERRED_PUBLICATION_DEADLINE_MS;
+    const startedAt = now();
+    const abort = new AbortController();
+    const elapsed = Promise.withResolvers<'elapsed'>();
+    const publicationGuard: ControlStorePublicationGuard = {
+      signal: abort.signal,
+      deadline,
+    };
+    const timer = setTimeout(
+      () => {
+        abort.abort();
+        elapsed.resolve('elapsed');
+      },
+      Math.max(0, deadline - performance.now())
+    );
+    const updateBusyProof = (
+      occurrence: RecurringOccurrence,
+      action: 'consume-busy' | 'defer-busy'
+    ) => {
+      // A separate guard identifies the receipt of this exact Core write.
+      const markerGuard: ControlStorePublicationGuard = { signal: abort.signal, deadline };
+      const { publicationDeferred: _previousProof, ...source } = occurrence;
+      const expected =
+        action === 'defer-busy' ? { ...source, publicationDeferred: 'thread_busy' } : source;
+      return settlePublicationWrite(
+        writeBusyProof(entry, action, markerGuard),
+        markerGuard,
+        elapsed.promise,
+        publication,
+        () =>
+          isDeepStrictEqual(
+            findAcceptedRecurringOccurrenceForQueue(db, entry.queueEntryId),
+            expected
+          ),
+        startedAt
+      );
+    };
+    const settlement = (async () => {
+      if (
+        deferredPublicationState(entry, deferred) !== 'ready' ||
+        publicationExpired(publicationGuard)
+      )
+        return;
+      const consumed = await updateBusyProof(deferred, 'consume-busy');
+      if (
+        publicationExpired(publicationGuard) ||
+        consumed?.kind !== 'occurrence' ||
+        !consumed.occurrence
+      )
+        return;
+      const occurrence = consumed.occurrence;
+      await input.schedules.withSchedulePublication(occurrence.scheduleId, async () => {
+        if (publicationExpired(publicationGuard)) return;
+        const state = deferredPublicationState(entry, occurrence);
+        if (publicationExpired(publicationGuard) || state === 'blocked') return;
+        if (state === 'ready') {
+          const result = await settlePublicationWrite(
+            publishWorkspaceTurn(entry, publicationGuard),
+            publicationGuard,
+            elapsed.promise,
+            publication,
+            () =>
+              recurringTurnPublicationIssue(
+                input.store,
+                requireSchedulerAdmissionEntry(db, entry.queueEntryId)
+              ) === null,
+            startedAt
+          );
+          if (result !== 'busy' || publicationExpired(publicationGuard)) return;
+        }
+        await updateBusyProof(occurrence, 'defer-busy');
+      });
+    })().finally(() => {
+      clearTimeout(timer);
+      publication.release();
+    });
+    await Promise.race([settlement, elapsed.promise]);
+  }
+
+  /** After posting, hold publication ownership until the native writer settles or exact readback proves the effect. */
+  async function settlePublicationWrite<T>(
+    write: Promise<T>,
+    guard: ControlStorePublicationGuard,
+    elapsed: Promise<'elapsed'>,
+    publication: RecurringPublicationOwner,
+    readback: () => boolean,
+    startedAt: string
+  ): Promise<T | undefined> {
+    const result = await Promise.race([
+      elapsed,
+      write.then(
+        (value) => ({ kind: 'finished' as const, value }),
+        (error: unknown) => ({ kind: 'failed' as const, error })
+      ),
+    ]);
+    if (result !== 'elapsed') {
+      if (result.kind === 'finished') return result.value;
+      if (!guard.postedSettlement) throw result.error;
+      input.onError?.(result.error);
+    }
+    const postedSettlement = guard.postedSettlement;
+    if (!postedSettlement) return;
+    const confirmed = publication.awaitReadback(readback, startedAt);
+    inspectRecurringPublicationSettlements(db.dataRoot, input.onError);
+    await Promise.race([postedSettlement, confirmed]);
+  }
+
+  /** Treats only a definite native busy rollback as permission to write deferred proof. */
+  async function publishWorkspaceTurn(
+    entry: CoreSchedulerQueueEntry,
+    publicationGuard?: ControlStorePublicationGuard
+  ): Promise<'published' | 'busy'> {
     try {
       await input.store.createTurn(
         entry.workspaceId,
@@ -212,6 +329,7 @@ export function startRecurringScheduleService(
           status: 'pending',
           agentId: entry.requestedAgentId,
           admitThreadInNativeWriter: true,
+          ...(publicationGuard ? { publicationGuard } : {}),
           executorKind: 'worker',
           triggerSource: { kind: 'automation', summary: 'Recurring schedule admission.' },
           ...(entry.reasoningEffort !== undefined
@@ -219,8 +337,10 @@ export function startRecurringScheduleService(
             : {}),
         }
       );
+      return 'published';
     } catch (error) {
       if (
+        (publicationGuard && publicationExpired(publicationGuard)) ||
         !(error instanceof PendingRequestCommandError) ||
         error.code !== 'thread_busy' ||
         !(error.cause instanceof ControlStoreWorkerError) ||
@@ -229,16 +349,25 @@ export function startRecurringScheduleService(
         error.cause.domain.code !== 'thread_busy'
       )
         throw error;
-      await deferAcceptedTurn(entry);
+      return 'busy';
     }
   }
 
-  function deferAcceptedTurn(entry: CoreSchedulerQueueEntry) {
-    return admitCoreScheduler(db, {
-      mode: 'recurring-publication',
-      queueEntryId: entry.queueEntryId,
-      action: 'defer-busy',
-    });
+  function writeBusyProof(
+    entry: CoreSchedulerQueueEntry,
+    action: 'consume-busy' | 'defer-busy',
+    guard?: ControlStorePublicationGuard
+  ) {
+    return admitCoreScheduler(
+      db,
+      {
+        mode: 'recurring-publication',
+        queueEntryId: entry.queueEntryId,
+        action,
+      },
+      undefined,
+      guard
+    );
   }
 
   /** Rechecks the original schedule, authority and target before a deferred publication. */

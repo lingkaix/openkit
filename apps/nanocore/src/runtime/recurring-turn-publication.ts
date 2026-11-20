@@ -9,14 +9,54 @@ import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.
 /** Canonical protocol Turn consumed by the publication checks. */
 type Turn = import('zod').infer<typeof TurnSchema>;
 
-const activePublications = new Set<string>();
+interface ActiveRecurringPublication {
+  readonly dataRoot: string;
+  awaiting?: {
+    readonly since: string;
+    readonly readback: () => boolean;
+    readonly confirmed: () => void;
+  };
+}
+
+const activePublications = new Map<string, ActiveRecurringPublication>();
 
 /** Keeps Core cancellation and the Workspace publication from passing each other across the two stores. */
 export function enterRecurringTurnPublication(dataRoot: string, queueEntryId: string) {
   const key = JSON.stringify([dataRoot, queueEntryId]);
   if (activePublications.has(key)) return null;
-  activePublications.add(key);
-  return () => activePublications.delete(key);
+  const publication: ActiveRecurringPublication = { dataRoot };
+  activePublications.set(key, publication);
+  return {
+    release: () => activePublications.delete(key),
+    awaitReadback(readback: () => boolean, since: string) {
+      const confirmed = Promise.withResolvers<void>();
+      publication.awaiting = { readback, since, confirmed: confirmed.resolve };
+      return confirmed.promise;
+    },
+  };
+}
+
+/** Reports the age only while exact posted delivery is unresolved in this Data Root owner. */
+export function recurringPublicationUncertainSince(
+  dataRoot: string,
+  queueEntryId: string
+): string | undefined {
+  return activePublications.get(JSON.stringify([dataRoot, queueEntryId]))?.awaiting?.since;
+}
+
+/** Reuses the scanner to confirm the exact durable effect of a timed-out publication step. */
+export function inspectRecurringPublicationSettlements(
+  dataRoot: string,
+  onError?: (error: unknown) => void
+): void {
+  for (const publication of activePublications.values()) {
+    if (publication.dataRoot !== dataRoot || !publication.awaiting) continue;
+    try {
+      if (publication.awaiting.readback()) publication.awaiting.confirmed();
+    } catch (error) {
+      onError?.(error);
+    }
+  }
 }
 
 /** Checks the accepted source tuple against a canonical Turn without consulting derivative caches. */

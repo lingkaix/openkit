@@ -81,7 +81,10 @@ import {
   type PreparedControlEntry,
   readPreparedControlEntry,
 } from './control-store-products.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  type ControlStorePublicationGuard,
+  getControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { insertExternalTriggerAdmission } from './external-trigger-admissions.js';
 import {
@@ -981,7 +984,8 @@ function admitCoreSchedulerWork(db: CoreDb, raw: CoreSchedulerInput): CoreSchedu
 export async function admitCoreScheduler<I extends CoreSchedulerDraft>(
   db: CoreDb,
   input: I,
-  prepare?: (input: I) => I | CoreSchedulerInput | Promise<I | CoreSchedulerInput>
+  prepare?: (input: I) => I | CoreSchedulerInput | Promise<I | CoreSchedulerInput>,
+  publicationGuard?: ControlStorePublicationGuard
 ): Promise<CoreSchedulerResult> {
   const snapshot = structuredClone(input);
   const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
@@ -1009,7 +1013,11 @@ export async function admitCoreScheduler<I extends CoreSchedulerDraft>(
       : prepared
   );
   try {
-    return await client.transition(database, { kind: 'scheduler-work', input: ready });
+    return await client.transition(
+      database,
+      { kind: 'scheduler-work', input: ready },
+      ...(publicationGuard ? ([publicationGuard] as const) : [])
+    );
   } catch (error) {
     if (input.mode === 'definition' && error instanceof OperationError) {
       if (error.code === 'automation_conflict') throw new AutomationMutationError(error.message);

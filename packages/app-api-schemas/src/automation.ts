@@ -185,6 +185,7 @@ export const AutomationOccurrenceSchema = z.object({
     .nullable(),
   schedulerStatus: z.enum(['queued', 'admitted', 'denied', 'cancelled', 'expired']).nullable(),
   publicationIssue: z.enum(['turn_missing', 'turn_contradictory']).nullable(),
+  publicationUncertainSince: z.iso.datetime().optional(),
 });
 /** Exact missed nominal coverage; reads return a range without expanding its occurrences. */
 export const AutomationExpiredRangeSchema = z
@@ -208,6 +209,7 @@ export const AutomationHistoryRequestSchema = z.object({
   automationId: AutomationIdSchema,
   limit: z.number().int().min(1).max(128).optional(),
   before: z.iso.datetime().optional(),
+  includePublicationDiagnostics: z.literal(true).optional(),
 });
 /** Joined occurrence history and inert exact ranges; no backend or host path is exposed. */
 export const AutomationHistoryResponseSchema = z.object({

@@ -1,16 +1,25 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
+import { AutomationHistoryResponseSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createAutomationOperationImplementations } from '../automation-operations.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
+import type {
+  ControlWorkerCommand,
+  ControlWorkerReply,
+  ControlWorkerRequest,
+} from '../storage/control-store-worker-protocol.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { RecurringPreparation } from '../storage/recurring-records.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
@@ -20,6 +29,7 @@ import {
   startRecurringScheduleService,
 } from './recurring-schedule-service.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
+import { createSchedulerAdmissionOperationImplementations } from './scheduler-admission-operations.js';
 
 const owned: { root: string; db: CoreDb; services: RecurringScheduleService[] }[] = [];
 const ready: Extract<RecurringPreparation, { kind: 'ready' }> = {
@@ -108,6 +118,50 @@ afterEach(async () => {
     await disposeTestStore(root, db);
   }
 });
+
+async function deferredPublicationFixture() {
+  const env = await fixture();
+  const { db, schedule, store, schedules, start } = env;
+  const { workspaceId, threadId, responsibleUserId } = schedule;
+  const busy = await store.createTurn(workspaceId, threadId, 'Original active work.', {
+    kind: 'user',
+    id: responsibleUserId,
+  });
+  const prepare = vi.fn(async () => structuredClone(ready));
+  const { service } = start(prepare);
+  await service.runOnce();
+  const occurrence = schedules.listHistory(schedule.id).items[0]!.record;
+  expect(occurrence.publicationDeferred).toBe('thread_busy');
+  const entry = requireSchedulerAdmissionEntry(db, occurrence.queueEntryId!);
+  await store.completeTurn(busy.id, { status: 'completed', completedAt: new Date().toISOString() });
+  return {
+    ...env,
+    service,
+    prepare,
+    entry,
+    fixedTurns: () =>
+      store.listThreadTurns(workspaceId, threadId).filter((turn) => turn.id === entry.turnId),
+  };
+}
+
+function isFixedPublication(command: ControlWorkerCommand | undefined, turnId: string): boolean {
+  return (
+    command?.operation === 'products' &&
+    command.transition.products.some(
+      (product) => product.kind === 'turn' && product.record.id === turnId
+    )
+  );
+}
+
+async function expireDeferredPublication(scan: Promise<void>, delay = 30_000): Promise<void> {
+  await vi.advanceTimersByTimeAsync(delay);
+  vi.useRealTimers();
+  let finished = false;
+  void scan.then(() => {
+    finished = true;
+  });
+  await vi.waitFor(() => expect(finished).toBe(true), { timeout: 5_000 });
+}
 
 describe('serialized recurring scanner', () => {
   it('holds scheduled Worker and Knowledge preparation while paused and resumes on the next scan', async () => {
@@ -380,7 +434,7 @@ describe('serialized recurring scanner', () => {
       const events: string[] = [];
       const write = vi
         .spyOn(client, 'products')
-        .mockImplementation(async (database, transition) => {
+        .mockImplementation(async (database, transition, guard) => {
           if (
             transition.products.some(
               (product) => product.kind === 'turn' && product.record.id === entry.turnId
@@ -388,11 +442,11 @@ describe('serialized recurring scanner', () => {
           ) {
             entered.resolve();
             await resume.promise;
-            await products(database, transition);
+            await products(database, transition, guard);
             events.push('turn committed');
             return;
           }
-          await products(database, transition);
+          await products(database, transition, guard);
         });
       const scan = service.runOnce();
       let deletion: Promise<void> | undefined;
@@ -467,6 +521,396 @@ describe('serialized recurring scanner', () => {
       expect(onError).not.toHaveBeenCalled();
     }
   );
+
+  it('releases a held native receipt after the fixed Turn is proved committed', async () => {
+    const { store, schedules, schedule, service, entry, fixedTurns, prepare } =
+      await deferredPublicationFixture();
+    const client = getControlStoreWorkerClient() as unknown as {
+      pending: ReadonlyMap<number, { readonly command: ControlWorkerCommand }>;
+      receive(value: ControlWorkerReply, host: unknown): void;
+    };
+    const receive = client.receive.bind(client);
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const forwarded = Promise.withResolvers<void>();
+    let captured = false;
+    const reply = vi.spyOn(client, 'receive').mockImplementation((value, host) => {
+      if (
+        value.status === 'ok' &&
+        value.operation === 'products' &&
+        isFixedPublication(client.pending.get(value.id)?.command, entry.turnId)
+      ) {
+        captured = true;
+        held.resolve();
+        void release.promise.then(() => {
+          receive(value, host);
+          forwarded.resolve();
+        });
+        return;
+      }
+      receive(value, host);
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const scan = service.runOnce();
+    try {
+      await held.promise;
+      expect(fixedTurns()).toHaveLength(1);
+      await expireDeferredPublication(scan);
+      await schedules.deleteAutomation(schedule.responsibleUserId, schedule.id);
+      expect(schedules.getAutomation(schedule.id).status).toBe('deleted');
+      expect(fixedTurns()).toHaveLength(1);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(store.getTurnById(entry.turnId).status).toBe('pending');
+    } finally {
+      vi.useRealTimers();
+      release.resolve();
+      if (captured) await forwarded.promise;
+      await scan;
+      reply.mockRestore();
+    }
+  });
+
+  it('prevents late deferred preparation from posting after the deadline', async () => {
+    const { store, schedules, schedule, service, entry, fixedTurns } =
+      await deferredPublicationFixture();
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const prepare = store.prepareNativeTurnPendingAdmission.bind(store);
+    const pause = vi
+      .spyOn(store, 'prepareNativeTurnPendingAdmission')
+      .mockImplementationOnce(async (...args) => {
+        const prepared = await prepare(...args);
+        entered.resolve();
+        await resume.promise;
+        return prepared;
+      });
+    const create = store.createTurn.bind(store);
+    let original: Promise<unknown> | undefined;
+    const turn = vi.spyOn(store, 'createTurn').mockImplementationOnce((...args) => {
+      const pending = create(...args);
+      original = pending.catch(() => undefined);
+      return pending;
+    });
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const scan = service.runOnce();
+    try {
+      await entered.promise;
+      await expireDeferredPublication(scan);
+      await schedules.deleteAutomation(schedule.responsibleUserId, schedule.id);
+      resume.resolve();
+      await original;
+      expect(
+        post.mock.calls.some(([command]) =>
+          isFixedPublication(command as ControlWorkerCommand, entry.turnId)
+        )
+      ).toBe(false);
+      expect(fixedTurns()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+      resume.resolve();
+      await scan;
+      await original;
+      post.mockRestore();
+      turn.mockRestore();
+      pause.mockRestore();
+    }
+  });
+
+  it.each(['consume-busy', 'defer-busy'] as const)(
+    'releases publication ownership after reading back a committed %s with its receipt held',
+    async (action) => {
+      const { db, store, schedules, schedule, service, entry, fixedTurns } =
+        await deferredPublicationFixture();
+      const { workspaceId, threadId, responsibleUserId } = schedule;
+      const client = getControlStoreWorkerClient() as unknown as {
+        receive(value: ControlWorkerReply, host: unknown): void;
+      };
+      const receive = client.receive.bind(client);
+      const held = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const forwarded = Promise.withResolvers<void>();
+      let markerId: number | undefined;
+      let consumeId: number | undefined;
+      let captured = false;
+      const send = Worker.prototype.postMessage;
+      const post = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+        this: Worker,
+        ...args: Parameters<Worker['postMessage']>
+      ) {
+        const command = args[0] as ControlWorkerRequest;
+        if (command.operation === 'transition' && 'content' in command && command.content) {
+          const marker = JSON.parse(new TextDecoder().decode(command.content));
+          if (marker.queueEntryId === entry.queueEntryId) {
+            if (marker.action === action) markerId = command.id;
+            if (marker.action === 'consume-busy') consumeId = command.id;
+          }
+        }
+        Reflect.apply(send, this, args);
+      });
+      const reply = vi.spyOn(client, 'receive').mockImplementation((value, host) => {
+        if (action === 'defer-busy' && value.status === 'ok' && value.id === consumeId) {
+          void store
+            .createTurn(workspaceId, threadId, 'Competing active work.', {
+              kind: 'user',
+              id: responsibleUserId,
+            })
+            .then(
+              () => receive(value, host),
+              (error: unknown) => {
+                receive(value, host);
+                held.reject(error);
+              }
+            );
+          return;
+        }
+        if (value.status === 'ok' && value.id === markerId) {
+          captured = true;
+          held.resolve();
+          void release.promise.then(() => {
+            receive(value, host);
+            forwarded.resolve();
+          });
+          return;
+        }
+        receive(value, host);
+      });
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+      const scan = service.runOnce();
+      try {
+        await held.promise;
+        expect(schedules.listHistory(schedule.id).items[0]!.record.publicationDeferred).toBe(
+          action === 'consume-busy' ? undefined : 'thread_busy'
+        );
+        await expireDeferredPublication(scan, 31_000);
+        if (action === 'consume-busy') {
+          const cancel = createSchedulerAdmissionOperationImplementations({
+            coreDb: db,
+            store,
+            repositoryWorkspaceDb: (id) => openWorkspaceDb(db.dataRoot, id),
+          })['scheduler.cancel'];
+          await expect(
+            cancel(
+              { workspaceId, queueEntryId: entry.queueEntryId },
+              {
+                kind: 'public',
+                actor: { kind: 'local', userId: responsibleUserId },
+                actorRef: { kind: 'user', id: responsibleUserId },
+                scope: { kind: 'workspace', workspaceId },
+                resolvedLineage: { workspaceId, ownerUserId: responsibleUserId },
+              }
+            )
+          ).resolves.toEqual({ cancelled: true });
+          expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('cancelled');
+        } else {
+          await schedules.deleteAutomation(responsibleUserId, schedule.id);
+          expect(schedules.getAutomation(schedule.id).status).toBe('deleted');
+          expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('queued');
+        }
+        release.resolve();
+        await forwarded.promise;
+        await service.runOnce();
+        expect(
+          post.mock.calls.some(([command]) =>
+            isFixedPublication(command as ControlWorkerCommand, entry.turnId)
+          )
+        ).toBe(false);
+        expect(fixedTurns()).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+        release.resolve();
+        if (captured) await forwarded.promise;
+        await scan;
+        reply.mockRestore();
+        post.mockRestore();
+      }
+    }
+  );
+
+  it('includes the final idle recheck inside the schedule section in the deadline', async () => {
+    const { store, schedules, schedule, service, entry, fixedTurns } =
+      await deferredPublicationFixture();
+    const enter = schedules.withSchedulePublication.bind(schedules);
+    let inSection = false;
+    let inspected = false;
+    const section = vi
+      .spyOn(schedules, 'withSchedulePublication')
+      .mockImplementation((id, run, waitMs) =>
+        enter(
+          id,
+          async () => {
+            inSection = id === schedule.id;
+            try {
+              return await run();
+            } finally {
+              inSection = false;
+            }
+          },
+          waitMs
+        )
+      );
+    const read = store.readThreadNavigationFacts.bind(store);
+    const idle = vi.spyOn(store, 'readThreadNavigationFacts').mockImplementation((...args) => {
+      const facts = read(...args);
+      if (inSection && !inspected) {
+        inspected = true;
+        vi.advanceTimersByTime(31_000);
+      }
+      return facts;
+    });
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      await service.runOnce();
+      expect(inspected).toBe(true);
+      expect(
+        post.mock.calls.some(([command]) =>
+          isFixedPublication(command as ControlWorkerCommand, entry.turnId)
+        )
+      ).toBe(false);
+      expect(fixedTurns()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+      post.mockRestore();
+      idle.mockRestore();
+      section.mockRestore();
+    }
+  });
+
+  it('withdraws an exact native request held before posting by a backup', async () => {
+    const { db, schedules, schedule, service, entry, fixedTurns } =
+      await deferredPublicationFixture();
+    const client = getControlStoreWorkerClient();
+    const scope = nativeProductScope(db.dataRoot, {
+      kind: 'workspace',
+      workspaceId: entry.workspaceId,
+    });
+    const release = await client.pauseForDataRootBackup(`workspace:${scope.path}`);
+    const write = client.products.bind(client);
+    const entered = Promise.withResolvers<void>();
+    let original: Promise<unknown> | undefined;
+    const prepared = vi.spyOn(client, 'products').mockImplementationOnce((...args) => {
+      const pending = write(...args);
+      original = pending.catch((error: unknown) => error);
+      entered.resolve();
+      return pending;
+    });
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const scan = service.runOnce();
+    try {
+      await entered.promise;
+      await expireDeferredPublication(scan);
+      await expect(original).resolves.toMatchObject({ commit: 'not-committed' });
+      release();
+      await schedules.deleteAutomation(schedule.responsibleUserId, schedule.id);
+      expect(
+        post.mock.calls.some(([command]) =>
+          isFixedPublication(command as ControlWorkerCommand, entry.turnId)
+        )
+      ).toBe(false);
+      expect(fixedTurns()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+      release();
+      await scan;
+      await original;
+      post.mockRestore();
+      prepared.mockRestore();
+    }
+  });
+
+  it('shows the age of unproved posted delivery and still admits an unrelated schedule', async () => {
+    const { db, store, schedules, schedule, service, entry, fixedTurns, clock } =
+      await deferredPublicationFixture();
+    const { workspaceId, responsibleUserId } = schedule;
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const send = Worker.prototype.postMessage;
+    let posts = 0;
+    const post = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+      this: Worker,
+      ...args: Parameters<Worker['postMessage']>
+    ) {
+      if (isFixedPublication(args[0] as ControlWorkerCommand, entry.turnId)) {
+        posts += 1;
+        held.resolve();
+        void release.promise.then(() => Reflect.apply(send, this, args));
+        return;
+      }
+      Reflect.apply(send, this, args);
+    });
+    const history = (includePublicationDiagnostics?: true) =>
+      AutomationHistoryResponseSchema.parse(
+        createAutomationOperationImplementations({ automationStore: schedules, coreDb: db, store })[
+          'automation.history'
+        ](
+          {
+            automationId: schedule.id,
+            ...(includePublicationDiagnostics ? { includePublicationDiagnostics } : {}),
+          },
+          {
+            kind: 'public',
+            actor: { kind: 'local', userId: responsibleUserId },
+            actorRef: { kind: 'user', id: responsibleUserId },
+            scope: { kind: 'workspace', workspaceId },
+            resolvedLineage: { workspaceId, ownerUserId: responsibleUserId },
+          }
+        )
+      ).items[0]!.record;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const scan = service.runOnce();
+    try {
+      await held.promise;
+      await expireDeferredPublication(scan);
+      const currentHistory = history(true);
+      expect(currentHistory).toMatchObject({
+        publicationUncertainSince: clock(),
+        publicationIssue: 'turn_missing',
+        turnId: null,
+      });
+      const defaultHistory = history();
+      expect(defaultHistory).not.toHaveProperty('publicationUncertainSince');
+      expect(currentHistory).toEqual({
+        ...defaultHistory,
+        publicationUncertainSince: clock(),
+      });
+      expect(fixedTurns()).toHaveLength(0);
+      const otherThread = await store.createThread(workspaceId, 'Unaffected Thread');
+      const other = await schedules.createAutomation(responsibleUserId, {
+        workspaceId,
+        threadId: otherThread.id,
+        name: 'Unaffected schedule',
+        intervalSeconds: 5,
+        prompt: 'Inspect status',
+      });
+      await schedules.updateAutomation(responsibleUserId, other.id, {
+        expectedRevision: other.revision,
+        status: 'active',
+        scheduledAt: clock(),
+      });
+      await service.runOnce();
+      expect(store.listThreadTurns(workspaceId, otherThread.id)).toHaveLength(1);
+      expect(posts).toBe(1);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const deletion = schedules
+        .deleteAutomation(responsibleUserId, schedule.id)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(deletion).resolves.toMatchObject({ code: 'schedule_publication_in_progress' });
+      vi.useRealTimers();
+      release.resolve();
+      await vi.waitFor(() => expect(fixedTurns()).toHaveLength(1), { timeout: 5_000 });
+      await schedules.deleteAutomation(responsibleUserId, schedule.id);
+      expect(history(true)).not.toHaveProperty('publicationUncertainSince');
+      expect(posts).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      release.resolve();
+      await scan;
+      post.mockRestore();
+    }
+  });
 
   it('keeps healthy admission and maintenance running after an admitted cadence exhausts the UTC range', async () => {
     const { schedules, schedule, start, setTime } = await fixture();

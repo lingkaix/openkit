@@ -9,7 +9,10 @@ import { StoreRecordNotFoundError } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { type OperationImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
-import { recurringTurnPublicationIssue } from './runtime/recurring-turn-publication.js';
+import {
+  recurringPublicationUncertainSince,
+  recurringTurnPublicationIssue,
+} from './runtime/recurring-turn-publication.js';
 import { requireSchedulerAdmissionEntry } from './scheduler-records.js';
 /** Joins fixed-interval operations to the durable Workspace schedule owner. */
 export function createAutomationOperationImplementations(
@@ -37,12 +40,17 @@ export function createAutomationOperationImplementations(
         const publicationIssue = queued
           ? recurringTurnPublicationIssue(dependencies.store!, queued)
           : null;
+        const publicationUncertainSince =
+          input.includePublicationDiagnostics && queued && publicationIssue
+            ? recurringPublicationUncertainSince(dependencies.coreDb!.dataRoot, queued.queueEntryId)
+            : undefined;
         return {
           kind: 'occurrence',
           record: {
             ...record,
             turnId: publicationIssue ? null : record.turnId,
             publicationIssue,
+            ...(publicationUncertainSince === undefined ? {} : { publicationUncertainSince }),
             resolvedSelection: resolvedPayload
               ? {
                   agentId: resolvedPayload.requestedAgentId,
