@@ -30,7 +30,24 @@ export const publicationJobs = [
 ];
 const commit = /^[a-f0-9]{40}$/;
 const hash = /^[a-f0-9]{64}$/;
-const firstCoveredTag = 'v0.1.0-rc.6';
+const legacyFirstTag = 'v0.1.0-rc.6';
+const trainFirstTag = 'v0.1.1-rc.1';
+const prereleaseTag = /^v0\.1\.(0|[1-9]\d*)-rc\.([1-9]\d*)$/u;
+
+/** The approved first tag selects the former RC cycle or its 0.1.x successor. */
+export function grantCoversPrerelease(tag, firstTag) {
+  if (firstTag !== legacyFirstTag && firstTag !== trainFirstTag) return false;
+  const match = typeof tag === 'string' ? prereleaseTag.exec(tag) : null;
+  if (!match) return false;
+  const [, patch, candidate] = match;
+  if (firstTag === trainFirstTag) return patch !== '0';
+  const releaseCandidate = Number(candidate);
+  const firstCandidate = Number(prereleaseTag.exec(firstTag)[2]);
+  return (
+    patch === '0' && Number.isSafeInteger(releaseCandidate) && releaseCandidate >= firstCandidate
+  );
+}
+
 /** Fail closed on a missing publication predicate. */
 function requireFact(holds, name) {
   if (!holds) throw Error(`Release Management: publication refused: ${name}`);
@@ -593,20 +610,13 @@ function successfulJobs(run, names) {
 /** Check every standing-grant predicate; this does not collect evidence or create a tag. */
 export function checkPublication(e, { now = new Date(), repoRoot = process.cwd() } = {}) {
   requireFact(e && typeof e === 'object', 'evidence');
-  const n = /^v0\.1\.0-rc\.([1-9][0-9]*)$/.exec(e.tag ?? '');
-  requireFact(
-    n &&
-      Number(n[1]) >= Number(firstCoveredTag.split('.').at(-1)) &&
-      Number.isSafeInteger(Number(n[1])),
-    'covered prerelease tag'
-  );
-  requireFact(commit.test(e.sha ?? ''), 'exact P');
   const g = e.grant;
+  requireFact(grantCoversPrerelease(e.tag, g?.firstTag), 'covered prerelease tag');
+  requireFact(commit.test(e.sha ?? ''), 'exact P');
   requireFact(
     g?.reference &&
       g.repository === e.repository &&
       e.repository === 'lingkaix/openkit' &&
-      g.firstTag === firstCoveredTag &&
       g.revoked === false &&
       g.cycleOpen === true,
     'applicable unrevoked grant'

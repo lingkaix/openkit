@@ -778,6 +778,46 @@ test('complete observed main-push evidence passes admission without relabeling i
 test('first covered prerelease passes a complete mechanical publication check', () => {
   assert.equal(checkPublication(evidence(), { now }).tag, 'v0.1.0-rc.6');
 });
+test('the successor prerelease grant admits 0.1.x candidates with an equal-input scratch baseline', () => {
+  const input = scratchEvidence();
+  input.grant.firstTag = 'v0.1.1-rc.1';
+  for (const tag of ['v0.1.1-rc.1', 'v0.1.1-rc.2', 'v0.1.2-rc.1']) {
+    const result = checkPublication({ ...input, tag }, { now });
+    assert.equal(result.status, 'eligible');
+    assert.equal(result.tag, tag);
+  }
+});
+
+test('the successor grant excludes the former series, stable and other release series', () => {
+  const input = scratchEvidence();
+  input.grant.firstTag = 'v0.1.1-rc.1';
+  for (const tag of [
+    'v0.1.0-rc.5',
+    'v0.1.0-rc.6',
+    'v0.1.1',
+    'v0.2.0-rc.1',
+    'v0.1.1-rc.0',
+    'v0.1.01-rc.1',
+    'v0.1.1-rc.01',
+  ])
+    assert.throws(() => checkPublication({ ...input, tag }, { now }), /covered prerelease tag/);
+});
+
+test('only the approved grant floors can select their respective prerelease series', () => {
+  const input = evidence();
+  assert.throws(
+    () => checkPublication({ ...input, tag: 'v0.1.1-rc.1' }, { now }),
+    /covered prerelease tag/
+  );
+  input.grant.firstTag = 'v0.1.0-rc.5';
+  assert.throws(() => checkPublication(input, { now }), /covered prerelease tag/);
+  input.grant.firstTag = 'v0.1.2-rc.1';
+  assert.throws(
+    () => checkPublication({ ...input, tag: 'v0.1.2-rc.1' }, { now }),
+    /covered prerelease tag/
+  );
+});
+
 test('the exact successful rc.8 scratch tag is admitted as a publication baseline', () => {
   assert.equal(checkPublication(scratchEvidence(), { now }).status, 'eligible');
 });
