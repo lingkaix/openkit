@@ -19,8 +19,14 @@ import {
   changeVerifiedFileMode,
   copyFileForCut,
   createPrivateTree,
+  createPrivateTreeSync,
+  ensureCanonicalDirectory,
   publishVerifiedFileReplacement,
+  readCanonicalFile,
   removePrivateTree,
+  removePrivateTreeSync,
+  syncCanonicalDirectory,
+  writeCanonicalFileAtomic,
 } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { ZodError } from 'zod';
@@ -256,6 +262,7 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
   readControlSchemaApplicationInput,
+  type ServerOwnerDescriptor,
 } from './control-store-worker-protocol.js';
 import { CoreJournalRefusal } from './core-journal-codecs.js';
 import { applyControlCoreJournal } from './core-journal-native.js';
@@ -264,7 +271,9 @@ import {
   bindCoreSqlite,
   bindWorkspaceSqlite,
   type CoreDb,
+  inspectServerOwnerFile,
   openSupportedScopeReadOnlySqlite,
+  serverStoragePath,
   type WorkspaceDb,
 } from './db.js';
 import { EvaluationCandidateCommandError } from './evaluation-candidate-codecs.js';
@@ -281,7 +290,10 @@ import { prepareRetainedProductJson } from './immutable-content.js';
 import {
   applyAppMigrations,
   applyNativeScopeMigrations,
+  applyServerOwnerJournal,
+  assertCurrentServerOwnerSchema,
   assertSupportedNativeLedger,
+  ServerOwnerAdmissionError,
 } from './migrate.js';
 import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
 import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
@@ -538,6 +550,7 @@ interface OwnedDatabase {
   readonly identity: string;
   readonly productOwner: ControlProductOwner | undefined;
   readonly physicalScope: ControlAppScope | undefined;
+  readonly serverOwner: ServerOwnerDescriptor['owner'] | undefined;
   readonly contentMount: ControlProductContentMount | undefined;
   readonly pending: WriteRequest[];
   readonly publications: ControlContentPreparation['publications'];
@@ -1282,6 +1295,18 @@ function failureCode(
   ids: readonly number[] = [],
   scope: 'request' | 'batch' = 'request'
 ): ControlWorkerFailureCode {
+  if (error instanceof ServerOwnerAdmissionError) {
+    switch (error.reason) {
+      case 'corrupt':
+        return 'integrity';
+      case 'full':
+        return 'no-space';
+      case 'migration-failed':
+        return 'migration_failed';
+      default:
+        return `owner-${error.reason}`;
+    }
+  }
   if (refusalObservation.hasSubscribers && ids.length) {
     const cause =
       error instanceof OperationError && error.code === 'usage_record_failed' ? error.cause : error;
@@ -3886,20 +3911,19 @@ function nativeUserDb(owner: OwnedDatabase, userId: string) {
 }
 
 /** Exact pre-inspection source facts; no SQLite connection escapes the private stage. */
-interface AppOpenInspectionFile {
+interface OpenInspectionFile {
   readonly suffix: string;
   readonly metadata: BigIntStats | undefined;
 }
 
-/** Validates a cold App without opening source SQLite or leaving sidecars on a refused source. */
-async function inspectExistingAppOpening(
+/** Shares private, capacity-admitted inspection for existing physical owners. */
+async function inspectExistingSqliteCopy<Result>(
   request: OpenRequest,
   path: string,
-  dataRoot: string,
-  expectedIdentity: string
-): Promise<{ files: readonly AppOpenInspectionFile[]; schemaDigest: string }> {
-  const scope = request.physicalScope;
-  if (!scope || !request.dataRoot || request.create) throw new ControlProductPreconditionError();
+  expectedIdentity: string,
+  stagePrefix: string,
+  inspect: (copy: string) => Result
+): Promise<{ files: readonly OpenInspectionFile[]; result: Result }> {
   const inputs = ['', '-wal', '-journal'].map((suffix) => {
     const metadata = lstatSync(`${path}${suffix}`, { bigint: true, throwIfNoEntry: false });
     if (!metadata && suffix) return { suffix, metadata };
@@ -3922,10 +3946,10 @@ async function inspectExistingAppOpening(
   await admitPhysicalPublication(undefined, request, [
     { path: dirname(path), publicationBytes: Number(forecast) },
   ]);
-  const scratch = await createPrivateTree(dirname(path), '.app-open-inspection-');
+  const scratch = await createPrivateTree(dirname(path), stagePrefix);
   let failed = false;
   let failure: unknown;
-  let schemaDigest: string | undefined;
+  let inspected: { result: Result } | undefined;
   try {
     const copy = join(scratch, 'inspection');
     for (const { suffix, metadata } of inputs) {
@@ -3937,19 +3961,7 @@ async function inspectExistingAppOpening(
         mode: 0o600,
       });
     }
-    const sqlite = openAppDbReadOnly(copy);
-    try {
-      assertSavepointSafeSchema(sqlite);
-      // Definition bytes belong to the original App, not to the disposable inspection directory.
-      assertAppAuthority({ scope: 'app', sqlite, dataRoot, ...scope });
-      schemaDigest = (
-        sqlite.prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1').get() as {
-          schemaDigest: string;
-        }
-      ).schemaDigest;
-    } finally {
-      sqlite.close();
-    }
+    inspected = { result: inspect(copy) };
   } catch (error) {
     failed = true;
     failure = error;
@@ -3958,15 +3970,97 @@ async function inspectExistingAppOpening(
     await removePrivateTree(scratch);
   } catch (error) {
     throw failed
-      ? new AggregateError([failure, error], 'App admission inspection cleanup failed.')
+      ? new AggregateError([failure, error], 'Native admission inspection cleanup failed.')
       : error;
   }
   if (failed) throw failure;
-  if (schemaDigest === undefined) throw new ControlProductPreconditionError();
-  return { files: inputs, schemaDigest };
+  if (!inspected) throw new ControlProductPreconditionError();
+  return { files: inputs, result: inspected.result };
 }
 
-/** Opens only a trusted admitted path; neither directory discovery nor opening grants ownership. */
+/** Rechecks original main/WAL/journal identity before a writable connection can open. */
+function assertOpenInspectionCurrent(path: string, files: readonly OpenInspectionFile[]): void {
+  for (const { suffix, metadata } of files) {
+    const current = lstatSync(`${path}${suffix}`, { bigint: true, throwIfNoEntry: false });
+    if (
+      current?.isSymbolicLink() ||
+      current?.dev !== metadata?.dev ||
+      current?.ino !== metadata?.ino ||
+      current?.size !== metadata?.size ||
+      current?.mtimeNs !== metadata?.mtimeNs ||
+      current?.ctimeNs !== metadata?.ctimeNs ||
+      current?.nlink !== metadata?.nlink ||
+      current?.mode !== metadata?.mode
+    )
+      throw new ControlProductPreconditionError();
+  }
+}
+
+/** Validates a cold App without opening source SQLite or leaving sidecars on a refused source. */
+async function inspectExistingAppOpening(
+  request: OpenRequest,
+  path: string,
+  dataRoot: string,
+  expectedIdentity: string
+): Promise<{ files: readonly OpenInspectionFile[]; schemaDigest: string }> {
+  const scope = request.physicalScope;
+  if (!scope || !request.dataRoot || request.create) throw new ControlProductPreconditionError();
+  const { files, result: schemaDigest } = await inspectExistingSqliteCopy(
+    request,
+    path,
+    expectedIdentity,
+    '.app-open-inspection-',
+    (copy) => {
+      const sqlite = openAppDbReadOnly(copy);
+      try {
+        assertSavepointSafeSchema(sqlite);
+        // Definition bytes belong to the original App, not to the disposable inspection directory.
+        assertAppAuthority({ scope: 'app', sqlite, dataRoot, ...scope });
+        const schemaDigest = (
+          sqlite.prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1').get() as
+            | { schemaDigest: string }
+            | undefined
+        )?.schemaDigest;
+        if (schemaDigest === undefined) throw new ControlProductPreconditionError();
+        return schemaDigest;
+      } finally {
+        sqlite.close();
+      }
+    }
+  );
+  return { files, schemaDigest };
+}
+
+function openServerOwnerSchemaReference(): Database.Database {
+  return new Database(':memory:');
+}
+
+/** Publishes a fully migrated owner file once, without replacing an existing file. */
+function provisionServerOwnerFile(path: string, descriptor: ServerOwnerDescriptor): void {
+  const parent = dirname(path);
+  ensureCanonicalDirectory(parent);
+  const stage = createPrivateTreeSync(parent, '.owner-provision-');
+  const candidate = join(stage, basename(path));
+  try {
+    const sqlite = new Database(candidate);
+    try {
+      applyServerOwnerJournal(sqlite, descriptor.owner, openServerOwnerSchemaReference);
+      if (sqlite.pragma('quick_check', { simple: true }) !== 'ok')
+        throw new ServerOwnerAdmissionError('corrupt');
+      assertSavepointSafeSchema(sqlite);
+      if ((sqlite.pragma('wal_checkpoint(TRUNCATE)') as { busy: number }[])[0]?.busy !== 0)
+        throw new ServerOwnerAdmissionError('migration-failed');
+    } finally {
+      sqlite.close();
+    }
+    const bytes = readCanonicalFile(candidate);
+    writeCanonicalFileAtomic(path, bytes, bytes.byteLength, undefined, 0o600, 'create');
+  } finally {
+    removePrivateTreeSync(stage);
+  }
+  syncCanonicalDirectory(parent);
+}
+
 async function openDatabase(request: OpenRequest): Promise<void> {
   if (databases.has(request.database)) {
     reply(failure(request.id, 'invalid-request'));
@@ -3984,12 +4078,17 @@ async function openDatabase(request: OpenRequest): Promise<void> {
   )
     throw new ControlProductPreconditionError();
   let contentMount = request.contentMount;
-  const path =
-    request.create && !existsSync(request.path)
+  const dataRoot = request.dataRoot === undefined ? undefined : realpathSync(request.dataRoot);
+  const split = request.serverOwner;
+  const path = split
+    ? serverStoragePath(dataRoot!, split.owner)
+    : request.create && !existsSync(request.path)
       ? join(realpathSync(dirname(request.path)), basename(request.path))
       : realpathSync(request.path);
-  const dataRoot = request.dataRoot === undefined ? undefined : realpathSync(request.dataRoot);
-  if (dataRoot !== undefined) {
+  if (split) {
+    if (path !== request.path || request.database !== `server-owner:${path}`)
+      throw new ServerOwnerAdmissionError('unsupported');
+  } else if (dataRoot !== undefined) {
     if (!request.productOwner && !request.physicalScope)
       throw new ControlProductPreconditionError();
     const expected = request.physicalScope
@@ -4007,7 +4106,9 @@ async function openDatabase(request: OpenRequest): Promise<void> {
     )
       throw new ControlProductPreconditionError();
   }
-  const existing = statSync(path, { throwIfNoEntry: false });
+  const existing = split
+    ? await inspectServerOwnerFile(dataRoot!, split.owner)
+    : statSync(path, { throwIfNoEntry: false });
   const existingIdentity = existing ? `${existing.dev}:${existing.ino}` : null;
   if (paths.has(path) || (existingIdentity !== null && identities.has(existingIdentity))) {
     reply(failure(request.id, 'invalid-request'));
@@ -4021,8 +4122,8 @@ async function openDatabase(request: OpenRequest): Promise<void> {
     throw new ControlProductPreconditionError();
   const inspectingApp =
     existing !== undefined && request.physicalScope !== undefined && !request.create;
-  if (inspectingApp) {
-    request.inspectingApp = true;
+  if (inspectingApp || split) {
+    request.inspectingApp = inspectingApp;
     paths.add(path);
     if (existingIdentity !== null) identities.add(existingIdentity);
   }
@@ -4061,30 +4162,43 @@ async function openDatabase(request: OpenRequest): Promise<void> {
         (request.dataRoot !== undefined && realpathSync(request.dataRoot) !== dataRoot)
       )
         throw new ControlProductPreconditionError();
-      for (const { suffix, metadata } of appInspection.files) {
-        const current = lstatSync(`${path}${suffix}`, { bigint: true, throwIfNoEntry: false });
-        if (
-          current?.isSymbolicLink() ||
-          current?.dev !== metadata?.dev ||
-          current?.ino !== metadata?.ino ||
-          current?.size !== metadata?.size ||
-          current?.mtimeNs !== metadata?.mtimeNs ||
-          current?.ctimeNs !== metadata?.ctimeNs ||
-          current?.nlink !== metadata?.nlink ||
-          current?.mode !== metadata?.mode
-        )
-          throw new ControlProductPreconditionError();
-      }
+      assertOpenInspectionCurrent(path, appInspection.files);
       // Cleanup yielded after the original proof; recheck its exact definition before source SQLite.
       assertAppDefinitionDigestMatches(
         { dataRoot: dataRoot!, ...request.physicalScope! },
         appInspection.schemaDigest
       );
     }
+    if (split) {
+      if (!existing) {
+        if (!request.create) throw new ServerOwnerAdmissionError('missing');
+        provisionServerOwnerFile(path, split);
+      } else {
+        const { files } = await inspectExistingSqliteCopy(
+          request,
+          path,
+          existingIdentity!,
+          '.owner-open-inspection-',
+          (copy) => {
+            const sqlite = new Database(copy, { fileMustExist: true, readonly: true, timeout: 5 });
+            try {
+              if (sqlite.pragma('quick_check', { simple: true }) !== 'ok')
+                throw new ServerOwnerAdmissionError('corrupt');
+              assertCurrentServerOwnerSchema(sqlite, split.owner, openServerOwnerSchemaReference);
+            } finally {
+              sqlite.close();
+            }
+          }
+        );
+        if (realpathSync(path) !== path) throw new ServerOwnerAdmissionError('recovery-required');
+        assertOpenInspectionCurrent(path, files);
+        if (request.create) syncCanonicalDirectory(dirname(path));
+      }
+    }
     request.inspectingApp = false;
     const sqlite = new Database(path, {
-      fileMustExist: !request.create,
-      ...(request.physicalScope ? { timeout: 1000 } : {}),
+      fileMustExist: split !== undefined || !request.create,
+      ...(request.physicalScope ? { timeout: 1000 } : split ? { timeout: 5 } : {}),
     });
     try {
       if (migrationScope !== undefined) assertSupportedNativeLedger(sqlite, migrationScope);
@@ -4155,6 +4269,7 @@ async function openDatabase(request: OpenRequest): Promise<void> {
         identity,
         productOwner: request.productOwner,
         physicalScope: request.physicalScope,
+        serverOwner: split?.owner,
         contentMount,
         pending: [],
         publications: new Map(),
@@ -4324,6 +4439,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     let code: ControlWorkerFailureCode | undefined;
     if (stopping || owner?.poisoned) code = 'unavailable';
     else if (!owner || owner.closing) code = 'not-open';
+    else if (owner.serverOwner) code = 'precondition';
     else if (
       owner.pending.length + value.requests.length > CONTROL_WORKER_LIMITS.pendingTransitions ||
       value.requests.reduce((bytes, request) => bytes + controlWorkerInputBytes(request) + 64, 0) >
@@ -4394,7 +4510,9 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           failure(
             request.id,
             request.inspectingApp || code !== 'sql-failed' ? code : 'unavailable',
-            request.inspectingApp ? 'not-committed' : 'unknown'
+            request.inspectingApp || (request.serverOwner && code !== 'sql-failed')
+              ? 'not-committed'
+              : 'unknown'
           )
         );
       });
@@ -4407,6 +4525,15 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     }
     if (owner.closing) {
       reply(failure(value.id, 'not-open'));
+      return;
+    }
+    if (
+      owner.serverOwner &&
+      value.operation !== 'close' &&
+      value.operation !== 'checkpoint' &&
+      value.operation !== 'reclaim'
+    ) {
+      reply(failure(value.id, 'precondition'));
       return;
     }
     if (

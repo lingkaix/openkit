@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import { BetterSQLiteSession } from 'drizzle-orm/better-sqlite3';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
@@ -10,9 +11,34 @@ import { BootConfigError } from '../config/mode.js';
 import { configureOwnedSqlite } from './control-store.js';
 import type { PreparedKnowledgeAuthorityTransfer } from './control-store-knowledge.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
+import type { StorageOwner, StorageUnavailable } from './storage-owner.js';
 
 /** Ownership scope for one native Drizzle journal. */
 export type StorageMigrationScope = 'core' | 'user' | 'workspace' | 'app';
+
+/** Server files with independent service or extension journals. */
+export type SplitStorageOwner = Exclude<StorageOwner, 'control-kernel'> | 'discord';
+
+/** The deployed journal and Data Root directory use the same flat owner path. */
+export const SPLIT_STORAGE_JOURNALS = {
+  'server-work': 'services/server-work',
+  communication: 'services/communication',
+  'security-trigger': 'services/security-trigger',
+  nanohost: 'extensions/nanohost',
+  'openai-agents': 'extensions/openai-agents',
+  discord: 'extensions/discord',
+} as const satisfies Record<SplitStorageOwner, string>;
+
+type NativeMigrationScope =
+  | StorageMigrationScope
+  | (typeof SPLIT_STORAGE_JOURNALS)[SplitStorageOwner];
+
+/** Stable owner admission result with no file contents or SQL in its message. */
+export class ServerOwnerAdmissionError extends Error {
+  constructor(readonly reason: Exclude<StorageUnavailable<StorageOwner>['reason'], 'disabled'>) {
+    super(`Server owner storage admission failed (${reason}).`);
+  }
+}
 
 /** Database handle that can apply a scoped native journal. */
 type SetupDb = {
@@ -77,7 +103,7 @@ export function applyAppMigrations(
  */
 export function assertSupportedNativeLedger(
   sqlite: SetupDb['sqlite'],
-  scope: StorageMigrationScope,
+  scope: NativeMigrationScope,
   migrationsFolder = findMigrationsFolder(scope)
 ): void {
   const journal = readJournal(migrationsFolder);
@@ -195,7 +221,7 @@ export function listAppliedMigrationIds(coreDb: CoreDb): string[] {
  */
 export function applyNativeScopeMigrations(
   sqlite: Database.Database,
-  scope: StorageMigrationScope,
+  scope: NativeMigrationScope,
   migrationsFolder = findMigrationsFolder(scope),
   knowledgeTransfer?: PreparedKnowledgeAuthorityTransfer
 ): void {
@@ -322,6 +348,8 @@ export function applyNativeScopeMigrations(
     };
     dialect.migrate(migrations, session, config);
   } catch (error) {
+    if (scope.includes('/') && migrationSqliteCode(error) === 'SQLITE_FULL')
+      throw new ServerOwnerAdmissionError('full');
     if (error instanceof BootConfigError && error.code === `migration_unsupported_${scope}`)
       throw error;
     const message = error instanceof Error ? error.message : '';
@@ -336,6 +364,91 @@ export function applyNativeScopeMigrations(
       `Failed to apply ${scope} native Drizzle migrations: ${failure ?? `sqlite_code=${migrationSqliteCode(error)}; migration=unavailable; statement_index=unavailable`}${rollbackCode ? `; rollback_code=${rollbackCode}` : ''}`
     );
   }
+}
+
+/** Checks exact owner journal history and the schema produced by its applied statements. */
+export function readServerOwnerJournal(
+  sqlite: Database.Database,
+  owner: SplitStorageOwner,
+  openReference: () => Database.Database
+): { readonly current: boolean; readonly rows: readonly { created_at: number; hash: string }[] } {
+  const folder = findMigrationsFolder(SPLIT_STORAGE_JOURNALS[owner]);
+  const journal = readJournal(folder);
+  if (journal.entries[0]?.tag !== '0000_baseline')
+    throw new BootConfigError('migration_failed', 'Owner journal has no baseline at index zero.');
+  let expected: ReturnType<typeof readMigrationFiles>;
+  try {
+    expected = readMigrationFiles({ migrationsFolder: folder });
+  } catch {
+    throw new ServerOwnerAdmissionError('migration-failed');
+  }
+  if (hasSqliteTable(sqlite, 'schema_migrations') || !hasSqliteTable(sqlite, NATIVE_LEDGER_TABLE))
+    throw new ServerOwnerAdmissionError('unsupported');
+  const applied = sqlite
+    .prepare(`SELECT created_at, hash FROM ${NATIVE_LEDGER_TABLE} ORDER BY created_at`)
+    .all() as { created_at: number; hash: string }[];
+  if (
+    !applied.length ||
+    applied.some(
+      (row, i) => row.created_at !== expected[i]?.folderMillis || row.hash !== expected[i]?.hash
+    )
+  )
+    throw new ServerOwnerAdmissionError('unsupported');
+  assertServerOwnerSchemaMatches(sqlite, expected.slice(0, applied.length), folder, openReference);
+  return { current: applied.length === expected.length, rows: applied };
+}
+
+/** The ledger proves reported history. The shipped owner's DDL proves the current schema. */
+function assertServerOwnerSchemaMatches(
+  sqlite: Database.Database,
+  migrations: ReturnType<typeof readMigrationFiles>,
+  migrationsFolder: string,
+  openReference: () => Database.Database
+): void {
+  const reference = openReference();
+  try {
+    configureOwnedSqlite(reference);
+    const dialect = new SQLiteSyncDialect();
+    try {
+      dialect.migrate(migrations, new BetterSQLiteSession(reference, dialect, undefined), {
+        migrationsFolder,
+      });
+    } catch {
+      throw new ServerOwnerAdmissionError('migration-failed');
+    }
+    const query = `SELECT type, name, tbl_name, sql FROM sqlite_master
+      WHERE type IN ('table', 'index', 'trigger')
+        AND name NOT GLOB 'sqlite_*' AND name <> ? ORDER BY type, name`;
+    if (
+      !isDeepStrictEqual(
+        sqlite.prepare(query).all(NATIVE_LEDGER_TABLE),
+        reference.prepare(query).all(NATIVE_LEDGER_TABLE)
+      )
+    )
+      throw new ServerOwnerAdmissionError('unsupported');
+  } finally {
+    reference.close();
+  }
+}
+
+/** Ordinary owners cannot serve until the exact shipped journal and schema are installed. */
+export function assertCurrentServerOwnerSchema(
+  sqlite: Database.Database,
+  owner: SplitStorageOwner,
+  openReference: () => Database.Database
+): void {
+  if (!readServerOwnerJournal(sqlite, owner, openReference).current)
+    throw new ServerOwnerAdmissionError('recovery-required');
+}
+
+/** Installs an owner's journal in private provisioning storage before its file is published. */
+export function applyServerOwnerJournal(
+  sqlite: Database.Database,
+  owner: SplitStorageOwner,
+  openReference: () => Database.Database
+): void {
+  applyNativeScopeMigrations(sqlite, SPLIT_STORAGE_JOURNALS[owner]);
+  assertCurrentServerOwnerSchema(sqlite, owner, openReference);
 }
 
 /**
@@ -445,7 +558,7 @@ function hasSqliteTable(sqlite: Database.Database, name: string): boolean {
 }
 
 /** Finds one scope's native journal folder from source, app, or built runtime paths. */
-function findMigrationsFolder(scope: StorageMigrationScope): string {
+function findMigrationsFolder(scope: NativeMigrationScope): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     join(process.cwd(), 'apps', 'nanocore', 'drizzle', scope),

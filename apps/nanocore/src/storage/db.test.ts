@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -13,13 +14,18 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import Database from 'better-sqlite3';
 import { sql } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { listServerAuditEvents, recordServerAuditEvent } from '../audit-events.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import {
   bindWorkspaceSqlite,
   listExistingWorkspaceDatabaseScopes,
@@ -32,6 +38,7 @@ import {
   openWorkspaceDb,
   openWorkspaceDbAtRoot,
   openWorkspaceReadDb,
+  serverStoragePath,
   type UserDb,
   type WorkspaceDb,
 } from './db.js';
@@ -1070,3 +1077,266 @@ function listMigrationIds(
 ): string[] {
   return listAppliedNativeMigrationIds(sqlite, scope);
 }
+
+describe('split Server owner admission through the native worker', () => {
+  const work = { owner: 'server-work' } as const;
+  const communication = { owner: 'communication' } as const;
+  const nanoHost = { owner: 'nanohost' } as const;
+  const baseline = 'CREATE TABLE owner_rows (id INTEGER PRIMARY KEY, content TEXT NOT NULL);';
+  const separateBaseline =
+    'CREATE TABLE owner_rows (id INTEGER PRIMARY KEY, content BLOB NOT NULL);';
+  const originalCwd = process.cwd();
+  let fixtureRoot: string;
+  let dataRoot: string;
+
+  /** Writes an isolated shipped-layout test journal with dates deliberately shared by other owners. */
+  function writeJournal(scope: string, sql: string, nextSql?: string): void {
+    const folder = join(fixtureRoot, 'drizzle', scope);
+    mkdirSync(join(folder, 'meta'), { recursive: true });
+    const first = { idx: 0, version: '6', tag: '0000_baseline', when: 1000, breakpoints: true };
+    const next = { ...first, idx: 1, tag: '0001_pending', when: 2000 };
+    writeFileSync(join(folder, '0000_baseline.sql'), sql);
+    if (nextSql) writeFileSync(join(folder, '0001_pending.sql'), nextSql);
+    writeFileSync(
+      join(folder, 'meta', '_journal.json'),
+      JSON.stringify({
+        version: '7',
+        dialect: 'sqlite',
+        entries: nextSql ? [first, next] : [first],
+      })
+    );
+  }
+
+  beforeEach(() => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'openkit-server-owners-'));
+    dataRoot = join(fixtureRoot, 'root');
+    mkdirSync(dataRoot);
+    process.chdir(fixtureRoot);
+  });
+
+  afterEach(async () => {
+    try {
+      await shutdownControlStoreWorkerClient();
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('computes the Core, service and flat extension paths and leaves a missing owner absent', async () => {
+    const client = getControlStoreWorkerClient();
+    expect(serverStoragePath(dataRoot, 'control-kernel')).toBe(
+      join(dataRoot, 'server/db/core.sqlite')
+    );
+    expect(serverStoragePath(dataRoot, work.owner)).toBe(
+      join(dataRoot, 'server/services/server-work/state.sqlite')
+    );
+    expect(serverStoragePath(dataRoot, nanoHost.owner)).toBe(
+      join(dataRoot, 'server/extensions/nanohost/state.sqlite')
+    );
+    expect(serverStoragePath(dataRoot, 'discord')).toBe(
+      join(dataRoot, 'server/extensions/discord/state.sqlite')
+    );
+    expect(serverStoragePath(dataRoot, 'openai-agents')).toBe(
+      join(dataRoot, 'server/extensions/openai-agents/state.sqlite')
+    );
+    await expect(client.openServerOwner(dataRoot, work)).resolves.toEqual({
+      state: 'unavailable',
+      owner: work.owner,
+      reason: 'missing',
+    });
+    expect(existsSync(join(dataRoot, 'server'))).toBe(false);
+  });
+
+  it('provisions one owner journal, gates legacy writes and reopens retained bytes after close', async () => {
+    writeJournal('services/server-work', baseline);
+    const client = getControlStoreWorkerClient();
+    const path = serverStoragePath(dataRoot, work.owner);
+    const ready = { state: 'ready', owner: work.owner };
+    await expect(
+      Promise.all([
+        client.provisionServerOwner(dataRoot, work),
+        client.provisionServerOwner(dataRoot, work),
+      ])
+    ).resolves.toEqual([ready, ready]);
+    await expect(client.openServerOwner(dataRoot, work)).resolves.toEqual(ready);
+    await expect(
+      client.write(`server-owner:${path}`, [
+        { mode: 'run', sql: "INSERT INTO owner_rows VALUES (1, 'legacy')", parameters: [] },
+      ])
+    ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+    const first = await client.openServerOwnerReadDb(dataRoot, work.owner);
+    const racing = client.openServerOwnerReadDb(dataRoot, work.owner);
+    const closed = client.closeServerOwner(dataRoot, work.owner);
+    try {
+      await expect(racing).rejects.toMatchObject({ reason: 'recovery-required' });
+      await expect(client.openServerOwnerReadDb(dataRoot, work.owner)).rejects.toMatchObject({
+        reason: 'recovery-required',
+      });
+      await expect
+        .poll(() => client.openServerOwner(dataRoot, work), { timeout: 3_000 })
+        .toEqual({ state: 'unavailable', owner: work.owner, reason: 'recovery-required' });
+      expect(first.open).toBe(true);
+      expect(first.readonly).toBe(true);
+      expect(first.pragma('query_only', { simple: true })).toBe(1);
+      expect(first.prepare('SELECT * FROM owner_rows').all()).toEqual([]);
+      expect(first.prepare('SELECT created_at FROM __drizzle_migrations').all()).toEqual([
+        { created_at: 1000 },
+      ]);
+    } finally {
+      first.close();
+      await closed;
+    }
+    const bytes = readFileSync(path);
+    await expect(client.openServerOwnerReadDb(dataRoot, work.owner)).rejects.toMatchObject({
+      reason: 'recovery-required',
+    });
+    await client.closeServerOwner(dataRoot, work.owner);
+    expect(readdirSync(dirname(path))).toEqual(['state.sqlite']);
+    await expect(client.openServerOwner(dataRoot, work)).resolves.toEqual(ready);
+    await client.closeServerOwner(dataRoot, work.owner);
+    expect(readFileSync(path)).toEqual(bytes);
+    expect(readdirSync(dirname(path))).toEqual(['state.sqlite']);
+  });
+
+  it('leaves a failed migration unpublished and keeps Core and sibling owner admission available', async () => {
+    const core = openCoreDbWithIntegrityCheck(dataRoot);
+    try {
+      applyMigrations(core);
+      writeJournal(
+        'services/server-work',
+        `${baseline}\n--> statement-breakpoint\nINVALID OWNER SQL;`
+      );
+      writeJournal('services/communication', separateBaseline);
+      const client = getControlStoreWorkerClient();
+      await expect(client.provisionServerOwner(dataRoot, work)).resolves.toEqual({
+        state: 'unavailable',
+        owner: work.owner,
+        reason: 'migration-failed',
+      });
+      const failedPath = serverStoragePath(dataRoot, work.owner);
+      expect(existsSync(failedPath)).toBe(false);
+      expect(readdirSync(dirname(failedPath))).toEqual([]);
+      await expect(client.provisionServerOwner(dataRoot, communication)).resolves.toEqual({
+        state: 'ready',
+        owner: communication.owner,
+      });
+
+      const event = recordServerAuditEvent({
+        coreDb: core,
+        action: 'test.owner-admission',
+        outcome: 'succeeded',
+        summary: 'Core remains available.',
+      });
+      expect(listServerAuditEvents(core).map((audit) => audit.id)).toContain(event.id);
+      writeJournal('services/server-work', baseline);
+      await expect(client.provisionServerOwner(dataRoot, work)).resolves.toEqual({
+        state: 'ready',
+        owner: work.owner,
+      });
+    } finally {
+      core.sqlite.close();
+    }
+  });
+
+  it('rejects mismatched ledgers, absent schema, aliases and corruption without replacing data', async () => {
+    writeJournal('services/server-work', baseline);
+    writeJournal('services/communication', separateBaseline);
+    const client = getControlStoreWorkerClient();
+    await client.provisionServerOwner(dataRoot, work);
+    await client.closeServerOwner(dataRoot, work.owner);
+    const workPath = serverStoragePath(dataRoot, work.owner);
+    const communicationPath = serverStoragePath(dataRoot, communication.owner);
+    mkdirSync(dirname(communicationPath));
+    const expected = { state: 'unavailable', owner: communication.owner, reason: 'unsupported' };
+    symlinkSync(workPath, communicationPath);
+    await expect(client.openServerOwner(dataRoot, communication)).resolves.toEqual(expected);
+    rmSync(communicationPath);
+    linkSync(workPath, communicationPath);
+    await expect(client.openServerOwner(dataRoot, communication)).resolves.toEqual(expected);
+    rmSync(communicationPath);
+    const original = readFileSync(workPath);
+    writeFileSync(communicationPath, original);
+    await expect(client.provisionServerOwner(dataRoot, communication)).resolves.toEqual(expected);
+    expect(readFileSync(communicationPath)).toEqual(original);
+
+    const db = new Database(workPath, { fileMustExist: true });
+    db.exec('DROP TABLE owner_rows');
+    db.close();
+    await expect(client.openServerOwner(dataRoot, work)).resolves.toEqual({
+      ...expected,
+      owner: work.owner,
+    });
+    writeFileSync(communicationPath, 'invalid SQLite bytes');
+    await expect(client.openServerOwner(dataRoot, communication)).resolves.toEqual({
+      ...expected,
+      reason: 'corrupt',
+    });
+    expect(readFileSync(communicationPath, 'utf8')).toBe('invalid SQLite bytes');
+  });
+
+  it('refuses the shipped Communication ledger when its active-User index is missing', async () => {
+    const journal = join(fixtureRoot, 'drizzle/services/communication');
+    mkdirSync(join(journal, 'meta'), { recursive: true });
+    for (const file of ['0000_baseline.sql', 'meta/_journal.json']) {
+      const shipped = new URL(`../../drizzle/services/communication/${file}`, import.meta.url);
+      writeFileSync(join(journal, file), readFileSync(shipped));
+    }
+    writeJournal('services/server-work', baseline);
+    const client = getControlStoreWorkerClient();
+    await expect(client.provisionServerOwner(dataRoot, communication)).resolves.toEqual({
+      state: 'ready',
+      owner: communication.owner,
+    });
+    await client.closeServerOwner(dataRoot, communication.owner);
+    await client.provisionServerOwner(dataRoot, work);
+    const path = serverStoragePath(dataRoot, communication.owner);
+    const tampered = new Database(path, { fileMustExist: true });
+    try {
+      const original = tampered.prepare('SELECT hash FROM __drizzle_migrations').all();
+      tampered.exec('DROP INDEX channel_bindings_active_user');
+      expect(tampered.prepare('SELECT hash FROM __drizzle_migrations').all()).toEqual(original);
+    } finally {
+      tampered.close();
+    }
+    const bytes = readFileSync(path);
+    await expect(client.openServerOwner(dataRoot, communication)).resolves.toEqual({
+      state: 'unavailable',
+      owner: communication.owner,
+      reason: 'unsupported',
+    });
+    await expect(client.openServerOwnerReadDb(dataRoot, communication.owner)).rejects.toMatchObject(
+      {
+        reason: 'recovery-required',
+      }
+    );
+    expect(readFileSync(path)).toEqual(bytes);
+    expect(readdirSync(dirname(path))).toEqual(['state.sqlite']);
+    const sibling = await client.openServerOwnerReadDb(dataRoot, work.owner);
+    try {
+      expect(sibling.prepare('SELECT * FROM owner_rows').all()).toEqual([]);
+    } finally {
+      sibling.close();
+    }
+  });
+
+  it('holds a supported existing prefix with pending DDL until a verified copy path is available', async () => {
+    writeJournal('extensions/nanohost', baseline);
+    const client = getControlStoreWorkerClient();
+    await client.provisionServerOwner(dataRoot, nanoHost);
+    await client.closeServerOwner(dataRoot, nanoHost.owner);
+    writeJournal(
+      'extensions/nanohost',
+      baseline,
+      'ALTER TABLE owner_rows ADD COLUMN revision INTEGER;'
+    );
+    const path = serverStoragePath(dataRoot, nanoHost.owner);
+    const before = readFileSync(path);
+    await expect(client.openServerOwner(dataRoot, nanoHost)).resolves.toEqual({
+      state: 'unavailable',
+      owner: nanoHost.owner,
+      reason: 'recovery-required',
+    });
+    expect(readFileSync(path)).toEqual(before);
+  });
+});
