@@ -18,6 +18,7 @@ import {
   type ControlLocalIdentity,
   ControlLocalIdentityResultSchema,
 } from '../auth/local-identity-codecs.js';
+import { type DataRootLock, retainDataRootLock } from '../bootstrap/lock.js';
 import { assertScopeAdmitted } from '../bootstrap/readiness.js';
 import {
   type ControlDiscordChannelInput,
@@ -2756,15 +2757,21 @@ class ControlStoreWorkerClient {
     recovery?: ControlRecoveryNativeCall
   ): Promise<void> {
     const snapshot = structuredClone(command);
+    if (snapshot.migrateServerOwner)
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
     if (recovery) return this.openFrozen(snapshot, recovery);
+    return this.admitOpen(snapshot);
+  }
+
+  private admitOpen(command: Omit<OpenCommand, 'operation'>): Promise<void> {
     return this.runOperation(
-      () => this.openFrozen(snapshot),
+      () => this.openFrozen(command),
       undefined,
       undefined,
       undefined,
       undefined,
       undefined,
-      snapshot
+      command
     );
   }
 
@@ -2784,6 +2791,22 @@ class ControlStoreWorkerClient {
     return this.admitServerOwner(dataRoot, descriptor, true);
   }
 
+  /** Migrates an existing, stopped owner under the Data Root lock. */
+  async migrateServerOwner<Owner extends ServerOwnerDescriptor['owner']>(
+    dataRoot: string,
+    descriptor: ServerOwnerDescriptor<Owner>,
+    lock: DataRootLock
+  ): Promise<StorageStatus<Owner>> {
+    const release = retainDataRootLock(lock, dataRoot);
+    if (!release)
+      return { state: 'unavailable', owner: descriptor.owner, reason: 'recovery-required' };
+    try {
+      return await this.admitServerOwner(dataRoot, descriptor, false, true);
+    } finally {
+      release();
+    }
+  }
+
   /** Closes an admitted owner and retains its bytes. */
   async closeServerOwner(dataRoot: string, owner: ServerOwnerDescriptor['owner']): Promise<void> {
     const database = `server-owner:${serverStoragePath(await realpath(dataRoot), owner)}`;
@@ -2794,18 +2817,20 @@ class ControlStoreWorkerClient {
   private async admitServerOwner<Owner extends ServerOwnerDescriptor['owner']>(
     dataRoot: string,
     descriptor: ServerOwnerDescriptor<Owner>,
-    create: boolean
+    create: boolean,
+    migrateServerOwner?: true
   ): Promise<StorageStatus<Owner>> {
     const owner = descriptor.owner;
     try {
       const root = await realpath(dataRoot);
       const path = serverStoragePath(root, owner);
-      await this.open({
+      await this.admitOpen({
         database: `server-owner:${path}`,
         path,
         dataRoot: root,
         create,
-        serverOwner: descriptor,
+        serverOwner: structuredClone(descriptor),
+        ...(migrateServerOwner ? { migrateServerOwner } : {}),
       });
       return { state: 'ready', owner };
     } catch (error) {
@@ -2857,6 +2882,7 @@ class ControlStoreWorkerClient {
     this.assertFrozenCall({ ...command, operation: 'open' }, recovery);
     const existing = this.openings.get(command.database);
     if (existing) {
+      if (command.migrateServerOwner) throw new ServerOwnerAdmissionError('recovery-required');
       if (existing.host.failed) throw new ControlStoreWorkerError('unavailable', 'not-committed');
       if (existing.retirement) {
         // Only preparation admitted before retirement may finish through its original scope drain.
@@ -2877,7 +2903,10 @@ class ControlStoreWorkerClient {
         !isDeepStrictEqual(existing.command, command) &&
         !(
           command.serverOwner &&
-          isDeepStrictEqual({ ...existing.command, create: command.create }, command)
+          isDeepStrictEqual(
+            { ...existing.command, create: command.create, migrateServerOwner: undefined },
+            { ...command, migrateServerOwner: undefined }
+          )
         ) &&
         !(
           // Acknowledged first-User creation may join later existing-User callers on the exact binding.
@@ -2896,18 +2925,17 @@ class ControlStoreWorkerClient {
     const binding = structuredClone(command);
     const physical = this.reserveOpening(binding, serverFile);
     this.assertParentOpenAdmission(binding, physical.path);
+    const submit = () =>
+      this.request({ ...binding, operation: 'open' }, undefined, physical.host, false, recovery);
     const opening: Opening = {
       command: binding,
       ...physical,
       acknowledged: false,
       openingRequestId: undefined,
       policyReads: new Set(),
-      promise: this.request(
-        { ...binding, operation: 'open' },
-        undefined,
-        physical.host,
-        false,
-        recovery
+      promise: (binding.migrateServerOwner
+        ? drainMainScopeReadHandles([physical.path]).then(submit)
+        : submit()
       ).then((reply) => {
         try {
           const current = statSync(physical.path);
@@ -2927,6 +2955,8 @@ class ControlStoreWorkerClient {
     try {
       await opening.promise;
     } catch (error) {
+      // An unknown migration may still own the file. Hold its deployment lock through actual exit.
+      if (binding.migrateServerOwner && physical.host.failed) await physical.host.exited.promise;
       // Unknown channel results retain their physical reservation until explicit shutdown.
       if (!physical.host.failed && this.openings.get(command.database) === opening)
         this.openings.delete(command.database);

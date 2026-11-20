@@ -56,14 +56,19 @@ type DataRootImplementations = {
   ) => OperationOutput<K> | Promise<OperationOutput<K>>;
 };
 
+/** Seals publisher admission, drains accepted work and returns the release for this Data Root. */
+type PauseDataRootPublishers = (dataRoot: string) => Promise<(() => void) | null>;
+
 /**
  * Joins deployment administration to existing storage and backup mechanics.
  * @param dataRoot Admitted storage root, or null when unavailable.
  * @param fileAdmission Existing configured file capacity owner.
+ * @param pausePublishers Complete hold for publishers outside the native SQL pool, when proved.
  */
 export function createDataRootAdminOperationImplementations(
   dataRoot: string | null,
-  fileAdmission?: FileStorageAdmission
+  fileAdmission?: FileStorageAdmission,
+  pausePublishers?: PauseDataRootPublishers
 ) {
   return {
     'storage.layout-report': async () => {
@@ -104,9 +109,18 @@ export function createDataRootAdminOperationImplementations(
         return failure('Data-root backup is unavailable.', 'data_root_backup_unavailable', 503);
       }
 
-      const backupId = allocateEntityId('drb');
+      // Producers may still need the writer to settle work they accepted before the cut.
+      const resumePublishers = await pausePublishers?.(dataRoot);
+      if (!resumePublishers) {
+        return failure(
+          'Data-root writers could not join the backup pause.',
+          'data_root_backup_unavailable',
+          503
+        );
+      }
 
       try {
+        const backupId = allocateEntityId('drb');
         const resume = await getControlStoreWorkerClient().pauseForDataRootBackup();
         let verified: VerifiedDataRootBackupManifest;
         try {
@@ -125,6 +139,8 @@ export function createDataRootAdminOperationImplementations(
         return DataRootBackupCreateResponseSchema.parse(dataRootBackupResponse(verified));
       } catch (_error) {
         return failure('Data-root backup verification failed.', 'data_root_backup_failed', 400);
+      } finally {
+        resumePublishers();
       }
     },
 

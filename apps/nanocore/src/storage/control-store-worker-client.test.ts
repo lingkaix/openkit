@@ -75,6 +75,11 @@ import { applyMigrations, applyScopedMigrations, hasPendingUserMigrations } from
 import { advanceThreadReadReceipt, readThreadReadReceipt } from './thread-read-receipts.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
+/** These roots have no independently admitted file publishers outside their native fixture. */
+function pauseFixturePublishers(): Promise<() => void> {
+  return Promise.resolve(() => {});
+}
+
 const interception = vi.hoisted(() => ({
   workers: [] as NativeWorker[],
   gate: undefined as SharedArrayBuffer | undefined,
@@ -1391,7 +1396,9 @@ describe('control writer parent admission', () => {
       during = posted.mock.calls.filter(([request]) => request.operation === 'write').length;
       return capture(input);
     });
-    await createDataRootAdminOperationImplementations(f.root)['backup.create']();
+    await createDataRootAdminOperationImplementations(f.root, undefined, pauseFixturePublishers)[
+      'backup.create'
+    ]();
     await expect(Promise.all(waiting)).resolves.toHaveLength(5);
     expect(during).toBe(0);
     const hosts = posted.mock.calls.flatMap(([request], index) =>
@@ -1874,7 +1881,11 @@ describe('control writer parent admission', () => {
     await waitForHold(gate);
     expect(posted).toHaveBeenCalled();
     expect(acknowledged).toBe(false);
-    const operations = createDataRootAdminOperationImplementations(root);
+    const operations = createDataRootAdminOperationImplementations(
+      root,
+      undefined,
+      pauseFixturePublishers
+    );
     const backup = operations['backup.create']();
     let copiesWhileHeld = -1;
     let destinationWhileHeld = true;
@@ -1939,7 +1950,11 @@ describe('control writer parent admission', () => {
     roots.push(`${f.root}.backups`);
     const posted = vi.spyOn(interception.workers[0]!, 'postMessage');
     const capture = dataRootBackup.writeHotDataRootBackup;
-    const operations = createDataRootAdminOperationImplementations(f.root);
+    const operations = createDataRootAdminOperationImplementations(
+      f.root,
+      undefined,
+      pauseFixturePublishers
+    );
     const accepted: Promise<unknown>[] = [];
     let excess: Promise<unknown> | undefined;
     let postedDuringCapture = -1;
@@ -1985,7 +2000,9 @@ describe('control writer parent admission', () => {
       return capture(input);
     });
     await expect(
-      createDataRootAdminOperationImplementations(f.root)['backup.create']()
+      createDataRootAdminOperationImplementations(f.root, undefined, pauseFixturePublishers)[
+        'backup.create'
+      ]()
     ).rejects.toMatchObject({ code: 'data_root_backup_failed', status: 400 });
     expect(await waiting).toMatchObject([{ mode: 'run', changes: 1 }]);
     expect(postedDuringCapture).toBe(0);
@@ -2005,9 +2022,21 @@ describe('control writer parent admission', () => {
     await waitForHold(f.gate!);
     expect(count(f.path)).toBe(1);
     const capture = vi.spyOn(dataRootBackup, 'writeHotDataRootBackup');
-    const backup = createDataRootAdminOperationImplementations(f.root)
+    const nativePauseEntered = Promise.withResolvers<void>();
+    const pause = f.client.pauseForDataRootBackup.bind(f.client);
+    vi.spyOn(f.client, 'pauseForDataRootBackup').mockImplementationOnce((...args) => {
+      const acquiring = pause(...args);
+      nativePauseEntered.resolve();
+      return acquiring;
+    });
+    const backup = createDataRootAdminOperationImplementations(
+      f.root,
+      undefined,
+      pauseFixturePublishers
+    )
       ['backup.create']()
       .catch((error: unknown) => error);
+    await nativePauseEntered.promise;
     const waiting = f.client
       .write('user', metadata('never-posted'))
       .catch((error: unknown) => error);
@@ -2242,7 +2271,11 @@ describe('typed global capture cut across native physical owners', () => {
           expect(readThreadReadReceipt(userDb, workspace.id, userTurn.threadId)).toEqual([]);
         if (heldScope === 'Workspace')
           expect(f.store.listThreadItems(workspace.id, itemTurn.threadId)).toEqual([]);
-        const operations = createDataRootAdminOperationImplementations(f.root);
+        const operations = createDataRootAdminOperationImplementations(
+          f.root,
+          undefined,
+          pauseFixturePublishers
+        );
         const backup = track(operations['backup.create']());
         await Promise.race([
           pauseEntered.promise,
@@ -2460,7 +2493,11 @@ describe('typed global capture cut across native physical owners', () => {
       if (args[0].path === path) openEntered.resolve();
       return result; // Same native request, binding, original Promise and failure.
     });
-    const operations = createDataRootAdminOperationImplementations(f.root);
+    const operations = createDataRootAdminOperationImplementations(
+      f.root,
+      undefined,
+      pauseFixturePublishers
+    );
     const backup = operations['backup.create']();
     void backup.catch(() => {});
     let firstUser: Promise<string[]> | undefined;
@@ -2737,7 +2774,11 @@ describe('typed global capture cut across native physical owners', () => {
           });
           expect(heldAudits).toHaveLength(1);
         }
-        const operations = createDataRootAdminOperationImplementations(f.root);
+        const operations = createDataRootAdminOperationImplementations(
+          f.root,
+          undefined,
+          pauseFixturePublishers
+        );
         const backup = track(operations['backup.create']());
         await Promise.race([
           pauseEntered.promise,

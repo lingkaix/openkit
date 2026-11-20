@@ -257,8 +257,8 @@ export function writeColdDataRootBackupManifest(
 }
 
 /**
- * Captures the live tree, SQLite snapshots and verified manifest during one continuous Core pause.
- * The Promise contract is retained, but capture does not yield to pending Core writers.
+ * Captures the live tree, SQLite snapshots and verified manifest. The serving caller holds the
+ * Data Root publishers and native writer pool paused until this capture settles.
  *
  * @param input Live data root and backup destination.
  * @returns Parsed manifest plus checked inventory paths.

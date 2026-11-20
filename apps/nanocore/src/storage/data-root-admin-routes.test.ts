@@ -8,12 +8,13 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DataRootBackupCreateResponseSchema } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import { createDataRootAdminOperationImplementations } from './data-root-admin-operations.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -49,6 +50,11 @@ describe('data-root admin routes', () => {
       scope: 'workspace-readonly',
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
+    const { backupId } = await createDataRootAdminOperationImplementations(
+      dataRoot,
+      undefined,
+      async () => () => {}
+    )['backup.create']();
     const app = createApp({
       auth: {
         api: {
@@ -85,8 +91,11 @@ describe('data-root admin routes', () => {
           }
         )
       );
-      expect(adminCreate.status).toBe(200);
-      const { backupId } = DataRootBackupCreateResponseSchema.parse(await adminCreate.json());
+      expect(adminCreate.status).toBe(503);
+      await expect(adminCreate.json()).resolves.toMatchObject({
+        code: 'data_root_backup_unavailable',
+      });
+      expect(readdirSync(`${dataRoot}.backups`)).toEqual([backupId]);
       const adminVerify = await app.request(
         ...operationRequest(
           'backup.verify',
@@ -141,6 +150,61 @@ describe('data-root admin routes', () => {
       }
     } finally {
       coreDb.sqlite.close();
+    }
+  });
+
+  it('waits for an accepted file publisher before holding SQLite and keeps it sealed through capture', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-file-drain-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    coreDb.sqlite.close();
+
+    await expect(
+      createDataRootAdminOperationImplementations(dataRoot, undefined, async () => null)[
+        'backup.create'
+      ]()
+    ).rejects.toMatchObject({ code: 'data_root_backup_unavailable', status: 503 });
+    expect(existsSync(`${dataRoot}.backups`)).toBe(false);
+
+    const publisherEntered = Promise.withResolvers<void>();
+    const finishPublication = Promise.withResolvers<void>();
+    const original = 'One complete original file publication.\r\n';
+    const publication = finishPublication.promise.then(() =>
+      writeFileSync(join(dataRoot, 'server', 'publisher-output.txt'), original)
+    );
+    const writer = getControlStoreWorkerClient();
+    const nativePause = vi.spyOn(writer, 'pauseForDataRootBackup');
+    const resumePublisher = vi.fn(() => {
+      const [backup] = readdirSync(`${dataRoot}.backups`);
+      expect(
+        readFileSync(join(`${dataRoot}.backups`, backup!, 'server', 'publisher-output.txt'), 'utf8')
+      ).toBe(original);
+    });
+    const operations = createDataRootAdminOperationImplementations(
+      dataRoot,
+      undefined,
+      async (root) => {
+        expect(root).toBe(dataRoot);
+        publisherEntered.resolve();
+        await publication;
+        return resumePublisher;
+      }
+    );
+
+    const pending = operations['backup.create']();
+    try {
+      await publisherEntered.promise;
+      expect(nativePause).not.toHaveBeenCalled();
+      expect(existsSync(`${dataRoot}.backups`)).toBe(false);
+      finishPublication.resolve();
+      const result = await pending;
+      expect(result.checkedFiles).toContain('server/publisher-output.txt');
+      expect(nativePause).toHaveBeenCalledTimes(1);
+      expect(resumePublisher).toHaveBeenCalledTimes(1);
+    } finally {
+      finishPublication.resolve();
+      await Promise.allSettled([publication, pending]);
+      nativePause.mockRestore();
     }
   });
 

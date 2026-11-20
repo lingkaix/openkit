@@ -365,12 +365,11 @@ export function applyNativeScopeMigrations(
   }
 }
 
-/** Validates exact owner journal entries and the tables required by the owning handlers. */
-export function assertCurrentServerOwnerSchema(
+/** Reads the exact supported journal prefix from one provisioned owner. */
+export function readServerOwnerJournal(
   sqlite: Database.Database,
-  owner: SplitStorageOwner,
-  requiredTables: readonly string[]
-): void {
+  owner: SplitStorageOwner
+): { readonly current: boolean; readonly rows: readonly { created_at: number; hash: string }[] } {
   const folder = findMigrationsFolder(SPLIT_STORAGE_JOURNALS[owner]);
   const journal = readJournal(folder);
   if (journal.entries[0]?.tag !== '0000_baseline')
@@ -393,14 +392,23 @@ export function assertCurrentServerOwnerSchema(
     )
   )
     throw new ServerOwnerAdmissionError('unsupported');
-  // Existing files with pending DDL wait for the verified pre-migration copy path.
-  if (applied.length < expected.length) throw new ServerOwnerAdmissionError('recovery-required');
+  return { current: applied.length === expected.length, rows: applied };
+}
+
+/** Validates exact owner journal entries and the tables required by the owning handlers. */
+export function assertCurrentServerOwnerSchema(
+  sqlite: Database.Database,
+  owner: SplitStorageOwner,
+  requiredTables: readonly string[]
+): void {
+  if (!readServerOwnerJournal(sqlite, owner).current)
+    throw new ServerOwnerAdmissionError('recovery-required');
   if (requiredTables.some((table) => !hasSqliteTable(sqlite, table)))
     throw new ServerOwnerAdmissionError('unsupported');
 }
 
-/** Installs an owner's journal in private provisioning storage before that file is published. */
-export function provisionServerOwnerSchema(
+/** Runs an owner's independent journal on admitted provisioning or migration storage. */
+export function applyServerOwnerJournal(
   sqlite: Database.Database,
   owner: SplitStorageOwner,
   requiredTables: readonly string[]
