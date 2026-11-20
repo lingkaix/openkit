@@ -128,7 +128,6 @@ function evaluateEntrypointShutdown(effects: {
     'closeNanoCoreListeners',
     'finishShutdown',
     'closeProcessCoreDatabase',
-    'releaseDataRootLock',
     'recordShutdownAudit',
     'recordBootStartAudit',
     'requireBootValue',
@@ -176,6 +175,7 @@ function evaluateEntrypointShutdown(effects: {
   const exit = vi.fn((code: number) => {
     events.push(`exit:${code}`);
   });
+  const forceShutdownAtDeadline = vi.fn();
   const processShutdownAbort = new AbortController();
   const coreDb = {
     sqlite: {
@@ -201,6 +201,7 @@ function evaluateEntrypointShutdown(effects: {
   });
   const bindings = {
     closeWithDeadline,
+    forceShutdownAtDeadline,
     runBootPhases,
     createShutdownReadinessSnapshot,
     bootReadiness: computeBootReadinessSnapshot({ bootId: 'boot_shutdown_order' }),
@@ -302,6 +303,7 @@ function evaluateEntrypointShutdown(effects: {
     shutdownControlStoreWorkerClient,
     getControlStoreWorkerClient,
     exit,
+    forceShutdownAtDeadline,
     processShutdownAbort,
   };
 }
@@ -466,13 +468,18 @@ describe('NanoCore boot phase order', () => {
       expect(lifecycle.events).not.toContain('audit.acknowledged');
       expect(lifecycle.shutdownControlStoreWorkerClient).not.toHaveBeenCalled();
       expect(lifecycle.exit).not.toHaveBeenCalled();
+      expect(lifecycle.forceShutdownAtDeadline).not.toHaveBeenCalled();
 
       // The bootstrap deadline is a crash boundary, even when durability is unknown.
       await vi.advanceTimersByTimeAsync(1);
       await lifecycle.completion();
-      expect(lifecycle.exit).toHaveBeenCalledTimes(1);
-      expect(lifecycle.exit).toHaveBeenCalledWith(1);
-      expect(lifecycle.events.slice(-3)).toEqual(['core.closed', 'lock.released', 'exit:1']);
+      expect(lifecycle.forceShutdownAtDeadline).toHaveBeenCalledExactlyOnceWith(
+        'SIGINT',
+        expect.any(Number)
+      );
+      expect(lifecycle.exit).not.toHaveBeenCalled();
+      expect(lifecycle.events).not.toContain('core.closed');
+      expect(lifecycle.events).not.toContain('lock.released');
       expect(lifecycle.recordShutdownAuditEvent).toHaveBeenCalledTimes(1);
       expect(lifecycle.shutdownControlStoreWorkerClient).not.toHaveBeenCalled();
       expect(lifecycle.getControlStoreWorkerClient).not.toHaveBeenCalled();

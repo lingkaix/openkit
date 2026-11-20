@@ -271,14 +271,11 @@ export async function assertTaskDurableAdmissionResponse({
           id: 1,
           method: 'tools/call',
           params: {
-            name: 'openkit_call',
+            name: 'task_start',
             arguments: {
-              operation: 'task.start',
-              input: {
-                ...body,
-                workspaceId: scope.workspaceId,
-                threadId: scope.threadId,
-              },
+              ...body,
+              workspaceId: scope.workspaceId,
+              threadId: scope.threadId,
             },
           },
         }),

@@ -62,6 +62,7 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import * as lockOwner from '../bootstrap/lock.js';
 import {
   createMcpConfig,
   importWorkspaceSkill,
@@ -4116,6 +4117,12 @@ describe('createConfiguredTurnExecutor', () => {
 
   it('uses the identity read by NanoCore boot for the Worker runtime handed to App', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-worker-release-'));
+    const acquireDataRootLock = lockOwner.acquireDataRootLock;
+    let fixtureLock: ReturnType<typeof acquireDataRootLock> | undefined;
+    const lock = vi.spyOn(lockOwner, 'acquireDataRootLock').mockImplementation((...args) => {
+      fixtureLock = acquireDataRootLock(...args);
+      return fixtureLock;
+    });
     const identityFile = join(dataRoot, 'release-identity.json');
     writeFileSync(identityFile, JSON.stringify(TEST_WORKER_RELEASE_IDENTITY));
     const readReleaseIdentity = releaseIdentityOwner.readReleaseIdentity;
@@ -4174,6 +4181,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
 
       await expect(import('../index.js')).rejects.toBe(atApp);
+      expect(fixtureLock).toBeDefined();
       const coreDb = appOptions?.coreDb;
       const runtime = appOptions?.workerLifecycleRuntime;
       if (!coreDb || !runtime)
@@ -4265,6 +4273,7 @@ describe('createConfiguredTurnExecutor', () => {
       app.mockRestore();
       dispatch.mockRestore();
       identity.mockRestore();
+      lock.mockRestore();
       vi.unstubAllEnvs();
       try {
         await closeRetrievalServices();
@@ -4280,6 +4289,8 @@ describe('createConfiguredTurnExecutor', () => {
             if (signal === 'exit') listener(0);
           }
         });
+        // This fixture owns teardown after preventing real process termination.
+        fixtureLock?.release();
         rmSync(dataRoot, { recursive: true, force: true });
       }
     }

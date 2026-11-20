@@ -8,10 +8,11 @@
     "package": "@earendil-works/pi-coding-agent",
     "version": "1.4.0",
     "host": "@openkit/pi-runtime-host",
-    "patchSha256": "d2b1f00b02b71eda03e1ee73e30192fcbfc0733caae72de9505176321788a224",
+    "patchSha256": "c506881d2122bf7030b2387784e66e75fc799dd3eb8031b283b81019822ba2bb",
     "patchedFiles": {
-      "dist/extensions/mcp/index.js": "ae5d979ec53b763e862cc44eb33a1c76e10bc8c325cca1938baeb5ecc3709d22",
-      "dist/extensions/mcp/index.d.ts": "6707eef166f180f99bd91cc4fb14dda787d9001183df6ce8eb5a3ee9086b251c"
+      "dist/extensions/mcp/index.js": "57a487582f6cae3ccf83ca149681a35826e80be069f4bd0c42a188bb8980cea8",
+      "dist/extensions/mcp/index.d.ts": "b5ed9f2675e330515d2351ad6d68517046681c40e1a4ecb8f73b87f5d3156c51",
+      "dist/extensions/mcp/runtime.js": "39f4c440a8d482fc62c26db051a1b834afc8858d9f56423b44750f23eb85c120"
     },
     "dependencies": {
       "@earendil-works/pi-ai": "1.4.0",

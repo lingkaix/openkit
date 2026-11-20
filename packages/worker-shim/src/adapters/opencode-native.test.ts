@@ -1066,11 +1066,8 @@ it('cancels a native typed-answer form without inventing an answer', async () =>
   expect(f.session.childState()).toBe('absent');
 }, 60000);
 
-// #497 Session Operations: a real crashed Tool claim must not run before admission.
-// This is qualified together with the pinned stdio startup source: stdio supplies no
-// managed-service lifecycle and therefore installs no restart sweep. An idle timeout
-// alone would not prove that, especially with the successor's empty admitted AEP.
-it('keeps a genuinely orphaned native execution inert through stdio startup', async () => {
+// #497 and #943: a real crashed Tool claim fences the exact native reopen before stdio starts.
+it('refuses a genuinely orphaned native execution before stdio startup', async () => {
   type Client = import('@opencode/client').OpenCodeClient;
   const clients: Client[] = [];
   const children: ReturnType<typeof spawn>[] = [];
@@ -1195,27 +1192,23 @@ it('keeps a genuinely orphaned native execution inert through stdio startup', as
   await exited;
   expect((await run.settled).status).toBe('failed');
   const oldCounts = { model: f.inference.requests.length, mcp: f.capability.hits.length };
+  const nativeDatabase = join(state, 'xdg', 'opencode', 'opencode.db');
+  const retainedDatabase = () =>
+    [nativeDatabase, `${nativeDatabase}-wal`].map((path) =>
+      existsSync(path) ? readFileSync(path) : null
+    );
+  const retained = retainedDatabase();
+  expect(retained[0]).not.toBeNull();
   control = join(root, 'orphan-successor-control');
   mkdirSync(control);
-  const successor = await fixture(adapter, handle.reference);
-  expect(clients).toHaveLength(2);
-  // The actual message.list application route requires completed native boot.
-  // It reads persisted native messages without marking idle or starting recovery.
-  // Retain both original effect endpoints and exact pending Tool identity/bytes.
-  const retained = await pending(clients[1]!);
-  expect(retained).toEqual(before);
+  await expect(fixture(adapter, handle.reference)).rejects.toMatchObject({
+    retainedSessionWork: 'suspended',
+  });
+  expect(children).toHaveLength(1);
+  expect(clients).toHaveLength(1);
   expect(f.inference.requests).toHaveLength(oldCounts.model);
   expect(f.capability.hits).toHaveLength(oldCounts.mcp);
-  expect(successor.inference.requests).toHaveLength(0);
-  expect(successor.capability.hits).toHaveLength(0);
-  expect(await successor.session.nativeHandle()).toEqual(handle);
-  expect(await pending(clients[1]!)).toEqual(before);
-  // A later explicitly admitted prompt proves the observer and live relay work;
-  // it makes no claim that the prior effect is safe to retry automatically.
-  expect((await (await successor.session.startTurn(successor.turn())).settled).status).toBe(
-    'completed'
-  );
-  expect(successor.inference.requests.length).toBeGreaterThan(0);
+  expect(retainedDatabase()).toEqual(retained);
 }, 60000);
 
 // #497 Tests: stored native provider credentials cannot replace the current

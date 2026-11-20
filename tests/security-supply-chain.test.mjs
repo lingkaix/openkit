@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -168,6 +169,12 @@ test('the pull-request graph holds no write permission and publishes nothing to 
       `${id} builds read-only`
     );
   }
+});
+
+test('Worker Runtimes pins the shipped Pi native-state patch', () => {
+  const { pi } = JSON.parse(readFileSync('containers/worker-runtimes/versions.json', 'utf8'));
+  const patch = readFileSync('patches/pi-coding-agent-1.4.0-openkit-native-state.patch');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), pi.patchSha256);
 });
 
 test('every workflow pins each action to a full commit sha', () => {
