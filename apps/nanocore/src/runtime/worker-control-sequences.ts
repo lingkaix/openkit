@@ -1,37 +1,44 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { CoreDb } from '../storage/db.js';
+import type Database from 'better-sqlite3';
 import type {
   WorkerControlSequenceRecorder,
   WorkerControlSequenceRecorderInput,
   WorkerControlSequenceRecorderResult,
 } from './worker-control-gateway.js';
 
+/** Admitted SQLite connection for retained Worker sequence fingerprints. */
+type WorkerControlSequenceDb = { readonly sqlite: Database.Database };
+
 /**
- * Creates a server-scope SQLite recorder for worker-control sequence fingerprints.
+ * Creates a SQLite recorder for retained Worker control sequence fingerprints.
  *
- * @param coreDb Server-scope Core database.
+ * @param owner Admitted SQLite handle for the fingerprint table.
  * @returns Durable sequence recorder.
  */
-export function createWorkerControlSequenceRecorder(coreDb: CoreDb): WorkerControlSequenceRecorder {
+export function createWorkerControlSequenceRecorder(
+  owner: WorkerControlSequenceDb
+): WorkerControlSequenceRecorder {
   return {
     accept(input) {
-      return acceptWorkerControlSequence(coreDb, input);
+      return acceptWorkerControlSequence(owner, input);
     },
   };
 }
 
 /**
- * Accepts or rejects one worker-control sequence fingerprint against durable state.
+ * Accepts or rejects one Worker control sequence fingerprint against durable state.
  *
- * @param coreDb Server-scope Core database.
+ * The caller supplies the writer transaction when this observation is part of a Worker record.
+ *
+ * @param owner Admitted SQLite handle for the fingerprint table.
  * @param input Sequence fingerprint input.
  * @returns Durable accept or reject outcome.
  */
 export function acceptWorkerControlSequence(
-  coreDb: CoreDb,
+  owner: WorkerControlSequenceDb,
   input: WorkerControlSequenceRecorderInput
 ): WorkerControlSequenceRecorderResult {
-  const duplicate = matchesAcceptedWorkerControlSequence(coreDb, input);
+  const duplicate = matchesAcceptedWorkerControlSequence(owner, input);
   if (duplicate !== null) {
     if (!duplicate) {
       return {
@@ -43,12 +50,12 @@ export function acceptWorkerControlSequence(
 
     return {
       duplicate: true,
-      nextExpectedSequence: nextExpectedSequence(coreDb, input),
+      nextExpectedSequence: nextExpectedSequence(owner, input),
       status: 'accepted',
     };
   }
 
-  const highest = highestAcceptedSequence(coreDb, input);
+  const highest = highestAcceptedSequence(owner, input);
 
   if (highest !== null && input.sequence < highest) {
     return {
@@ -58,7 +65,7 @@ export function acceptWorkerControlSequence(
     };
   }
 
-  coreDb.sqlite
+  owner.sqlite
     .prepare(
       `
       INSERT INTO worker_control_sequence_fingerprints (
@@ -91,17 +98,17 @@ export function acceptWorkerControlSequence(
 
   return {
     duplicate: false,
-    nextExpectedSequence: nextExpectedSequence(coreDb, input),
+    nextExpectedSequence: nextExpectedSequence(owner, input),
     status: 'accepted',
   };
 }
 
 /** Compares a retained observation without accepting a new sequence or changing liveness. */
 export function matchesAcceptedWorkerControlSequence(
-  coreDb: CoreDb,
+  owner: WorkerControlSequenceDb,
   input: WorkerControlSequenceRecorderInput
 ): boolean | null {
-  const existing = coreDb.sqlite
+  const existing = owner.sqlite
     .prepare(
       `
       SELECT fingerprint
@@ -130,15 +137,15 @@ export function matchesAcceptedWorkerControlSequence(
 /**
  * Reads the highest accepted sequence for one worker-control operation stream.
  *
- * @param coreDb Server-scope Core database.
+ * @param owner Admitted SQLite handle for the fingerprint table.
  * @param input Sequence stream selector.
  * @returns Highest sequence, or null when none exists.
  */
 function highestAcceptedSequence(
-  coreDb: CoreDb,
+  owner: WorkerControlSequenceDb,
   input: WorkerControlSequenceRecorderInput
 ): number | null {
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(
       `
       SELECT MAX(sequence) AS highest
@@ -158,12 +165,15 @@ function highestAcceptedSequence(
 /**
  * Computes the durable next expected sequence for one operation stream.
  *
- * @param coreDb Server-scope Core database.
+ * @param owner Admitted SQLite handle for the fingerprint table.
  * @param input Sequence stream selector.
  * @returns Next sequence after the durable high-watermark, or zero before any sequence.
  */
-function nextExpectedSequence(coreDb: CoreDb, input: WorkerControlSequenceRecorderInput): number {
-  const highest = highestAcceptedSequence(coreDb, input);
+function nextExpectedSequence(
+  owner: WorkerControlSequenceDb,
+  input: WorkerControlSequenceRecorderInput
+): number {
+  const highest = highestAcceptedSequence(owner, input);
 
   return highest === null ? 0 : highest + 1;
 }

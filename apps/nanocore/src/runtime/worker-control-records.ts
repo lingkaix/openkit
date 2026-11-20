@@ -22,6 +22,7 @@ import {
   type WorkerObservationData,
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
+import type Database from 'better-sqlite3';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import {
@@ -50,6 +51,8 @@ import type {
   WorkerControlTokenBindingInput,
 } from './worker-control-gateway.js';
 import { workerControlEventReceipt } from './worker-control-gateway.js';
+
+type WorkerControlReceiptDb = { readonly sqlite: Database.Database };
 
 /** Default interval for observing one scheduler-owned durable final status. */
 const WORKER_FINAL_STATUS_POLL_INTERVAL_MS = 100;
@@ -306,9 +309,9 @@ export async function recoverWorkerObservationSource(
   }
 }
 
-/** Writes only the original Core receipt; native observation work finishes before this synchronous step. */
+/** Writes the original receipt on its owner after native observation publication finishes. */
 export function writeWorkerControlAcceptedRecord(
-  coreDb: CoreDb,
+  owner: WorkerControlReceiptDb,
   input: WorkerControlAcceptedRecordRecorderInput
 ): void {
   const event =
@@ -316,7 +319,7 @@ export function writeWorkerControlAcceptedRecord(
       ? WorkerCanonicalEventRecordSchema.parse(input.record)
       : null;
   const receipt = event ? workerControlEventReceipt(event) : input.record;
-  const existing = coreDb.sqlite
+  const existing = owner.sqlite
     .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson FROM worker_control_records
     WHERE agent_session_id = ? AND package_snapshot_id = ? AND operation = ? AND record_key = ?`)
     .get(
@@ -338,7 +341,7 @@ export function writeWorkerControlAcceptedRecord(
     })
   )
     throw new Error('recovery_required: worker receipt identity conflict');
-  coreDb.sqlite
+  owner.sqlite
     .prepare(
       `
       INSERT OR IGNORE INTO worker_control_records (
@@ -647,16 +650,16 @@ async function recordWorkerObservation(
 /**
  * Reads canonical events durably accepted for one complete worker package lineage.
  *
- * @param coreDb Server-scope Core database.
+ * @param owner Admitted receipt database.
  * @param lineage Exact package lineage selector.
  * @returns Canonical accepted events ordered by worker sequence.
  * @throws Error when durable event JSON is invalid or contradicts the selected lineage.
  */
 export function listWorkerControlAcceptedEvents(
-  coreDb: CoreDb,
+  owner: WorkerControlReceiptDb,
   lineage: WorkerControlLineage
 ): WorkerCanonicalEventRecord[] {
-  const rows = coreDb.sqlite
+  const rows = owner.sqlite
     .prepare(
       `
       SELECT schema_version AS schemaVersion, record_json AS recordJson
@@ -697,10 +700,10 @@ export function listWorkerControlAcceptedEvents(
 
 /** Reads the accepted final status for one exact worker lineage. */
 export function getWorkerControlAcceptedFinalStatus(
-  coreDb: CoreDb,
+  owner: WorkerControlReceiptDb,
   lineage: WorkerControlLineage
 ): AcceptedWorkerFinalStatus | null {
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(
       `SELECT schema_version AS schemaVersion, record_json AS recordJson, accepted_at AS acceptedAt
        FROM worker_control_records

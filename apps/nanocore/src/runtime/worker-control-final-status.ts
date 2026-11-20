@@ -1,4 +1,5 @@
 import { readRetainedV1 } from '@openkit/protocol';
+import type Database from 'better-sqlite3';
 import { WorkerControlGatewayError } from '../operation-error.js';
 import {
   ControlStoreWorkerError,
@@ -16,6 +17,10 @@ import {
   ControlWorkerSupplyAckReaderSchema,
 } from '../storage/worker-control-record-codecs.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
+import type {
+  WorkerControlArtifactNotice,
+  WorkerControlSupplyRefreshAck,
+} from './worker-control-gateway.js';
 
 /** Publishes only the original complete Core final tuple after Main's read-only raw-output check. */
 export async function publishWorkerControlFinalStatus(
@@ -124,22 +129,12 @@ export async function publishWorkerControlOperation(
       result.duplicate &&
       (payload.operation === 'artifact_notice' || payload.operation === 'supply_refresh_ack')
     ) {
-      const row = db.sqlite
-        .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson FROM worker_control_records
-        WHERE agent_session_id = ? AND package_snapshot_id = ? AND operation = ? AND record_key = ?`)
-        .get(
-          coordinates.lineage.agentSessionId,
-          coordinates.lineage.packageSnapshotId,
-          payload.operation,
-          payload.recordKey
-        ) as { schemaVersion: unknown; recordJson: string } | undefined;
-      if (row)
-        record = readRetainedV1(row, () => {
-          const value: unknown = JSON.parse(row.recordJson);
-          return payload.operation === 'artifact_notice'
-            ? ControlWorkerArtifactNoticeReaderSchema.parse(value)
-            : ControlWorkerSupplyAckReaderSchema.parse(value);
-        });
+      record = readWorkerControlDuplicateReceipt(
+        db,
+        coordinates.lineage,
+        payload.operation,
+        payload.recordKey
+      );
     }
     return {
       duplicate: result.duplicate,
@@ -158,4 +153,26 @@ export async function publishWorkerControlOperation(
       );
     throw error;
   }
+}
+
+/** Reads the original descriptive receipt, if retained. This does not admit a replay. */
+export function readWorkerControlDuplicateReceipt(
+  owner: { readonly sqlite: Database.Database },
+  lineage: Pick<ControlWorkerOperationCommand['lineage'], 'agentSessionId' | 'packageSnapshotId'>,
+  operation: 'artifact_notice' | 'supply_refresh_ack',
+  recordKey: string
+): WorkerControlArtifactNotice | WorkerControlSupplyRefreshAck | undefined {
+  const row = owner.sqlite
+    .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson FROM worker_control_records
+        WHERE agent_session_id = ? AND package_snapshot_id = ? AND operation = ? AND record_key = ?`)
+    .get(lineage.agentSessionId, lineage.packageSnapshotId, operation, recordKey) as
+    | { schemaVersion: unknown; recordJson: string }
+    | undefined;
+  if (!row) return undefined;
+  return readRetainedV1(row, () => {
+    const value: unknown = JSON.parse(row.recordJson);
+    return operation === 'artifact_notice'
+      ? ControlWorkerArtifactNoticeReaderSchema.parse(value)
+      : ControlWorkerSupplyAckReaderSchema.parse(value);
+  });
 }

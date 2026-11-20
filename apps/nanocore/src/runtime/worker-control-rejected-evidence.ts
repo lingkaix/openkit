@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type Database from 'better-sqlite3';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
@@ -109,16 +110,16 @@ export async function recordWorkerControlRejectedEvidence(
 /**
  * Lists rejected worker-control evidence for one workspace read model.
  *
- * @param coreDb Server-scope Core database.
+ * @param owner Admitted evidence database.
  * @param workspaceId Workspace id to project.
  * @returns Matching evidence rows in deterministic rejection order.
  */
 export function listWorkerControlRejectedEvidenceForWorkspace(
-  coreDb: CoreDb,
+  owner: { readonly sqlite: Database.Database },
   workspaceId: string
 ): WorkerControlRejectedEvidenceRecord[] {
   return (
-    coreDb.sqlite
+    owner.sqlite
       .prepare(
         `
         SELECT

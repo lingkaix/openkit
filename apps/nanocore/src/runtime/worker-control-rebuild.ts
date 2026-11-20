@@ -6,6 +6,7 @@ import type {
   WorkerCanonicalEventRecord,
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
+import type Database from 'better-sqlite3';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -170,14 +171,14 @@ function assertRestoredPackageLineage(
 }
 
 /**
- * Reads product-safe accepted worker-control records for one lineage.
+ * Reads product-safe accepted worker-control records without authorizing session restoration.
  *
- * @param coreDb Server-scope Core database.
+ * @param owner Admitted SQLite owner of the accepted records.
  * @param lineage Worker-control lineage selector.
  * @returns Accepted records grouped by snapshot field.
  */
-function readAcceptedRecords(
-  coreDb: CoreDb,
+export function readAcceptedRecords(
+  owner: { readonly sqlite: Database.Database },
   lineage: WorkerControlLineage
 ): {
   artifacts: WorkerControlArtifactNotice[];
@@ -185,7 +186,7 @@ function readAcceptedRecords(
   events: WorkerCanonicalEventRecord[];
   supplyRefreshAcks: WorkerControlSupplyRefreshAck[];
 } {
-  const rows = coreDb.sqlite
+  const rows = owner.sqlite
     .prepare(
       `
       SELECT schema_version AS schemaVersion, operation, record_json AS recordJson, accepted_at AS acceptedAt
@@ -200,9 +201,10 @@ function readAcceptedRecords(
   const result = {
     artifacts: [] as WorkerControlArtifactNotice[],
     capabilitySummaries: [] as WorkerCapabilityCallSummary[],
-    events: [] as WorkerCanonicalEventRecord[],
     supplyRefreshAcks: [] as WorkerControlSupplyRefreshAck[],
   };
+
+  const eventsByAcceptedAt = new Map<string, WorkerCanonicalEventRecord[]>();
 
   for (const row of rows) {
     const record = readRetainedV1(row, () => JSON.parse(row.recordJson) as unknown);
@@ -218,10 +220,20 @@ function readAcceptedRecords(
       const eventType = (record as { event?: { type?: string } }).event?.type;
       // Observation transport receipts are not canonical transcript or public session events.
       // Their existing durable sequence fingerprints remain the replay authority.
-      if (eventType !== 'observation.recorded' && eventType !== 'observation.content.chunk')
-        result.events.push(record as WorkerCanonicalEventRecord);
+      if (eventType !== 'observation.recorded' && eventType !== 'observation.content.chunk') {
+        const event = record as WorkerCanonicalEventRecord;
+        const events = eventsByAcceptedAt.get(row.acceptedAt);
+        if (events) events.push(event);
+        else eventsByAcceptedAt.set(row.acceptedAt, [event]);
+      }
     }
   }
 
-  return result;
+  return {
+    ...result,
+    // Buckets retain SQL timestamp order. Only events accepted in the same instant can swap.
+    events: [...eventsByAcceptedAt.values()].flatMap((events) =>
+      events.sort((left, right) => left.sequence - right.sequence)
+    ),
+  };
 }
