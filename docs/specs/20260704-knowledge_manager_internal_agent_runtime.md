@@ -72,6 +72,8 @@ Workspace, User, and Server maintenance runs receive read-only authoring guidanc
 
 Caller cancellation ends a nonterminal Knowledge Manager query or maintenance Turn as `cancelled` and emits `turn.completed` with payload `turn-completed` and `stopReason=aborted`; an owned role deadline without caller cancellation ends the Turn as `failed` with `knowledge_manager_timeout` and `stopReason=error`; normal completion emits `stopReason=completed` ([Four Turn Terminal States](../decisions/20260921-four_turn_terminal_states.md)). No late result Item may be appended after terminal completion is sealed. Restart or provider failure never replays a model run or resumes a virtual editing filesystem.
 
+When Workspace `knowledge.tell` retains its supplied Source and reaches the owned role deadline before any known or unresolved Notebook effect, its terminal Status Item reports the exact currently admitted Source and the existing continuation. The same command replays that result. A fresh `knowledge.maintain` can select the Source by ID at the current Notebook base and under current admission. A submission whose effect is unknown requires inspection.
+
 ## Callers, Audit, And Route Errors
 
 Entry paths use `assistant`, `task-mode`, `app-api`, `internal-agent`, and `worker`. Semantic operation results and retrieval traces retain `KnowledgeManagerCallerSchema` (mapping `internal-agent` queries to `assistant` and `worker` queries to `task-mode`, while the Knowledge Manager Turn retains the actual role, model, and usage). External App API payloads MUST NOT supply a `caller` override.

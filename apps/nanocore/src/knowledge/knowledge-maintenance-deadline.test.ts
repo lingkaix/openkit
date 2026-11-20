@@ -32,6 +32,7 @@ import {
   type KnowledgeMaintenanceDependencies,
   maintainKnowledgeAgent,
 } from './knowledge-agent-maintenance.js';
+import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { initializeScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import {
@@ -229,6 +230,7 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
     },
     baseRevision,
     overview,
+    input,
     updateTurn,
     maintain,
     readTurn,
@@ -339,9 +341,13 @@ describe.each(['workspace', 'server', 'user'] as const)('%s notebook editor dead
   });
 });
 
-it.each(['workspace', 'user'] as const)(
-  'returns the owned timeout code in %s maintenance without publication or retry',
-  async (scope) => {
+it.each([
+  { scope: 'workspace', tellContent: undefined },
+  { scope: 'user', tellContent: undefined },
+  { scope: 'workspace', tellContent: 'Keep the cobalt label for the focused fixture.' },
+] as const)(
+  'returns the owned timeout in $scope maintenance with tellContent=$tellContent',
+  async ({ scope, tellContent }) => {
     const f = await fixture(scope);
     const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
     const snapshot = createInMemoryRuntimeConfigSnapshot({
@@ -450,8 +456,29 @@ it.each(['workspace', 'user'] as const)(
       if (input.turn.owner.kind === 'server') throw new Error('Expected a Workspace run.');
       await pinKnowledgeManagerExecution(roleDependencies, input);
     };
-    f.dependencies.run = (input) => {
+    f.dependencies.run = async (input) => {
       if ('kind' in input) throw new Error('Expected a Workspace run.');
+      if (tellContent !== undefined) {
+        const execute = (name: string, value: unknown) =>
+          input.tools
+            .find((tool) => tool.name === name)!
+            .execute(value, { callId: randomUUID(), toolOccurrence: 1, signal: input.signal });
+        expect(
+          toolValue(
+            await execute('knowledge.notebook-workspace.update', {
+              script: "printf '\\n[Missing](missing.md)\\n' >> index.md",
+            })
+          )
+        ).toMatchObject({ exitCode: 0 });
+        const refusal = await execute('knowledge.notebook.update', {
+          summary: 'Submit a link to a missing Page.',
+        });
+        expect(refusal.isError).toBe(true);
+        expect(toolValue(refusal)).toMatchObject({
+          code: 'invalid_request',
+          diagnostics: ['notebook.unresolved_page_link'],
+        });
+      }
       return runKnowledgeManagerAgent(roleDependencies, input);
     };
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -463,7 +490,11 @@ it.each(['workspace', 'user'] as const)(
       ).unref();
       return controller.signal;
     });
-    const pending = f.maintain();
+    const request = { ...f.input, ...(tellContent === undefined ? {} : { tellContent }) };
+    const pending =
+      tellContent === undefined
+        ? f.maintain()
+        : runKnowledgeMaintenanceCommand(f.dependencies, request);
     // Observe rejection while the clock advances; awaiting the original below still fails the test.
     void pending.catch(() => {});
     await dispatched.promise;
@@ -479,7 +510,43 @@ it.each(['workspace', 'user'] as const)(
       internalExecution: { limits: { deadlineMs: 90_000 } },
     });
     expect(createResponses).toHaveBeenCalledTimes(1);
-    expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+    if (tellContent === undefined) {
+      expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+      return;
+    }
+    const sources = f.store.listKnowledgeSources(f.workspace.id);
+    expect(sources).toHaveLength(1);
+    const source = sources[0]!;
+    const revision = f.notebook.publishedRevision();
+    expect(revision).toBe(result.notebookRevision);
+    expect(f.notebook.inspectRevision(revision).parentRevision).toBe(f.baseRevision);
+    expect(f.notebook.readRevision(revision).files).toEqual({ 'index.md': f.overview });
+    expect(f.store.listKnowledgeProposals(f.workspace.id)).toHaveLength(0);
+    expect(result.summary).toContain(`source:${source.id}@${source.contentDigest}`);
+    expect(result.summary).toContain('knowledge.maintain');
+    expect(await runKnowledgeMaintenanceCommand(f.dependencies, request)).toEqual(result);
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+    f.dependencies.run = async (input) => {
+      expect(JSON.stringify(input.messages)).toContain(
+        `source:${source.id}@${source.contentDigest}`
+      );
+      await input.tools
+        .find((tool) => tool.name === 'knowledge.notebook.update')!
+        .execute(
+          { summary: 'The exact retained Source was available for a fresh request.' },
+          { callId: randomUUID(), toolOccurrence: 1, signal: input.signal }
+        );
+      await f.updateTurn(input, { status: 'completed', completedAt: new Date().toISOString() });
+      return { turnId: input.turn.id, text: '{}' };
+    };
+    const resumed = await runKnowledgeMaintenanceCommand(f.dependencies, {
+      ...f.input,
+      requestId: randomUUID(),
+      sources: [`source:${source.id}`],
+    });
+    expect(resumed.outcome).toBe('no-change');
+    expect(f.store.listKnowledgeSources(f.workspace.id).map(({ id }) => id)).toEqual([source.id]);
   }
 );
 
