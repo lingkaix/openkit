@@ -1,6 +1,7 @@
-/** Native Core backend-session records and read-only projections; facade mutations post through the physical owner. */
+/** Native backend-session records and Core attempt-bound operations. */
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import type Database from 'better-sqlite3';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreDb } from '../storage/db.js';
 import type {
@@ -11,6 +12,9 @@ import { BackendSessionRefusal } from '../storage/worker-backend-session-codecs.
 import { requireStoredNanoHostPhysicalEpoch } from './nanohost-runtime-target-records.js';
 
 export type { WorkerBackendSessionState } from '../storage/schema/index.js';
+
+/** Admitted SQLite connection that holds the native session records. */
+type WorkerBackendSessionDb = { readonly sqlite: Database.Database };
 
 /** Authored reference lineage retained by a durable backend anchor. */
 export interface WorkerBackendReferenceLineage {
@@ -365,15 +369,15 @@ export function recordWorkerBackendSessionMaterializing(
 }
 
 /**
- * Applies one allowed compare-and-set lifecycle transition.
+ * Applies one allowed compare-and-set lifecycle transition in the owner's write transaction.
  *
- * @param coreDb Open Core database handle.
+ * @param owner Admitted SQLite handle for the native backend-session records.
  * @param input Expected state, next state, lease id, and transition clock.
  * @returns Updated durable session.
  * @throws Error when the requested transition is invalid or the state changed concurrently.
  */
 export function transitionWorkerBackendSessionState(
-  coreDb: CoreDb,
+  owner: WorkerBackendSessionDb,
   input: TransitionWorkerBackendSessionStateInput
 ): WorkerBackendSessionRecord {
   if (!ALLOWED_TRANSITIONS[input.fromState].includes(input.toState)) {
@@ -382,9 +386,9 @@ export function transitionWorkerBackendSessionState(
     );
   }
   const timestamp = input.now?.() ?? new Date().toISOString();
-  const current = selectWorkerBackendSession(coreDb, input.attemptId);
+  const current = selectWorkerBackendSession(owner, input.attemptId);
   if (current) readRetainedV1(current, () => current);
-  const result = coreDb.sqlite
+  const result = owner.sqlite
     .prepare(
       `UPDATE worker_backend_sessions
        SET state = ?,
@@ -397,7 +401,7 @@ export function transitionWorkerBackendSessionState(
   if (result.changes !== 1) {
     throw new BackendSessionRefusal('Worker backend session state changed before transition.');
   }
-  return requireWorkerBackendSession(coreDb, input.attemptId);
+  return requireWorkerBackendSession(owner, input.attemptId);
 }
 
 /**
@@ -470,21 +474,21 @@ export function markWorkerBackendSessionLaunching(
 }
 
 /**
- * Marks the exact workspace handle set as published after its workspace transaction commits.
+ * Marks the exact workspace handle set as published in the owner's write transaction after the workspace commit.
  *
- * @param coreDb Open Core database handle.
+ * @param owner Admitted SQLite handle for the native backend-session records.
  * @param input Owning lease and marker clock.
  * @returns Updated durable backend session.
  * @throws Error when the marker changed concurrently.
  */
 export function markWorkerBackendWorkspaceHandoffComplete(
-  coreDb: CoreDb,
+  owner: WorkerBackendSessionDb,
   input: MarkWorkerBackendWorkspaceHandoffCompleteInput
 ): WorkerBackendSessionRecord {
   const timestamp = input.now?.() ?? new Date().toISOString();
-  const current = selectWorkerBackendSession(coreDb, input.attemptId);
+  const current = selectWorkerBackendSession(owner, input.attemptId);
   if (current) readRetainedV1(current, () => current);
-  const result = coreDb.sqlite
+  const result = owner.sqlite
     .prepare(
       `UPDATE worker_backend_sessions
        SET workspace_handoff_state = 'complete', updated_at = ?
@@ -494,32 +498,34 @@ export function markWorkerBackendWorkspaceHandoffComplete(
   if (result.changes !== 1) {
     throw new BackendSessionRefusal('Worker backend workspace handoff changed before publication.');
   }
-  return requireWorkerBackendSession(coreDb, input.attemptId);
+  return requireWorkerBackendSession(owner, input.attemptId);
 }
 
 /**
  * Reads one durable backend session by execution attempt.
  *
- * @param coreDb Open Core database handle.
+ * @param owner Admitted SQLite handle for the native backend-session records.
  * @param attemptId Owning execution attempt id.
  * @returns Durable session or null when no physical identity was recorded.
  */
 export function getWorkerBackendSession(
-  coreDb: CoreDb,
+  owner: WorkerBackendSessionDb,
   attemptId: string
 ): WorkerBackendSessionRecord | null {
-  const row = selectWorkerBackendSession(coreDb, attemptId);
+  const row = selectWorkerBackendSession(owner, attemptId);
   return row ? mapWorkerBackendSessionRow(row) : null;
 }
 
 /**
  * Lists all durable backend sessions in stable lease order.
  *
- * @param coreDb Open Core database handle.
+ * @param owner Admitted SQLite handle for the native backend-session records.
  * @returns Durable session rows.
  */
-export function listWorkerBackendSessions(coreDb: CoreDb): WorkerBackendSessionRecord[] {
-  const rows = coreDb.sqlite
+export function listWorkerBackendSessions(
+  owner: WorkerBackendSessionDb
+): WorkerBackendSessionRecord[] {
+  const rows = owner.sqlite
     .prepare(`${workerBackendSessionSelectSql()} ORDER BY attempt_id ASC`)
     .all() as WorkerBackendSessionRow[];
   return rows.map(mapWorkerBackendSessionRow);
@@ -527,10 +533,10 @@ export function listWorkerBackendSessions(coreDb: CoreDb): WorkerBackendSessionR
 
 /** Reads one durable backend session or throws. */
 function requireWorkerBackendSession(
-  coreDb: CoreDb,
+  owner: WorkerBackendSessionDb,
   attemptId: string
 ): WorkerBackendSessionRecord {
-  const session = getWorkerBackendSession(coreDb, attemptId);
+  const session = getWorkerBackendSession(owner, attemptId);
   if (!session) {
     throw new BackendSessionRefusal(`Worker backend session not found: ${attemptId}`);
   }
@@ -539,10 +545,10 @@ function requireWorkerBackendSession(
 
 /** Selects one raw durable backend session row. */
 function selectWorkerBackendSession(
-  coreDb: CoreDb,
+  owner: WorkerBackendSessionDb,
   attemptId: string
 ): WorkerBackendSessionRow | undefined {
-  return coreDb.sqlite
+  return owner.sqlite
     .prepare(`${workerBackendSessionSelectSql()} WHERE attempt_id = ?`)
     .get(attemptId) as WorkerBackendSessionRow | undefined;
 }
