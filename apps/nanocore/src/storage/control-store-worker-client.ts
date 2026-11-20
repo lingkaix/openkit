@@ -213,6 +213,7 @@ import {
   FileStorageAdmission,
   type FileStorageReservation,
 } from './artifacts/file-admission.js';
+import type { WorkInputRef } from './control-kernel-port.js';
 import { CONTROL_STORE_BUDGET, type ControlCheckpoint } from './control-store.js';
 import type {
   CommandReceipt,
@@ -224,7 +225,6 @@ import type {
 } from './control-store-admission-codecs.js';
 import {
   CommandReceiptSchema,
-  type CoreSchedulerInput,
   type CoreSchedulerResult,
   SchedulerAdmissionTransitionError,
 } from './control-store-admission-codecs.js';
@@ -285,6 +285,7 @@ import {
   type ControlWorkerCommand,
   type ControlWorkerReply,
   type ControlWorkerRequest,
+  ControlWorkspaceQueueInputWireSchema,
   controlMaterialTransferSize,
   controlWorkerInputBytes,
   controlWorkObservationTransferSize,
@@ -688,6 +689,8 @@ interface Pending {
   };
   readonly closeout?: CapabilityCloseoutCredit | undefined;
   readonly policyCall?: PolicyCall;
+  /** Main admission is rechecked for the Workspace named in the original framed create. */
+  readonly schedulerWorkspaceId?: string;
   readonly progressCopy?: { readonly credit: ProgressCopyCredit; readonly bytes: number };
   readonly productPublication?: {
     readonly guard: ControlStorePublicationGuard;
@@ -1702,7 +1705,9 @@ class ControlStoreWorkerClient {
           ? join(dirname(dirname(path)), 'evidence', 'backend')
           : command.operation === 'open'
             ? command.contentMount?.root
-            : opening?.command.contentMount?.root;
+            : command.operation === 'workspace-queue-input'
+              ? undefined
+              : opening?.command.contentMount?.root;
       // Content may be a separate mount. Same-device forecasts still join the same pool.
       const observationGrowth =
         command.operation === 'observation' && 'chunk' in command.input
@@ -3360,7 +3365,8 @@ class ControlStoreWorkerClient {
                 [],
                 undefined,
                 undefined,
-                publicationGuard
+                publicationGuard,
+                transition.input.mode === 'create' ? transition.input.entry.workspaceId : undefined
               )
             : json === undefined
               ? await this.request({
@@ -4783,6 +4789,62 @@ class ControlStoreWorkerClient {
     if (reply.operation !== 'server-admin-token-default' || typeof reply.result !== 'boolean')
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
     return reply.result;
+  }
+
+  /** Stages exact input at its existing Workspace and returns the reference after FULL commit. */
+  async stageWorkspaceQueueInput(
+    dataRoot: string,
+    draft: {
+      readonly workspaceId: string;
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly originalInvocationId: string;
+      readonly input: WorkInputRef;
+      readonly text: string;
+    }
+  ): Promise<WorkInputRef> {
+    const { text, ...scope } = draft;
+    const wire = ControlWorkspaceQueueInputWireSchema.safeParse({
+      ...scope,
+      ...frameControlScalarText(text),
+    });
+    if (!wire.success) throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+
+    const target = nativeProductScope(dataRoot, wire.data.input.owner);
+    const opening = {
+      database: `workspace:${target.path}`,
+      path: target.path,
+      dataRoot,
+      create: false,
+      initialize: 'workspace' as const,
+      productOwner: target.owner,
+      contentMount: target.contentMount,
+    };
+    return this.runOperation(
+      async () => {
+        assertScopeAdmitted(dataRoot, 'workspace', wire.data.workspaceId);
+        const admitted = this.openings.get(opening.database);
+        await this.openFrozen({ ...opening, create: admitted?.command.create ?? false });
+        const reply = await this.request(
+          {
+            operation: 'workspace-queue-input',
+            database: opening.database,
+            input: wire.data,
+            content: new ArrayBuffer(0),
+          },
+          [text]
+        );
+        if (reply.operation !== 'workspace-queue-input' || reply.result !== null)
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return wire.data.input;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      opening
+    );
   }
 
   /** Reuses the exact physical owner for a closed originally standalone Core or Workspace Audit. */
@@ -6787,7 +6849,8 @@ class ControlStoreWorkerClient {
     preparedCapacity: readonly NativeCapacityReservation[] = [],
     schemaApplicationFacts?: Pending['schemaApplicationFacts'],
     policyCall?: PolicyCall,
-    publicationGuard?: ControlStorePublicationGuard
+    publicationGuard?: ControlStorePublicationGuard,
+    schedulerWorkspaceId?: string
   ): Promise<Success> {
     if (publicationGuard?.signal.aborted)
       return Promise.reject(new ControlStoreWorkerError('precondition', 'not-committed'));
@@ -6934,6 +6997,7 @@ class ControlStoreWorkerClient {
           (command.transition.kind === 'command-receipt' ||
             command.transition.kind === 'scheduler-work')) ||
         command.operation === 'standalone-audit' ||
+        command.operation === 'workspace-queue-input' ||
         command.operation === 'thread-read-membership' ||
         command.operation === 'worker-control-final-status' ||
         command.operation === 'worker-control-heartbeat' ||
@@ -6958,6 +7022,7 @@ class ControlStoreWorkerClient {
                     command.operation === 'schema-application' ||
                     command.operation === 'attention-enqueue' ||
                     command.operation === 'standalone-audit' ||
+                    command.operation === 'workspace-queue-input' ||
                     command.operation === 'thread-read-membership' ||
                     command.operation === 'worker-control-final-status' ||
                     command.operation === 'worker-control-heartbeat' ||
@@ -7111,6 +7176,7 @@ class ControlStoreWorkerClient {
           ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
           ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
           ...(policyCall ? { policyCall } : {}),
+          ...(schedulerWorkspaceId === undefined ? {} : { schedulerWorkspaceId }),
           ...(publicationGuard && cancelUnposted
             ? {
                 productPublication: {
@@ -7260,13 +7326,17 @@ class ControlStoreWorkerClient {
     ) ?? [entry];
     if (members.some((member) => !member.ready)) return;
     try {
-      for (const member of members)
-        this.assertFrozenCall(
-          member.command,
-          member.recovery,
-          'database' in member.command ? this.openings.get(member.command.database) : undefined,
-          member
-        );
+      for (const member of members) {
+        const memberOpening =
+          'database' in member.command ? this.openings.get(member.command.database) : undefined;
+        this.assertFrozenCall(member.command, member.recovery, memberOpening, member);
+        if (member.schedulerWorkspaceId !== undefined) {
+          const dataRoot = memberOpening?.command.dataRoot;
+          if (dataRoot === undefined)
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          assertScopeAdmitted(dataRoot, 'workspace', member.schedulerWorkspaceId);
+        }
+      }
     } catch (error) {
       for (const member of members)
         this.complete(

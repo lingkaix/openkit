@@ -1,3 +1,7 @@
+import {
+  createTestQueueEntry,
+  schedulerFixtureInput,
+} from '../test-support/scheduler-admissions.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -806,7 +810,7 @@ describe('C-a snapshot authoritative blockers', () => {
       workspaceId,
       threadId: dependency.threadId,
       turnId: dependency.id,
-      turnInput: 'Retained dependency',
+      inputRef: schedulerFixtureInput(workspaceId, dependency.id, 'Retained dependency'),
       requestedAgentId: 'agent_fixture',
       triggerActor: { kind: 'user', id: f.ownerId },
     });
@@ -1081,7 +1085,7 @@ describe('C-a snapshot authoritative blockers', () => {
       workspaceId,
       threadId: privateThread.id,
       turnId: first.id,
-      turnInput: 'Private queued input',
+      inputRef: schedulerFixtureInput(workspaceId, first.id, 'Private queued input'),
       requestedAgentId: 'agent_private',
       triggerActor: { kind: 'user', id: f.ownerId },
     });
@@ -1109,7 +1113,7 @@ describe('C-a snapshot authoritative blockers', () => {
       workspaceId,
       threadId: DEMO_THREAD_ID,
       turnId: turn.id,
-      turnInput: 'Queued only',
+      inputRef: schedulerFixtureInput(workspaceId, turn.id, 'Queued only'),
       requestedAgentId: 'agent_fixture',
       triggerActor: { kind: 'user', id: f.ownerId },
     });
@@ -1577,7 +1581,7 @@ describe('C-a additional owner families', () => {
       workspaceId,
       threadId: DEMO_THREAD_ID,
       turnId: turn.id,
-      turnInput: 'Physical lifecycle fixture',
+      inputRef: schedulerFixtureInput(workspaceId, turn.id, 'Physical lifecycle fixture'),
       requestedAgentId: 'agent_fixture',
       triggerActor: { kind: 'user', id: f.ownerId },
     });
@@ -1730,14 +1734,14 @@ describe('C-a frozen scheduler pre-post ordering', () => {
         { status: 'pending', agentId }
       );
       const executor = new SimulatedTurnExecutor({ coreDb: f.coreDb });
-      const entry = createSchedulerAdmissionEntry(f.coreDb, {
+      const entry = await createTestQueueEntry(f.coreDb, {
         queueEntryId: randomUUID(),
         requestId: randomUUID(),
         backendId: executor.id,
         workspaceId,
         threadId: DEMO_THREAD_ID,
         turnId: turn.id,
-        turnInput,
+        text: turnInput,
         requestedAgentId: agentId,
         triggerActor: { kind: 'user', id: f.ownerId },
       });
@@ -1754,8 +1758,8 @@ describe('C-a frozen scheduler pre-post ordering', () => {
       expect(claims.size).toBe(0);
       const claim = vi.spyOn(claims, 'set');
       const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
-      const beforeWorkspace = tree(f.workspaceRoot);
       const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+      const beforeWorkspace = tree(f.workspaceRoot);
       const deny = vi.spyOn(schedulerPublication, 'admitCoreScheduler');
       const open = vi.spyOn(databaseOwner, 'openWorkspaceDb');
       const read = vi.spyOn(databaseOwner, 'openWorkspaceReadDb');
@@ -1881,14 +1885,14 @@ describe('C-a observational cross-Workspace scheduler probes', () => {
       { status: 'pending', agentId }
     );
     const executor = new SimulatedTurnExecutor({ coreDb: f.coreDb });
-    const entry = createSchedulerAdmissionEntry(f.coreDb, {
+    const entry = await createTestQueueEntry(f.coreDb, {
       queueEntryId: randomUUID(),
       requestId: randomUUID(),
       backendId: executor.id,
       workspaceId: sibling.id,
       threadId: thread.id,
       turnId: turn.id,
-      turnInput,
+      text: turnInput,
       requestedAgentId: agentId,
       triggerActor: { kind: 'user', id: f.ownerId },
     });

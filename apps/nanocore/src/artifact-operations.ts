@@ -49,6 +49,7 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
+import { readScheduledAdmissionText } from './runtime/scheduler-dispatch-input.js';
 import { updateWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
@@ -1037,15 +1038,16 @@ function assertArtifactReviewFollowUpProof(input: {
     workspaceId: input.review.workspaceId,
     statuses: ['queued', 'admitted'],
   }).filter((entry) => entry.turnId === turnId);
+  const [admission] = admissions;
   if (
     workspaceIdForOwner(turn.owner) !== input.review.workspaceId ||
     turn.threadId !== input.review.sourceThreadId ||
     turn.agentId !== input.review.sourceAgentId ||
     admissions.length !== 1 ||
-    admissions[0]?.threadId !== turn.threadId ||
-    admissions[0]?.requestId !== deriveArtifactReviewWorkerRequestId(input.decisionRequestId) ||
-    admissions[0]?.requestedAgentId !== input.review.sourceAgentId ||
-    admissions[0]?.turnInput !== input.expectedPrompt
+    admission?.threadId !== turn.threadId ||
+    admission.requestId !== deriveArtifactReviewWorkerRequestId(input.decisionRequestId) ||
+    admission.requestedAgentId !== input.review.sourceAgentId ||
+    readScheduledAdmissionText(input.coreDb, admission) !== input.expectedPrompt
   ) {
     throw recoveryRequired('The Artifact Review follow-up proof is contradictory.');
   }

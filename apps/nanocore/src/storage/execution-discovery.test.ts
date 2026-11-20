@@ -27,7 +27,6 @@ import { drainNanoHostSandboxAdmission } from '../runtime/nanohost-harness.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import { getWorkerStorageBinding } from '../runtime/worker-storage-bindings.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -37,6 +36,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { controlStoreFor } from './control-store.js';
 import {
@@ -269,7 +269,8 @@ describe('Core execution candidate discovery', () => {
     const reconciler = new ExecutionReconciler({ coreDb: db, advanceIdleCleanup });
     try {
       const requestId = testEntityId('tu', 'pending_selection_request').slice(3);
-      const entry = createSchedulerAdmissionEntry(db, {
+      const text = 'Keep only current resident cleanup eligible for selection.';
+      const entry = await createTestQueueEntry(db, {
         backendId: 'nanohost',
         queueEntryId: 'queue:pending-selection',
         requestId,
@@ -277,7 +278,7 @@ describe('Core execution candidate discovery', () => {
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: DEMO_THREAD_ID,
         turnId: testEntityId('tu', 'pending_selection'),
-        turnInput: 'Keep only current resident cleanup eligible for selection.',
+        text,
         triggerActor: { kind: 'user', id: ownerUserId },
       });
       const scope = {
@@ -289,7 +290,7 @@ describe('Core execution candidate discovery', () => {
       await store.createTurn(
         entry.workspaceId,
         entry.threadId,
-        entry.turnInput,
+        text,
         entry.triggerActor,
         undefined,
         {
@@ -304,7 +305,7 @@ describe('Core execution candidate discovery', () => {
             scope,
             inputHash: commandInputHash({
               queueEntryId: entry.queueEntryId,
-              turnInput: entry.turnInput,
+              turnInput: text,
             }),
             responseKind: 'turn',
             createdAt,

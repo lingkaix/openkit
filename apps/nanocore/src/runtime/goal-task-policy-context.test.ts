@@ -36,7 +36,10 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { stageArtifactPayload } from '../storage/artifacts/file-payload.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -51,6 +54,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
@@ -69,6 +73,7 @@ import {
   denyPendingRequest,
   freezeReadyOutcomes,
   frozenPendingOutcomeInput,
+  pendingOutcomeBatchDraft,
   pendingRequestSystemActor,
   readPendingRequest,
 } from './pending-requests.js';
@@ -110,6 +115,7 @@ async function retainCompletedTaskFixture(
     'knowledge_notebook_proposals',
     'pending_requests',
     'worker_turn_checkpoints',
+    'workspace_work_inputs',
     'idempotency_requests',
     'audit_events',
   ].map((table) => ({
@@ -412,7 +418,7 @@ async function fixture(typed = true, linked = true) {
     createdAt: turn.startedAt!,
     completedAt: turn.startedAt!,
   });
-  const admission = createSchedulerAdmissionEntry(coreDb, {
+  const admission = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue_${requestId}`,
     requestId,
@@ -420,7 +426,7 @@ async function fixture(typed = true, linked = true) {
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput,
+    text: turnInput,
     requestedAgentId: agentId,
   });
   const environmentPackage = await resolveAgentEnvironmentPackage({
@@ -654,18 +660,28 @@ async function fixture(typed = true, linked = true) {
           triggerSource: { kind: 'approval-resolution', summary: 'Approval outcomes are ready.' },
         }
       );
-      expect(
-        freezeReadyOutcomes(db.sqlite, {
-          workspaceId: workspace.id,
-          threadId: thread.id,
-          turnId: outcomeTurn.id,
-          executor: 'worker',
-          agentId,
-          cause: 'outcome',
-          responsibleUserId: actor.userId,
-          now,
-        })
-      ).toHaveLength(1);
+      const outcomeScope = {
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: outcomeTurn.id,
+      };
+      const selected = freezeReadyOutcomes(db.sqlite, {
+        ...outcomeScope,
+        executor: 'worker',
+        agentId,
+        cause: 'outcome',
+        responsibleUserId: actor.userId,
+        now,
+      });
+      expect(selected).toHaveLength(1);
+      const { manifest, members, ...batchScope } = pendingOutcomeBatchDraft(
+        outcomeScope,
+        selected
+      )!;
+      const writer = getControlStoreWorkerClient();
+      for (const body of [...members, manifest]) {
+        await writer.stageWorkspaceQueueInput(root, { ...batchScope, ...body });
+      }
       await store.createItem({
         id: deriveEntityId('it', ['task-user', outcomeTurn.id]),
         owner: { kind: 'workspace', workspaceId: workspace.id },
@@ -683,10 +699,8 @@ async function fixture(typed = true, linked = true) {
         queueEntryId: `queue_${outcomeTurn.id}`,
         requestId: randomUUID(),
         triggerActor: outcomeTurn.triggerActor,
-        workspaceId: workspace.id,
-        threadId: thread.id,
-        turnId: outcomeTurn.id,
-        turnInput: outcomeInput,
+        ...outcomeScope,
+        inputRef: manifest.input,
         requestedAgentId: agentId,
         serverAdminTokenId: null,
       });
@@ -827,7 +841,7 @@ it.each(['turn.start', 'worker_environment.activate'] as const)(
       createdAt: turn.startedAt!,
       completedAt: turn.startedAt!,
     });
-    const admission = createSchedulerAdmissionEntry(f.coreDb, {
+    const admission = await createTestQueueEntry(f.coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue_${turn.id}`,
       requestId,
@@ -835,7 +849,7 @@ it.each(['turn.start', 'worker_environment.activate'] as const)(
       workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
-      turnInput: input,
+      text: input,
       requestedAgentId: agentId,
     });
     recordTestExecutionAttempt(f.coreDb, {
@@ -1009,7 +1023,7 @@ it('inherits a standalone Task ceiling through its exact native Artifact Review 
     createdAt: timestamp,
     completedAt: timestamp,
   });
-  const entry = createSchedulerAdmissionEntry(f.coreDb, {
+  const entry = await createTestQueueEntry(f.coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue_${turnId}`,
     requestId,
@@ -1017,7 +1031,7 @@ it('inherits a standalone Task ceiling through its exact native Artifact Review 
     workspaceId: source.workspaceId,
     threadId: source.threadId,
     turnId,
-    turnInput: input,
+    text: input,
     requestedAgentId: f.agentId,
   });
   recordTestExecutionAttempt(f.coreDb, {
@@ -1062,8 +1076,8 @@ it.each([
   const lineage = await f.outcome(captured.requestId, true);
   if (corruption === 'changed-original-input')
     f.coreDb.sqlite
-      .prepare('UPDATE scheduler_admission_entries SET turn_input=? WHERE turn_id=?')
-      .run('{}', f.lineage.turnId);
+      .prepare('UPDATE scheduler_admission_entries SET input_digest=? WHERE turn_id=?')
+      .run('0'.repeat(64), f.lineage.turnId);
   if (corruption === 'wrong-current-package') lineage.packageSnapshotId = 'wrong-package';
   if (corruption === 'missing-current-attempt' || corruption === 'missing-original-attempt')
     f.coreDb.sqlite
@@ -1368,8 +1382,8 @@ it.each([
       .run(f.lineage.turnId);
   if (corruption === 'changed-input')
     f.coreDb.sqlite
-      .prepare('UPDATE scheduler_admission_entries SET turn_input=? WHERE turn_id=?')
-      .run('{}', f.lineage.turnId);
+      .prepare('UPDATE scheduler_admission_entries SET input_digest=? WHERE turn_id=?')
+      .run('0'.repeat(64), f.lineage.turnId);
   if (corruption === 'wrong-worker')
     await f.store.updateTurn(f.lineage.turnId, { agentId: 'another-worker' });
   if (corruption === 'cancelled-card')

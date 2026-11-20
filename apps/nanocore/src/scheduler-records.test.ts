@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
@@ -37,6 +38,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from './test-support/release-identity.js';
+import { schedulerFixtureInput as fixtureSchedulerInput } from './test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -96,7 +98,11 @@ function createPreparedAttempt(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: testEntityId('th', `thread_${suffix}`),
     turnId: testEntityId('tu', `turn_${suffix}`),
-    turnInput: `Run Native attempt ${suffix}`,
+    inputRef: fixtureSchedulerInput(
+      'ws_00000000-0000-7000-8000-000000000001',
+      testEntityId('tu', `turn_${suffix}`),
+      `Run Native attempt ${suffix}`
+    ),
     requestedAgentId: 'agent_worker',
     now: () => '2026-07-05T00:00:00.000Z',
   });
@@ -184,7 +190,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
         turnId: testEntityId('tu', 'turn_1'),
-        turnInput: 'Run task',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          testEntityId('tu', 'turn_1'),
+          'Run task'
+        ),
         requestedAgentId: 'assistant',
         workspaceRoots: [
           {
@@ -280,7 +290,11 @@ describe('scheduler records', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: testEntityId('th', 'thread_unknown_version'),
       turnId: testEntityId('tu', 'turn_unknown_version'),
-      turnInput: 'Keep retained admission unchanged',
+      inputRef: fixtureSchedulerInput(
+        'ws_00000000-0000-7000-8000-000000000001',
+        testEntityId('tu', 'turn_unknown_version'),
+        'Keep retained admission unchanged'
+      ),
       requestedAgentId: 'assistant',
     };
     try {
@@ -299,7 +313,10 @@ describe('scheduler records', () => {
         'Unsupported retained record format.'
       );
       expect(() =>
-        createSchedulerAdmissionEntry(coreDb, { ...input, turnInput: 'Changed input' })
+        createSchedulerAdmissionEntry(coreDb, {
+          ...input,
+          inputRef: { ...input.inputRef, digest: sha256Hex('Changed input') },
+        })
       ).toThrow('Unsupported retained record format.');
       expect(() =>
         denySchedulerAdmissionEntry(coreDb, {
@@ -337,7 +354,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7b97-bc3d-37f962735158',
         threadId: testEntityId('th', 'thread_b'),
         turnId: testEntityId('tu', 'turn_b'),
-        turnInput: 'Run automation work',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7b97-bc3d-37f962735158',
+          testEntityId('tu', 'turn_b'),
+          'Run automation work'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:02.000Z',
@@ -349,7 +370,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7509-8702-098e8909b075',
         threadId: testEntityId('th', 'thread_goal'),
         turnId: testEntityId('tu', 'turn_goal'),
-        turnInput: 'Run fresh Goal work',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7509-8702-098e8909b075',
+          testEntityId('tu', 'turn_goal'),
+          'Run fresh Goal work'
+        ),
         requestedAgentId: 'agent_worker',
         workerStorageChoice: {
           goalId: 'goal_fresh',
@@ -369,7 +394,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7159-b04f-df2eaa9abaf0',
         threadId: testEntityId('th', 'thread_a'),
         turnId: testEntityId('tu', 'turn_a'),
-        turnInput: 'Run interactive work',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7159-b04f-df2eaa9abaf0',
+          testEntityId('tu', 'turn_a'),
+          'Run interactive work'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         workspaceCwd: '/workspace/project',
@@ -401,7 +430,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7700-9168-e31a19301e5a',
         threadId: testEntityId('th', 'thread_c'),
         turnId: testEntityId('tu', 'turn_c'),
-        turnInput: 'Run maintenance work',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7700-9168-e31a19301e5a',
+          testEntityId('tu', 'turn_c'),
+          'Run maintenance work'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:01.000Z',
@@ -413,8 +446,8 @@ describe('scheduler records', () => {
       expect(
         listQueuedSchedulerAdmissionEntries(coreDb).find(
           (entry) => entry.queueEntryId === 'queue_interactive'
-        )?.turnInput
-      ).toBe('Run interactive work');
+        )?.inputRef.digest
+      ).toBe(sha256Hex('Run interactive work'));
       expect(
         listQueuedSchedulerAdmissionEntries(coreDb).find(
           (entry) => entry.queueEntryId === 'queue_interactive'
@@ -477,7 +510,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: testEntityId('th', 'thread_bad_storage_choice'),
         turnId: testEntityId('tu', 'turn_bad_storage_choice'),
-        turnInput: 'Reject malformed storage choice',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'turn_bad_storage_choice'),
+          'Reject malformed storage choice'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:00.000Z',
@@ -512,7 +549,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: testEntityId('th', 'thread_demo'),
         turnId: testEntityId('tu', 'turn_demo'),
-        turnInput: 'Run first queued turn',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'turn_demo'),
+          'Run first queued turn'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:00.000Z',
@@ -526,7 +567,11 @@ describe('scheduler records', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: testEntityId('th', 'thread_demo'),
           turnId: testEntityId('tu', 'turn_demo'),
-          turnInput: 'Run duplicate queued turn',
+          inputRef: fixtureSchedulerInput(
+            'ws_00000000-0000-7000-8000-000000000001',
+            testEntityId('tu', 'turn_demo'),
+            'Run duplicate queued turn'
+          ),
           requestedAgentId: 'agent_worker',
           profileRef: null,
           now: () => '2026-07-05T00:00:01.000Z',
@@ -548,7 +593,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: testEntityId('th', 'thread_demo'),
         turnId: testEntityId('tu', 'turn_demo'),
-        turnInput: 'Run denied turn',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'turn_demo'),
+          'Run denied turn'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:00.000Z',
@@ -578,7 +627,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: testEntityId('th', 'thread_demo'),
         turnId: testEntityId('tu', 'turn_demo'),
-        turnInput: 'Run denied turn again',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'turn_demo'),
+          'Run denied turn again'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:00.000Z',
@@ -624,7 +677,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: testEntityId('th', 'thread_demo'),
         turnId: testEntityId('tu', 'turn_demo'),
-        turnInput: 'Cancel this turn',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'turn_demo'),
+          'Cancel this turn'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:00.000Z',
@@ -1613,7 +1670,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: testEntityId('th', 'thread_shared'),
         turnId: testEntityId('tu', 'turn_thread_first'),
-        turnInput: 'Run first shared-thread turn',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'turn_thread_first'),
+          'Run first shared-thread turn'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:01.000Z',
@@ -1634,7 +1695,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: testEntityId('th', 'thread_shared'),
         turnId: testEntityId('tu', 'turn_thread_second'),
-        turnInput: 'Run second shared-thread turn',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'turn_thread_second'),
+          'Run second shared-thread turn'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:03.000Z',
@@ -1646,7 +1711,11 @@ describe('scheduler records', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: testEntityId('th', 'thread_other'),
         turnId: testEntityId('tu', 'turn_thread_other'),
-        turnInput: 'Run other thread turn',
+        inputRef: fixtureSchedulerInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'turn_thread_other'),
+          'Run other thread turn'
+        ),
         requestedAgentId: 'agent_worker',
         profileRef: null,
         now: () => '2026-07-05T00:00:04.000Z',
@@ -1779,7 +1848,6 @@ describe('bounded original scheduler authority readers', () => {
       triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       workspaceId,
       requestedAgentId: 'agent_worker',
-      turnInput: 'Retain the selected storage.',
       now: () => '2026-07-05T00:00:01.000Z',
     };
     const fillers: ReturnType<typeof requireSchedulerAdmissionEntry>[] = [];
@@ -1789,6 +1857,11 @@ describe('bounded original scheduler authority readers', () => {
         queueEntryId: `queue_snapshot_f${String(index).padStart(3, '0')}`,
         threadId: testEntityId('th', `snapshot-filler-${index}`),
         turnId: testEntityId('tu', `snapshot-filler-${index}`),
+        inputRef: fixtureSchedulerInput(
+          workspaceId,
+          testEntityId('tu', `snapshot-filler-${index}`),
+          'Retain the selected storage.'
+        ),
       });
       // Real attempt admission avoids queued accumulation without bypassing the queue cap.
       attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
@@ -1814,6 +1887,11 @@ describe('bounded original scheduler authority readers', () => {
       queueEntryId: 'queue_snapshot_z',
       threadId: testEntityId('th', 'snapshot-original'),
       turnId: testEntityId('tu', 'snapshot-original'),
+      inputRef: fixtureSchedulerInput(
+        workspaceId,
+        testEntityId('tu', 'snapshot-original'),
+        'Retain the selected storage.'
+      ),
     });
     const replacementId = 'queue_snapshot_a';
     let crossed = false;
@@ -1838,6 +1916,11 @@ describe('bounded original scheduler authority readers', () => {
                   queueEntryId: replacementId,
                   threadId: testEntityId('th', 'snapshot-replacement'),
                   turnId: testEntityId('tu', 'snapshot-replacement'),
+                  inputRef: fixtureSchedulerInput(
+                    workspaceId,
+                    testEntityId('tu', 'snapshot-replacement'),
+                    'Retain the selected storage.'
+                  ),
                 });
                 expect(replacement.status).toBe('queued');
                 expect(requireSchedulerAdmissionEntry(writer, original.queueEntryId).status).toBe(
@@ -1901,7 +1984,11 @@ describe('bounded original scheduler authority readers', () => {
         workspaceId,
         threadId: testEntityId('th', `page-thread-${index}`),
         turnId: testEntityId('tu', `page-turn-${index}`),
-        turnInput: `Original admission ${index}`,
+        inputRef: fixtureSchedulerInput(
+          workspaceId,
+          testEntityId('tu', `page-turn-${index}`),
+          `Original admission ${index}`
+        ),
         requestedAgentId: 'agent_worker',
         now: () =>
           index === 0

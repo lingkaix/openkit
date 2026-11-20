@@ -5,11 +5,12 @@ import { Worker } from 'node:worker_threads';
 import { AutomationHistoryResponseSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAutomationOperationImplementations } from '../automation-operations.js';
-import { AutomationStore } from '../lib/automation-store.js';
+import { AutomationStore, stageRecurringQueueInput } from '../lib/automation-store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import type {
   ControlWorkerCommand,
@@ -30,6 +31,7 @@ import {
 } from './recurring-schedule-service.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import { createSchedulerAdmissionOperationImplementations } from './scheduler-admission-operations.js';
+import { readScheduledAdmissionText } from './scheduler-dispatch-input.js';
 
 const owned: { root: string; db: CoreDb; services: RecurringScheduleService[] }[] = [];
 const ready: Extract<RecurringPreparation, { kind: 'ready' }> = {
@@ -295,7 +297,7 @@ describe('serialized recurring scanner', () => {
       });
       expect(onError).not.toHaveBeenCalled();
       const entry = requireSchedulerAdmissionEntry(db, accepted.queueEntryId!);
-      expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_missing');
+      expect(recurringTurnPublicationIssue(db, store, entry)).toBe('turn_missing');
       await expect(publish.mock.results[0]!.value).rejects.toMatchObject({
         code: 'thread_busy',
         cause: {
@@ -317,7 +319,7 @@ describe('serialized recurring scanner', () => {
       expect(publish).toHaveBeenCalledTimes(2);
       expect(prepare).toHaveBeenCalledTimes(1);
       expect(schedules.getOccurrence(accepted.id)).not.toHaveProperty('publicationDeferred');
-      expect(recurringTurnPublicationIssue(store, entry)).toBe(
+      expect(recurringTurnPublicationIssue(db, store, entry)).toBe(
         result === 'committed' ? null : 'turn_missing'
       );
       expect(store.listThreadTurns(workspaceId, threadId).map((turn) => turn.id)).toEqual(
@@ -382,7 +384,7 @@ describe('serialized recurring scanner', () => {
         });
       }
       await Promise.all([service.runOnce(), service.runOnce()]);
-      expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_missing');
+      expect(recurringTurnPublicationIssue(db, store, entry)).toBe('turn_missing');
       expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('queued');
       expect(publish).toHaveBeenCalledTimes(change === 'native busy rollback' ? 1 : 0);
 
@@ -395,7 +397,7 @@ describe('serialized recurring scanner', () => {
 
       const revoked = change.startsWith('deleted');
       expect(schedules.getAutomation(schedule.id).status).toBe(revoked ? 'deleted' : 'active');
-      expect(recurringTurnPublicationIssue(store, entry)).toBe(revoked ? 'turn_missing' : null);
+      expect(recurringTurnPublicationIssue(db, store, entry)).toBe(revoked ? 'turn_missing' : null);
       expect(
         store.listThreadTurns(workspaceId, threadId).filter(({ id }) => id === entry.turnId)
       ).toHaveLength(revoked ? 0 : 1);
@@ -499,7 +501,7 @@ describe('serialized recurring scanner', () => {
           prompt: 'Inspect status',
         });
         expect(schedules.getAutomation(schedule.id).status).toBe('active');
-        expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_missing');
+        expect(recurringTurnPublicationIssue(db, store, entry)).toBe('turn_missing');
       } finally {
         resume.resolve();
         await scan;
@@ -516,7 +518,7 @@ describe('serialized recurring scanner', () => {
       }
       expect(schedules.getAutomation(schedule.id).status).toBe('deleted');
       expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('queued');
-      expect(recurringTurnPublicationIssue(store, entry)).toBeNull();
+      expect(recurringTurnPublicationIssue(db, store, entry)).toBeNull();
       expect(prepare).toHaveBeenCalledTimes(1);
       expect(onError).not.toHaveBeenCalled();
     }
@@ -1212,6 +1214,119 @@ it('inspects durable acceptance after an unknown commit result and never submits
     n: 1,
   });
 });
+
+it('uses the first staged recurring choices when the writer restarts before Core acceptance', async () => {
+  const { root, schedules, schedule, clock } = await fixture();
+  const occurrence = (await schedules.collectScanCandidates(clock()))[0]!;
+  const inputRef = await stageRecurringQueueInput(root, occurrence, ready);
+  await shutdownControlStoreWorkerClient();
+  const reopened = openCoreDb(root);
+  const reopenedSchedules = new AutomationStore(reopened, clock);
+  const prepare = vi.fn(async () => ({
+    kind: 'ready' as const,
+    payload: { ...ready.payload, modelId: 'new-model' },
+  }));
+  const onError = vi.fn();
+  const service = startRecurringScheduleService({
+    schedules: reopenedSchedules,
+    store: createTestStore({ dataRoot: root }),
+    prepare,
+    now: clock,
+    onError,
+    setInterval: () => 'timer',
+    clearInterval: () => {},
+  });
+  try {
+    await service.runOnce();
+    const accepted = reopenedSchedules.listHistory(schedule.id).items[0]!.record;
+    expect(prepare).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(accepted).toMatchObject({
+      state: 'admission-accepted',
+      inputRef,
+      resolvedPayload: ready.payload,
+    });
+    expect(requireSchedulerAdmissionEntry(reopened, accepted.queueEntryId!)).toMatchObject({
+      inputRef,
+      modelId: ready.payload.modelId,
+    });
+  } finally {
+    service.stop();
+    reopened.sqlite.close();
+  }
+});
+
+it('keeps a pending occurrence on hold when its selected Workspace input is missing', async () => {
+  const { root, db, workspace, schedules, clock, start } = await fixture();
+  const occurrence = (await schedules.collectScanCandidates(clock()))[0]!;
+  const inputRef = await stageRecurringQueueInput(root, occurrence, ready);
+  const pending = await schedules.commitAttempt(
+    occurrence.id,
+    occurrence.definitionRevision,
+    ready,
+    () => ({ kind: 'failure', code: 'selection_unavailable' }),
+    inputRef
+  );
+  expect(pending).toMatchObject({ state: 'pending', inputRef, resolvedPayload: ready.payload });
+  await shutdownControlStoreWorkerClient();
+  const owner = openWorkspaceDb(root, workspace.id);
+  try {
+    expect(
+      owner.sqlite
+        .prepare('DELETE FROM workspace_work_inputs WHERE input_id = ?')
+        .run(inputRef.inputId).changes
+    ).toBe(1);
+    const prepare = vi.fn(async () => structuredClone(ready));
+    const { service, onError } = start(prepare);
+    await service.runOnce();
+
+    expect(
+      owner.sqlite
+        .prepare('SELECT 1 FROM workspace_work_inputs WHERE input_id = ?')
+        .get(inputRef.inputId)
+    ).toBeUndefined();
+    expect(schedules.getOccurrence(occurrence.id)).toEqual(pending);
+    expect(db.sqlite.prepare('SELECT 1 FROM scheduler_admission_entries').get()).toBeUndefined();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'recovery_required' }));
+  } finally {
+    owner.sqlite.close();
+  }
+});
+
+it.each(['changed snapshot prompt', 'missing accepted source'] as const)(
+  'holds the accepted recurring input on %s after a live schedule edit',
+  async (fault) => {
+    const { db, store, schedules, schedule, start } = await fixture();
+    const { service } = start();
+    await service.runOnce();
+    service.stop();
+    const occurrence = schedules.listHistory(schedule.id).items[0]!.record;
+    expect(occurrence.state).toBe('admission-accepted');
+    const entry = requireSchedulerAdmissionEntry(db, occurrence.queueEntryId!);
+    const paused = await schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
+      expectedRevision: schedule.revision,
+      status: 'paused',
+    });
+    await schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
+      expectedRevision: paused.revision,
+      prompt: 'A later schedule revision.',
+    });
+
+    expect(readScheduledAdmissionText(db, entry)).toBe(occurrence.snapshot.prompt);
+    expect(recurringTurnPublicationIssue(db, store, entry)).toBeNull();
+    const corruption =
+      fault === 'changed snapshot prompt'
+        ? db.sqlite.prepare(
+            "UPDATE recurring_occurrences SET record_json = json_set(record_json, '$.snapshot.prompt', 'Contradictory original prompt') WHERE queue_entry_id = ?"
+          )
+        : db.sqlite.prepare('DELETE FROM recurring_occurrences WHERE queue_entry_id = ?');
+    expect(corruption.run(entry.queueEntryId).changes).toBe(1);
+
+    expect(readScheduledAdmissionText(db, entry)).toBeNull();
+    expect(recurringTurnPublicationIssue(db, store, entry)).toBe('turn_contradictory');
+  }
+);
 
 it('does not accept into a private Thread owned by another responsible user', async () => {
   const { store, schedules, schedule, workspace, thread, start } = await fixture();

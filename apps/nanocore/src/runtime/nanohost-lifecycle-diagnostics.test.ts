@@ -26,6 +26,7 @@ import {
 } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createNanoHostHarnessRuntime,
@@ -495,7 +496,11 @@ describe('Harness delivery localization through real Core and shim owners', () =
           workspaceId: testEntityId('ws', 'diag-workspace'),
           threadId: testEntityId('th', 'diag-thread'),
           turnId: testEntityId('tu', 'diag-turn'),
-          turnInput: 'Exercise exact private Harness transport delivery',
+          inputRef: schedulerFixtureInput(
+            testEntityId('ws', 'diag-workspace'),
+            testEntityId('tu', 'diag-turn'),
+            'Exercise exact private Harness transport delivery'
+          ),
           requestedAgentId: 'agent_diag',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           now: () => now,

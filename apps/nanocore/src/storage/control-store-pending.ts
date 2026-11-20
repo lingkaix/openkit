@@ -13,6 +13,7 @@ import {
   type ControlPendingCommandResult,
   isCommandIntentApproval,
   type PreparedControlPendingCommand,
+  pendingOutcomeBatchDraft,
   pendingRequestItemId,
   readPendingRequest,
 } from '../runtime/pending-requests.js';
@@ -43,6 +44,7 @@ import {
   readPreparedControlEntry,
 } from './control-store-products.js';
 import type { WorkspaceDb } from './db.js';
+import { prepareWorkspaceQueueInputBatch } from './workspace-queue-inputs.js';
 
 /** Original Pending command receipts; no separate execution or settlement ledger. */
 export const ControlPendingReceiptSchema = z
@@ -110,6 +112,13 @@ export async function prepareControlPendingCommands(
   for (const entry of prepared) readPreparedControlEntry(entry);
   const ids = new Set<string>();
   const requestIds = new Set<string>();
+  const workerInputs = new Map<
+    string,
+    {
+      manifest: NonNullable<ReturnType<typeof pendingOutcomeBatchDraft>>['manifest']['input'];
+      prepared: Awaited<ReturnType<typeof prepareWorkspaceQueueInputBatch>>;
+    }
+  >();
   for (const value of commands) {
     const command = ControlPendingCommandInputSchema.parse(value);
     if (command.workspaceId !== db.workspaceId)
@@ -120,6 +129,24 @@ export async function prepareControlPendingCommands(
       );
     for (const source of command.expected ?? []) requestIds.add(source.requestId);
     if ('requestId' in command) requestIds.add(command.requestId);
+    if (command.action === 'freeze' && command.executor === 'worker') {
+      const selected = command.expectedSelection.map((requestId) => {
+        const record = readPendingRequest(db.sqlite, requestId);
+        if (!record)
+          throw new PendingRequestCommandError(
+            'conflict',
+            'The selected Pending input is missing.',
+            409
+          );
+        return record;
+      });
+      const batch = pendingOutcomeBatchDraft(command, selected);
+      if (batch)
+        workerInputs.set(command.turnId, {
+          manifest: batch.manifest.input,
+          prepared: await prepareWorkspaceQueueInputBatch(db, batch),
+        });
+    }
     if (command.action === 'associate-invalidation')
       for (const id of command.requestIds) requestIds.add(id);
     if (command.action === 'raise') {
@@ -159,7 +186,7 @@ export async function prepareControlPendingCommands(
     ] as const)
       ids.add(pendingRequestItemId(requestId, role));
   }
-  return prepareRetainedPendingItems(db, mount, prepared, ids);
+  return { ...(await prepareRetainedPendingItems(db, mount, prepared, ids)), workerInputs };
 }
 
 /** Prepares the current canonical Item context after earlier queued transitions commit, before archive SQL. */

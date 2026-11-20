@@ -28,13 +28,13 @@ import {
   readWorkspaceSnapshotCursor,
   type WorkspaceCollectionIdentity,
 } from '../runtime/workspace-snapshot-chain.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
@@ -172,7 +172,7 @@ async function fixture(bytes = Buffer.from('original captured work\n')) {
   });
   // Original scalar admission and baseline setup must not compete with either native owner.
   await shutdownControlStoreWorkerClient();
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor: pkg.scope.triggerActor,
     profileRef: pkg.agent.profileId,
@@ -181,7 +181,7 @@ async function fixture(bytes = Buffer.from('original captured work\n')) {
     workspaceId: db.workspaceId,
     threadId: pkg.scope.threadId,
     turnId: pkg.scope.turnId,
-    turnInput: 'Capture original work',
+    text: 'Capture original work',
     now: () => timestamp,
   });
   const attempt = recordTestExecutionAttempt(coreDb, {

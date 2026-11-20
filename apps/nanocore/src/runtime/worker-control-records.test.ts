@@ -22,6 +22,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
@@ -87,7 +88,11 @@ function insertWorkerAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
     workspaceId: lineage.workspaceId,
     threadId: lineage.threadId,
     turnId: lineage.turnId,
-    turnInput: 'Wait for the exact durable worker final status',
+    inputRef: schedulerFixtureInput(
+      lineage.workspaceId,
+      lineage.turnId,
+      'Wait for the exact durable worker final status'
+    ),
     requestedAgentId: 'agent_worker',
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     now: () => '2026-07-15T00:00:00.000Z',
@@ -126,7 +131,11 @@ function createFinalStatusAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
     threadId: lineage.threadId,
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     turnId: lineage.turnId,
-    turnInput: 'Run final-status binding test',
+    inputRef: schedulerFixtureInput(
+      lineage.workspaceId,
+      lineage.turnId,
+      'Run final-status binding test'
+    ),
     workspaceId: lineage.workspaceId,
   });
   recordTestExecutionAttempt(coreDb, {
@@ -862,7 +871,11 @@ async function nativeImageBinding(
     workspaceId: bindingLineage.workspaceId,
     threadId: bindingLineage.threadId,
     turnId: bindingLineage.turnId,
-    turnInput: 'Retain the exact backend image binding',
+    inputRef: schedulerFixtureInput(
+      bindingLineage.workspaceId,
+      bindingLineage.turnId,
+      'Retain the exact backend image binding'
+    ),
     requestedAgentId: f.pkg.agent.agentId,
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     now,

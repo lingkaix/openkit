@@ -51,6 +51,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestStore } from '../test-support/store.js';
 import { createWorkerEnvironmentOperations } from '../worker-environments/worker-environment-operations.js';
 import {
@@ -928,7 +929,11 @@ describe('central Workspace operation authorizer', () => {
       workspaceId: fixture.workspace.id,
       threadId: fixture.turn.threadId,
       turnId: 'tu_00000000-0000-7615-b8c7-8be649d29bd5',
-      turnInput: 'Run worker',
+      inputRef: schedulerFixtureInput(
+        fixture.workspace.id,
+        'tu_00000000-0000-7615-b8c7-8be649d29bd5',
+        'Run worker'
+      ),
       requestedAgentId: 'agent_worker',
     });
     const turnLineage = {
@@ -1153,7 +1158,11 @@ describe('central Workspace operation authorizer', () => {
         workspaceId: fixture.workspace.id,
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
-        turnInput: 'Check current tool authority',
+        inputRef: schedulerFixtureInput(
+          fixture.workspace.id,
+          fixture.turn.id,
+          'Check current tool authority'
+        ),
         requestedAgentId: 'agent_worker',
       });
       recordTestExecutionAttempt(fixture.coreDb, {

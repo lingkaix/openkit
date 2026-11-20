@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemorySpanExporter, type ReadableSpan } from '@opentelemetry/sdk-trace';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -19,6 +18,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
@@ -295,7 +295,7 @@ async function createFixture() {
       const turn = await store.updateTurn(created.id, { agentId: agentSetup.manifest.id });
       const agentSessionId = testEntityId('as', `telemetry-${turn.id}`);
       const now = () => new Date().toISOString();
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: actor,
         profileRef: 'profile_worker',
@@ -304,7 +304,7 @@ async function createFixture() {
         requestedAgentId: agentSetup.manifest.id,
         threadId: turn.threadId,
         turnId: turn.id,
-        turnInput: REQUEST_CANARY,
+        text: REQUEST_CANARY,
         workspaceId: DEMO_WORKSPACE_ID,
         now,
       });

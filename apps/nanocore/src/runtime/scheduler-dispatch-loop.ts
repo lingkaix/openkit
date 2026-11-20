@@ -44,7 +44,6 @@ import {
   openWorkspaceReadDb,
 } from '../storage/db.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
-import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { withTurnDispatchTelemetry } from '../telemetry.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
@@ -68,9 +67,14 @@ import {
   TurnStartValidationError,
   workspaceSourceRefsFromAgentManifest,
 } from './orchestrator.js';
+import { isRecurringQueueEntry } from './recurring-queue-input.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
+import { readScheduledAdmissionText } from './scheduler-dispatch-input.js';
 import type { PrepareAgentSessionForTurnInput, TurnExecutor } from './types.js';
-import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
+import {
+  WorkerGovernanceCapacityUnavailableError,
+  WorkerInputRecoveryRequiredError,
+} from './worker-governance-backend.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 /** Current composition and the exact selected admission; no placement or native proof policy lives here. */
@@ -242,9 +246,16 @@ export async function runSchedulerDispatchLoop(
         throw new Error('Queued admission does not name the configured execution backend.');
       // An incomplete cross-store publication fences only its own request/Thread. Continue
       // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
-      if (!schedulerEntryPublicationComplete(input, entry)) {
+      const turnInput = readScheduledAdmissionText(input.coreDb, entry);
+      if (turnInput === null) {
+        sourceRecoveryRequired = true;
+        unpublishedQueueEntryIds.add(entry.queueEntryId);
+        count--;
+        continue;
+      }
+      if (!schedulerEntryPublicationComplete(input, entry, turnInput)) {
         if (
-          findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId) ||
+          isRecurringQueueEntry(input.coreDb, entry.queueEntryId) ||
           findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId)
         )
           sourceRecoveryRequired = true;
@@ -292,6 +303,15 @@ export async function runSchedulerDispatchLoop(
         );
       startedTurns.push(...result.startedTurns);
       if (
+        result.terminalResult.status === 'queued' &&
+        result.terminalResult.reason === 'recovery-required'
+      ) {
+        sourceRecoveryRequired = true;
+        unpublishedQueueEntryIds.add(entry.queueEntryId);
+        count--;
+        continue;
+      }
+      if (
         result.terminalResult.status !== 'queued' ||
         result.terminalResult.reason !== 'max-dispatches'
       )
@@ -306,10 +326,12 @@ export async function runSchedulerDispatchLoop(
 /** Checks the existing receipt or receipt-free source tuple without inventing a second ready flag. */
 function schedulerEntryPublicationComplete(
   input: RunSchedulerDispatchLoopInput,
-  entry: CoreSchedulerQueueEntry
+  entry: CoreSchedulerQueueEntry,
+  turnInput: string
 ): boolean {
-  const occurrence = findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId);
-  if (occurrence) return recurringTurnPublicationIssue(input.store, entry) === null;
+  if (isRecurringQueueEntry(input.coreDb, entry.queueEntryId)) {
+    return recurringTurnPublicationIssue(input.coreDb, input.store, entry) === null;
+  }
   const eventAdmission = findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId);
   if (eventAdmission)
     return externalTriggerTurnPublicationComplete(input.coreDb, input.store, eventAdmission);
@@ -353,8 +375,9 @@ function schedulerEntryPublicationComplete(
       )
     )
       return true;
-    if (readAssistantTaskHandoffSource(input.store, workspaceDb, entry)) return true;
-    if (activationPublicationComplete(input, entry)) return true;
+    if (readAssistantTaskHandoffSource(input.store, workspaceDb, { ...entry, turnInput }))
+      return true;
+    if (activationPublicationComplete(input, entry, turnInput)) return true;
     const checkpoint = workspaceDb.sqlite
       .prepare(
         'SELECT goal_id AS goalId, task_id AS taskId FROM worker_turn_checkpoints WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND request_id = ?'
@@ -377,7 +400,8 @@ function schedulerEntryPublicationComplete(
 /** Resolves the existing administrator-home activation receipt and immutable result for its queued successor. */
 function activationPublicationComplete(
   input: RunSchedulerDispatchLoopInput,
-  entry: CoreSchedulerQueueEntry
+  entry: CoreSchedulerQueueEntry,
+  turnInput: string
 ): boolean {
   for (const workspace of listExistingWorkspaceDatabaseScopes(input.coreDb.dataRoot)) {
     const db = openWorkspaceReadDb(input.coreDb.dataRoot, workspace.workspaceId);
@@ -404,7 +428,7 @@ function activationPublicationComplete(
           result.data.requestId === entry.requestId &&
           result.data.replaceNow?.workspaceId === entry.workspaceId &&
           result.data.replaceNow.threadId === entry.threadId &&
-          result.data.replaceNow.prompt === entry.turnInput &&
+          result.data.replaceNow.prompt === turnInput &&
           result.data.target.agentId === entry.requestedAgentId
         )
           return true;
@@ -506,20 +530,6 @@ async function dispatchSchedulerAdmission(
       setup.manifest,
       entry.workspaceRoots
     );
-    const preparation: PrepareAgentSessionForTurnInput = {
-      attemptId: attempt.attemptId,
-      agentSetup: setup,
-      freshAgentSessionId: (input.createAgentSessionId ?? (() => allocateEntityId('as')))(),
-      requestId: entry.requestId,
-      turn: input.store.getTurnById(entry.turnId),
-      turnInput: entry.turnInput,
-      workspaceCwd: entry.workspaceCwd,
-      workspaceRoots: entry.workspaceRoots,
-      ...(entry.workerStorageChoice ? { workerStorageChoice: entry.workerStorageChoice } : {}),
-      ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
-      ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
-      ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
-    };
     if (!input.turnExecutor.prepareAgentSessionForTurn)
       throw new Error('Configured executor has no AgentSession preparation owner.');
     // Both boundaries use the same existing classified denial for this one attempt.
@@ -531,6 +541,23 @@ async function dispatchSchedulerAdmission(
     // Attempt creation awaited the native owner; policy may have changed before Host work.
     assertAgentWorkNotPaused(input.agentWorkPaused?.());
     if (!currentSchedulerDispatchAuthority(input, entry)) throw authorityDenial;
+    const freshAgentSessionId = (input.createAgentSessionId ?? (() => allocateEntityId('as')))();
+    const turnInput = readScheduledAdmissionText(input.coreDb, entry);
+    if (turnInput === null) throw new WorkerInputRecoveryRequiredError();
+    const preparation: PrepareAgentSessionForTurnInput = {
+      attemptId: attempt.attemptId,
+      agentSetup: setup,
+      freshAgentSessionId,
+      requestId: entry.requestId,
+      turn: input.store.getTurnById(entry.turnId),
+      turnInput,
+      workspaceCwd: entry.workspaceCwd,
+      workspaceRoots: entry.workspaceRoots,
+      ...(entry.workerStorageChoice ? { workerStorageChoice: entry.workerStorageChoice } : {}),
+      ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
+      ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
+      ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
+    };
     const prepared = await Promise.race([
       input.turnExecutor.prepareAgentSessionForTurn(input.store, preparation),
       expiration.promise,
@@ -606,7 +633,7 @@ async function dispatchSchedulerAdmission(
         writer: getControlStoreWorkerClient(),
       },
       gatewayConfig: input.gatewayConfig,
-      input: entry.turnInput,
+      input: turnInput,
       modelId: entry.modelId,
       ...(entry.reasoningEffort !== undefined ? { reasoningEffort: entry.reasoningEffort } : {}),
       profileId: entry.profileRef,
@@ -652,6 +679,15 @@ async function dispatchSchedulerAdmission(
     const current = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
     // Recovery owns the expired attempt and its original Turn after the persisted fence.
     if (current.terminalCause === 'preparation-deadline') throw error;
+    if (
+      error instanceof WorkerInputRecoveryRequiredError &&
+      current.phase === 'open' &&
+      current.operationId === null
+    )
+      return {
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'recovery-required' },
+      };
     if (
       error instanceof WorkerGovernanceCapacityUnavailableError &&
       current.phase === 'open' &&

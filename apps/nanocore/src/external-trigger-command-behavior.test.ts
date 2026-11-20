@@ -1,3 +1,4 @@
+import { sha256Hex } from '@openkit/protocol/digest';
 import { describe, expect, it, vi } from 'vitest';
 import { externalTriggerFixture } from '../test-support/external-trigger-behavior.fixture.js';
 
@@ -11,6 +12,7 @@ describe('external event command-log behavior', () => {
   it('retains the original external event after eight days, ordinary Core pruning and reopen', async () => {
     const f = await externalTriggerFixture();
     const first = await f.admit(EVENT, 'Original event.');
+    expect(first.entry.inputRef.digest).toBe(sha256Hex('Original event.'));
     const sourceTurnId = first.admission.sourceTurnId;
     await f.nextPoll();
     await f.ordinaryCoreCommand();
@@ -20,13 +22,13 @@ describe('external event command-log behavior', () => {
     expect(repeated.admission.sourceTurnId).toBe(sourceTurnId);
     expect(repeated.turn.id).toBe(first.turn.id);
     expect(repeated.turn.threadId).toBe(first.turn.threadId);
-    expect(repeated.entry.turnInput).toBe(first.entry.turnInput);
+    expect(repeated.entry.inputRef).toEqual(first.entry.inputRef);
     await f.reopen();
     const reopened = await f.admit(EVENT, 'Changed after reopening.');
     expect(reopened.duplicate).toBe(true);
     expect(reopened.admission).toEqual(first.admission);
     expect(reopened.turn.id).toBe(first.turn.id);
-    expect(reopened.entry.turnInput).toBe(first.entry.turnInput);
+    expect(reopened.entry.inputRef).toEqual(first.entry.inputRef);
   });
 
   it('refuses a corrupt retained sourceTurnId with 409 recovery_required', async () => {

@@ -45,6 +45,7 @@ import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-recor
 import { readExternalTriggerPollSource } from './external-trigger-source.js';
 import { goalPlanDigest, readNativeGoalView } from './goal-owner.js';
 import { listThreadPendingRequests, pendingRequestSystemActor } from './pending-requests.js';
+import { readScheduledAdmissionText } from './scheduler-dispatch-input.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
 
 /** Retained native Task selection with optional current Goal bounds; references grant no rights. */
@@ -428,6 +429,8 @@ export function readGoalTaskPolicyContext(input: {
       schedulerAdmissionInputHash(admission) !== admission.inputHash
     )
       throw unavailable();
+    const turnInput = readScheduledAdmissionText(coreDb, admission);
+    if (turnInput === null) throw unavailable();
     const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, scope).filter(
       (attempt) =>
         attempt.queueEntryId === admission.queueEntryId &&
@@ -469,18 +472,17 @@ export function readGoalTaskPolicyContext(input: {
           ? pendingRequestSystemActor(responsibleUserIdForActor(turn.triggerActor))
           : turn.triggerActor
       ) ||
-      (!outcomeInitiated && initiatingItem.text !== admission.turnInput) ||
+      (!outcomeInitiated && initiatingItem.text !== turnInput) ||
       (checkpoint
         ? checkpoint.requestId !== admission.requestId ||
-          (link &&
-            checkpoint.requestInputHash !== commandInputHash({ input: admission.turnInput })) ||
+          (link && checkpoint.requestInputHash !== commandInputHash({ input: turnInput })) ||
           (checkpoint.workerSessionId !== null &&
             checkpoint.workerSessionId !== scope.agentSessionId)
         : isSealedTurnTerminal(turn.status) &&
           (attempt.phase !== 'closed' || attempt.disposition !== 'accepted' || !attempt.fenceRef))
     )
       throw unavailable();
-    return { admission, turn, checkpoint };
+    return { admission, turn, checkpoint, turnInput };
   };
   const current = readWorkerSource(lineage);
   // The Task owner declares these exact Thread and Turn names. Match that native source,
@@ -507,12 +509,10 @@ export function readGoalTaskPolicyContext(input: {
     agentSessionId: originalAttempt.agentSessionId,
     packageSnapshotId: originalAttempt.inputRef,
   });
-  const request = StructuredWorkerDelegationRequestSchema.parse(
-    JSON.parse(source.admission.turnInput)
-  );
+  const request = StructuredWorkerDelegationRequestSchema.parse(JSON.parse(source.turnInput));
   // Only the original Task preparation owns this required checkpoint and structured digest.
   if (
-    serializeStructuredWorkerDelegationRequest(request) !== source.admission.turnInput ||
+    serializeStructuredWorkerDelegationRequest(request) !== source.turnInput ||
     (source.checkpoint
       ? source.checkpoint.contextDigest !== commandInputHash(request)
       : !isSealedTurnTerminal(source.turn.status))
@@ -521,7 +521,7 @@ export function readGoalTaskPolicyContext(input: {
   const selected = request.resources.flatMap((value) =>
     value.kind === 'policy' ? [value.resource] : []
   );
-  const structuredInputHash = commandInputHash({ input: source.admission.turnInput });
+  const structuredInputHash = commandInputHash({ input: source.turnInput });
   const nativeSelection =
     !link && selected.length === 0 && source.checkpoint?.requestInputHash !== structuredInputHash;
   const originalCommand = nativeSelection

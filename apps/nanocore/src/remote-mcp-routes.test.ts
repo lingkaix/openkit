@@ -48,6 +48,7 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-suppo
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { createTestStore } from './test-support/store.js';
 import * as materialOwners from './workspace-materials.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
@@ -578,7 +579,7 @@ describe('remote MCP App endpoint', () => {
           threadId: thread.id,
           turnId: `turn_${queueEntryId}`,
           triggerActor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
-          turnInput: 'Protected work',
+          inputRef: schedulerFixtureInput(workspaceId, `turn_${queueEntryId}`, 'Protected work'),
           requestedAgentId: 'agent_codex_host',
         });
         denySchedulerAdmissionEntry(f.coreDb, { queueEntryId, denialReason: 'authority-denied' });
@@ -818,7 +819,7 @@ describe('remote MCP App endpoint', () => {
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: thread.id,
         turnId: `turn_${queueEntryId}`,
-        turnInput: 'Work',
+        inputRef: schedulerFixtureInput(DEMO_WORKSPACE_ID, `turn_${queueEntryId}`, 'Work'),
         requestedAgentId: 'agent_codex_host',
       });
     denySchedulerAdmissionEntry(f.coreDb, {

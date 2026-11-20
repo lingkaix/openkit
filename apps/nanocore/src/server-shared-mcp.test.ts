@@ -53,6 +53,7 @@ import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { createNativeCommandTurn } from './test-support/native-task-admission.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { getVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { advanceActiveVaultReferenceVersion } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -296,7 +297,7 @@ async function fixture() {
       workspaceId,
       threadId: thread.id,
       turnId: turn.id,
-      turnInput: 'Call echo',
+      inputRef: schedulerFixtureInput(workspaceId, turn.id, 'Call echo'),
       requestedAgentId: pkg.agent.agentId,
     });
     const bindingRef = `binding_${turn.id}`;

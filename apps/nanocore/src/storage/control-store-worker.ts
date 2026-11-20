@@ -371,6 +371,10 @@ import { applyWorkspaceCaptureInDb, prepareWorkspaceCapture } from './workspace-
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import { WorkspaceOwnerMembershipRemovedError } from './workspace-owner-records.js';
+import {
+  commitWorkspaceQueueInputBatch,
+  prepareWorkspaceQueueInput,
+} from './workspace-queue-inputs.js';
 import { ControlRecoverySourceReactivationRefusalSchema } from './workspace-reactivation-codecs.js';
 import { applyControlRecoverySourceReactivation } from './workspace-reactivation-native.js';
 import { WorkspaceRecoveryDecisionRefusal } from './workspace-recovery-decision-codecs.js';
@@ -459,6 +463,7 @@ type WriteCommand = Extract<
       | 'thread-read-membership'
       | 'boot-audit'
       | 'standalone-audit'
+      | 'workspace-queue-input'
       | 'resolved-agent-setup'
       | 'scoped-notebook-sql'
       | 'admin-recovery'
@@ -520,6 +525,7 @@ type WriteRequest = WriteCommand & {
   readonly itemPublication?: ControlPublicationInput | undefined;
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedPending?: PreparedControlPendingCommand | undefined;
+  readonly preparedWorkspaceQueueInput?: ReturnType<typeof prepareWorkspaceQueueInput> | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
   readonly preparedVaultRead?: PreparedNativeVaultRead | undefined;
   policyReadState?:
@@ -1637,6 +1643,9 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
           lanes.add(request.input.artifact.origin.turnId);
       }
       break;
+    case 'workspace-queue-input':
+      lanes.add(request.input.turnId);
+      break;
     case 'pending':
       add(request.input);
       pending([request.input.input]);
@@ -2635,6 +2644,17 @@ function flush(owner: OwnedDatabase): void {
               id: request.id,
               status: 'ok',
               operation: 'publication',
+            };
+          } else if (request.operation === 'workspace-queue-input') {
+            if (owner.scopeDb?.scope !== 'workspace' || !request.preparedWorkspaceQueueInput)
+              throw new ControlProductPreconditionError();
+            commitWorkspaceQueueInputBatch(owner.scopeDb, request.preparedWorkspaceQueueInput);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-queue-input',
+              result: null,
             };
           } else if (request.operation === 'pending') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
@@ -4725,6 +4745,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'private-workspace' ||
       value.operation === 'workspace-review-finish' ||
       value.operation === 'standalone-audit' ||
+      value.operation === 'workspace-queue-input' ||
       value.operation === 'resolved-agent-setup' ||
       value.operation === 'scoped-notebook-sql' ||
       value.operation === 'workspace-stage-review' ||
@@ -4835,6 +4856,9 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let itemPublication: ControlPublicationInput | undefined;
           let preparedEntries: WriteRequest['preparedEntries'];
           let preparedPending: PreparedControlPendingCommand | undefined;
+          let preparedWorkspaceQueueInput:
+            | ReturnType<typeof prepareWorkspaceQueueInput>
+            | undefined;
           let preparedGoal: PreparedControlGoalCommand | undefined;
           let preparedVaultRead: PreparedNativeVaultRead | undefined;
           let preparedMaterial: ControlMaterialCommandInput | undefined;
@@ -4851,6 +4875,15 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             if (value.operation === 'attention-enqueue') {
               preparedAttentionEnqueue = AttentionEnqueueCommandSchema.parse(
                 JSON.parse(readControlScalarText(value.input, value.content))
+              );
+            }
+            if (value.operation === 'workspace-queue-input') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              const { workspaceId, threadId, turnId, originalInvocationId, input } = value.input;
+              preparedWorkspaceQueueInput = prepareWorkspaceQueueInput(
+                owner.scopeDb,
+                { workspaceId, threadId, turnId, originalInvocationId },
+                { input, text: readControlScalarText(value.input, value.content) }
               );
             }
             if (value.operation === 'standalone-audit') {
@@ -5290,6 +5323,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedVaultRead,
               preparedReview,
               preparedPending,
+              preparedWorkspaceQueueInput,
               preparedPublication,
               preparedItem,
               preparedEvent,

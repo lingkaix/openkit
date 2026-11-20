@@ -20,6 +20,7 @@ import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { observeAppUpdatePreflight } from './preflight.js';
@@ -78,7 +79,11 @@ describe('content-free deployment maintenance preflight', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: executionThread.id,
         turnId: testEntityId('tu', `turn_${phase}`),
-        turnInput: 'Private admitted input',
+        inputRef: schedulerFixtureInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', `turn_${phase}`),
+          'Private admitted input'
+        ),
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
       });
@@ -168,7 +173,7 @@ describe('content-free deployment maintenance preflight', () => {
         workspaceId,
         threadId: thread.id,
         turnId: turn.id,
-        turnInput: 'Authorized work',
+        inputRef: schedulerFixtureInput(workspaceId, turn.id, 'Authorized work'),
         requestedAgentId: 'agent_codex_host',
       });
       const attempt = createSchedulerExecutionAttempt(coreDb, { entry, preparationInput: {} });

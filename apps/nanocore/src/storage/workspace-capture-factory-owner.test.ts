@@ -15,7 +15,6 @@ import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import { getWorkerStorageBinding } from '../runtime/worker-storage-bindings.js';
 import { listWorkspaceReconciliationRecords } from '../runtime/workspace-reconciliation-records.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -25,6 +24,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   getControlStoreWorkerClient,
@@ -73,7 +73,8 @@ it('rolls back the Factory idle receipt and completion together on a late SQL re
     await shutdownControlStoreWorkerClient();
     const attemptId = testEntityId('attempt', 'factory-idle-atomic-rollback');
     const agentSessionId = testEntityId('as', 'factory-idle-atomic-rollback');
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const turnInput = 'Complete original work before an idle capture.';
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       requestId: testEntityId('tu', 'factory-idle-atomic-rollback-request').slice(3),
       queueEntryId: 'factory-idle-atomic-rollback',
@@ -81,7 +82,7 @@ it('rolls back the Factory idle receipt and completion together on a late SQL re
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: DEMO_THREAD_ID,
       turnId: testEntityId('tu', 'factory-idle-atomic-rollback'),
-      turnInput: 'Complete original work before an idle capture.',
+      text: turnInput,
       triggerActor: { kind: 'user', id: userId },
     });
     // Original Factory publication pattern: the Store owns the actual pending Turn and receipt.
@@ -90,7 +91,7 @@ it('rolls back the Factory idle receipt and completion together on a late SQL re
     await store.createTurn(
       entry.workspaceId,
       entry.threadId,
-      entry.turnInput,
+      turnInput,
       entry.triggerActor,
       undefined,
       {
@@ -105,7 +106,7 @@ it('rolls back the Factory idle receipt and completion together on a late SQL re
           scope,
           inputHash: commandInputHash({
             queueEntryId: entry.queueEntryId,
-            turnInput: entry.turnInput,
+            turnInput,
           }),
           responseKind: 'turn',
           createdAt,

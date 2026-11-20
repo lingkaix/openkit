@@ -6,6 +6,7 @@ import { deriveEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
 import {
   CoreSchedulerInputSchema,
@@ -145,6 +146,7 @@ const acceptedOccurrence = {
   id: deriveEntityId('occ', [actor.id, acceptedScheduledAt]),
   scheduleId: actor.id,
   workspaceId: range.workspaceId,
+  inputRef: schedulerFixtureInput(range.workspaceId, acceptedTurnId, 'Inspect status'),
   definitionRevision: 2,
   scheduledAt: acceptedScheduledAt,
   deadline: '2027-05-28T09:10:00.000Z',
@@ -275,7 +277,7 @@ describe('retained recurring record readers', () => {
         workspaceId: acceptedOccurrence.workspaceId,
         threadId: acceptedOccurrence.snapshot.threadId,
         turnId: acceptedOccurrence.turnId,
-        turnInput: acceptedOccurrence.snapshot.prompt,
+        inputRef: acceptedOccurrence.inputRef,
         requestedAgentId: acceptedOccurrence.resolvedPayload.requestedAgentId,
         profileRef: acceptedOccurrence.resolvedPayload.profileRef,
         modelId: acceptedOccurrence.resolvedPayload.modelId,
@@ -290,8 +292,8 @@ describe('retained recurring record readers', () => {
       expect(findAcceptedRecurringOccurrenceForQueue(db, 'queue-entry-not-retained')).toBeNull();
 
       db.sqlite
-        .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE queue_entry_id = ?')
-        .run('Changed request bytes', acceptedOccurrence.requestId);
+        .prepare('UPDATE scheduler_admission_entries SET input_digest = ? WHERE queue_entry_id = ?')
+        .run('b'.repeat(64), acceptedOccurrence.requestId);
       expect(() =>
         findAcceptedRecurringOccurrenceForQueue(db, acceptedOccurrence.requestId)
       ).toThrow('contradicts its scheduler admission');
@@ -322,7 +324,7 @@ describe('scheduler admission wire decoding', () => {
     workspaceId: acceptedOccurrence.workspaceId,
     threadId: acceptedOccurrence.snapshot.threadId,
     turnId: acceptedTurnId,
-    turnInput: 'Inspect status',
+    inputRef: acceptedOccurrence.inputRef,
     requestedAgentId: 'agent_worker',
     profileRef: 'profile_default',
     modelId: 'model_default',

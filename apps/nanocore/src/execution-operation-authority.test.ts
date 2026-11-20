@@ -23,6 +23,7 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-suppo
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -70,7 +71,11 @@ describe('execution operation authority', () => {
           threadId: thread.id,
           turnId: testEntityId('tu', 'turn_admin'),
           triggerActor: { kind: 'user', id: testEntityId('usr', 'user_other') },
-          turnInput: 'Work',
+          inputRef: schedulerFixtureInput(
+            DEMO_WORKSPACE_ID,
+            testEntityId('tu', 'turn_admin'),
+            'Work'
+          ),
           requestedAgentId: 'agent_codex_host',
         });
         denySchedulerAdmissionEntry(coreDb, {

@@ -9,6 +9,7 @@ import {
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   acceptSchedulerExecutionObservation,
@@ -38,14 +39,15 @@ function fixture() {
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
   recordWorkspaceOwnerMembership({ coreDb: db, workspaceId, ownerUserId: actor.id });
+  const turnId = 'tu_00000000-0000-7000-8000-000000000001';
   const entry = createSchedulerAdmissionEntry(db, {
     queueEntryId: 'queue-attempt-format',
     backendId: 'nanohost',
     triggerActor: actor,
     workspaceId,
     threadId: 'th_00000000-0000-7000-8000-000000000001',
-    turnId: 'tu_00000000-0000-7000-8000-000000000001',
-    turnInput: 'Inspect retained format.',
+    turnId,
+    inputRef: schedulerFixtureInput(workspaceId, turnId, 'Inspect retained format.'),
     requestedAgentId: 'agent_worker',
   });
   const attempt = createSchedulerExecutionAttempt(db, {

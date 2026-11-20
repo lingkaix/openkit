@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { describe, expect, it } from 'vitest';
 import {
   cancelSchedulerAdmissionEntry,
@@ -11,8 +12,11 @@ import {
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 
+const originalInstruction = '  Preserve the exact instruction.\nRun its focused checks.  ';
+
 /** Supplies exact accepted command input at the existing admission boundary. */
 function command(index = 0) {
+  const workspaceId = 'workspace_contract';
   return {
     backendId: 'configured-backend',
     now: () => '2026-10-06T00:00:00.000Z',
@@ -25,8 +29,12 @@ function command(index = 0) {
     threadId: `thread_contract_${index}`,
     triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
     turnId: `turn_contract_${index}`,
-    turnInput: '  Preserve the exact instruction.\nRun its focused checks.  ',
-    workspaceId: 'workspace_contract',
+    inputRef: {
+      owner: { kind: 'workspace' as const, workspaceId },
+      inputId: `input_contract_${index}`,
+      digest: sha256Hex(originalInstruction),
+    },
+    workspaceId,
   };
 }
 
@@ -58,7 +66,25 @@ describe('route B exact admission (Durable Scheduler Design: Admission And Launc
   );
 
   it.each([
-    { name: 'instruction bytes', change: { turnInput: command().turnInput.trim() } },
+    {
+      name: 'instruction bytes',
+      change: {
+        inputRef: { ...command().inputRef, digest: sha256Hex(originalInstruction.trim()) },
+      },
+    },
+    {
+      name: 'input identity',
+      change: { inputRef: { ...command().inputRef, inputId: command(1).inputRef.inputId } },
+    },
+    {
+      name: 'input owner',
+      change: {
+        inputRef: {
+          ...command().inputRef,
+          owner: { kind: 'workspace' as const, workspaceId: 'another-workspace' },
+        },
+      },
+    },
     { name: 'request lineage', change: { threadId: 'another-thread' } },
     { name: 'Agent supply', change: { requestedAgentId: 'another-agent' } },
     { name: 'administrator provenance', change: { serverAdminTokenId: 'token_other' } },
@@ -79,6 +105,24 @@ describe('route B exact admission (Durable Scheduler Design: Admission And Launc
       ).toThrow();
       expect(requireSchedulerAdmissionEntry(db, original.queueEntryId)).toEqual(original);
       expect(listQueuedSchedulerAdmissionEntries(db)).toEqual([original]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('retains the original WorkInputRef on a cancelled row with no payload column', () => {
+    const db = database();
+    try {
+      const submitted = command();
+      const original = createSchedulerAdmissionEntry(db, submitted);
+      cancelSchedulerAdmissionEntry(db, original);
+      const retained = requireSchedulerAdmissionEntry(db, original.queueEntryId);
+      expect(retained).toMatchObject({ inputRef: submitted.inputRef, status: 'cancelled' });
+      const row = db.sqlite
+        .prepare('SELECT * FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+        .get(original.queueEntryId);
+      expect(row).not.toHaveProperty('turn_input');
+      expect(JSON.stringify(row)).not.toContain(originalInstruction);
     } finally {
       db.sqlite.close();
     }

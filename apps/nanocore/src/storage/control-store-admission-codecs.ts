@@ -503,6 +503,24 @@ export class SchedulerAdmissionTransitionError extends Error {
 export class AutomationRecordNotFoundError extends Error {}
 /** Original recurring revision or lifecycle refusal. */
 export class AutomationMutationError extends Error {}
+/** The Workspace identity and exact owned input digest are the queue's only input facts. */
+export const WorkspaceQueueInputRefSchema = z.strictObject({
+  owner: z.strictObject({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }),
+  inputId: z.string().min(1),
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+/** Original text crosses only the owning Workspace's stage operation. */
+export const WorkspaceQueueInputWriteSchema = z.strictObject({
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
+  originalInvocationId: z.string().min(1),
+  input: WorkspaceQueueInputRefSchema,
+  text: z.string(),
+});
+export type WorkspaceQueueInputWrite = z.infer<typeof WorkspaceQueueInputWriteSchema>;
+
 /** Existing prepared selections; no effect or callback crosses this carrier. */
 export const RecurringAdmissionPayloadSchema = z.object({
   backendId: z.string().min(1),
@@ -560,7 +578,7 @@ const SchedulerCreateSchema = z
     workspaceId: z.string().min(1),
     threadId: z.string().min(1),
     turnId: z.string().min(1),
-    turnInput: z.string(),
+    inputRef: WorkspaceQueueInputRefSchema,
     workerStorageChoice: storageChoice.nullable().optional(),
     requestedAgentId: z.string().min(1),
     profileRef: z.string().nullable().optional(),
@@ -684,6 +702,7 @@ export const CoreSchedulerInputSchema = z.discriminatedUnion('mode', [
       definitionRevision: z.number().int().positive(),
       preparation,
       current: preparation.optional(),
+      inputRef: WorkspaceQueueInputRefSchema.optional(),
       timestamp: z.string().datetime(),
     })
     .strict(),
@@ -818,7 +837,10 @@ export const CoreSchedulerRefusalSchema = z.union([
       operation: z.literal('transition'),
       kind: z.literal('turn'),
       code: z.literal('recovery_required'),
-      message: z.literal('Accepted external event work requires inspection.'),
+      message: z.enum([
+        'Accepted external event work requires inspection.',
+        'Original Workspace input is unavailable.',
+      ]),
       status: z.literal(409),
     })
     .strict(),

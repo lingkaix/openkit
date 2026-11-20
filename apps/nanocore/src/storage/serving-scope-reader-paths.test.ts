@@ -22,7 +22,6 @@ import {
 } from '../runtime/execution-attempt-records.js';
 import type { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { createMeasurementEffectFixture } from '../test-support/load-effect.fixture.js';
@@ -31,6 +30,7 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, createTestStore, disposeTestStore } from '../test-support/store.js';
 import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -422,7 +422,7 @@ it('uses reader opens through the first real simulator execution and retains its
     captureCoverage: { scope: 'server', value: 'off' },
   });
   const requestId = randomUUID();
-  const entry = createSchedulerAdmissionEntry(f.coreDb, {
+  const entry = await createTestQueueEntry(f.coreDb, {
     backendId: executor.executionBackend.id,
     queueEntryId: randomUUID(),
     requestId,
@@ -432,7 +432,7 @@ it('uses reader opens through the first real simulator execution and retains its
     workspaceId: f.workspace.id,
     threadId: turn.threadId,
     turnId: turn.id,
-    turnInput: text,
+    text: text,
     triggerActor: actor,
     workspaceCwd: null,
     workspaceRoots: [],

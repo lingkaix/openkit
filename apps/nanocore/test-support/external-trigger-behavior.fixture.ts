@@ -14,6 +14,7 @@ import {
   admitExternalTriggerEvent,
   type ExternalTriggerServiceInput,
 } from '../src/runtime/external-trigger-service.js';
+import { readScheduledAdmissionText } from '../src/runtime/scheduler-dispatch-input.js';
 import type { TurnExecutor } from '../src/runtime/types.js';
 import { prepareWorkerTurnJournalIntents } from '../src/runtime/worker-governance-turn-executor.js';
 import { requireSchedulerAdmissionEntry } from '../src/scheduler-records.js';
@@ -100,6 +101,8 @@ export async function externalTriggerFixture() {
       },
     }))!;
     const entry = requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
+    const turnInput = readScheduledAdmissionText(coreDb, entry);
+    if (turnInput === null) throw new Error('The original recurring fixture input is unavailable.');
     const agentSessionId = allocateEntityId('as');
     await store.createAgentSession({
       id: agentSessionId,
@@ -114,7 +117,7 @@ export async function externalTriggerFixture() {
     const turn = await store.createTurn(
       workspace.id,
       thread.id,
-      entry.turnInput,
+      turnInput,
       schedule.actor,
       snapshot.version,
       {

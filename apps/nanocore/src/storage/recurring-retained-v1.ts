@@ -142,6 +142,13 @@ export const StoredRecurringOccurrenceV1Schema = z.object({
   queueEntryId: z.string().min(1).nullable(),
   publicationDeferred: z.literal('thread_busy').optional(),
   turnId: TurnIdSchema.nullable(),
+  inputRef: z
+    .strictObject({
+      owner: z.strictObject({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }),
+      inputId: z.string().min(1),
+      digest: z.string().regex(/^[a-f0-9]{64}$/),
+    })
+    .optional(),
   createdAt: z.iso.datetime(),
   terminalAt: z.iso.datetime().nullable(),
   resolvedPayload: StoredRecurringAdmissionPayloadV1Schema.nullable(),

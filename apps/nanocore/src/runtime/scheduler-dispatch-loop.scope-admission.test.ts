@@ -11,8 +11,10 @@ import { ProviderRegistry } from '../providers/registry.js';
 import {
   createSchedulerAdmissionEntry,
   findNextDispatchableSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { openCoreDb } from '../storage/db.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
@@ -31,8 +33,15 @@ import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
 } from './scheduler-dispatch-loop.js';
+import { stageSchedulerStartInput } from './scheduler-input-staging.js';
 
-it('dispatches a healthy FIFO sibling while retaining quarantined admissions and an unresolved binding', async () => {
+const faults = [
+  'quarantined Workspace',
+  'missing input',
+  'mismatched input bytes',
+  'missing input after claim',
+] as const;
+it.each(faults)('holds %s and dispatches the healthy FIFO sibling', async (hold) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'dispatch-scope-'));
   const coreDb = openCoreDb(dataRoot);
   try {
@@ -48,19 +57,22 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
     await recordTestNativeRuntimeTarget(coreDb);
     const executor = new SimulatedTurnExecutor({ coreDb });
     const starts = vi.spyOn(executor, 'startTurn');
+    const preparations = vi.spyOn(executor, 'prepareAgentSessionForTurn');
     const publish = async (workspaceId: string, name: string) => {
       const thread = await store.createThread(workspaceId, name);
       const requestId = randomUUID();
+      const turnId = allocateEntityId('tu');
+      const work = { workspaceId, threadId: thread.id, turnId };
+      const text = 'Local scope dispatch proof';
+      const inputRef = await stageSchedulerStartInput(dataRoot, work, requestId, text);
       const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: executor.id,
         queueEntryId: randomUUID(),
         requestId,
         triggerActor: { kind: 'user', id: userId },
         serverAdminTokenId: null,
-        workspaceId,
-        threadId: thread.id,
-        turnId: allocateEntityId('tu'),
-        turnInput: 'Local scope dispatch proof',
+        ...work,
+        inputRef,
         requestedAgentId: manifest.id,
       });
       const scope = { actorId: userId, workspaceId, threadId: thread.id };
@@ -68,7 +80,7 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
       await store.createTurn(
         entry.workspaceId,
         entry.threadId,
-        entry.turnInput,
+        text,
         entry.triggerActor,
         undefined,
         {
@@ -80,7 +92,7 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
             key: commandRequestKey('turn.start', requestId, scope),
             command: 'turn.start',
             requestId,
-            inputHash: commandInputHash({ input: entry.turnInput }),
+            inputHash: commandInputHash({ input: text }),
             scope,
             responseKind: 'turn',
             createdAt,
@@ -112,10 +124,42 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
     const admissionsBefore = coreDb.sqlite
       .prepare('SELECT * FROM scheduler_admission_entries WHERE workspace_id = ? ORDER BY rowid')
       .all(bad.id);
-    refuseScope(dataRoot, { scope: 'workspace', id: bad.id, check: 'database' });
+    const faultOriginalInput = (missing: boolean) => {
+      const owner = openWorkspaceDb(dataRoot, bad.id);
+      try {
+        const changed = missing
+          ? owner.sqlite
+              .prepare('DELETE FROM workspace_work_inputs WHERE input_id = ?')
+              .run(first.inputRef.inputId)
+          : owner.sqlite
+              .prepare('UPDATE workspace_work_inputs SET input_bytes = ? WHERE input_id = ?')
+              .run(Buffer.from('Contradictory bytes'), first.inputRef.inputId);
+        expect(changed.changes).toBe(1);
+      } finally {
+        owner.sqlite.close();
+      }
+    };
+    if (hold === 'quarantined Workspace') {
+      refuseScope(dataRoot, { scope: 'workspace', id: bad.id, check: 'database' });
+    } else if (hold !== 'missing input after claim') {
+      await shutdownControlStoreWorkerClient();
+      faultOriginalInput(hold === 'missing input');
+    }
+    let deletedAfterClaim = false;
     const input = {
+      createAgentSessionId: () => {
+        if (hold === 'missing input after claim' && !deletedAfterClaim) {
+          expect(requireSchedulerAdmissionEntry(coreDb, first.queueEntryId).status).toBe(
+            'admitted'
+          );
+          faultOriginalInput(true);
+          deletedAfterClaim = true;
+        }
+        return allocateEntityId('as');
+      },
       coreDb,
       store,
+      maxDispatches: 2,
       turnExecutor: executor,
       executionBackend: executor.executionBackend,
       agentManifests: [manifest],
@@ -133,30 +177,47 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
       ]),
     };
     const result = await runSchedulerDispatchLoop(input);
+    expect(deletedAfterClaim).toBe(hold === 'missing input after claim');
     await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
     expect(result.startedTurns.map(({ dispatch }) => dispatch.entry.queueEntryId)).toEqual([
       healthy.queueEntryId,
     ]);
     expect(starts.mock.calls.map(([, turnId]) => turnId)).toEqual([healthy.turnId]);
+    expect(preparations.mock.calls.map(([, preparation]) => preparation.turn.id)).toEqual([
+      healthy.turnId,
+    ]);
     expect(store.getTurnById(healthy.turnId).status).toBe('completed');
+    expect(result.terminalResult).toEqual({ status: 'queued', reason: 'recovery-required' });
     const repeated = await runSchedulerDispatchLoop(input);
     expect(repeated.startedTurns).toEqual([]);
-    expect(repeated.terminalResult).toEqual({ status: 'queued', reason: 'recovery-required' });
-    expect(
-      coreDb.sqlite
-        .prepare('SELECT * FROM scheduler_admission_entries WHERE workspace_id = ? ORDER BY rowid')
-        .all(bad.id)
-    ).toEqual(admissionsBefore);
+    const attempts = coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_execution_attempts WHERE turn_id = ?')
+      .all(first.turnId);
+    if (hold === 'missing input after claim') {
+      expect(store.getTurnById(first.turnId).status).toBe('pending');
+      expect(requireSchedulerAdmissionEntry(coreDb, first.queueEntryId)).toMatchObject({
+        status: 'admitted',
+        inputRef: first.inputRef,
+      });
+      expect(attempts).toEqual([
+        expect.objectContaining({ phase: 'open', operation_id: null, terminal_cause: null }),
+      ]);
+    } else {
+      expect(repeated.terminalResult).toEqual({ status: 'queued', reason: 'recovery-required' });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT * FROM scheduler_admission_entries WHERE workspace_id = ? ORDER BY rowid'
+          )
+          .all(bad.id)
+      ).toEqual(admissionsBefore);
+      expect(attempts).toEqual([]);
+    }
     expect(
       coreDb.sqlite
         .prepare('SELECT * FROM scheduler_execution_attempts WHERE attempt_id = ?')
         .get(heldAttempt.attemptId)
     ).toEqual(heldBefore);
-    expect(
-      coreDb.sqlite
-        .prepare('SELECT * FROM scheduler_execution_attempts WHERE turn_id = ?')
-        .all(first.turnId)
-    ).toEqual([]);
     starts.mockRestore();
   } finally {
     await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);

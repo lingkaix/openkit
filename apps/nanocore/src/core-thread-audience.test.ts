@@ -18,6 +18,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const STAMP = '2026-09-14T00:00:00.000Z';
@@ -176,7 +177,7 @@ async function createCoreAudienceFixture() {
     workspaceId: workspace.id,
     threadId: own.id,
     turnId: approvalTurn.id,
-    turnInput: 'Approve private push',
+    inputRef: schedulerFixtureInput(workspace.id, approvalTurn.id, 'Approve private push'),
     requestedAgentId: 'agent_fixture',
     triggerActor: approvalTurn.triggerActor,
     now: () => new Date().toISOString(),
@@ -375,7 +376,7 @@ describe('core Thread audience', () => {
         workspaceId: workspace.id,
         threadId: shared.id,
         turnId: turn.id,
-        turnInput: 'Queued work',
+        inputRef: schedulerFixtureInput(workspace.id, turn.id, 'Queued work'),
         requestedAgentId: 'agent_fixture',
         triggerActor: turn.triggerActor,
       });
@@ -486,17 +487,21 @@ describe('core Thread audience', () => {
         summary: 'Stop request accepted.',
       });
       db.sqlite.close();
-      for (const [userId, visible] of [
-        ['usr_00000000-0000-7000-8000-000000000001', true],
-        ['usr_00000000-0000-73d4-904a-d4c4b905df7c', false],
-      ] as const) {
+      const readers = (
+        [
+          ['usr_00000000-0000-7000-8000-000000000001', true],
+          ['usr_00000000-0000-73d4-904a-d4c4b905df7c', false],
+        ] as const
+      ).map(([userId, visible]) => ({
+        headers: bearer(fixture.coreDb, { scope: 'workspace', userId }, fixture.workspace.id),
+        visible,
+      }));
+      for (const { headers, visible } of readers) {
         const response = await fixture.app.request(
           ...operationRequest(
             'audit.workspace-list',
             { workspaceId: fixture.workspace.id },
-            {
-              headers: bearer(fixture.coreDb, { scope: 'workspace', userId }, fixture.workspace.id),
-            }
+            { headers }
           )
         );
         expect(response.status).toBe(200);

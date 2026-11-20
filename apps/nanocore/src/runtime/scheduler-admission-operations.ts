@@ -217,6 +217,7 @@ export function createSchedulerAdmissionOperationImplementations(
         const eventSource = findExternalTriggerAdmissionForQueue(coreDb, queueEntryId);
         const publicationIssue = source
           ? recurringTurnPublicationIssue(
+              coreDb,
               store,
               requireSchedulerAdmissionEntry(coreDb, queueEntryId)
             )

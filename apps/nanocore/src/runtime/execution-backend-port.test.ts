@@ -41,6 +41,7 @@ import {
   type RunSchedulerDispatchLoopInput,
   runSchedulerDispatchLoop,
 } from './scheduler-dispatch-loop.js';
+import { stageSchedulerStartInput } from './scheduler-input-staging.js';
 import {
   type RunSchedulerRestartRecoveryInput,
   runSchedulerRecoveryMaintenance,
@@ -300,7 +301,12 @@ async function fixture(
       turnId,
       workspaceId: input.workspaceId,
       threadId,
-      turnInput: input.input,
+      inputRef: await stageSchedulerStartInput(
+        db.dataRoot,
+        { workspaceId: input.workspaceId, threadId, turnId },
+        input.requestId,
+        input.input
+      ),
       requestedAgentId: input.agentId,
       triggerActor: { kind: 'user', id: scope.actorId },
       now: dispatchInput.now!,

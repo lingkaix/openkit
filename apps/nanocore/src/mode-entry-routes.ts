@@ -158,6 +158,7 @@ import {
   observeTurnAdmission,
   verifyAcceptedTurnLineage,
 } from './runtime/product-turn-start.js';
+import { readScheduledAdmissionText } from './runtime/scheduler-dispatch-input.js';
 import type { TurnCommandRuntimeContext } from './runtime/types.js';
 import {
   createWorkerCheckpointEvidenceDiagnostics,
@@ -189,7 +190,6 @@ import {
   requireSchedulerAdmissionEntry,
   requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
-  schedulerAdmissionInputHash,
 } from './scheduler-records.js';
 import { assertAgentWorkNotPaused } from './security/agent-work-pause.js';
 import {
@@ -1436,9 +1436,12 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(
     return await joinTaskCheckpointRepair(input, 'classification', () =>
       classifyConversationWorkerCheckpoint(input)
     );
+  const turnInput = readScheduledAdmissionText(input.coreDb, admission);
+  if (turnInput === null)
+    throw directTaskModeRecoveryError('The boot Task admission input requires recovery.');
   const outcomeSource = readAssistantTaskHandoffSource(input.store, input.workspaceDb, {
     ...checkpoint,
-    turnInput: admission.turnInput,
+    turnInput,
     modelId: admission.modelId,
     triggerActor: admission.triggerActor,
   });
@@ -1758,17 +1761,28 @@ async function recoverSessionlessTaskAdmission(input: {
   );
   if (entries.length !== 1 || attempts.length > 1)
     throw directTaskModeRecoveryError('The sessionless Task has no unique admission owner.');
-  const admission = requireSchedulerAdmissionEntry(input.coreDb, entries[0]!.id);
+  let admission: ReturnType<typeof requireSchedulerAdmissionEntry>;
   let turn: ReturnType<FsStore['getTurn']>;
+  try {
+    admission = requireSchedulerAdmissionEntry(input.coreDb, entries[0]!.id);
+  } catch (error) {
+    throw directTaskModeRecoveryError('The sessionless Task admission requires recovery.', error);
+  }
   try {
     turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
   } catch {
     throw directTaskModeRecoveryError('The Task checkpoint is missing its worker Turn.');
   }
   const attempt = attempts[0];
-  const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
-    JSON.parse(admission.turnInput)
-  );
+  const turnInput = readScheduledAdmissionText(input.coreDb, admission);
+  if (turnInput === null)
+    throw directTaskModeRecoveryError('The sessionless Task admission input requires recovery.');
+  let workerRequest: ReturnType<typeof StructuredWorkerDelegationRequestSchema.parse>;
+  try {
+    workerRequest = StructuredWorkerDelegationRequestSchema.parse(JSON.parse(turnInput));
+  } catch (error) {
+    throw directTaskModeRecoveryError('The sessionless Task admission input is invalid.', error);
+  }
   const context = checkpoint
     ? parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)
     : null;
@@ -1791,7 +1805,6 @@ async function recoverSessionlessTaskAdmission(input: {
     admission.threadId !== input.threadId ||
     admission.turnId !== input.turnId ||
     admission.requestId !== input.requestId ||
-    admission.inputHash !== schedulerAdmissionInputHash(admission) ||
     !['user', 'integration'].includes(admission.triggerActor.kind) ||
     !isDeepStrictEqual(admission.triggerActor, turn.triggerActor) ||
     admission.triggerActor.id !== turn.triggerActor.id ||
@@ -1823,7 +1836,7 @@ async function recoverSessionlessTaskAdmission(input: {
       workspaceIdForOwner(initiatingItem.owner) !== input.workspaceId ||
       initiatingItem.threadId !== input.threadId ||
       initiatingItem.turnId !== input.turnId ||
-      initiatingItem.text !== admission.turnInput)
+      initiatingItem.text !== turnInput)
   )
     throw directTaskModeRecoveryError('The sessionless Task input contradicts its admission.');
   const scope = {
@@ -1847,7 +1860,7 @@ async function recoverSessionlessTaskAdmission(input: {
   });
   const outcomeSource = readAssistantTaskHandoffSource(input.store, input.workspaceDb, {
     ...input,
-    turnInput: admission.turnInput,
+    turnInput,
     modelId: admission.modelId,
     triggerActor: admission.triggerActor,
   });

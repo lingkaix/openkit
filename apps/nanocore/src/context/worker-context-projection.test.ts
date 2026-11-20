@@ -28,6 +28,7 @@ import { createDemoStore, seedDemoWorkspace } from '../test-support/demo-store.j
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
@@ -452,7 +453,11 @@ describe('worker Context Package read projection', () => {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: thread.id,
             turnId: turn.id,
-            turnInput: 'Run accepted worker turn.',
+            inputRef: schedulerFixtureInput(
+              'ws_00000000-0000-7000-8000-000000000001',
+              turn.id,
+              'Run accepted worker turn.'
+            ),
             requestedAgentId: 'agent_codex_host',
             profileRef: 'agent_codex_host',
           });
@@ -753,7 +758,11 @@ it.each(['authority', 'thread-projection'] as const)(
         workspaceId,
         threadId: index === 128 ? selectedThread.id : testEntityId('th', `s39-snapshot-${index}`),
         turnId: testEntityId('tu', `s39-snapshot-${index}`),
-        turnInput: 'Inspect original admission selection.',
+        inputRef: schedulerFixtureInput(
+          workspaceId,
+          testEntityId('tu', `s39-snapshot-${index}`),
+          'Inspect original admission selection.'
+        ),
         requestedAgentId: 'agent_worker',
         now: () => '2026-07-05T00:00:00.000Z',
       });

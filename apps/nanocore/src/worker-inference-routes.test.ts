@@ -78,6 +78,7 @@ import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-use
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const fixtureGatewayRegistry = new ProviderRegistry([]);
@@ -550,7 +551,11 @@ async function createWorkerInferenceRouteFixture(
       workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
-      turnInput: 'Call worker inference',
+      inputRef: schedulerFixtureInput(
+        workspaceIdForOwner(turn.owner),
+        turn.id,
+        'Call worker inference'
+      ),
       requestedAgentId: environmentPackage.agent.agentId,
     });
     const submittedAttempt = recordTestExecutionAttempt(appCoreDb, {

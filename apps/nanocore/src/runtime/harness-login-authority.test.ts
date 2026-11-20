@@ -14,7 +14,6 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { resolveHarnessLogicalModelCatalog } from '../llm/logical-models.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { agentSessionsRoot, nativeProductScope } from '../storage/workspace-file-records.js';
@@ -25,6 +24,7 @@ import {
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import {
   createTestCoreDb,
   createTestStore,
@@ -111,14 +111,14 @@ async function fixture(
       kind: 'user',
       id: userId,
     });
-    const previousEntry = createSchedulerAdmissionEntry(coreDb, {
+    const previousEntry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue:${previousTurn.id}`,
       requestedAgentId: 'agent_codex_host',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: previousTurn.id,
-      turnInput: 'Prior prepared Turn',
+      text: 'Prior prepared Turn',
       triggerActor: previousTurn.triggerActor,
       requestId: randomUUID(),
       now: () => timestamp,
@@ -157,14 +157,14 @@ async function fixture(
   const sandboxBindingRef = residentOrigin ?? `sandbox-binding:${randomUUID()}`;
   const attemptBindingRef =
     placement === 'shared-resident' ? `sandbox-binding:${randomUUID()}` : sandboxBindingRef;
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue:${turn.id}`,
     requestedAgentId: 'agent_codex_host',
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput: 'Prepare private Login',
+    text: 'Prepare private Login',
     triggerActor: turn.triggerActor,
     requestId: randomUUID(),
     now: () => timestamp,

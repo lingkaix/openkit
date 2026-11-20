@@ -29,6 +29,7 @@ import {
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { projectTurnEventRequestId } from '../storage/retained-work-events-v1.js';
+import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
 import {
   findNamedAgentEnvironmentPackageSnapshot,
   listExportableAgentEnvironmentPackageSnapshots,
@@ -264,6 +265,13 @@ export function hasWorkerCheckpointNeverSubmittedProof(
   const originalInput = store
     .listWorkspaceItemRevisions(checkpoint.workspaceId)
     .find((item) => item.id === deriveEntityId('it', ['task-user', turn.id]));
+  const stagedInput = readWorkspaceQueueInput(coreDb.dataRoot, admission, admission.inputRef);
+  if (
+    !stagedInput ||
+    stagedInput.originalInvocationId !== (admission.requestId ?? admission.queueEntryId)
+  )
+    throw new Error('Never-submitted checkpoint has no exact original Workspace input.');
+  const originalText = stagedInput.text;
   const preparation = JSON.parse(attempt.preparationInputJson);
   if (
     admission.status !== 'admitted' ||
@@ -299,16 +307,14 @@ export function hasWorkerCheckpointNeverSubmittedProof(
     initiatingItem.turnId !== turn.id ||
     !isDeepStrictEqual(initiatingItem, originalInput) ||
     !isDeepStrictEqual(initiatingItem.actor, turn.triggerActor) ||
-    initiatingItem.text !== admission.turnInput ||
+    initiatingItem.text !== originalText ||
     // The optional navigation projection is fixed; arbitrary additions still invalidate lineage.
-    ![
-      admission.turnInput,
-      workerInputWithKnowledgeOverview(admission.turnInput, session.id),
-    ].includes((pkg.extensions.openkit as { turnInput?: unknown }).turnInput as string) ||
+    ![originalText, workerInputWithKnowledgeOverview(originalText, session.id)].includes(
+      (pkg.extensions.openkit as { turnInput?: unknown }).turnInput as string
+    ) ||
     !checkpoint.contextDigest ||
-    commandInputHash(
-      StructuredWorkerDelegationRequestSchema.parse(JSON.parse(admission.turnInput))
-    ) !== checkpoint.contextDigest ||
+    commandInputHash(StructuredWorkerDelegationRequestSchema.parse(JSON.parse(originalText))) !==
+      checkpoint.contextDigest ||
     parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)?.contextDigest !==
       checkpoint.contextDigest
   )

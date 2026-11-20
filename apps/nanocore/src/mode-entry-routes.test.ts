@@ -3067,15 +3067,19 @@ describe('route B queued Task receipts', () => {
               return;
             }
             if ('proofGap' in scenario && scenario.proofGap === 'input') {
-              const row = coreDb.sqlite
-                .prepare('SELECT turn_input FROM scheduler_admission_entries WHERE turn_id = ?')
-                .get(admittedId) as { turn_input: string };
-              const changed = JSON.parse(row.turn_input);
+              const { input_id: inputId } = coreDb.sqlite
+                .prepare('SELECT input_id FROM scheduler_admission_entries WHERE turn_id = ?')
+                .get(admittedId) as { input_id: string };
+              const { input_bytes: originalInput } = checkpointDb.sqlite
+                .prepare('SELECT input_bytes FROM workspace_work_inputs WHERE input_id = ?')
+                .get(inputId) as { input_bytes: Buffer };
+              const changed = JSON.parse(originalInput.toString('utf8'));
               changed.objective = 'Contradictory retained instruction';
-              const changedInput = JSON.stringify(changed);
-              coreDb.sqlite
-                .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
-                .run(changedInput, admittedId);
+              const changedInput = Buffer.from(JSON.stringify(changed));
+              const updateOwnerInput = checkpointDb.sqlite.prepare(
+                'UPDATE workspace_work_inputs SET input_bytes = ? WHERE input_id = ? AND turn_id = ?'
+              );
+              expect(updateOwnerInput.run(changedInput, inputId, admittedId).changes).toBe(1);
               const before = await replay();
               expect(
                 before.status,
@@ -3090,9 +3094,7 @@ describe('route B queued Task receipts', () => {
                   admittedId
                 )
               ).toEqual(checkpoint);
-              coreDb.sqlite
-                .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
-                .run(row.turn_input, admittedId);
+              expect(updateOwnerInput.run(originalInput, inputId, admittedId).changes).toBe(1);
               await expect(
                 classifyDirectTaskCheckpointAfterSchedulerRecovery({
                   coreDb,
@@ -3109,9 +3111,7 @@ describe('route B queued Task receipts', () => {
                   admittedId
                 )
               ).toBeNull();
-              coreDb.sqlite
-                .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
-                .run(changedInput, admittedId);
+              expect(updateOwnerInput.run(changedInput, inputId, admittedId).changes).toBe(1);
               const after = await replay();
               expect(
                 after.status,

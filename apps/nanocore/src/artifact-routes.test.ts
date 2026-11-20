@@ -24,6 +24,7 @@ import {
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
+import { readScheduledAdmissionText } from './runtime/scheduler-dispatch-input.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import {
   recordWorkspaceSyncReview,
@@ -1172,7 +1173,9 @@ describe('Core artifact routes', () => {
           turnId: followUpTurnId,
         }),
       ]);
-      expect(JSON.parse(admissions[0]?.turnInput ?? '{}')).toMatchObject({
+      const admission = admissions[0]!;
+      const originalInput = readScheduledAdmissionText(coreDb, admission);
+      expect(JSON.parse(originalInput ?? '{}')).toMatchObject({
         artifactMediaType: 'text/plain',
       });
       const checkpointDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -1202,12 +1205,18 @@ describe('Core artifact routes', () => {
       );
 
       const tamperedPrompt = {
-        ...(JSON.parse(admissions[0]?.turnInput ?? '{}') as Record<string, unknown>),
+        ...(JSON.parse(originalInput ?? '{}') as Record<string, unknown>),
         artifactContent: 'Tampered scheduler content.',
       };
-      coreDb.sqlite
-        .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
-        .run(JSON.stringify(tamperedPrompt), followUpTurnId);
+      const inputDb = openWorkspaceDb(dataRoot, admission.workspaceId);
+      try {
+        const changed = inputDb.sqlite
+          .prepare('UPDATE workspace_work_inputs SET input_bytes = ? WHERE input_id = ?')
+          .run(Buffer.from(JSON.stringify(tamperedPrompt)), admission.inputRef.inputId);
+        expect(changed.changes).toBe(1);
+      } finally {
+        inputDb.sqlite.close();
+      }
       const corruptReplayRes = await postJson(app, decisionPath, request);
       expect(corruptReplayRes.status).toBe(409);
       await expect(corruptReplayRes.json()).resolves.toMatchObject({ code: 'recovery_required' });

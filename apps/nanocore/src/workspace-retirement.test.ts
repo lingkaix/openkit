@@ -1,3 +1,4 @@
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 // openkit-test-platform: posix
 
 import { randomUUID } from 'node:crypto';
@@ -265,7 +266,11 @@ async function retainRuntimeFences(f: Fixture) {
     workspaceId: f.workspaceId,
     threadId: testEntityId('th', 'retirement-thread'),
     turnId: testEntityId('tu', 'retirement-turn'),
-    turnInput: 'Retained private runtime input',
+    inputRef: schedulerFixtureInput(
+      f.workspaceId,
+      testEntityId('tu', 'retirement-turn'),
+      'Retained private runtime input'
+    ),
     requestedAgentId: 'agent_retirement',
     now: () => NOW,
   });

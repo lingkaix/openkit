@@ -54,6 +54,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import {
   createWorkspaceDeletionRequest,
   readWorkspaceDeletionRequest,
@@ -212,7 +213,11 @@ function attempt(coreDb: CoreDb, label = 'attempt_cleanup_operation') {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: testEntityId('th', `thread_${id}`),
     turnId: testEntityId('tu', `turn_${id}`),
-    turnInput: PRIVATE,
+    inputRef: schedulerFixtureInput(
+      'ws_00000000-0000-7000-8000-000000000001',
+      testEntityId('tu', `turn_${id}`),
+      PRIVATE
+    ),
     requestedAgentId: 'agent_cleanup',
     now: () => CREATED,
   });

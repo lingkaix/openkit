@@ -51,6 +51,7 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb } from '../test-support/store.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -160,7 +161,7 @@ async function createNativeStageReviewFixture(name: string) {
     threadId: DEMO_THREAD_ID,
     triggerActor: actor,
     turnId: turn.id,
-    turnInput: `Stage review ${name}`,
+    inputRef: schedulerFixtureInput(DEMO_WORKSPACE_ID, turn.id, `Stage review ${name}`),
     workspaceId: DEMO_WORKSPACE_ID,
   });
   recordTestExecutionAttempt(coreDb, {

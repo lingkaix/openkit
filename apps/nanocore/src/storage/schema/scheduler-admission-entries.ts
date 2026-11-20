@@ -38,8 +38,10 @@ export const schedulerAdmissionEntries = sqliteTable(
     threadId: text('thread_id').notNull(),
     /** Turn lineage id. */
     turnId: text('turn_id').notNull(),
-    /** Worker turn input captured when the entry is queued. */
-    turnInput: text('turn_input').notNull(),
+    /** Original immutable input owned by this entry's Workspace. */
+    inputId: text('input_id').notNull(),
+    /** SHA-256 of the exact UTF-8 bytes retained at that Workspace. */
+    inputDigest: text('input_digest').notNull(),
     /** Exact retained-storage choice captured before package planning. */
     workerStorageChoiceJson: text('worker_storage_choice_json'),
     /** Requested agent id. */

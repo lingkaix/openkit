@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startRecurringScheduleService } from '../runtime/recurring-schedule-service.js';
+import { readScheduledAdmissionText } from '../runtime/scheduler-dispatch-input.js';
 import {
   cancelSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
@@ -17,6 +18,11 @@ import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { exportRecurringPortableHistory } from '../storage/recurring-portable-history.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
+import {
+  DEMO_THREAD_ID,
+  DEMO_WORKSPACE_ID,
+  seedDemoWorkspace,
+} from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
@@ -24,11 +30,12 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { AutomationMutationError, AutomationStore } from './automation-store.js';
 
 const fixtures: { root: string; db: CoreDb }[] = [];
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'recurrence-store-'));
   const db = openCoreDb(root);
   fixtures.push({ root, db });
   applyMigrations(db);
+  await seedDemoWorkspace(createTestStore({ dataRoot: root }), ensureLocalUser(db), []);
   let instant = '2026-10-16T00:00:00.000Z';
   const clock = () => instant;
   const store = new AutomationStore(db, clock);
@@ -50,8 +57,8 @@ afterEach(async () => {
     rmSync(root, { recursive: true, force: true });
 });
 const definition = {
-  workspaceId: testEntityId('ws', 'ws_test'),
-  threadId: testEntityId('th', 'th_test'),
+  workspaceId: DEMO_WORKSPACE_ID,
+  threadId: DEMO_THREAD_ID,
   name: 'Poll',
   intervalSeconds: 5,
   prompt: 'Inspect status',
@@ -67,7 +74,7 @@ const payload = {
 
 describe('durable fixed-interval recurrence', () => {
   it('refuses an overflowing fixed interval before it can block another schedule scan', async () => {
-    const { store } = fixture();
+    const { store } = await fixture();
     const userId = testEntityId('usr', 'user_creator');
     const healthy = await store.createAutomation(userId, definition);
     await store.updateAutomation(userId, healthy.id, {
@@ -85,7 +92,7 @@ describe('durable fixed-interval recurrence', () => {
   });
 
   it('refuses unsafe activation of a retained paused definition without changing it', async () => {
-    const { db, store } = fixture();
+    const { db, store } = await fixture();
     const userId = testEntityId('usr', 'user_creator');
     const unsafe = await store.createAutomation(userId, definition);
     // Fault-inject a previously admitted cadence at its owning retained-row seam.
@@ -104,7 +111,7 @@ describe('durable fixed-interval recurrence', () => {
   });
 
   it('admits a very large representable cadence without an arbitrary interval ceiling', async () => {
-    const { store } = fixture();
+    const { store } = await fixture();
     const userId = testEntityId('usr', 'user_creator');
     const created = await store.createAutomation(userId, {
       ...definition,
@@ -122,7 +129,7 @@ describe('durable fixed-interval recurrence', () => {
   });
 
   it('contains a retained overflowing successor while committing healthy scan work once', async () => {
-    const { db, store } = fixture();
+    const { db, store } = await fixture();
     const userId = testEntityId('usr', 'user_creator');
     const active = await Promise.all(
       [0, 1].map(async () => {
@@ -162,7 +169,7 @@ describe('durable fixed-interval recurrence', () => {
   });
 
   it('accounts an expired retained final instant without poisoning the SQL live frontier', async () => {
-    const { db, store, setTime } = fixture();
+    const { db, store, setTime } = await fixture();
     const userId = testEntityId('usr', 'user_creator');
     const unsafe = await store.createAutomation(userId, definition);
     const active = await store.updateAutomation(userId, unsafe.id, {
@@ -199,7 +206,7 @@ describe('durable fixed-interval recurrence', () => {
   it.each(['pause', 'delete'] as const)(
     'seals a retained overflowing cadence on %s without losing its final instant',
     async (action) => {
-      const { db, store } = fixture();
+      const { db, store } = await fixture();
       const userId = testEntityId('usr', 'user_creator');
       const created = await store.createAutomation(userId, definition);
       const active = await store.updateAutomation(userId, created.id, {
@@ -234,7 +241,7 @@ describe('durable fixed-interval recurrence', () => {
   );
 
   it('writes v1 paused schedules and preserves identity across a database reopen', async () => {
-    const { db, root, clock, store } = fixture();
+    const { db, root, clock, store } = await fixture();
     const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
     expect(schedule).toMatchObject({
       status: 'paused',
@@ -267,7 +274,7 @@ describe('durable fixed-interval recurrence', () => {
     ).toEqual(retained);
   });
   it('writes v1 occurrences and atomically accepts one deterministic queue row without retry', async () => {
-    const { db, store } = fixture();
+    const { db, store } = await fixture();
     const created = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
     const active = await store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
       expectedRevision: 1,
@@ -313,7 +320,7 @@ describe('durable fixed-interval recurrence', () => {
 it.each(['recurring_schedules', 'recurring_occurrences', 'recurring_expired_ranges'] as const)(
   'refuses unknown %s versions before payload decode, scan or mutation',
   async (table) => {
-    const { db, store, setTime } = fixture();
+    const { db, store, setTime } = await fixture();
     const userId = testEntityId('usr', 'user_creator');
     const schedule = await store.createAutomation(userId, definition);
     const active = await store.updateAutomation(userId, schedule.id, {
@@ -375,7 +382,7 @@ it.each(['recurring_schedules', 'recurring_occurrences', 'recurring_expired_rang
 );
 
 it('limits committed outcomes to three and keeps admission-failed terminal at expiry', async () => {
-  const { store, setTime } = fixture();
+  const { store, setTime } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -397,7 +404,7 @@ it('limits committed outcomes to three and keeps admission-failed terminal at ex
 });
 
 it('expires at the exact deadline and leaves a backward-clock candidate pending without an outcome', async () => {
-  const { db, store, setTime } = fixture();
+  const { db, store, setTime } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -421,7 +428,7 @@ it('expires at the exact deadline and leaves a backward-clock candidate pending 
 });
 
 it('rolls back the queue, attempt, frozen payload and acceptance together', async () => {
-  const { db, store } = fixture();
+  const { db, store } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -453,7 +460,7 @@ it('rolls back the queue, attempt, frozen payload and acceptance together', asyn
 });
 
 it('bounds each schedule to one queued occurrence while allowing a running predecessor', async () => {
-  const { db, store, setTime } = fixture();
+  const { db, store, setTime } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -479,7 +486,7 @@ it('bounds each schedule to one queued occurrence while allowing a running prede
 });
 
 it('freezes the complete first resolved payload on failure and fences substitution', async () => {
-  const { db, store } = fixture();
+  const { db, store } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -512,7 +519,7 @@ it('freezes the complete first resolved payload on failure and fences substituti
 it.each(['queued', 'admitted', 'denied', 'cancelled', 'expired'])(
   'reconciles exact deterministic queue replay in %s without resubmission',
   async (status) => {
-    const { db, store } = fixture();
+    const { db, store } = await fixture();
     const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
     await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
       expectedRevision: 1,
@@ -545,7 +552,7 @@ it.each(['queued', 'admitted', 'denied', 'cancelled', 'expired'])(
 );
 
 it('fences a conflicting deterministic queue row without overwriting it', async () => {
-  const { db, store } = fixture();
+  const { db, store } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -571,7 +578,7 @@ it('fences a conflicting deterministic queue row without overwriting it', async 
 });
 
 it('seals pause history with the old snapshot, cancels pending work, and rejects a stale scan', async () => {
-  const { store, setTime } = fixture();
+  const { store, setTime } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -626,7 +633,7 @@ it('seals pause history with the old snapshot, cancels pending work, and rejects
 });
 
 it('writes v1 lossless ranges and serves huge-outage live work without unbounded replay', async () => {
-  const { db, store, setTime } = fixture();
+  const { db, store, setTime } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -665,7 +672,7 @@ it('writes v1 lossless ranges and serves huge-outage live work without unbounded
 });
 
 it('retains accepted admissions on delete and cannot resume the identity tombstone', async () => {
-  const { store } = fixture();
+  const { store } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -694,7 +701,7 @@ it('retains accepted admissions on delete and cannot resume the identity tombsto
 });
 
 it('commits every definition and terminal transition with its Workspace AuditEvent and rolls back audit failure', async () => {
-  const { db, store } = fixture();
+  const { db, store } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   expect(
     db.sqlite.prepare('SELECT action, actor_json, workspace_id FROM audit_events').get()
@@ -738,7 +745,7 @@ it('commits every definition and terminal transition with its Workspace AuditEve
 });
 
 it('does not advance the definition cursor when materialization rolls back', async () => {
-  const { db, store } = fixture();
+  const { db, store } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   const active = await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -757,7 +764,7 @@ it('does not advance the definition cursor when materialization rolls back', asy
 });
 
 it('uses the shared Workspace fence for definition changes and admission', async () => {
-  const { store, db } = fixture();
+  const { store, db } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -782,7 +789,7 @@ it('uses the shared Workspace fence for definition changes and admission', async
 });
 
 it('reopens pending work with its attempt count, immutable payload, and original deadline', async () => {
-  const { db, root, store, clock } = fixture();
+  const { db, root, store, clock } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -812,7 +819,7 @@ it('reopens pending work with its attempt count, immutable payload, and original
 });
 
 it('orders same-deadline schedules by code units without locale collation', async () => {
-  const { store } = fixture();
+  const { store } = await fixture();
   const userId = testEntityId('usr', 'user_creator');
   const schedules = [
     await store.createAutomation(userId, definition),
@@ -844,7 +851,7 @@ it('orders same-deadline schedules by code units without locale collation', asyn
 });
 
 it('caps live selection at 128 globally in nominal deadline order', async () => {
-  const { store, setTime } = fixture();
+  const { store, setTime } = await fixture();
   // Each fixture definition uses the actual native publisher; Main holds no SQL transaction across its acknowledgement.
   const schedules = [];
   for (let index = 0; index < 140; index++) {
@@ -868,8 +875,8 @@ it('caps live selection at 128 globally in nominal deadline order', async () => 
   expect(store.getAutomation(schedules[128]!.id).nextScheduledAt).toBe('2026-10-16T00:02:08.000Z');
 });
 
-it('verifies the retained queue bytes as well as its stored hash before publishing acceptance', async () => {
-  const { db, store } = fixture();
+it('verifies the retained queue input reference against its stored hash before publishing acceptance', async () => {
+  const { db, store } = await fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -880,10 +887,8 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
   const accepted = (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))!;
   expect(findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toEqual(accepted);
   db.sqlite
-    .prepare(
-      `UPDATE scheduler_admission_entries SET turn_input = 'changed bytes' WHERE queue_entry_id = ?`
-    )
-    .run(accepted.queueEntryId);
+    .prepare('UPDATE scheduler_admission_entries SET input_digest = ? WHERE queue_entry_id = ?')
+    .run('0'.repeat(64), accepted.queueEntryId);
   expect(() => findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toThrow(
     'contradicts'
   );
@@ -896,8 +901,8 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
 });
 
 const monthlyDefinition = {
-  workspaceId: testEntityId('ws', 'ws_test'),
-  threadId: testEntityId('th', 'th_test'),
+  workspaceId: DEMO_WORKSPACE_ID,
+  threadId: DEMO_THREAD_ID,
   name: 'Monthly',
   prompt: 'Inspect status',
   monthlyUtc: { zone: 'UTC' as const, dayOfMonth: 28, hour: 9, minute: 0, second: 0 },
@@ -905,7 +910,7 @@ const monthlyDefinition = {
 
 describe('monthly UTC recurrence lifecycle', () => {
   it('materializes the monthly nominal instant and advances its exact cursor', async () => {
-    const { db, store, clock, setTime } = fixture();
+    const { db, store, clock, setTime } = await fixture();
     setTime('2027-01-28T09:00:00.000Z');
     const paused = await store.createAutomation(
       testEntityId('usr', 'user_creator'),
@@ -937,7 +942,7 @@ describe('monthly UTC recurrence lifecycle', () => {
 });
 
 it('rejects off-rule monthly resume without mutation and replaces complete paused timing', async () => {
-  const { store, setTime } = fixture();
+  const { store, setTime } = await fixture();
   setTime('2027-01-01T00:00:00.000Z');
   const original = await store.createAutomation(
     testEntityId('usr', 'user_creator'),
@@ -973,7 +978,7 @@ it('rejects off-rule monthly resume without mutation and replaces complete pause
 });
 
 it('seals a monthly outage with an exact immutable range and cancels the live instant before editing', async () => {
-  const { store, setTime } = fixture();
+  const { store, setTime } = await fixture();
   setTime('2020-01-28T09:00:00.000Z');
   const created = await store.createAutomation(
     testEntityId('usr', 'user_creator'),
@@ -1033,7 +1038,7 @@ it('seals a monthly outage with an exact immutable range and cancels the live in
 });
 
 it('orders actual fixed and monthly live frontiers before the shared 128 schedule limit', async () => {
-  const { store, setTime } = fixture();
+  const { store, setTime } = await fixture();
   setTime('2020-01-28T09:00:00.000Z');
   // Publish through the actual native owner without holding Main SQL across its acknowledgements.
   const fixed = await (async () => {
@@ -1073,7 +1078,7 @@ it('orders actual fixed and monthly live frontiers before the shared 128 schedul
 });
 
 it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Core restart', async () => {
-  const state = fixture();
+  const state = await fixture();
   let db = state.db;
   ensureLocalUser(db);
   let files = createTestStore({ dataRoot: state.root });
@@ -1130,12 +1135,13 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
       status: 'pending',
       threadId: thread.id,
     });
-    expect(requireSchedulerAdmissionEntry(db, january.record.queueEntryId!)).toMatchObject({
+    const januaryEntry = requireSchedulerAdmissionEntry(db, january.record.queueEntryId!);
+    expect(januaryEntry).toMatchObject({
       triggerActor: created.actor,
-      turnInput: monthlyDefinition.prompt,
       threadId: thread.id,
       ...payload,
     });
+    expect(readScheduledAdmissionText(db, januaryEntry)).toBe(monthlyDefinition.prompt);
     cancelSchedulerAdmissionEntry(db, {
       queueEntryId: january.record.queueEntryId!,
       workspaceId: workspace.id,
@@ -1241,7 +1247,7 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
 });
 
 it('rolls back monthly range, cursor and Audit together before retrying the same exact prefix', async () => {
-  const { db, store, setTime } = fixture();
+  const { db, store, setTime } = await fixture();
   setTime('2020-01-28T09:00:00.000Z');
   const created = await store.createAutomation(
     testEntityId('usr', 'user_creator'),
@@ -1271,7 +1277,7 @@ it('rolls back monthly range, cursor and Audit together before retrying the same
 });
 
 it('fails the SQL frontier closed on contradictory retained core timing', async () => {
-  const { db, store, setTime } = fixture();
+  const { db, store, setTime } = await fixture();
   setTime('2027-01-28T09:00:00.000Z');
   const created = await store.createAutomation(
     testEntityId('usr', 'user_creator'),
@@ -1292,7 +1298,7 @@ it('fails the SQL frontier closed on contradictory retained core timing', async 
 });
 
 it('selects a live monthly instant ahead of more than 128 expired-only fixed prefixes', async () => {
-  const { db, store, setTime } = fixture();
+  const { db, store, setTime } = await fixture();
   setTime('2020-01-28T09:00:00.000Z');
   await (async () => {
     for (let index = 0; index < 129; index++) {
@@ -1329,7 +1335,7 @@ it('selects a live monthly instant ahead of more than 128 expired-only fixed pre
 });
 
 it('preserves one series waiting slot during explicit retry, including after restart', async () => {
-  const { root, db, clock, store, setTime } = fixture();
+  const { root, db, clock, store, setTime } = await fixture();
   const created = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   const active = await store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
     expectedRevision: 1,

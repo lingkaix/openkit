@@ -26,6 +26,7 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
@@ -427,14 +428,19 @@ describe('Shared attention run origin and exact question summary', () => {
   it('keeps a real scheduler row without inventing origin before its source Turn has been published', async () => {
     const f = await fixture();
     // This is the original admission owner's normal queue-before-Turn interval, not a forged missing pointer.
+    const fixtureTurnId = allocateEntityId('tu');
     const entry = createSchedulerAdmissionEntry(f.coreDb, {
       backendId: 'nanohost',
       requestId: randomUUID(),
       queueEntryId: randomUUID(),
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: f.thread.id,
-      turnId: allocateEntityId('tu'),
-      turnInput: 'Existing scheduler admission',
+      turnId: fixtureTurnId,
+      inputRef: schedulerFixtureInput(
+        DEMO_WORKSPACE_ID,
+        fixtureTurnId,
+        'Existing scheduler admission'
+      ),
       triggerActor: f.human,
       requestedAgentId: 'agent_demo',
     });

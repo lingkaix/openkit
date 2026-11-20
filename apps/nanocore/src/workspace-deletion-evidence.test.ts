@@ -12,6 +12,7 @@ import { insertExternalTriggerAdmission } from './storage/external-trigger-admis
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import {
   createWorkspaceDeletionClosure,
   existingWorkspaceDeletionClosureRoot,
@@ -140,7 +141,11 @@ it('retains the immutable external admission join in deletion evidence before it
         workspaceId: workspace.id,
         threadId: target.id,
         turnId: testEntityId('tu', 'tu_closure_case'),
-        turnInput: 'One case.',
+        inputRef: schedulerFixtureInput(
+          workspace.id,
+          testEntityId('tu', 'tu_closure_case'),
+          'One case.'
+        ),
         triggerActor: schedule.actor,
       });
       return insertExternalTriggerAdmission(coreDb, {

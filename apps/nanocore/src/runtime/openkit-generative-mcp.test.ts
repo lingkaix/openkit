@@ -13,6 +13,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createOpenkitGenerativeMcpSupply,
@@ -74,7 +75,7 @@ function workerAuthority(dataRoot: string, turnId: string) {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId,
-    turnInput: 'Proof',
+    inputRef: schedulerFixtureInput('ws_00000000-0000-7000-8000-000000000001', turnId, 'Proof'),
     requestedAgentId: 'agent_codex_host',
   });
   recordTestExecutionAttempt(coreDb, {

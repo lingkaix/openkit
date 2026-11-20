@@ -37,6 +37,7 @@ import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { publishTestWorkspaceNotebook } from '../test-support/workspace-notebook-publication.js';
 import {
   createWorkspaceMaterial,
@@ -1173,7 +1174,7 @@ async function sourceToolFixture(
     workspaceId: scope.workspaceId,
     threadId: scope.threadId,
     turnId: scope.turnId,
-    turnInput: 'Read source',
+    inputRef: schedulerFixtureInput(scope.workspaceId, scope.turnId, 'Read source'),
     requestedAgentId: fixture.environmentPackage.agent.agentId,
   });
   recordTestExecutionAttempt(fixture.coreDb, {

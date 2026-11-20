@@ -18,6 +18,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -197,7 +198,7 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
     workspaceId: f.db.workspaceId,
     threadId: f.owner.threadId,
     turnId: f.turn.id,
-    turnInput: 'Retain observations',
+    inputRef: schedulerFixtureInput(f.db.workspaceId, f.turn.id, 'Retain observations'),
   });
   const attempt = recordTestExecutionAttempt(f.coreDb, {
     entry,

@@ -17,6 +17,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
@@ -85,15 +86,21 @@ describe('scheduler admission routes', () => {
       'queue_cancel_close',
       'queue_retry_audit_failure',
     ]) {
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const turnId = testEntityId('tu', `turn_${queueEntryId}`);
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId,
         requestId: `request_${queueEntryId}`,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        workspaceId,
         threadId: thread.id,
-        turnId: testEntityId('tu', `turn_${queueEntryId}`),
-        turnInput: 'Exercise scheduler admission database lifecycle.',
+        turnId,
+        inputRef: schedulerFixtureInput(
+          workspaceId,
+          turnId,
+          'Exercise scheduler admission database lifecycle.'
+        ),
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
       });
@@ -226,15 +233,21 @@ describe('scheduler admission routes', () => {
     });
 
     for (const queueEntryId of ['queue_foreign_retry', 'queue_foreign_cancel']) {
+      const workspaceId = 'ws_00000000-0000-7f9c-aa14-53566c621405';
+      const turnId = testEntityId('tu', `turn_${queueEntryId}`);
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId,
         requestId: `request_${queueEntryId}`,
-        workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405',
+        workspaceId,
         threadId: testEntityId('th', 'thread_foreign'),
-        turnId: testEntityId('tu', `turn_${queueEntryId}`),
-        turnInput: 'Keep foreign scheduler admission existence private.',
+        turnId,
+        inputRef: schedulerFixtureInput(
+          workspaceId,
+          turnId,
+          'Keep foreign scheduler admission existence private.'
+        ),
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
       });
@@ -335,15 +348,21 @@ describe('scheduler admission routes', () => {
     });
 
     for (const queueEntryId of ['queue_victim_retry', 'queue_victim_cancel']) {
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const turnId = testEntityId('tu', `turn_${queueEntryId}`);
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId,
         requestId: `request_${queueEntryId}`,
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7ed6-81e5-051501208741' },
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        workspaceId,
         threadId: shared.id,
-        turnId: testEntityId('tu', `turn_${queueEntryId}`),
-        turnInput: 'Shared workspace admission from another actor.',
+        turnId,
+        inputRef: schedulerFixtureInput(
+          workspaceId,
+          turnId,
+          'Shared workspace admission from another actor.'
+        ),
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
       });

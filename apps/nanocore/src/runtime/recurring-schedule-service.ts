@@ -2,8 +2,13 @@ import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
-import type { AutomationStore } from '../lib/automation-store.js';
+import {
+  type AutomationStore,
+  findStagedRecurringQueueInput,
+  stageRecurringQueueInput,
+} from '../lib/automation-store.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import {
   type CoreSchedulerQueueEntry,
   listQueuedSchedulerAdmissionEntries,
@@ -22,6 +27,7 @@ import {
   type RecurringPreparation,
 } from '../storage/recurring-records.js';
 import { PendingRequestCommandError } from './pending-request-error.js';
+import { readRecurringQueueInput } from './recurring-queue-input.js';
 import {
   enterRecurringTurnPublication,
   inspectRecurringPublicationSettlements,
@@ -82,6 +88,11 @@ export function startRecurringScheduleService(
       if (!release) continue;
       try {
         let preparation = validateCurrent(occurrence);
+        const staged =
+          occurrence.inputRef || !preparation
+            ? findStagedRecurringQueueInput(db.dataRoot, occurrence)
+            : null;
+        preparation ??= staged?.preparation;
         if (!preparation) {
           try {
             preparation = await input.prepare(occurrence);
@@ -104,11 +115,18 @@ export function startRecurringScheduleService(
         const queueAlreadyAccepted = db.sqlite
           .prepare('SELECT 1 FROM scheduler_admission_entries WHERE request_id = ? LIMIT 1')
           .get(occurrence.requestId);
+        const inputRef =
+          !queueAlreadyAccepted && preparation.kind === 'ready'
+            ? (staged?.inputRef ??
+              (await stageRecurringQueueInput(db.dataRoot, occurrence, preparation)))
+            : undefined;
+        if (stopped || input.agentWorkPaused?.()) return;
         const accepted = await input.schedules.commitAttempt(
           occurrence.id,
           occurrence.definitionRevision,
           preparation,
-          () => (input.agentWorkPaused?.() ? undefined : validateCurrent(occurrence))
+          () => (input.agentWorkPaused?.() ? undefined : validateCurrent(occurrence)),
+          inputRef
         );
         if (
           !queueAlreadyAccepted &&
@@ -268,6 +286,7 @@ export function startRecurringScheduleService(
             publication,
             () =>
               recurringTurnPublicationIssue(
+                db,
                 input.store,
                 requireSchedulerAdmissionEntry(db, entry.queueEntryId)
               ) === null,
@@ -317,11 +336,19 @@ export function startRecurringScheduleService(
     entry: CoreSchedulerQueueEntry,
     publicationGuard?: ControlStorePublicationGuard
   ): Promise<'published' | 'busy'> {
+    const occurrence = findAcceptedRecurringOccurrenceForQueue(db, entry.queueEntryId);
+    const originalInput = occurrence && readRecurringQueueInput(db.dataRoot, entry, occurrence);
+    if (originalInput === null)
+      throw new OperationError(
+        'recovery_required',
+        'The original recurring input is unavailable.',
+        409
+      );
     try {
       await input.store.createTurn(
         entry.workspaceId,
         entry.threadId,
-        entry.turnInput,
+        originalInput,
         entry.triggerActor,
         null,
         {
@@ -379,7 +406,7 @@ export function startRecurringScheduleService(
     const thread = input.store.getThreadSegmentHead(entry.workspaceId, entry.threadId);
     if (
       thread.status !== 'active' ||
-      recurringTurnPublicationIssue(input.store, entry) !== 'turn_missing' ||
+      recurringTurnPublicationIssue(db, input.store, entry) !== 'turn_missing' ||
       requireSchedulerAdmissionEntry(db, entry.queueEntryId).status !== 'queued'
     )
       return 'blocked';

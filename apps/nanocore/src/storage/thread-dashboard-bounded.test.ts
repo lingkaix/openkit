@@ -16,6 +16,7 @@ import {
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './db.js';
@@ -223,7 +224,7 @@ it('projects only the last recorded environment observation and admitted model w
     workspaceId: DEMO_WORKSPACE_ID,
     threadId: f.thread.id,
     turnId: turn.id,
-    turnInput: 'Queued work',
+    inputRef: schedulerFixtureInput(DEMO_WORKSPACE_ID, turn.id, 'Queued work'),
     triggerActor: f.actor,
     requestedAgentId: 'agent_demo',
     modelId: 'recorded-model',

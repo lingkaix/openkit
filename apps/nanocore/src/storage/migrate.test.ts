@@ -120,6 +120,7 @@ const WORKSPACE_TABLES = [
   'workspace_reconciliation_records',
   'workspace_snapshot_collections',
   'workspace_snapshot_cursors',
+  'workspace_work_inputs',
 ];
 
 /**
@@ -585,12 +586,14 @@ describe('database setup', () => {
           'workspace_id',
           'thread_id',
           'turn_id',
-          'turn_input',
+          'input_id',
+          'input_digest',
           'worker_storage_choice_json',
           'requested_agent_id',
           'status',
         ])
       );
+      expect(listColumnNames(coreDb, 'scheduler_admission_entries')).not.toContain('turn_input');
       expect(listColumnNames(coreDb, 'worker_backend_sessions')).toEqual([
         'attempt_id',
         'workspace_id',

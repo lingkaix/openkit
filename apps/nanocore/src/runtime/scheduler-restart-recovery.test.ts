@@ -74,6 +74,10 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
+import {
+  createTestQueueEntry,
+  schedulerFixtureInput,
+} from '../test-support/scheduler-admissions.js';
 import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -2717,6 +2721,8 @@ function dispatchLease(
         '2026-07-05T00:00:00.000Z'
       );
   }
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const turnId = testEntityId('tu', `turn_${suffix}`);
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor,
@@ -2724,9 +2730,9 @@ function dispatchLease(
     requestId: fixtureRequestId(`request_${suffix}`),
     requestedAgentId: 'agent_codex_host',
     threadId,
-    turnId: testEntityId('tu', `turn_${suffix}`),
-    turnInput: `Run ${suffix}`,
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    turnId,
+    inputRef: schedulerFixtureInput(workspaceId, turnId, `Run ${suffix}`),
+    workspaceId,
     now: () => admittedAt,
   });
   if (!nativePrepared) {
@@ -3986,7 +3992,7 @@ describe('scheduler restart recovery', () => {
           ready: true,
         });
         // Keep later work before product admission while the first Turn still owns the Thread.
-        const admission = createSchedulerAdmissionEntry(f.coreDb, {
+        const admission = await createTestQueueEntry(f.coreDb, {
           queueEntryId: `queued_${suffix}`,
           backendId: 'nanohost',
           workspaceId: workspaceIdForOwner(f.turn.owner),
@@ -3994,7 +4000,7 @@ describe('scheduler restart recovery', () => {
           turnId: testEntityId('tu', `queued_${suffix}`),
           requestedAgentId: 'agent_codex_host',
           triggerActor: f.turn.triggerActor,
-          turnInput: 'Later queued work',
+          text: 'Later queued work',
         });
         expect(() => f.store.getTurnById(admission.turnId)).toThrow();
         if (partial)
@@ -5216,7 +5222,7 @@ describe('scheduler restart recovery', () => {
       ownerUserId: LOCAL_USER_ID,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const admission = createSchedulerAdmissionEntry(coreDb, {
+    const admission = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       queueEntryId: 'queue_product_projection',
@@ -5224,7 +5230,7 @@ describe('scheduler restart recovery', () => {
       requestedAgentId: 'agent_codex_host',
       threadId: turn.threadId,
       turnId,
-      turnInput: 'Recover this turn',
+      text: 'Recover this turn',
       workspaceId: workspaceIdForOwner(turn.owner),
       now: () => '2026-07-05T00:00:01.000Z',
     });
@@ -8050,7 +8056,7 @@ async function assertRecoveryClosedAndNextTurnAdmitted(
       status: 'pending',
     }
   );
-  const entry = createSchedulerAdmissionEntry(f.coreDb, {
+  const entry = await createTestQueueEntry(f.coreDb, {
     backendId: 'nanohost',
     triggerActor: { kind: 'user', id: LOCAL_USER_ID },
     queueEntryId: `queue_${nextTurnId}`,
@@ -8058,7 +8064,7 @@ async function assertRecoveryClosedAndNextTurnAdmitted(
     requestedAgentId: 'agent_codex_host',
     threadId: f.threadId,
     turnId: nextTurnId,
-    turnInput: 'New authorized work',
+    text: 'New authorized work',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     now: () => f.clock.now,
   });

@@ -107,6 +107,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -331,7 +332,11 @@ async function createDurableWorkerControlLease(
     requestedAgentId: environmentPackage.agent.agentId,
     threadId: lineage.threadId,
     turnId: lineage.turnId,
-    turnInput: 'Run durable worker-control test',
+    inputRef: schedulerFixtureInput(
+      lineage.workspaceId,
+      lineage.turnId,
+      'Run durable worker-control test'
+    ),
     workspaceId: lineage.workspaceId,
   });
   const submittedAttempt = recordTestExecutionAttempt(coreDb, {
@@ -2282,7 +2287,11 @@ describe('worker control routes', () => {
       requestedAgentId: environmentPackage.agent.agentId,
       threadId: lineage.threadId,
       turnId: lineage.turnId,
-      turnInput: 'Run worker control route test',
+      inputRef: schedulerFixtureInput(
+        lineage.workspaceId,
+        lineage.turnId,
+        'Run worker control route test'
+      ),
       workspaceId: lineage.workspaceId,
     });
     const submittedAttempt = recordTestExecutionAttempt(coreDb, {
@@ -2762,7 +2771,11 @@ describe('worker control routes', () => {
       requestedAgentId: environmentPackage.agent.agentId,
       threadId: lineage.threadId,
       turnId: lineage.turnId,
-      turnInput: 'Run final status route test',
+      inputRef: schedulerFixtureInput(
+        lineage.workspaceId,
+        lineage.turnId,
+        'Run final status route test'
+      ),
       workspaceId: lineage.workspaceId,
     });
     const submittedAttempt = recordTestExecutionAttempt(coreDb, {
@@ -3285,7 +3298,11 @@ describe('worker control routes', () => {
         requestedAgentId: environmentPackage.agent.agentId,
         threadId: lineage.threadId,
         turnId: lineage.turnId,
-        turnInput: 'Run durable worker-control test',
+        inputRef: schedulerFixtureInput(
+          lineage.workspaceId,
+          lineage.turnId,
+          'Run durable worker-control test'
+        ),
         workspaceId: lineage.workspaceId,
       });
       const submittedAttempt = recordTestExecutionAttempt(coreDb, {
@@ -3791,7 +3808,11 @@ describe('worker control routes', () => {
         requestedAgentId: environmentPackage.agent.agentId,
         threadId: lineage.threadId,
         turnId: lineage.turnId,
-        turnInput: 'Run supply refresh worker',
+        inputRef: schedulerFixtureInput(
+          lineage.workspaceId,
+          lineage.turnId,
+          'Run supply refresh worker'
+        ),
         workspaceId: lineage.workspaceId,
       });
       const submittedAttempt = recordTestExecutionAttempt(coreDb, {
@@ -4623,7 +4644,11 @@ describe('worker control routes', () => {
         requestedAgentId: environmentPackage.agent.agentId,
         threadId: lineage.threadId,
         turnId: lineage.turnId,
-        turnInput: 'Run worker control rebuild test',
+        inputRef: schedulerFixtureInput(
+          lineage.workspaceId,
+          lineage.turnId,
+          'Run worker control rebuild test'
+        ),
         workspaceId: lineage.workspaceId,
       });
       const submittedAttempt = recordTestExecutionAttempt(coreDb, {

@@ -4,12 +4,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
-import {
-  createSchedulerAdmissionEntry,
-  requireSchedulerAdmissionEntry,
-} from '../scheduler-records.js';
+import { readScheduledAdmissionText } from '../runtime/scheduler-dispatch-input.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import { insertExternalTriggerAdmission } from './external-trigger-admissions.js';
@@ -74,10 +73,12 @@ describe('recurring portable history', () => {
     const accepted = store.getOccurrence(occurrence.id);
     if (publish) {
       const entry = requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
+      const originalText = readScheduledAdmissionText(coreDb, entry);
+      if (originalText === null) throw new Error('The recurring fixture has no original input.');
       await files.createTurn(
         entry.workspaceId,
         entry.threadId,
-        entry.turnInput,
+        originalText,
         entry.triggerActor,
         null,
         {
@@ -166,7 +167,7 @@ describe('recurring portable history', () => {
       'conversation',
       { visibility: 'workspace', threadSource: 'worker', parentThreadId: thread.id }
     );
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'private-backend',
       queueEntryId: 'external-case-queue',
       requestedAgentId: 'historical-worker',
@@ -174,7 +175,7 @@ describe('recurring portable history', () => {
       threadId: targetThread.id,
       turnId: testEntityId('tu', 'tu_external_case'),
       triggerActor: schedule.actor,
-      turnInput: 'One explicit case brief',
+      text: 'One explicit case brief',
     });
     const join = coreDb.sqlite.transaction(() =>
       insertExternalTriggerAdmission(coreDb, {

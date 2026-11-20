@@ -11,7 +11,6 @@ import { type ActorRef, writeRetainedV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -26,6 +25,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -170,7 +170,7 @@ async function createRestorableWorkerControlFixture(
     workspaceDb.sqlite.close();
   }
 
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor: options.admissionTriggerActor ?? environmentPackage.scope.triggerActor,
     now: () => '2026-07-13T00:00:02.000Z',
@@ -183,7 +183,7 @@ async function createRestorableWorkerControlFixture(
     requestedAgentId: environmentPackage.agent.agentId,
     threadId: environmentPackage.scope.threadId,
     turnId: environmentPackage.scope.turnId,
-    turnInput: 'Restore worker inference identity',
+    text: 'Restore worker inference identity',
     workspaceId: environmentPackage.scope.workspaceId,
   });
   const sandboxBindingRef = 'lease-binding:restore_1';

@@ -10,6 +10,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import type { WorkInputRef } from './storage/control-kernel-port.js';
 import { commandInputHash } from './storage/control-store-input.js';
 import type { CoreDb } from './storage/db.js';
 import type {
@@ -112,8 +113,8 @@ export interface CoreSchedulerQueueEntry {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Worker turn input captured when the entry is queued. */
-  readonly turnInput: string;
+  /** Exact committed input at the Workspace work owner. */
+  readonly inputRef: WorkInputRef;
   /** Exact retained-storage choice captured before package planning. */
   readonly workerStorageChoice: SchedulerWorkerStorageChoice | null;
   /** Requested agent id. */
@@ -147,7 +148,8 @@ interface SchedulerAdmissionEntryRow {
   readonly workspace_id: string;
   readonly thread_id: string;
   readonly turn_id: string;
-  readonly turn_input: string;
+  readonly input_id: string;
+  readonly input_digest: string;
   readonly worker_storage_choice_json: string | null;
   readonly requested_agent_id: string;
   readonly profile_ref: string | null;
@@ -182,8 +184,8 @@ export interface CreateSchedulerAdmissionEntryInput {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Worker turn input captured when the entry is queued. */
-  readonly turnInput: string;
+  /** Exact input already committed at the Workspace work owner. */
+  readonly inputRef: WorkInputRef;
   /** Exact retained-storage choice captured before package planning. */
   readonly workerStorageChoice?: SchedulerWorkerStorageChoice | null;
   /** Requested agent id. */
@@ -238,13 +240,14 @@ export interface ListSchedulerAdmissionEntriesForWorkspaceInput {
  * @throws Error when actor, storage choice or reasoning effort is invalid.
  */
 export function schedulerAdmissionInputHash(input: CreateSchedulerAdmissionEntryInput): string {
+  const inputRef = workspaceQueueInputRef(input.workspaceId, input.inputRef);
   return commandInputHash({
     backendId: input.backendId,
     requestId: input.requestId ?? null,
     workspaceId: input.workspaceId,
     threadId: input.threadId,
     turnId: input.turnId,
-    turnInput: input.turnInput,
+    inputRef,
     workerStorageChoice: input.workerStorageChoice
       ? parseSchedulerWorkerStorageChoice(input.workerStorageChoice)
       : null,
@@ -261,6 +264,18 @@ export function schedulerAdmissionInputHash(input: CreateSchedulerAdmissionEntry
     workspaceCwd: input.workspaceCwd ?? null,
     workspaceRoots: input.workspaceRoots ?? [],
   });
+}
+
+/** Checks the exact work reference for the existing Workspace-only scheduler queue. */
+function workspaceQueueInputRef(workspaceId: string, ref: WorkInputRef): WorkInputRef {
+  if (
+    ref.owner.kind !== 'workspace' ||
+    ref.owner.workspaceId !== workspaceId ||
+    !ref.inputId ||
+    !/^[0-9a-f]{64}$/.test(ref.digest)
+  )
+    throw new SchedulerAdmissionTransitionError('Scheduler admission input reference is invalid.');
+  return { owner: { kind: 'workspace', workspaceId }, inputId: ref.inputId, digest: ref.digest };
 }
 
 /**
@@ -289,13 +304,8 @@ export function createSchedulerAdmissionEntry(
   });
   return coreDb.sqlite
     .transaction(() => {
-      const existing = coreDb.sqlite
-        .prepare(`${schedulerAdmissionSelectSql()}
-      WHERE queue_entry_id = ? OR turn_id = ?
-      ORDER BY rowid LIMIT 1`)
-        .get(input.queueEntryId, input.turnId) as SchedulerAdmissionEntryRow | undefined;
-      if (existing) {
-        const entry = mapSchedulerAdmissionEntryRow(existing);
+      const entry = findSchedulerAdmissionForStart(coreDb, input);
+      if (entry) {
         if (entry.queueEntryId !== input.queueEntryId || entry.inputHash !== inputHash)
           throw new SchedulerAdmissionTransitionError(
             'Scheduler admission request conflicts with its retained input.'
@@ -314,11 +324,12 @@ export function createSchedulerAdmissionEntry(
         );
       coreDb.sqlite
         .prepare(`INSERT INTO scheduler_admission_entries (
-      queue_entry_id, backend_id, input_hash, request_id, workspace_id, thread_id, turn_id, turn_input,
+      queue_entry_id, backend_id, input_hash, request_id, workspace_id, thread_id, turn_id,
+      input_id, input_digest,
       worker_storage_choice_json, requested_agent_id, profile_ref, model_id, reasoning_effort,
       enqueued_at, status, denial_reason, trigger_actor_json,
       server_admin_token_id, credential_ref_json, workspace_cwd, workspace_roots_json, schema_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           input.queueEntryId,
           input.backendId,
@@ -327,7 +338,8 @@ export function createSchedulerAdmissionEntry(
           input.workspaceId,
           input.threadId,
           input.turnId,
-          input.turnInput,
+          input.inputRef.inputId,
+          input.inputRef.digest,
           storageChoice ? JSON.stringify(storageChoice) : null,
           input.requestedAgentId,
           input.profileRef ?? null,
@@ -553,6 +565,19 @@ export function* readSchedulerAdmissionPagesForWorkspace(
   }
 }
 
+/** Finds either retained identity that would prevent first input selection. */
+export function findSchedulerAdmissionForStart(
+  coreDb: CoreDb,
+  input: { readonly queueEntryId: string; readonly turnId: string }
+): CoreSchedulerQueueEntry | null {
+  const row = coreDb.sqlite
+    .prepare(`${schedulerAdmissionSelectSql()}
+      WHERE queue_entry_id = ? OR turn_id = ?
+      ORDER BY rowid LIMIT 1`)
+    .get(input.queueEntryId, input.turnId) as SchedulerAdmissionEntryRow | undefined;
+  return row ? mapSchedulerAdmissionEntryRow(row) : null;
+}
+
 /**
  * Reads one admission entry or throws.
  *
@@ -600,7 +625,8 @@ function schedulerAdmissionSelectSql(): string {
     workspace_id,
     thread_id,
     turn_id,
-    turn_input,
+    input_id,
+    input_digest,
     worker_storage_choice_json,
     requested_agent_id,
     profile_ref,
@@ -637,7 +663,11 @@ function mapSchedulerAdmissionEntryRow(row: SchedulerAdmissionEntryRow): CoreSch
     workspaceId: row.workspace_id,
     threadId: row.thread_id,
     turnId: row.turn_id,
-    turnInput: row.turn_input,
+    inputRef: workspaceQueueInputRef(row.workspace_id, {
+      owner: { kind: 'workspace', workspaceId: row.workspace_id },
+      inputId: row.input_id,
+      digest: row.input_digest,
+    }),
     workerStorageChoice: row.worker_storage_choice_json
       ? parseSchedulerWorkerStorageChoice(JSON.parse(row.worker_storage_choice_json), true)
       : null,

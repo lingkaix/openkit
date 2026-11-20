@@ -145,6 +145,113 @@ async function fixture(explicitSetupVersion = true) {
   };
 }
 
+it('returns a storage recovery refusal when the Workspace queue input insert fails', async () => {
+  const f = await fixture();
+  const request = await f.request(f.first.version.digest);
+  f.workspaceDb.sqlite.exec(
+    `CREATE TRIGGER refuse_queue_input BEFORE INSERT ON workspace_work_inputs
+      BEGIN SELECT RAISE(ABORT, 'Workspace queue input insert is unavailable'); END`
+  );
+
+  const response = await f.call(request);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ code: 'recovery_required' });
+  expect(
+    f.coreDb.sqlite
+      .prepare('SELECT 1 FROM scheduler_admission_entries WHERE request_id = ?')
+      .get(request.requestId)
+  ).toBeUndefined();
+  expect(f.prepare).not.toHaveBeenCalled();
+  expect(f.submit).not.toHaveBeenCalled();
+});
+
+it('rejects a non-scalar public start retry before writing a receipt', async () => {
+  const f = await fixture();
+  const request = { ...(await f.request(f.first.version.digest)), input: '\uFFFD' };
+  const changed = { ...request, input: '\uD800' };
+  const originalBytes = Buffer.from(request.input);
+  expect(Buffer.from(changed.input)).toEqual(originalBytes);
+  const receiptIds = f.workspaceDb.sqlite
+    .prepare(
+      "SELECT response_id FROM idempotency_requests WHERE command_name = 'turn.start' AND request_id = ?"
+    )
+    .pluck();
+  const inputBytes = f.workspaceDb.sqlite
+    .prepare('SELECT input_bytes FROM workspace_work_inputs WHERE invocation_id = ?')
+    .pluck();
+  const publish = vi
+    .spyOn(f.store, 'createTurn')
+    .mockRejectedValueOnce(new Error('Interrupted after Core admission'));
+
+  const interrupted = await f.call(request);
+  expect(interrupted.status).toBe(404);
+  expect(await interrupted.json()).toMatchObject({ code: 'turn_start_failed' });
+  expect(publish).toHaveBeenCalledOnce();
+  publish.mockRestore();
+  const originalTurnId = f.coreDb.sqlite
+    .prepare('SELECT turn_id FROM scheduler_admission_entries WHERE request_id = ?')
+    .pluck()
+    .get(request.requestId);
+  expect(originalTurnId).toEqual(expect.any(String));
+  expect(receiptIds.all(request.requestId)).toEqual([]);
+  expect(inputBytes.all(request.requestId)).toEqual([originalBytes]);
+
+  const refused = await f.call(changed);
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toMatchObject({ code: 'recovery_required' });
+  expect(receiptIds.all(request.requestId)).toEqual([]);
+  expect(inputBytes.all(request.requestId)).toEqual([originalBytes]);
+
+  const replayed = await f.call(request);
+  expect(replayed.status, await replayed.clone().text()).toBe(202);
+  expect(await replayed.json()).toMatchObject({ id: originalTurnId });
+  expect(receiptIds.all(request.requestId)).toEqual([originalTurnId]);
+  expect(inputBytes.all(request.requestId)).toEqual([originalBytes]);
+});
+
+it.each([
+  { retry: 'exact', code: 'recovery_required' },
+  { retry: 'changed', code: 'scheduler_admission_denied' },
+] as const)(
+  'keeps missing selected input absent on an $retry public start retry',
+  async ({ retry, code }) => {
+    const f = await fixture();
+    const request = await f.request(f.first.version.digest);
+    const publish = vi
+      .spyOn(f.store, 'createTurn')
+      .mockRejectedValueOnce(new Error('Interrupted after Core admission'));
+    await f.call(request);
+    expect(publish).toHaveBeenCalledOnce();
+    publish.mockRestore();
+    const selectedRow = f.coreDb.sqlite.prepare(
+      'SELECT input_id AS inputId, input_digest AS digest, status FROM scheduler_admission_entries WHERE request_id = ?'
+    );
+    const selected = selectedRow.get(request.requestId) as
+      | { inputId: string; digest: string; status: string }
+      | undefined;
+    expect(selected).toMatchObject({ status: 'queued' });
+    expect(
+      f.workspaceDb.sqlite
+        .prepare('DELETE FROM workspace_work_inputs WHERE input_id = ?')
+        .run(selected!.inputId).changes
+    ).toBe(1);
+
+    const response = await f.call(
+      retry === 'changed' ? { ...request, input: 'Replacement from a later caller.' } : request
+    );
+    expect(
+      f.workspaceDb.sqlite
+        .prepare('SELECT 1 FROM workspace_work_inputs WHERE input_id = ?')
+        .get(selected!.inputId)
+    ).toBeUndefined();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code });
+    expect(selectedRow.get(request.requestId)).toEqual(selected);
+    expect(f.prepare).not.toHaveBeenCalled();
+    expect(f.submit).not.toHaveBeenCalled();
+  }
+);
+
 it('retains two exact run choices and their AEP explanation without changing setup, default or pin', async () => {
   const f = await fixture();
   const catalogBefore = readFileSync(catalogDocumentPath(f.dataRoot, f.workspace.id));

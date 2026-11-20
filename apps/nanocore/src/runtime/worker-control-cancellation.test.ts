@@ -8,7 +8,6 @@ import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -19,6 +18,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
@@ -119,7 +119,7 @@ async function createFixture() {
   applyScopedMigrations(workspaceDb);
   await recordAgentEnvironmentPackageSnapshot(workspaceDb, { createdAt: now, environmentPackage });
   workspaceDb.sqlite.close();
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     now: () => now,
     profileRef: 'default',
@@ -129,7 +129,7 @@ async function createFixture() {
     threadId: turn.threadId,
     triggerActor: environmentPackage.scope.triggerActor,
     turnId: turn.id,
-    turnInput: 'Cancel one exact worker Turn',
+    text: 'Cancel one exact worker Turn',
     workspaceId: workspaceIdForOwner(turn.owner),
   });
   recordTestExecutionAttempt(coreDb, {

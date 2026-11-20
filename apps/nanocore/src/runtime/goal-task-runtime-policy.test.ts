@@ -47,7 +47,6 @@ import {
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
@@ -80,6 +79,7 @@ import {
   resolveAgentEnvironmentPackageMetadata,
 } from '../test-support/prepared-agent-environment.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -167,6 +167,7 @@ async function retainCompletedTaskFixture(
     'knowledge_notebook_proposals',
     'pending_requests',
     'worker_turn_checkpoints',
+    'workspace_work_inputs',
     'idempotency_requests',
     'audit_events',
   ].map((table) => ({
@@ -700,7 +701,7 @@ async function fixture(
           }
         : {}),
     };
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue_${requestId}`,
       requestId,
@@ -708,7 +709,7 @@ async function fixture(
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
-      turnInput: prompt,
+      text: prompt,
       requestedAgentId: agentId,
     });
     const planned = resolveAgentEnvironmentPackageMetadata(environmentInput);
@@ -864,7 +865,7 @@ async function fixture(
           ? { coreDb, readRuntimeConfig: () => manager.current() }
           : {}),
       });
-      const followupEntry = createSchedulerAdmissionEntry(coreDb, {
+      const followupEntry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue_${turn.id}`,
         requestId: followupRequestId,
@@ -872,7 +873,7 @@ async function fixture(
         workspaceId: workspace.id,
         threadId: thread.id,
         turnId: turn.id,
-        turnInput: followupInput,
+        text: followupInput,
         requestedAgentId: agentId,
         serverAdminTokenId: token.tokenId,
       });

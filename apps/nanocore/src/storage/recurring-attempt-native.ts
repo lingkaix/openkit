@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { AutomationRecord } from '@openkit/app-api-schemas';
 import { deriveEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
@@ -22,6 +23,8 @@ import {
   readRecurringSchedule,
   recurringSchedulerAdmissionInput,
 } from './recurring-records.js';
+
+import { hasCommittedWorkspaceQueueInput } from './workspace-queue-inputs.js';
 
 type JsonRow = { schemaVersion: unknown; record_json: string };
 /** The existing exact recurring occurrence read. */
@@ -124,7 +127,22 @@ export function applyNativeRecurringWork(
   return coreDb.sqlite
     .transaction(() => {
       let occurrence = readRecurringOccurrenceFromDb(coreDb, occurrenceId);
+      const turnId = deriveEntityId('tu', [
+        'recurring',
+        occurrence.scheduleId,
+        occurrence.scheduledAt,
+      ]);
+      if (
+        input.inputRef &&
+        (input.inputRef.owner.workspaceId !== occurrence.workspaceId ||
+          input.inputRef.inputId !== deriveEntityId('it', ['task-user', turnId]) ||
+          (occurrence.inputRef && !isDeepStrictEqual(occurrence.inputRef, input.inputRef)))
+      )
+        throw new SchedulerAdmissionTransitionError(
+          'Recurring input conflicts with its original occurrence.'
+        );
       if (occurrence.state !== 'pending') return occurrence;
+      const inputRef = occurrence.inputRef ?? input.inputRef;
       const schedule = requireRecurringAutomationFromDb(coreDb, occurrence.scheduleId);
       if (
         schedule.status !== 'active' ||
@@ -151,17 +169,14 @@ export function applyNativeRecurringWork(
           JSON.stringify(occurrence.resolvedPayload)
       )
         return finishRecurringOccurrenceInDb(coreDb, occurrence, 'recovery_required', timestamp);
-      const request = resolved
-        ? recurringSchedulerAdmissionInput(occurrence, resolved, timestamp)
-        : null;
+      const request =
+        resolved && inputRef
+          ? recurringSchedulerAdmissionInput(occurrence, resolved, inputRef, timestamp)
+          : null;
       const ownQueues = coreDb.sqlite
         .prepare(`SELECT queue_entry_id FROM scheduler_admission_entries
         WHERE queue_entry_id = ? OR request_id = ? OR turn_id = ? LIMIT 2`)
-        .all(
-          occurrence.requestId,
-          occurrence.requestId,
-          deriveEntityId('tu', ['recurring', occurrence.scheduleId, occurrence.scheduledAt])
-        ) as { queue_entry_id: string }[];
+        .all(occurrence.requestId, occurrence.requestId, turnId) as { queue_entry_id: string }[];
       if (ownQueues.length > 1)
         return finishRecurringOccurrenceInDb(coreDb, occurrence, 'recovery_required', timestamp);
       if (ownQueues[0]) {
@@ -176,6 +191,7 @@ export function applyNativeRecurringWork(
         occurrence = {
           ...occurrence,
           resolvedPayload: resolved,
+          ...(inputRef && { inputRef }),
           queueEntryId: existing.queueEntryId,
           turnId: existing.turnId,
         };
@@ -214,7 +230,12 @@ export function applyNativeRecurringWork(
             AND occurrence.state = 'admission-accepted' AND entry.status = 'queued' LIMIT 1`)
           .get(occurrence.scheduleId, occurrence.id);
         if (waiting) code = 'queue_backlog_full';
-        else if (!request) code = 'selection_unavailable';
+        else if (
+          !request ||
+          !inputRef ||
+          !hasCommittedWorkspaceQueueInput(coreDb.dataRoot, request, inputRef, occurrence.requestId)
+        )
+          code = 'selection_unavailable';
         else {
           try {
             const entry = createSchedulerAdmissionEntry(coreDb, request);
@@ -232,6 +253,7 @@ export function applyNativeRecurringWork(
       occurrence = {
         ...occurrence,
         resolvedPayload: resolved,
+        ...(inputRef && { inputRef }),
         attempts: [
           ...occurrence.attempts,
           {

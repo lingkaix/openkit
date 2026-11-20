@@ -42,6 +42,7 @@ import {
   createSchedulerExecutionAttempt,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
+import { stageSchedulerStartInput } from '../runtime/scheduler-input-staging.js';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
@@ -49,11 +50,13 @@ import {
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import { commandRequestKey, getCommandRequestRecord } from './command-request-records.js';
 import { admitCoreScheduler } from './control-store-admission.js';
+import { WorkspaceQueueInputRefSchema } from './control-store-admission-codecs.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
@@ -2156,7 +2159,11 @@ describe('control writer parent admission', () => {
       workspaceId,
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-7000-8000-000000000001',
-      turnInput: 'Retain one exact attempt transition across a lost FULL reply.',
+      inputRef: schedulerFixtureInput(
+        workspaceId,
+        'tu_00000000-0000-7000-8000-000000000001',
+        'Retain one exact attempt transition across a lost FULL reply.'
+      ),
       requestedAgentId: 'agent_worker',
     });
     const attempt = createSchedulerExecutionAttempt(coreDb, {
@@ -2522,24 +2529,32 @@ describe('typed global capture cut across native physical owners', () => {
         contentMount: coreScope.contentMount,
       });
       const userDb = await f.client.openInitializedUserReadDb(f.root, f.userId);
-      const coreCommands = turns.slice(0, 2).map((turn, index) => ({
-        mode: 'create' as const,
-        entry: {
-          backendId: 'nanohost',
-          queueEntryId: `typed-capture-${index}-${randomUUID()}`,
-          requestId: randomUUID(),
-          requestedAgentId: 'agent_worker',
-          timestamp: stamp,
-          triggerActor: actor,
-          workspaceId: workspace.id,
-          threadId: turn.threadId,
-          turnId: turn.id,
-          turnInput:
+      const coreCommands = await Promise.all(
+        turns.slice(0, 2).map(async (turn, index) => {
+          const scope = { workspaceId: workspace.id, threadId: turn.threadId, turnId: turn.id };
+          const requestId = randomUUID();
+          const text =
             index === 0
               ? 'Include this original Core admission.\r\n'
-              : 'Exclude this later Core admission. 🚀',
-        },
-      }));
+              : 'Exclude this later Core admission. 🚀';
+          const inputRef = WorkspaceQueueInputRefSchema.parse(
+            await stageSchedulerStartInput(f.root, scope, requestId, text)
+          );
+          return {
+            mode: 'create' as const,
+            entry: {
+              ...scope,
+              backendId: 'nanohost',
+              queueEntryId: `typed-capture-${index}-${randomUUID()}`,
+              requestId,
+              requestedAgentId: 'agent_worker',
+              timestamp: stamp,
+              triggerActor: actor,
+              inputRef,
+            },
+          };
+        })
+      );
       const userDatabase = `user:${userDbPath(f.root, f.userId)}`;
       const workspaceDatabase = `workspace:${workspaceDbPath(f.root, workspace.id)}`;
       const selectors = {

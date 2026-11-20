@@ -19,6 +19,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
@@ -149,7 +150,11 @@ async function createFixture() {
     requestedAgentId: 'agent_codex_host',
     threadId: testEntityId('th', 'thread_backend_session'),
     turnId: 'tu_00000000-0000-7a07-9f58-6d0e7a18a11c',
-    turnInput: 'Run worker',
+    inputRef: schedulerFixtureInput(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'tu_00000000-0000-7a07-9f58-6d0e7a18a11c',
+      'Run worker'
+    ),
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     now: () => '2026-07-15T00:00:01.000Z',
   });

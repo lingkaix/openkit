@@ -6,7 +6,6 @@ import { Worker } from 'node:worker_threads';
 import type { OperationId } from '@openkit/app-api-schemas';
 import { allocateEntityId, type PolicyDocumentV1 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
@@ -40,6 +39,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { getVaultInjectionPlan, listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -837,7 +837,7 @@ describe('reviewed Workspace grant to User Login material boundary', () => {
         workspaceId,
         threadId: turn.threadId,
         turnId: turn.id,
-        turnInput: 'Prepare reviewed Login',
+        inputRef: schedulerFixtureInput(workspaceId, turn.id, 'Prepare reviewed Login'),
         triggerActor: turn.triggerActor,
         requestId: randomUUID(),
       });

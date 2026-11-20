@@ -5,6 +5,7 @@ import {
   type TurnSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import type { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 import type { Actor } from '../auth/identity.js';
@@ -313,8 +314,8 @@ export async function runWorkerTurnLoop(
               workspaceIdForOwner(created.owner) !== input.workspaceId ||
               created.threadId !== input.threadId ||
               (admission.attempt?.agentSessionId ?? null) !== agentSessionId ||
-              admission.admission.turnInput !==
-                serializeStructuredWorkerDelegationRequest(prepared.delegationRequest) ||
+              admission.admission.inputRef.digest !==
+                sha256Hex(serializeStructuredWorkerDelegationRequest(prepared.delegationRequest)) ||
               !checkpoint ||
               checkpoint.requestId !== input.requestId ||
               checkpoint.requestInputHash !== input.requestInputHash ||
@@ -532,7 +533,7 @@ async function removeOwnCancelledPreparation(
   const admission = requireSchedulerAdmissionEntry(input.coreDb, rows[0]!.id, {
     workspaceId: input.workspaceId,
   });
-  // Both owners receive these identities from the initiating mode; product-start copies the reserved Turn and exact serialized request into its admission.
+  // Both owners bind their original reserved Turn and serialized request digest.
   if (
     admission.status !== 'cancelled' ||
     admission.workspaceId !== input.workspaceId ||
@@ -543,7 +544,8 @@ async function removeOwnCancelledPreparation(
     admission.triggerActor.id !== input.triggerActor.id ||
     responsibleUserIdForActor(admission.triggerActor) !==
       responsibleUserIdForActor(input.triggerActor) ||
-    admission.turnInput !== serializeStructuredWorkerDelegationRequest(prepared.delegationRequest)
+    admission.inputRef.digest !==
+      sha256Hex(serializeStructuredWorkerDelegationRequest(prepared.delegationRequest))
   )
     return false;
   const coreEffects = input.coreDb.sqlite

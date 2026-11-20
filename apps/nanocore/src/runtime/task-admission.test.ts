@@ -47,6 +47,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   listSchedulerExecutionAttemptsByTurnId,
@@ -150,7 +151,7 @@ it.each([
             requestedAgentId: input.requestedAgentId,
             threadId: input.threadId,
             turnId: input.reservedTurnId,
-            turnInput: input.prompt,
+            inputRef: schedulerFixtureInput(input.workspaceId, input.reservedTurnId, input.prompt),
             triggerActor: input.triggerActor,
             workspaceId: input.workspaceId,
           });

@@ -36,10 +36,7 @@ import { commandInputHash } from '../runtime/idempotent-command.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import { recordTaskTerminalFact } from '../runtime/task-terminal-fact.js';
 import { upsertWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
-import {
-  createSchedulerAdmissionEntry,
-  type SchedulerExecutionLineage,
-} from '../scheduler-records.js';
+import type { SchedulerExecutionLineage } from '../scheduler-records.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -58,6 +55,7 @@ import {
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService } from './goal-domains.js';
 import { createGoalTaskPolicyService } from './goal-task-policy.js';
@@ -465,7 +463,7 @@ async function fixture() {
     createdAt: turn.startedAt!,
     completedAt: turn.startedAt!,
   });
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue_${requestId}`,
     requestId,
@@ -473,7 +471,7 @@ async function fixture() {
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput,
+    text: turnInput,
     requestedAgentId: 'issue-worker',
   });
   recordTestExecutionAttempt(coreDb, {

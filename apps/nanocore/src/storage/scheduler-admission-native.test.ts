@@ -2,8 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { afterEach, expect, it, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { refuseScope, settleWorkspaceRecoveryScope } from '../bootstrap/readiness.js';
+import { readFrozenSchedulerInput } from '../runtime/scheduler-dispatch-frozen-input.js';
+import { stageSchedulerStartInput } from '../runtime/scheduler-input-staging.js';
 import {
   type CoreSchedulerQueueEntry,
   listQueuedSchedulerAdmissionEntries,
@@ -20,12 +24,14 @@ import {
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import { isControlWorkerReply, isControlWorkerRequest } from './control-store-worker-protocol.js';
-import { type CoreDb, openCoreDb } from './db.js';
-import { applyMigrations } from './migrate.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb } from './db.js';
+import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import { readWorkspaceQueueInput } from './workspace-queue-inputs.js';
 
 const roots: string[] = [];
 const handles: CoreDb[] = [];
 const timestamp = '2026-11-02T00:00:00.000Z';
+const originalText = '  Preserve this original admission.\nInspect it after uncertainty. 🚀  ';
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -44,25 +50,36 @@ function fixture() {
   const userId = ensureLocalUser(db);
   const workspaceId = testEntityId('ws', 'scheduler-native-deciders');
   recordWorkspaceOwnerMembership({ coreDb: db, workspaceId, ownerUserId: userId });
+  const workspace = openWorkspaceDb(root, workspaceId);
+  try {
+    applyScopedMigrations(workspace);
+  } finally {
+    workspace.sqlite.close();
+  }
   db.sqlite.pragma('query_only = ON');
   return { db, root, userId, workspaceId };
 }
 
 /** Fixes original command identity and exact instruction bytes before native publication. */
-function command(f: ReturnType<typeof fixture>, index: number) {
+async function command(f: ReturnType<typeof fixture>, index: number) {
+  const scope = {
+    workspaceId: f.workspaceId,
+    threadId: testEntityId('th', `scheduler-native-decider-${index}`),
+    turnId: testEntityId('tu', `scheduler-native-decider-${index}`),
+  };
+  const requestId = `request-native-decider-${index}`;
+  const inputRef = await stageSchedulerStartInput(f.root, scope, requestId, originalText);
   return {
     mode: 'create' as const,
     entry: {
       backendId: 'nanohost',
       queueEntryId: `queue-native-decider-${index}`,
-      requestId: `request-native-decider-${index}`,
+      requestId,
       requestedAgentId: 'agent_worker',
       timestamp,
       triggerActor: { kind: 'user' as const, id: f.userId },
-      workspaceId: f.workspaceId,
-      threadId: testEntityId('th', `scheduler-native-decider-${index}`),
-      turnId: testEntityId('tu', `scheduler-native-decider-${index}`),
-      turnInput: '  Preserve this original admission.\nInspect it after uncertainty. 🚀  ',
+      ...scope,
+      inputRef,
     },
   };
 }
@@ -72,25 +89,26 @@ it('refuses the twenty-first native admission without a row while Main is query-
   const retained: CoreSchedulerQueueEntry[] = [];
   // Durable Scheduler Design: Admission And Launch fixes the default queued bound at 20.
   for (let index = 0; index < 20; index += 1) {
-    const result = await admitCoreScheduler(f.db, command(f, index));
+    const result = await admitCoreScheduler(f.db, await command(f, index));
     expect(result.kind).toBe('queue');
     if (result.kind !== 'queue') throw new Error('Native admission omitted its queue entry.');
     retained.push(result.entry);
   }
-  const candidate = command(f, 20);
+  const candidate = await command(f, 20);
   const refused = admitCoreScheduler(f.db, candidate);
   await expect(refused).rejects.toBeInstanceOf(SchedulerAdmissionTransitionError);
   await expect(refused).rejects.toMatchObject({ reason: 'queue-full' });
   expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
   expect(listQueuedSchedulerAdmissionEntries(f.db)).toEqual(retained);
   expect(() => requireSchedulerAdmissionEntry(f.db, candidate.entry.queueEntryId)).toThrow();
-  const replay = await admitCoreScheduler(f.db, command(f, 0));
+  const replay = await admitCoreScheduler(f.db, await command(f, 0));
   expect(replay).toEqual({ kind: 'queue', entry: retained[0] });
   expect(listQueuedSchedulerAdmissionEntries(f.db)).toEqual(retained);
 });
 
 it('rechecks current authority after native open and refuses admission without a row', async () => {
   const f = fixture();
+  const candidate = await command(f, 0);
   const client = getControlStoreWorkerClient();
   const nativeOpen = client.open.bind(client);
   const posted = vi.spyOn(client, 'transition');
@@ -107,7 +125,6 @@ it('rechecks current authority after native open and refuses admission without a
       authority.sqlite.close();
     }
   });
-  const candidate = command(f, 0);
   // Control Store: current same-database authority decides in the native transaction.
   await expect(admitCoreScheduler(f.db, candidate)).rejects.toMatchObject({
     code: 'workspace_access_denied',
@@ -128,10 +145,128 @@ it('rechecks current authority after native open and refuses admission without a
   expect(() => requireSchedulerAdmissionEntry(f.db, candidate.entry.queueEntryId)).toThrow();
 });
 
+it('refuses frozen admission when an original member disappears at the native post', async () => {
+  const f = fixture();
+  const scope = {
+    workspaceId: f.workspaceId,
+    threadId: testEntityId('th', 'frozen-native-admission'),
+    turnId: testEntityId('tu', 'frozen-native-admission'),
+  };
+  const stage = async (inputId: string, text: string) =>
+    getControlStoreWorkerClient().stageWorkspaceQueueInput(f.root, {
+      ...scope,
+      originalInvocationId: scope.turnId,
+      input: {
+        owner: { kind: 'workspace', workspaceId: scope.workspaceId },
+        inputId,
+        digest: sha256Hex(text),
+      },
+      text,
+    });
+  const first = await stage('frozen-first', 'First original');
+  const second = await stage('frozen-second', 'Second original');
+  const manifest = JSON.stringify(
+    [first, second].map(({ inputId, digest }) => ({ inputId, digest }))
+  );
+  const inputRef = await stage(scope.turnId, manifest);
+  expect(readFrozenSchedulerInput(f.root, scope, inputRef)).toEqual([
+    { input: first, text: 'First original' },
+    { input: second, text: 'Second original' },
+  ]);
+
+  const post = Worker.prototype.postMessage;
+  let removed = 0;
+  vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (this: Worker, ...args) {
+    const request: unknown = args[0];
+    if (
+      isControlWorkerRequest(request) &&
+      request.operation === 'transition' &&
+      request.database === `core:${f.db.sqlite.name}` &&
+      'kind' in request.transition &&
+      request.transition.kind === 'scheduler-work'
+    ) {
+      const workspace = openWorkspaceDb(f.root, f.workspaceId);
+      try {
+        removed += workspace.sqlite
+          .prepare('DELETE FROM workspace_work_inputs WHERE input_id = ?')
+          .run(second.inputId).changes;
+      } finally {
+        workspace.sqlite.close();
+      }
+    }
+    return post.apply(this, args);
+  });
+
+  const queueEntryId = 'queue-frozen-native-admission';
+  await expect(
+    admitCoreScheduler(f.db, {
+      mode: 'create',
+      entry: {
+        ...scope,
+        backendId: 'nanohost',
+        queueEntryId,
+        requestId: 'request-frozen-native-admission',
+        requestedAgentId: 'agent_worker',
+        timestamp,
+        triggerActor: { kind: 'user', id: f.userId },
+        inputRef,
+      },
+    })
+  ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
+  expect(removed).toBe(1);
+  expect(readWorkspaceQueueInput(f.root, scope, inputRef)).toEqual({
+    text: manifest,
+    originalInvocationId: scope.turnId,
+  });
+  expect(readWorkspaceQueueInput(f.root, scope, first)).toEqual({
+    text: 'First original',
+    originalInvocationId: scope.turnId,
+  });
+  expect(readFrozenSchedulerInput(f.root, scope, inputRef)).toBeNull();
+  expect(listQueuedSchedulerAdmissionEntries(f.db)).toEqual([]);
+  expect(() => requireSchedulerAdmissionEntry(f.db, queueEntryId)).toThrow();
+});
+
+it('refuses native admission after Workspace recovery with the ordinary input intact', async () => {
+  const f = fixture();
+  const candidate = await command(f, 0);
+  const { inputRef, requestId, queueEntryId } = candidate.entry;
+  const workspace = openWorkspaceDb(f.root, f.workspaceId);
+  workspace.sqlite.pragma('query_only = ON');
+  const recovery = { scope: 'workspace', id: f.workspaceId, check: 'recovery' } as const;
+  const prepare = vi.fn((original: typeof candidate) => {
+    refuseScope(f.root, recovery);
+    return original;
+  });
+  try {
+    await expect(admitCoreScheduler(f.db, candidate, prepare)).rejects.toMatchObject({
+      code: 'recovery_required',
+      status: 409,
+    });
+    expect(prepare).toHaveBeenCalledOnce();
+    const original = workspace.sqlite
+      .prepare(
+        'SELECT input_digest AS digest, input_bytes AS bytes, invocation_id AS invocation FROM workspace_work_inputs WHERE input_id = ?'
+      )
+      .get(inputRef.inputId);
+    expect(original).toEqual({
+      digest: inputRef.digest,
+      bytes: Buffer.from(originalText),
+      invocation: requestId,
+    });
+    expect(listQueuedSchedulerAdmissionEntries(f.db)).toEqual([]);
+    expect(() => requireSchedulerAdmissionEntry(f.db, queueEntryId)).toThrow();
+  } finally {
+    workspace.sqlite.close();
+    if (prepare.mock.calls.length)
+      settleWorkspaceRecoveryScope({ dataRoot: f.root, failure: recovery });
+  }
+});
+
 it('keeps a lost native scheduler reply unknown without retry and inspects the original after cold reopen', async () => {
   const f = fixture();
   const client = getControlStoreWorkerClient();
-  const candidate = command(f, 0);
+  const candidate = await command(f, 0);
   let schedulerPosts = 0;
   let submitted: { readonly id: number; readonly worker: Worker } | undefined;
   let committedReply: CoreSchedulerQueueEntry | undefined;
@@ -198,6 +333,10 @@ it('keeps a lost native scheduler reply unknown without retry and inspects the o
   handles.push(reopened);
   reopened.sqlite.pragma('query_only = ON');
   expect(requireSchedulerAdmissionEntry(reopened, candidate.entry.queueEntryId)).toEqual(retained);
+  expect(readWorkspaceQueueInput(f.root, retained, retained.inputRef)).toEqual({
+    text: originalText,
+    originalInvocationId: candidate.entry.requestId,
+  });
   expect(listQueuedSchedulerAdmissionEntries(reopened)).toEqual([retained]);
   expect(schedulerPosts).toBe(1);
 });

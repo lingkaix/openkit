@@ -27,6 +27,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { AuthVariables } from './middleware.js';
 
@@ -176,7 +177,7 @@ it('preserves the exact admitted Worker Agent in concrete Thread resource decisi
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput: 'Request access',
+    inputRef: schedulerFixtureInput(workspace.id, turn.id, 'Request access'),
     requestedAgentId: 'researcher',
   });
   const packageSnapshotId = 'resource-policy-worker-snapshot';

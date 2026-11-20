@@ -54,6 +54,7 @@ import {
   createTestNativeEnvironmentDb,
 } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -232,15 +233,17 @@ async function createTurnFixture(
     triggerActor
   );
   if (coreDb) {
+    // These package fixtures need Core metadata while their product Turn has its own owner.
+    const workspaceId = workspaceIdForOwner(turn.owner);
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue_${turn.id}`,
       triggerActor,
       ...(serverAdminTokenId ? { serverAdminTokenId } : {}),
-      workspaceId: workspaceIdForOwner(turn.owner),
+      workspaceId,
       threadId: turn.threadId,
       turnId: turn.id,
-      turnInput: input,
+      inputRef: schedulerFixtureInput(workspaceId, turn.id, input),
       requestedAgentId: 'agent_codex_host',
     });
   }

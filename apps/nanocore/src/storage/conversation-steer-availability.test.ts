@@ -12,7 +12,6 @@ import {
 import { ProviderRegistry } from '../providers/registry.js';
 import { executeGoalOperation } from '../runtime/goal-owner.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -28,6 +27,7 @@ import {
 } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openWorkspaceDb } from './db.js';
@@ -100,7 +100,8 @@ async function liveFixture(runtime: { adapter: string; version: string }) {
     null,
   ]);
   const scope = { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, actorId: f.userId };
-  const entry = createSchedulerAdmissionEntry(f.coreDb, {
+  const turnInput = 'Original Task work';
+  const entry = await createTestQueueEntry(f.coreDb, {
     backendId: 'nanohost',
     requestId,
     queueEntryId: `catalog-original-${turnId}`,
@@ -108,7 +109,7 @@ async function liveFixture(runtime: { adapter: string; version: string }) {
     workspaceId: DEMO_WORKSPACE_ID,
     threadId: DEMO_THREAD_ID,
     turnId,
-    turnInput: 'Original Task work',
+    text: turnInput,
     triggerActor: actor,
   });
   await createNativeCommandTurn(
@@ -116,7 +117,7 @@ async function liveFixture(runtime: { adapter: string; version: string }) {
     { requestId, agentId: f.manifest.id },
     entry.workspaceId,
     entry.threadId,
-    entry.turnInput,
+    turnInput,
     actor,
     undefined,
     { turnId, status: 'pending', agentId: f.manifest.id, executorKind: 'worker' }

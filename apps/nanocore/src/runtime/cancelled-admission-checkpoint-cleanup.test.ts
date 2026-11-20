@@ -32,6 +32,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -147,7 +148,11 @@ function writeCancelledAdmission(
     threadId: input.threadId,
     triggerActor: ACTOR,
     turnId: input.turnId,
-    turnInput: 'Cancelled before Turn persistence.',
+    inputRef: schedulerFixtureInput(
+      input.workspaceId,
+      input.turnId,
+      'Cancelled before Turn persistence.'
+    ),
     workspaceId: input.workspaceId,
   });
   cancelSchedulerAdmissionEntry(coreDb, {
@@ -176,7 +181,11 @@ function writeStartFailureLease(
     threadId: input.threadId,
     triggerActor: ACTOR,
     turnId: input.turnId,
-    turnInput: 'Start failed before Turn persistence.',
+    inputRef: schedulerFixtureInput(
+      input.workspaceId,
+      input.turnId,
+      'Start failed before Turn persistence.'
+    ),
     workspaceId: input.workspaceId,
   });
   createSchedulerExecutionAttempt(coreDb, {

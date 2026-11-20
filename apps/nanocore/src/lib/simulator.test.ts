@@ -43,7 +43,6 @@ import { readPendingRequest } from '../runtime/pending-requests.js';
 import * as productTurnStart from '../runtime/product-turn-start.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import * as filePayload from '../storage/artifacts/file-payload.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
@@ -70,6 +69,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { SimulatedTurnExecutor } from './simulator.js';
 import { FsStore } from './store.js';
@@ -2082,7 +2082,7 @@ describe('SimulatedTurnExecutor', () => {
     );
 
     await store.updateTurn(firstTurn.id, { agentId: 'agent_codex_host' });
-    const firstAdmission = createSchedulerAdmissionEntry(coreDb, {
+    const firstAdmission = await createTestQueueEntry(coreDb, {
       backendId: executor.executionBackend.id,
       queueEntryId: `simulator:${firstTurn.id}`,
       requestId: null,
@@ -2092,7 +2092,7 @@ describe('SimulatedTurnExecutor', () => {
       workspaceId: workspaceIdForOwner(firstTurn.owner),
       threadId: firstTurn.threadId,
       turnId: firstTurn.id,
-      turnInput: 'Use the default agent',
+      text: 'Use the default agent',
       triggerActor: firstTurn.triggerActor,
       workspaceCwd: null,
       workspaceRoots: [],
@@ -2157,7 +2157,7 @@ describe('SimulatedTurnExecutor', () => {
     );
 
     await store.updateTurn(turn.id, { agentId: selectedAgentSetup.manifest.id });
-    const selectedAdmission = createSchedulerAdmissionEntry(coreDb, {
+    const selectedAdmission = await createTestQueueEntry(coreDb, {
       backendId: executor.executionBackend.id,
       queueEntryId: `simulator:${turn.id}`,
       requestId: null,
@@ -2167,7 +2167,7 @@ describe('SimulatedTurnExecutor', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
-      turnInput: 'Use the selected agent',
+      text: 'Use the selected agent',
       triggerActor: turn.triggerActor,
       workspaceCwd: null,
       workspaceRoots: [],
@@ -2296,7 +2296,7 @@ describe('SimulatedTurnExecutor', () => {
     const body = 'Simulator answer: Concise';
 
     await store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
-    const artifactAdmission = createSchedulerAdmissionEntry(coreDb, {
+    const artifactAdmission = await createTestQueueEntry(coreDb, {
       backendId: executor.executionBackend.id,
       queueEntryId: `simulator:${turn.id}`,
       requestId: artifactRequestId,
@@ -2306,7 +2306,7 @@ describe('SimulatedTurnExecutor', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
-      turnInput: 'Create one simulator Artifact',
+      text: 'Create one simulator Artifact',
       triggerActor: actor,
       workspaceCwd: null,
       workspaceRoots: [],

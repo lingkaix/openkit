@@ -25,6 +25,7 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   ControlStoreWorkerError,
@@ -57,14 +58,19 @@ function fixture(label: string) {
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
   recordWorkspaceOwnerMembership({ coreDb: db, workspaceId, ownerUserId: actor.id });
+  const turnId = `tu_00000000-0000-7000-8000-${label.padStart(12, '0')}`;
   const entry = createSchedulerAdmissionEntry(db, {
     queueEntryId: `queue-attempt-owner-${label}`,
     backendId: 'nanohost',
     triggerActor: actor,
     workspaceId,
     threadId: 'th_00000000-0000-7000-8000-000000000001',
-    turnId: `tu_00000000-0000-7000-8000-${label.padStart(12, '0')}`,
-    turnInput: 'Exercise the native execution-attempt owner.',
+    turnId,
+    inputRef: schedulerFixtureInput(
+      workspaceId,
+      turnId,
+      'Exercise the native execution-attempt owner.'
+    ),
     requestedAgentId: 'agent_worker',
   });
   db.sqlite.pragma('query_only = ON');

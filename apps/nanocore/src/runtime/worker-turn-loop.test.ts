@@ -8,7 +8,6 @@ import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import {
   cancelSchedulerAdmissionEntry,
-  createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import {
@@ -29,6 +28,7 @@ import {
 } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -560,7 +560,7 @@ function admittedWorker(
         updatedAt: timestamp,
       });
     const prompt = serializeStructuredWorkerDelegationRequest(prepared.delegationRequest);
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue_loop_${turnId}`,
       requestId,
@@ -569,7 +569,7 @@ function admittedWorker(
       workspaceId,
       requestedAgentId: manifest.id,
       triggerActor: { kind: 'user', id: actorId },
-      turnInput: prompt,
+      text: prompt,
       serverAdminTokenId:
         requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin'
           ? (requestActor.tokenId ?? null)
@@ -1274,8 +1274,8 @@ it('removes only its live never-leased cancelled preparation and retains cancell
 
 /** Cancels exact never-attempted intent before product publication; no Native effects exist. */
 function cancelledWorker(coreDb: CoreDb, requestId: string) {
-  return ({ turnId, prepared }: WorkerTurnLoopStartWorkerInput): never => {
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+  return async ({ turnId, prepared }: WorkerTurnLoopStartWorkerInput): Promise<never> => {
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue_cancel_${turnId}`,
       requestId,
@@ -1284,7 +1284,7 @@ function cancelledWorker(coreDb: CoreDb, requestId: string) {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       requestedAgentId: createTestAgentSetup().manifest.id,
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      turnInput: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+      text: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
     });
     cancelSchedulerAdmissionEntry(coreDb, {
       queueEntryId: entry.queueEntryId,
@@ -1323,7 +1323,7 @@ function cancelledLoopInput(
     reserveTurn: () => ({ turnId: 'tu_00000000-0000-7952-9279-bc2b017e274b' }),
     startWorker: async (input) => {
       try {
-        return cancelledWorker(coreDb, 'req_refusal')(input);
+        return await cancelledWorker(coreDb, 'req_refusal')(input);
       } catch (error) {
         await mutate();
         throw error;
@@ -1466,9 +1466,9 @@ it.each([
       if (kind === 'changed-admission')
         coreDb.sqlite
           .prepare(
-            "UPDATE scheduler_admission_entries SET turn_input='changed' WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
+            "UPDATE scheduler_admission_entries SET input_digest=? WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
           )
-          .run();
+          .run('0'.repeat(64));
       if (kind === 'rollback') {
         await shutdownControlStoreWorkerClient();
         workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_removal
@@ -1639,7 +1639,7 @@ it.each(['usr_00000000-0000-73d4-904a-d4c4b905df7c', 'usr_00000000-0000-7000-800
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     try {
       // Request UUID alone is not command identity: actor and Thread scope remain exact.
-      const unrelated = createSchedulerAdmissionEntry(coreDb, {
+      const unrelated = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue_other',
         requestId: 'req_refusal',
@@ -1651,7 +1651,7 @@ it.each(['usr_00000000-0000-73d4-904a-d4c4b905df7c', 'usr_00000000-0000-7000-800
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         requestedAgentId: createTestAgentSetup().manifest.id,
         triggerActor: { kind: 'user', id: actorId },
-        turnInput: serializeStructuredWorkerDelegationRequest(
+        text: serializeStructuredWorkerDelegationRequest(
           preparedWorkerTurn(false).delegationRequest
         ),
       });

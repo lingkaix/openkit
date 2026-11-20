@@ -1,3 +1,4 @@
+import { schedulerFixtureInput, createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -125,6 +126,7 @@ import {
   isCurrentAgentSessionStatus,
   nativeProductScope,
 } from '../storage/workspace-file-records.js';
+import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -241,6 +243,7 @@ import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
 } from './scheduler-dispatch-loop.js';
+import { stageSchedulerStartInput } from './scheduler-input-staging.js';
 import * as factoryOwners from './turn-executor-factory.js';
 import {
   createConfiguredTurnExecutor,
@@ -548,7 +551,7 @@ function bindNanoHostWorkerLineage(
       threadId: environmentPackage.scope.threadId,
       triggerActor: environmentPackage.scope.triggerActor,
       turnId: environmentPackage.scope.turnId,
-      turnInput: 'Factory worker storage fixture',
+      inputRef: schedulerFixtureInput(environmentPackage.scope.workspaceId, environmentPackage.scope.turnId, 'Factory worker storage fixture'),
       workspaceId: environmentPackage.scope.workspaceId,
     });
   }
@@ -2323,7 +2326,7 @@ describe('createConfiguredTurnExecutor', () => {
         requestedAgentId: 'agent_codex_host',
         threadId: input.threadId,
         turnId: 'tu_00000000-0000-7198-835c-d2d0d4772464',
-        turnInput: 'Commit exact continuity',
+        inputRef: schedulerFixtureInput(input.workspaceId, 'tu_00000000-0000-7198-835c-d2d0d4772464', 'Commit exact continuity'),
         triggerActor: environmentPackage.scope.triggerActor,
         workspaceId: input.workspaceId,
       });
@@ -3479,7 +3482,7 @@ describe('createConfiguredTurnExecutor', () => {
         });
       restoreAccept = () => acceptObservation.mockRestore();
       const commandRequestId = randomUUID();
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${randomUUID()}`,
         requestId: commandRequestId,
@@ -3493,7 +3496,7 @@ describe('createConfiguredTurnExecutor', () => {
           commandRequestId,
           null,
         ]),
-        turnInput: 'Use the live static Provider.',
+        text: 'Use the live static Provider.',
         triggerActor: { kind: 'user', id: ownerUserId },
       });
       await createNativeCommandTurn(
@@ -3501,7 +3504,7 @@ describe('createConfiguredTurnExecutor', () => {
         { requestId: commandRequestId, agentId: authored.id },
         entry.workspaceId,
         entry.threadId,
-        entry.turnInput,
+        readFactoryAdmissionInput(store, entry),
         entry.triggerActor,
         undefined,
         { turnId: entry.turnId, status: 'pending', executorKind: 'worker' }
@@ -3741,7 +3744,7 @@ describe('createConfiguredTurnExecutor', () => {
             threadId,
             workspaceId,
             triggerActor,
-            turnInput: 'Factory worker storage fixture',
+            inputRef: schedulerFixtureInput(workspaceId, turnId, 'Factory worker storage fixture'),
           });
           resolution = {
             coreDb,
@@ -4207,7 +4210,12 @@ describe('createConfiguredTurnExecutor', () => {
             threadId: pkg.scope.threadId,
             triggerActor: pkg.scope.triggerActor,
             turnId: pkg.scope.turnId,
-            turnInput: 'Factory worker storage fixture',
+            inputRef: await stageSchedulerStartInput(
+              coreDb.dataRoot,
+              pkg.scope,
+              pkg.scope.requestId ?? `queue:${attemptId}`,
+              'Factory worker storage fixture'
+            ),
             workspaceId: pkg.scope.workspaceId,
             timestamp: now(),
           },
@@ -4409,7 +4417,7 @@ describe('createConfiguredTurnExecutor', () => {
     let original: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
     try {
       const agentSessionId = testEntityId('as', 'release_resident');
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue:release_resident',
         requestId: testEntityId('tu', 'request_release_resident').slice(3),
@@ -4417,7 +4425,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: DEMO_THREAD_ID,
         turnId: testEntityId('tu', 'release_resident'),
-        turnInput: 'Complete the original resident Turn',
+        text: 'Complete the original resident Turn',
         triggerActor: { kind: 'user', id: ownerUserId },
       });
       await publishFactoryAdmission(store, entry);
@@ -4527,7 +4535,7 @@ describe('createConfiguredTurnExecutor', () => {
       const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
       try {
         const firstSessionId = testEntityId('as', `unproved-${bound}-0`);
-        const firstEntry = createSchedulerAdmissionEntry(coreDb, {
+        const firstEntry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:unproved-${bound}-0`,
           requestId: testEntityId('tu', `unproved-request-${bound}-0`).slice(3),
@@ -4535,7 +4543,7 @@ describe('createConfiguredTurnExecutor', () => {
           workspaceId,
           threadId: threadIds[0]!,
           turnId: testEntityId('tu', `unproved-${bound}-0`),
-          turnInput: 'Hold the first admitted Turn.',
+          text: 'Hold the first admitted Turn.',
           triggerActor: { kind: 'user', id: ownerUserId },
         });
         await publishFactoryAdmission(store, firstEntry);
@@ -4548,7 +4556,7 @@ describe('createConfiguredTurnExecutor', () => {
           coreDb,
           store.getAgentSession(firstSessionId).retainedStorage!
         )!;
-        const second = createSchedulerAdmissionEntry(coreDb, {
+        const second = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:unproved-${bound}-1`,
           requestId: testEntityId('tu', `unproved-request-${bound}-1`).slice(3),
@@ -4556,7 +4564,7 @@ describe('createConfiguredTurnExecutor', () => {
           workspaceId,
           threadId: threadIds[1]!,
           turnId: secondTurnId,
-          turnInput: 'Request another binding without complete co-residency proof.',
+          text: 'Request another binding without complete co-residency proof.',
           triggerActor: { kind: 'user', id: ownerUserId },
           workerStorageChoice: {
             kind: 'selected',
@@ -4772,7 +4780,7 @@ describe('createConfiguredTurnExecutor', () => {
               store.getAgentSession(cohort[0]!.pkg.scope.agentSessionId).retainedStorage!
             )
           : null;
-        const entry = createSchedulerAdmissionEntry(coreDb, {
+        const entry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:${attemptId}`,
           requestId: testEntityId('tu', `bound_request_${bound}_${index}`).slice(3),
@@ -4780,7 +4788,7 @@ describe('createConfiguredTurnExecutor', () => {
           workspaceId,
           threadId: threadIds[thread]!,
           turnId: testEntityId('tu', `bound_${bound}_${index}`),
-          turnInput: `Bound ${bound} Turn ${index}`,
+          text: `Bound ${bound} Turn ${index}`,
           triggerActor: { kind: 'user', id: ownerUserId },
           ...(storage
             ? {
@@ -5200,7 +5208,7 @@ describe('createConfiguredTurnExecutor', () => {
         manifest = { ...manifest, skills: label === 'corrupt' ? [{ id: 'repo-guidelines' }] : [] };
         const attemptId = testEntityId('attempt', `skill_pre_effect_${label}`);
         const turnId = testEntityId('tu', `skill_pre_effect_${label}`);
-        const entry = createSchedulerAdmissionEntry(coreDb, {
+        const entry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:${attemptId}`,
           requestId: testEntityId('tu', `request_skill_pre_effect_${label}`).slice(3),
@@ -5208,7 +5216,7 @@ describe('createConfiguredTurnExecutor', () => {
           workspaceId,
           threadId,
           turnId,
-          turnInput: 'Use selected Skill',
+          text: 'Use selected Skill',
           triggerActor: { kind: 'user', id: ownerUserId },
         });
         await publishFactoryAdmission(store, entry);
@@ -6874,7 +6882,7 @@ describe('createConfiguredTurnExecutor', () => {
     onTestFinished(() => injected.mockRestore());
     const attemptId = testEntityId('attempt', 'capture_insert_rollback');
     const agentSessionId = testEntityId('as', 'capture_insert_rollback');
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue:${attemptId}`,
       requestId: testEntityId('tu', 'capture_insert_rollback_request').slice(3),
@@ -6882,7 +6890,7 @@ describe('createConfiguredTurnExecutor', () => {
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: DEMO_THREAD_ID,
       turnId: testEntityId('tu', 'capture_insert_rollback'),
-      turnInput: 'Retain the original arrived capture after a local refusal.',
+      text: 'Retain the original arrived capture after a local refusal.',
       triggerActor: { kind: 'user', id: ownerUserId },
     });
     await publishFactoryAdmission(store, entry);
@@ -6914,7 +6922,7 @@ describe('createConfiguredTurnExecutor', () => {
       )!;
       const siblingAttemptId = testEntityId('attempt', 'capture_concurrent_sibling');
       const siblingAgentSessionId = testEntityId('as', 'capture_concurrent_sibling');
-      const siblingEntry = createSchedulerAdmissionEntry(coreDb, {
+      const siblingEntry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${siblingAttemptId}`,
         requestId: testEntityId('tu', 'capture_concurrent_sibling_request').slice(3),
@@ -6922,7 +6930,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId: entry.workspaceId,
         threadId: siblingThread.id,
         turnId: testEntityId('tu', 'capture_concurrent_sibling'),
-        turnInput: 'Complete an independent binding in the same shared Sandbox.',
+        text: 'Complete an independent binding in the same shared Sandbox.',
         triggerActor: { kind: 'user', id: ownerUserId },
         workerStorageChoice: {
           kind: 'selected',
@@ -7173,7 +7181,7 @@ describe('createConfiguredTurnExecutor', () => {
           testEntityId('th', 'capture_partial_fresh_epoch')
         );
         const nextAttemptId = testEntityId('attempt', 'capture_partial_fresh_epoch');
-        const incomingEntry = createSchedulerAdmissionEntry(coreDb, {
+        const incomingEntry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:${nextAttemptId}`,
           requestId: testEntityId('tu', 'capture_partial_fresh_request').slice(3),
@@ -7181,7 +7189,7 @@ describe('createConfiguredTurnExecutor', () => {
           workspaceId: entry.workspaceId,
           threadId: incomingThread.id,
           turnId: testEntityId('tu', 'capture_partial_fresh_epoch'),
-          turnInput: 'Refuse reuse before the original partial capture has a disposition.',
+          text: 'Refuse reuse before the original partial capture has a disposition.',
           triggerActor: { kind: 'user', id: ownerUserId },
         });
         await publishFactoryAdmission(coldStore, incomingEntry);
@@ -7646,7 +7654,7 @@ describe('createConfiguredTurnExecutor', () => {
             threadId,
             workspaceId,
             triggerActor,
-            turnInput: 'Factory worker storage fixture',
+            inputRef: schedulerFixtureInput(workspaceId, turnId, 'Factory worker storage fixture'),
           });
           resolution = {
             coreDb,
@@ -8045,7 +8053,7 @@ describe('createConfiguredTurnExecutor', () => {
     const admitted: Awaited<ReturnType<typeof native.admitTurn>>[] = [];
     const admit = async (label: string) => {
       const turnId = testEntityId('tu', `collection-versions-${label}`);
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:collection-versions-${label}`,
         requestId: turnId.slice(3),
@@ -8053,7 +8061,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId,
         threadId: DEMO_THREAD_ID,
         turnId,
-        turnInput: 'Collect with original credential authority.',
+        text: 'Collect with original credential authority.',
         triggerActor: { kind: 'user', id: ownerUserId },
       });
       await publishFactoryAdmission(store, entry);
@@ -8902,7 +8910,7 @@ describe('createConfiguredTurnExecutor', () => {
             ? getWorkerStorageBinding(coreDb, store.getAgentSession(originalId).retainedStorage!)
             : null;
         if (sharedAdapters && index) expect(selectedStorage).not.toBeNull();
-        const entry = createSchedulerAdmissionEntry(coreDb, {
+        const entry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:${attemptId}`,
           requestId: testEntityId(
@@ -8913,7 +8921,7 @@ describe('createConfiguredTurnExecutor', () => {
           workspaceId,
           threadId,
           turnId,
-          turnInput: sharedAdapters ? `Run ${label}` : index ? 'Run next fixture' : 'Run fixture',
+          text: sharedAdapters ? `Run ${label}` : index ? 'Run next fixture' : 'Run fixture',
           workerStorageChoice: selectedStorage
             ? {
                 expectedRevision: selectedStorage.revision,
@@ -9737,7 +9745,7 @@ describe('createConfiguredTurnExecutor', () => {
       threadId: string,
       choice?: SchedulerWorkerStorageChoice
     ) => {
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:selected-slot-${label}`,
         requestId: testEntityId('tu', `request_selected_slot_${label}`).slice(3),
@@ -9745,7 +9753,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId,
         threadId,
         turnId: testEntityId('tu', `selected_slot_${label}`),
-        turnInput: `Continue retained work ${label}`,
+        text: `Continue retained work ${label}`,
         workerStorageChoice: choice,
         triggerActor: { kind: 'user', id: ownerUserId },
         workspaceCwd: null,
@@ -10408,7 +10416,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId: environmentPackage.scope.workspaceId,
         threadId: environmentPackage.scope.threadId,
         turnId: environmentPackage.scope.turnId,
-        turnInput: 'Recover the original no-Sandbox storage reservation.',
+        inputRef: schedulerFixtureInput(environmentPackage.scope.workspaceId, environmentPackage.scope.turnId, 'Recover the original no-Sandbox storage reservation.'),
         now: () => failureAt,
       });
       recordTestExecutionAttempt(coreDb, {
@@ -11448,7 +11456,7 @@ describe('createConfiguredTurnExecutor', () => {
       let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
       let originalBackendSessionId: string | undefined;
       try {
-        const entry = createSchedulerAdmissionEntry(coreDb, {
+        const entry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:${label}`,
           requestId: testEntityId('tu', `request-${label}`).slice(3),
@@ -11456,7 +11464,7 @@ describe('createConfiguredTurnExecutor', () => {
           workspaceId,
           threadId: DEMO_THREAD_ID,
           turnId: testEntityId('tu', label),
-          turnInput: 'Keep the credential-bearing resident binding available.',
+          text: 'Keep the credential-bearing resident binding available.',
           triggerActor: { kind: 'user', id: ownerUserId },
         });
         await publishFactoryAdmission(store, entry);
@@ -11608,13 +11616,13 @@ describe('createConfiguredTurnExecutor', () => {
           )!;
           const siblingAgentSessionId = testEntityId('as', `${label}-sibling`);
           const siblingAttemptId = testEntityId('attempt', `${label}-sibling`);
-          const siblingEntry = createSchedulerAdmissionEntry(coreDb, {
+          const siblingEntry = await createTestQueueEntry(coreDb, {
             ...entry,
             queueEntryId: `queue:${label}-sibling`,
             requestId: testEntityId('tu', `request-${label}-sibling`).slice(3),
             threadId: siblingThread.id,
             turnId: testEntityId('tu', `${label}-sibling`),
-            turnInput:
+            text:
               'Retain an independent cancellation and collection owner in the same Sandbox.',
             workerStorageChoice: {
               kind: 'selected',
@@ -11836,12 +11844,12 @@ describe('createConfiguredTurnExecutor', () => {
         }
         if (binding === 'idle-after-no-effect') {
           const failedAttemptId = testEntityId('attempt', `${label}-later`);
-          const later = createSchedulerAdmissionEntry(coreDb, {
+          const later = await createTestQueueEntry(coreDb, {
             ...entry,
             queueEntryId: `queue:${label}-later`,
             requestId: testEntityId('tu', `request-${label}-later`).slice(3),
             turnId: testEntityId('tu', `${label}-later`),
-            turnInput: 'Fail preparation after publication without touching the resident.',
+            text: 'Fail preparation after publication without touching the resident.',
           });
           await publishFactoryAdmission(store, later);
           const backend = native.executor.executionBackend as WorkerGovernanceBackend;
@@ -12423,7 +12431,7 @@ describe('createConfiguredTurnExecutor', () => {
         threadId,
         turnId,
         triggerActor,
-        turnInput,
+        inputRef: schedulerFixtureInput(workspaceId, turnId, turnInput),
       });
       const runtimeEnvCredentials: WorkerGovernanceRuntimeEnvCredential[] = [];
       const receipts: CreateVaultInjectionReceiptInput[] = [];
@@ -13842,14 +13850,14 @@ describe('createConfiguredTurnExecutor', () => {
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
       await recordTestNativeRuntimeTarget(coreDb);
       admitTestNativeEnvironment(coreDb, setup.manifest);
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${attemptId}`,
         requestId: testEntityId('tu', `request_${suffix}`).slice(3),
         requestedAgentId: setup.manifest.id,
         threadId: DEMO_THREAD_ID,
         turnId,
-        turnInput: 'Acquire the exact local image.',
+        text: 'Acquire the exact local image.',
         triggerActor: { kind: 'user', id: ownerUserId },
         workspaceId: DEMO_WORKSPACE_ID,
       });
@@ -14005,11 +14013,12 @@ describe('createConfiguredTurnExecutor', () => {
         await expect(runtime.cleanupBackendSession(anchor)).rejects.toBeInstanceOf(
           NanoHostCleanupFencePendingError
         );
-        const competing = createSchedulerAdmissionEntry(coreDb, {
+        const competing = await createTestQueueEntry(coreDb, {
           ...entry,
           queueEntryId: `queue:${attemptId}:competing`,
           requestId: testEntityId('tu', 'request_acquire_match_competing').slice(3),
           turnId: testEntityId('tu', 'turn_acquire_match_competing'),
+          text: readFactoryAdmissionInput(store, entry),
         });
         await publishFactoryAdmission(store, competing);
         expect((await dispatch()).startedTurns).toEqual([]);
@@ -14062,7 +14071,7 @@ describe('createConfiguredTurnExecutor', () => {
       const storage =
         label === 'restored' ? store.getAgentSession(originalSessionId).retainedStorage : null;
       const current = storage ? getWorkerStorageBinding(coreDb, storage) : null;
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${attemptId}`,
         requestId: testEntityId('tu', `measured-inspect-request-${label}`).slice(3),
@@ -14070,7 +14079,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId,
         threadId,
         turnId: testEntityId('tu', `measured-inspect-${label}`),
-        turnInput: 'Inspect restored binding copy',
+        text: 'Inspect restored binding copy',
         triggerActor: { kind: 'user', id: ownerUserId },
         ...(current
           ? {
@@ -15418,7 +15427,7 @@ describe('createConfiguredTurnExecutor', () => {
         const turnId = testEntityId('tu', `proof_${scenario}_${index}`);
         const attemptId = testEntityId('attempt', `proof_${scenario}_${index}`);
         const agentSessionId = testEntityId('as', `proof_${scenario}_${index}`);
-        const entry = createSchedulerAdmissionEntry(coreDb, {
+        const entry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:${attemptId}`,
           requestId: testEntityId('tu', `request_proof_${scenario}_${index}`).slice(3),
@@ -15426,7 +15435,7 @@ describe('createConfiguredTurnExecutor', () => {
           workspaceId,
           threadId: threadIds[thread]!,
           turnId,
-          turnInput: `Native proof ${index}`,
+          text: `Native proof ${index}`,
           triggerActor: { kind: 'user', id: ownerUserId },
         });
         await publishFactoryAdmission(store, entry);
@@ -16617,7 +16626,7 @@ describe('createConfiguredTurnExecutor', () => {
           requestId: environmentPackage.scope.requestId,
           requestedAgentId: environmentPackage.agent.agentId,
           ...environmentPackage.scope,
-          turnInput: 'Complete a reusable Turn',
+          inputRef: schedulerFixtureInput(environmentPackage.scope.workspaceId, environmentPackage.scope.turnId, 'Complete a reusable Turn'),
         });
       /** Inserts the real scheduler grant and its capacity accounting before backend effects. */
       const dispatch = async (environmentPackage: AgentEnvironmentPackage) => {
@@ -16978,10 +16987,22 @@ describe('createConfiguredTurnExecutor', () => {
       const receipts: ReturnType<FsStore['getCommandRequest']>[] = [];
       const scope = { workspaceId, threadId, actorId: ownerUserId };
       /** Creates queue state through its native owner before the existing Turn/receipt publication. */
-      const createAdmission = async (
-        input: Extract<CoreSchedulerInput, { mode: 'create' }>['entry']
-      ) => {
-        const result = await admitCoreScheduler(coreDb, { mode: 'create', entry: input });
+      const createAdmission = async ({
+        text,
+        ...input
+      }: Omit<Extract<CoreSchedulerInput, { mode: 'create' }>['entry'], 'inputRef'> & {
+        text: string;
+      }) => {
+        const inputRef = await stageSchedulerStartInput(
+          coreDb.dataRoot,
+          input,
+          input.requestId ?? input.queueEntryId,
+          text
+        );
+        const result = await admitCoreScheduler(coreDb, {
+          mode: 'create',
+          entry: { ...input, inputRef },
+        });
         if (result.kind !== 'queue') throw new Error('Expected a native scheduler queue entry.');
         return result.entry;
       };
@@ -17004,7 +17025,7 @@ describe('createConfiguredTurnExecutor', () => {
                 ? (await store.createThread(workspaceId, 'Eviction request')).id
                 : threadId,
             turnId: testEntityId('tu', `turn_idle_eviction_${label}`),
-            turnInput: `Continue retained work ${label}`,
+            text: `Continue retained work ${label}`,
             workerStorageChoice: choice,
             triggerActor: { kind: 'user' as const, id: ownerUserId },
           };
@@ -17935,7 +17956,7 @@ describe('createConfiguredTurnExecutor', () => {
       choice?: SchedulerWorkerStorageChoice
     ) => {
       signal.throwIfAborted();
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:shared-choice-${label}`,
         requestId: testEntityId('tu', `request_shared_choice_${label}`).slice(3),
@@ -17943,7 +17964,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId,
         threadId,
         turnId: testEntityId('tu', `shared_choice_${label}`),
-        turnInput: `Shared choice ${label}`,
+        text: `Shared choice ${label}`,
         workerStorageChoice: choice,
         triggerActor: { kind: 'user', id: ownerUserId },
       });
@@ -18357,7 +18378,7 @@ describe('createConfiguredTurnExecutor', () => {
     };
 
     const enter = async (native: Native, label: string, expectedSessionId?: string) => {
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:readiness-${label}`,
         requestId: testEntityId('tu', `request_readiness_${label}`).slice(3),
@@ -18365,7 +18386,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceId,
         threadId,
         turnId: testEntityId('tu', `readiness_${label}`),
-        turnInput: `Native readiness ${label}`,
+        text: `Native readiness ${label}`,
         triggerActor: { kind: 'user', id: ownerUserId },
       });
       await publishFactoryAdmission(store, entry);
@@ -20132,14 +20153,14 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           });
         restoreOpenObservation = () => openObservation.mockRestore();
         native.peerFaults.failedFinal = failedTurn;
-        const previous = createSchedulerAdmissionEntry(coreDb, {
+        const previous = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: 'queue_restart_selected_previous',
           requestId: '00000000-0000-4000-8000-00000000e500',
           requestedAgentId: setup.manifest.id,
           threadId: scopePackage.scope.threadId,
           turnId: scopePackage.scope.turnId,
-          turnInput: 'Establish retained native work before restart.',
+          text: 'Establish retained native work before restart.',
           triggerActor: scopePackage.scope.triggerActor,
           workspaceId: scopePackage.scope.workspaceId,
         });
@@ -20265,12 +20286,12 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         );
         native.peerFaults.failedFinal = false;
         const beforeEffects = outside.effects.length;
-        const successor = createSchedulerAdmissionEntry(coreDb, {
+        const successor = await createTestQueueEntry(coreDb, {
           ...previous,
           queueEntryId: 'queue_restart_selected',
           requestId: '00000000-0000-4000-8000-00000000e501',
           turnId: testEntityId('tu', 'turn_restart_selected_next'),
-          turnInput: 'Continue from the exact retained native attachment.',
+          text: 'Continue from the exact retained native attachment.',
           workerStorageChoice: {
             kind: 'selected',
             expectedRevision: retained.revision,
@@ -20961,7 +20982,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     });
     let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
     try {
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue:storage-audience-metadata',
         requestId: '00000000-0000-4000-8000-00000000e800',
@@ -20969,7 +20990,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: DEMO_THREAD_ID,
         turnId: testEntityId('tu', 'storage_audience_metadata'),
-        turnInput: 'Use the current shared Thread audience.',
+        text: 'Use the current shared Thread audience.',
         triggerActor: { kind: 'user', id: ownerUserId },
       });
       await publishFactoryAdmission(store, entry);
@@ -21277,7 +21298,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       });
       const attemptId = testEntityId('attempt', `lease_${label}`);
       const agentSessionId = testEntityId('as', `as_${label}`);
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${attemptId}`,
         requestId: testEntityId('tu', `request_${label}`).slice(3),
@@ -21285,7 +21306,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: DEMO_THREAD_ID,
         turnId: testEntityId('tu', `turn_${label}`),
-        turnInput: 'Complete the original resident Turn',
+        text: 'Complete the original resident Turn',
         triggerActor: { kind: 'user', id: ownerUserId },
       });
       await publishFactoryAdmission(store, entry);
@@ -21458,7 +21479,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         }),
     };
     const nativeFixture = await createNativeTaskAdmissionFixture(coreDb, store, options);
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue:${attemptId}`,
       requestId: testEntityId('tu', `request_${label}`).slice(3),
@@ -21466,7 +21487,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: DEMO_THREAD_ID,
       turnId: testEntityId('tu', `turn_${label}`),
-      turnInput: 'Complete the original resident Turn',
+      text: 'Complete the original resident Turn',
       triggerActor: { kind: 'user', id: ownerUserId },
     });
     // Preserve the fixture's journal registration while observing acknowledged owner output.
@@ -22756,7 +22777,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
               store.getAgentSession(cohort[0]!.pkg.scope.agentSessionId).retainedStorage!
             )!
           : null;
-        const entry = createSchedulerAdmissionEntry(coreDb, {
+        const entry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:idle-resident-join-${label}`,
           requestId: testEntityId('tu', `idle_resident_join_request_${label}`).slice(3),
@@ -22764,7 +22785,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           workspaceId: DEMO_WORKSPACE_ID,
           threadId: thread.id,
           turnId: testEntityId('tu', `idle_resident_join_${label}`),
-          turnInput: 'Retain the exact resident until its storage attachment is released.',
+          text: 'Retain the exact resident until its storage attachment is released.',
           triggerActor: { kind: 'user', id: ownerUserId },
           ...(storage
             ? {
@@ -22985,7 +23006,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           }
           return await settle(db, input);
         });
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${attemptId}`,
         requestId: turnId.slice(3),
@@ -22993,7 +23014,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: DEMO_THREAD_ID,
         turnId,
-        turnInput: 'Retain unknown cleanup until the exact full release proof exists.',
+        text: 'Retain unknown cleanup until the exact full release proof exists.',
         triggerActor: { kind: 'user', id: ownerUserId },
       });
       await publishFactoryAdmission(store, entry);
@@ -23188,7 +23209,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       });
       const attemptId = testEntityId('attempt', `lease_${label}`);
       const agentSessionId = testEntityId('as', `as_${label}`);
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${attemptId}`,
         requestId: testEntityId('tu', `request_${label}`).slice(3),
@@ -23196,7 +23217,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: DEMO_THREAD_ID,
         turnId: testEntityId('tu', `turn_${label}`),
-        turnInput: 'Complete the original resident Turn',
+        text: 'Complete the original resident Turn',
         triggerActor: { kind: 'user', id: ownerUserId },
       });
       await publishFactoryAdmission(store, entry);
@@ -23496,11 +23517,26 @@ async function closeFactoryAttempt(
   });
 }
 
+/** Resolves the original staged input for the fixture's pending Turn and receipt. */
+function readFactoryAdmissionInput(
+  store: FsStore,
+  entry: ReturnType<typeof createSchedulerAdmissionEntry>
+): string {
+  const dataRoot = store.getDataRoot();
+  if (!dataRoot) throw new Error('Factory fixture has no Workspace input owner.');
+  const original = readWorkspaceQueueInput(dataRoot, entry, entry.inputRef);
+  if (!original || original.originalInvocationId !== (entry.requestId ?? entry.queueEntryId)) {
+    throw new Error('Factory fixture has no verified original Workspace input.');
+  }
+  return original.text;
+}
+
 /** Publishes the same pending Turn and ordinary receipt produced by the command owner before dispatch. */
 async function publishFactoryAdmission(
   store: FsStore,
   entry: ReturnType<typeof createSchedulerAdmissionEntry>
 ) {
+  const turnInput = readFactoryAdmissionInput(store, entry);
   const createdAt = new Date().toISOString();
   const scope = {
     workspaceId: entry.workspaceId,
@@ -23513,7 +23549,7 @@ async function publishFactoryAdmission(
   await store.createTurn(
     entry.workspaceId,
     entry.threadId,
-    entry.turnInput,
+    turnInput,
     entry.triggerActor,
     undefined,
     {
@@ -23528,7 +23564,7 @@ async function publishFactoryAdmission(
         scope,
         inputHash: commandInputHash({
           queueEntryId: entry.queueEntryId,
-          turnInput: entry.turnInput,
+          turnInput,
         }),
         responseKind: 'turn',
         createdAt,
@@ -23633,7 +23669,7 @@ describe('retired Workspace resident isolation', () => {
       const admission = async (index: number, workspaceId: string, threadId: string) => {
         const attemptId = testEntityId('attempt', `failure_scope_${proof}_${index}`);
         const agentSessionId = testEntityId('as', `failure_scope_${proof}_${index}`);
-        const entry = createSchedulerAdmissionEntry(coreDb, {
+        const entry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:${attemptId}`,
           requestId: testEntityId('tu', `failure_scope_request_${proof}_${index}`).slice(3),
@@ -23641,7 +23677,7 @@ describe('retired Workspace resident isolation', () => {
           workspaceId,
           threadId,
           turnId: testEntityId('tu', `failure_scope_${proof}_${index}`),
-          turnInput: 'Inspect exact retirement isolation.',
+          text: 'Inspect exact retirement isolation.',
           triggerActor: { kind: 'user', id: ownerUserId },
         });
         await publishFactoryAdmission(store, entry);
@@ -24210,7 +24246,7 @@ async function buildOrdinaryProofTemplate(): Promise<OrdinaryProofTemplate> {
   const native = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig });
   const attemptId = testEntityId('attempt', 'proof_base_1');
   const agentSessionId = testEntityId('as', 'proof_base_1');
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue:${attemptId}`,
     requestId: testEntityId('tu', 'request_proof_base_1').slice(3),
@@ -24218,7 +24254,7 @@ async function buildOrdinaryProofTemplate(): Promise<OrdinaryProofTemplate> {
     workspaceId,
     threadId: threadIds[0]!,
     turnId: testEntityId('tu', 'proof_base_1'),
-    turnInput: 'Native proof 1',
+    text: 'Native proof 1',
     triggerActor: { kind: 'user', id: ownerUserId },
   });
   await publishFactoryAdmission(store, entry);
@@ -24278,7 +24314,7 @@ async function buildRetirementCheckpoint(): Promise<RetirementCheckpoint> {
   const native = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig });
   const attemptId = testEntityId('attempt', 'failure_scope_base_1');
   const agentSessionId = testEntityId('as', 'failure_scope_base_1');
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue:${attemptId}`,
     requestId: testEntityId('tu', 'failure_scope_request_base_1').slice(3),
@@ -24286,7 +24322,7 @@ async function buildRetirementCheckpoint(): Promise<RetirementCheckpoint> {
     workspaceId: retiredWorkspaceId,
     threadId: DEMO_THREAD_ID,
     turnId: testEntityId('tu', 'failure_scope_base_1'),
-    turnInput: 'Inspect exact retirement isolation.',
+    text: 'Inspect exact retirement isolation.',
     triggerActor: { kind: 'user', id: ownerUserId },
   });
   await publishFactoryAdmission(store, entry);
@@ -25355,7 +25391,7 @@ describe('inert initial private Login exchange through the concrete backend sess
         );
         const agentSessionId = evidenceSessionId ?? testEntityId('as', randomUUID());
         const attemptId = testEntityId('attempt', randomUUID());
-        const admissionEntry = createSchedulerAdmissionEntry(coreDb, {
+        const admissionEntry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:${turn.id}`,
           requestId,
@@ -25363,7 +25399,7 @@ describe('inert initial private Login exchange through the concrete backend sess
           workspaceId: DEMO_WORKSPACE_ID,
           threadId: thread.id,
           turnId: turn.id,
-          turnInput: 'Prepare initial Login',
+          text: 'Prepare initial Login',
           triggerActor: turn.triggerActor,
         });
         const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
@@ -25570,7 +25606,7 @@ describe('inert initial private Login exchange through the concrete backend sess
             backendId: 'nanohost', queueEntryId: `queue:${nextTurn.id}`,
             requestId: nextRequestId, requestedAgentId: setup.manifest.id,
             workspaceId: DEMO_WORKSPACE_ID, threadId: nextThread.id, turnId: nextTurn.id,
-            turnInput: 'Prepare independent Login B', triggerActor: nextTurn.triggerActor,
+            inputRef: schedulerFixtureInput(DEMO_WORKSPACE_ID, nextTurn.id, 'Prepare independent Login B'), triggerActor: nextTurn.triggerActor,
           });
           const nextSetup = createTestAgentSetup({
             privateRoute, requiredCapabilities: ['trusted-worker-inference-relay'],
@@ -26787,11 +26823,11 @@ describe('inert initial private Login exchange through the concrete backend sess
           );
           expect(nextTurn.id).not.toBe(turn.id);
           // Selection requires the next Turn's own admitted authority, not A's old admission.
-          createSchedulerAdmissionEntry(coreDb, {
+          await createTestQueueEntry(coreDb, {
             backendId: 'nanohost', queueEntryId: `queue:${nextTurn.id}`,
             requestId: previewRequestId, requestedAgentId: authored.id,
             workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id, turnId: nextTurn.id,
-            turnInput: 'Preview the installed preferred Login', triggerActor: nextTurn.triggerActor,
+            text: 'Preview the installed preferred Login', triggerActor: nextTurn.triggerActor,
           });
           const beforePreview = () => ({
             references: [login.referenceId, preferred.referenceId, fallback.referenceId].map(
@@ -28142,7 +28178,7 @@ it('fences same-account Login replacement until the actual shared survivor settl
     ) => {
       if (closing) throw new Error('Shared fixture disposal blocks new admissions.');
       const commandRequestId = randomUUID();
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:shared-login-${randomUUID()}`,
         requestId: commandRequestId,
@@ -28156,7 +28192,7 @@ it('fences same-account Login replacement until the actual shared survivor settl
           commandRequestId,
           null,
         ]),
-        turnInput: label,
+        text: label,
         ...(choice ? { workerStorageChoice: choice } : {}),
         triggerActor: { kind: 'user', id: ownerUserId },
       });
@@ -28165,7 +28201,7 @@ it('fences same-account Login replacement until the actual shared survivor settl
         { requestId: commandRequestId, agentId: authored.id },
         entry.workspaceId,
         entry.threadId,
-        entry.turnInput,
+        readFactoryAdmissionInput(store, entry),
         entry.triggerActor,
         undefined,
         { turnId: entry.turnId, status: 'pending', executorKind: 'worker' }

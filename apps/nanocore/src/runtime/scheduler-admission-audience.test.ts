@@ -16,6 +16,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
@@ -56,14 +57,16 @@ describe('scheduler admission thread audience', () => {
       ['queue_foreign_private', privateThread.id],
       ['queue_own_private', ownPrivate.id],
     ] as const) {
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const turnId = testEntityId('tu', `turn_${queueEntryId}`);
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        workspaceId,
         threadId,
-        turnId: testEntityId('tu', `turn_${queueEntryId}`),
-        turnInput: `Admission for ${threadId}.`,
+        turnId,
+        inputRef: schedulerFixtureInput(workspaceId, turnId, `Admission for ${threadId}.`),
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
       });

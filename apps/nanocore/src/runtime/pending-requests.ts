@@ -24,6 +24,7 @@ import {
   readCommandRequestRecordPagesFromSqlite,
   readCommandRequestRecordsFromSqlite,
 } from '../storage/command-request-records.js';
+import type { WorkInputRef } from '../storage/control-kernel-port.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import {
   ControlPendingCommandInputSchema,
@@ -48,6 +49,10 @@ import {
   type WorkspaceDb,
 } from '../storage/db.js';
 import { StoredItemPayloadV1Schema } from '../storage/retained-work-items-v1.js';
+import {
+  commitWorkspaceQueueInputBatch,
+  type prepareWorkspaceQueueInputBatch,
+} from '../storage/workspace-queue-inputs.js';
 
 /** Fixed retained handoff meaning; current publisher and Approval admission remain separate. */
 const StoredPendingAssistantHandoffV1Schema = z.discriminatedUnion('kind', [
@@ -1210,7 +1215,13 @@ export function frozenPendingOutcomeInput(
     )
     .all(turnId) as PendingRequestRow[];
   if (!rows.length) return triggerInput;
-  const outcomes = rows.map(parsePendingRequestRow).map((record) => ({
+  const outcomes = rows.map(parsePendingRequestRow).map(pendingOutcomeDeliveryProjection);
+  return JSON.stringify({ triggerInput, pendingOutcomes: outcomes });
+}
+
+/** Preserves the exact native delivery fields, including work omitted by presentation Items. */
+function pendingOutcomeDeliveryProjection(record: PendingRequestRecord) {
+  return {
     requestId: record.requestId,
     requestItemId: record.requestItemId,
     publicationTurnId: record.publicationTurnId,
@@ -1234,8 +1245,44 @@ export function frozenPendingOutcomeInput(
     reason: record.dispositionReason ?? record.invalidatingEvent,
     answers: record.answerMap,
     result: record.heldResult,
-  }));
-  return JSON.stringify({ triggerInput, pendingOutcomes: outcomes });
+  };
+}
+
+/** Exact child payloads and their ordered WorkInputRefs for one Workspace freeze transaction. */
+export function pendingOutcomeBatchDraft(
+  scope: { workspaceId: string; threadId: string; turnId: string },
+  selected: readonly PendingRequestRecord[]
+) {
+  if (!selected.length) return null;
+  const owner = { kind: 'workspace' as const, workspaceId: scope.workspaceId };
+  const members = selected.map((record) => {
+    if (record.workspaceId !== scope.workspaceId || record.threadId !== scope.threadId)
+      pendingNativeConflict('The Pending delivery batch has a different work owner.');
+    const text = JSON.stringify(
+      pendingOutcomeDeliveryProjection({
+        ...record,
+        publicationTurnId: record.publicationTurnId ?? scope.turnId,
+      })
+    );
+    const input: WorkInputRef = {
+      owner,
+      inputId: canonicalJsonText([scope.turnId, record.requestId]),
+      digest: sha256Hex(text),
+    };
+    return { input, text };
+  });
+  const text = JSON.stringify(
+    members.map(({ input: { inputId, digest } }) => ({ inputId, digest }))
+  );
+  const input: WorkInputRef = { owner, inputId: scope.turnId, digest: sha256Hex(text) };
+  return {
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    originalInvocationId: scope.turnId,
+    manifest: { input, text },
+    members,
+  };
 }
 
 /**
@@ -2601,6 +2648,13 @@ export interface PreparedControlPendingCommand {
     readonly revision: number;
     readonly contentJson: string;
   }[];
+  readonly workerInputs?: ReadonlyMap<
+    string,
+    {
+      readonly manifest: WorkInputRef;
+      readonly prepared: Awaited<ReturnType<typeof prepareWorkspaceQueueInputBatch>>;
+    }
+  >;
 }
 
 /** Selects exactly the existing archive closeout work; malformed records are filtered separately. */
@@ -3126,6 +3180,13 @@ export function applyControlPendingCommand(
         selected.some((record) => record.raisingTurnId === command.turnId)
       )
         pendingNativeConflict('The current native outcome selection differs from preparation.');
+      if (command.executor === 'worker') {
+        const batch = pendingOutcomeBatchDraft(command, selected);
+        const staged = prepared.workerInputs?.get(command.turnId);
+        if (!isDeepStrictEqual(batch?.manifest.input, staged?.manifest))
+          pendingNativeConflict('The prepared Pending input differs from its selected batch.');
+        if (staged) commitWorkspaceQueueInputBatch(db, staged.prepared);
+      }
       return result(
         freezeReadyOutcomes(db.sqlite, {
           workspaceId: command.workspaceId,

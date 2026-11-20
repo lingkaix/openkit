@@ -32,6 +32,7 @@ import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { registerWorkerMcpRoutes, reviewCapturedMcpPolicy } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
@@ -516,7 +517,7 @@ async function capturedFixture() {
     workspaceId: f.workspace.id,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput: 'Capture echo',
+    inputRef: schedulerFixtureInput(f.workspace.id, turn.id, 'Capture echo'),
     requestedAgentId: setup.manifest.id,
   });
   const attempt = recordTestExecutionAttempt(f.coreDb, {

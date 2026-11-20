@@ -20,27 +20,37 @@ import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { type RuntimeConfigSnapshot, resolveDefaultAgentId } from '../config/runtime-config.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import type { CommandRequestRecord, FsStore } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import type { ProviderCredentialResolver } from '../providers/registry.js';
 import {
   type CoreSchedulerQueueEntry,
+  findSchedulerAdmissionForStart,
   requireSchedulerAdmissionEntry,
   SchedulerAdmissionTransitionError,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import type { WorkInputRef } from '../storage/control-kernel-port.js';
 import { admitCoreScheduler } from '../storage/control-store-admission.js';
-import type { ExternalSourceSchema } from '../storage/control-store-admission-codecs.js';
+import {
+  type ExternalSourceSchema,
+  WorkspaceQueueInputRefSchema,
+} from '../storage/control-store-admission-codecs.js';
+import { frameControlScalarText } from '../storage/control-store-input.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { ExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
+import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
 import { assertRunSkillSelectionsIncluded } from './agent-environment.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
 import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
+import { readFrozenSchedulerInput } from './scheduler-dispatch-frozen-input.js';
 import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
 } from './scheduler-dispatch-loop.js';
+import { stageSchedulerStartInput } from './scheduler-input-staging.js';
 import { materializeWorkspaceRootsForTurn } from './turn-workspace-context.js';
 import type { TurnExecutor } from './types.js';
 import { getWorkerCheckpoint, parseWorkerCheckpointContextAssembly } from './worker-checkpoints.js';
@@ -59,6 +69,8 @@ interface StartProductTurnInput
   readonly coreDb?: CoreDb;
   /** Parsed protocol turn-start request. */
   readonly input: Extract<z.infer<typeof SubmitTurnInputRequestSchema>, { input: string }>;
+  /** Exact precommitted Worker outcome manifest, when the Pending owner already froze it. */
+  readonly inputRef?: WorkInputRef;
   /** Exact actor that triggered this scheduler admission. */
   readonly triggerActor: ActorRef;
   /** Known native entry cause, separate from actor identity and unavailable to model input. */
@@ -124,6 +136,15 @@ export function checkAgentReadinessForAdmission(manifest: AgentManifest): AgentR
     );
   }
   return readiness;
+}
+
+function refuseWorkspaceInputStaging(error: unknown): never {
+  if (error instanceof OperationError) throw error;
+  throw new TurnStartValidationError(
+    'recovery_required',
+    'Original Workspace input could not be staged.',
+    409
+  );
 }
 
 /**
@@ -291,6 +312,52 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.input.reasoningEffort ?? setup.setup.manifest.models.reasoningEffort;
   if (input.fileInputs?.length) input.assertFileInputAdmission?.();
   try {
+    const inputScope = {
+      workspaceId: input.input.workspaceId,
+      threadId: input.input.threadId,
+      turnId,
+    };
+    const selected = findSchedulerAdmissionForStart(input.coreDb, { queueEntryId, turnId });
+    let replayDigest: string | undefined;
+    if (selected && !input.inputRef) {
+      try {
+        replayDigest = frameControlScalarText(input.input.input).digest;
+      } catch (error) {
+        refuseWorkspaceInputStaging(error);
+      }
+    }
+    if (
+      selected &&
+      (selected.queueEntryId !== queueEntryId ||
+        (input.inputRef
+          ? !isDeepStrictEqual(input.inputRef, selected.inputRef)
+          : replayDigest !== `sha256:${selected.inputRef.digest}`))
+    )
+      throw new TurnStartValidationError(
+        'scheduler_admission_denied',
+        'Scheduler admission request conflicts with its retained input.',
+        409
+      );
+    const inputRef =
+      selected?.inputRef ??
+      input.inputRef ??
+      (await stageSchedulerStartInput(
+        input.coreDb.dataRoot,
+        inputScope,
+        input.input.requestId,
+        input.input.input
+      ).catch(refuseWorkspaceInputStaging));
+    const originalAvailable = input.inputRef
+      ? readFrozenSchedulerInput(input.coreDb.dataRoot, inputScope, inputRef) !== null
+      : !selected ||
+        readWorkspaceQueueInput(input.coreDb.dataRoot, inputScope, inputRef)
+          ?.originalInvocationId === input.input.requestId;
+    if (!originalAvailable)
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The original scheduled input is unavailable.',
+        409
+      );
     const result = await admitCoreScheduler(
       input.coreDb,
       {
@@ -307,7 +374,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
           requestedAgentId,
           threadId: input.input.threadId,
           turnId,
-          turnInput: input.input.input,
+          inputRef: WorkspaceQueueInputRefSchema.parse(inputRef),
           ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
           triggerActor: canonicalTriggerActor,
           serverAdminTokenId: presentedServerAdminTokenId,
@@ -596,6 +663,7 @@ export function verifyAcceptedTurnLineage(input: {
   let turn: z.infer<typeof TurnSchema>;
   let attempt: ReturnType<typeof listSchedulerExecutionAttemptsForTurn>[number] | null;
   let admission: CoreSchedulerQueueEntry;
+  let originalInput: string;
   try {
     turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
     // The native writer commits attempt acquisition and admission status together.
@@ -616,6 +684,10 @@ export function verifyAcceptedTurnLineage(input: {
     const held = attempts.filter((candidate) => candidate.phase !== 'closed');
     attempt = held[0] ?? null;
     admission = entry;
+    const original = readWorkspaceQueueInput(coreDb.dataRoot, input, admission.inputRef);
+    if (!original || original.originalInvocationId !== input.requestId)
+      throw new Error('The original worker input is unavailable.');
+    originalInput = original.text;
     if (
       !['pending', 'running'].includes(turn.status) ||
       !['user', 'integration'].includes(turn.triggerActor.kind) ||
@@ -647,7 +719,7 @@ export function verifyAcceptedTurnLineage(input: {
         workspaceIdForOwner(initiatingItem.owner) !== input.workspaceId ||
         initiatingItem.threadId !== input.threadId ||
         initiatingItem.turnId !== input.turnId ||
-        initiatingItem.text !== admission.turnInput)
+        initiatingItem.text !== originalInput)
     )
       throw new Error('Live Turn input Item contradicts scheduler admission.');
   } catch {
@@ -660,7 +732,7 @@ export function verifyAcceptedTurnLineage(input: {
   if (input.commandInput) {
     const command = input.commandInput;
     if (
-      admission.turnInput !== command.input ||
+      originalInput !== command.input ||
       admission.modelId !== (command.modelId ?? null) ||
       admission.profileRef !== (command.profileId ?? null) ||
       (command.agentId !== undefined && admission.requestedAgentId !== command.agentId) ||
@@ -696,9 +768,7 @@ export function verifyAcceptedTurnLineage(input: {
         'The Task live admission owner tuple requires recovery.',
         409
       );
-    const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
-      JSON.parse(admission.turnInput)
-    );
+    const workerRequest = StructuredWorkerDelegationRequestSchema.parse(JSON.parse(originalInput));
     if (commandInputHash(workerRequest) !== checkpoint.contextDigest)
       throw new TurnStartValidationError(
         'recovery_required',

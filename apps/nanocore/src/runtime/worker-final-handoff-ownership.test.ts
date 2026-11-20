@@ -12,6 +12,7 @@ import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environ
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
@@ -92,7 +93,7 @@ it('accepts the original Core final under a Workspace write lock without claimin
       threadId: lineage.threadId,
       triggerActor: { kind: 'user', id: userId },
       turnId: lineage.turnId,
-      turnInput: 'Complete the admitted work.',
+      inputRef: schedulerFixtureInput(workspaceId, lineage.turnId, 'Complete the admitted work.'),
       workspaceId,
       now: () => timestamp,
     });

@@ -1002,8 +1002,8 @@ describe('checkpoint-owned never-submitted failed start', () => {
             .run('sha256:contradiction', f.turnId);
         if (gap === 'bad-admission')
           sql
-            .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
-            .run('{}', f.turnId);
+            .prepare('UPDATE scheduler_admission_entries SET input_digest = ? WHERE turn_id = ?')
+            .run('0'.repeat(64), f.turnId);
         if (gap === 'materialization') {
           const inputs = recordWorkspaceInputSnapshots(
             f.workspaceDb,

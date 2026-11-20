@@ -17,6 +17,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalTools } from './goal-coordinator.js';
@@ -232,7 +233,7 @@ it.each([
         turnId: reservedTurnId,
         requestId: randomUUID(),
         triggerActor: { kind: 'user', id: actor.userId },
-        turnInput: 'Write note',
+        inputRef: schedulerFixtureInput(workspace.id, reservedTurnId, 'Write note'),
         requestedAgentId: 'codex',
       });
       cancelSchedulerAdmissionEntry(coreDb, {

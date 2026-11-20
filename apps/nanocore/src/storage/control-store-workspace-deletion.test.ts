@@ -15,6 +15,7 @@ import { commandInputHash } from '../runtime/idempotent-command.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
 import {
@@ -200,14 +201,15 @@ async function fixture(lostAck = false) {
   instant = '2026-10-16T03:10:00.000Z';
   await schedules.collectScanCandidates(instant);
   coreDb.sqlite.transaction(() => {
+    const fixtureTurnId = allocateEntityId('tu');
     const entry = createSchedulerAdmissionEntry(coreDb, {
       queueEntryId: `external-${randomUUID()}`,
       backendId: 'nanohost',
       requestedAgentId: 'fixture-worker',
       workspaceId,
       threadId,
-      turnId: allocateEntityId('tu'),
-      turnInput: 'Retained external event.',
+      turnId: fixtureTurnId,
+      inputRef: schedulerFixtureInput(workspaceId, fixtureTurnId, 'Retained external event.'),
       triggerActor: schedule.actor,
     });
     insertExternalTriggerAdmission(coreDb, {

@@ -1367,6 +1367,8 @@ async function deliverWorkerOutcome(
       } catch (error) {
         const now = new Date().toISOString();
         if (error instanceof TurnStartValidationError) {
+          // A lost input or owner proof leaves the original batch and pending Turn held.
+          if (error.code === 'recovery_required') return;
           refusal = error;
           refusedOutcomeTurns.add(turnId);
           await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {

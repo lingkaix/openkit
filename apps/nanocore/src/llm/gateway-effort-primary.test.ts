@@ -27,6 +27,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import {
   closeTestCoreDb,
   createTestCoreDb,
@@ -223,7 +224,11 @@ async function postWorkerEffort(input: {
     workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
-    turnInput: 'Call worker inference',
+    inputRef: schedulerFixtureInput(
+      workspaceIdForOwner(turn.owner),
+      turn.id,
+      'Call worker inference'
+    ),
     requestedAgentId: environmentPackage.agent.agentId,
   });
   const submittedAttempt = recordTestExecutionAttempt(coreDb, {

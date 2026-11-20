@@ -74,6 +74,7 @@ import { testGoalDomainProposal } from './test-support/goal-domain.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { remoteMcpInvocation } from './test-support/remote-mcp-invocation.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { resolveWorkspaceMembershipRelation } from './workspace-sharing.js';
@@ -567,7 +568,11 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
-    turnInput: 'Operation invariant',
+    inputRef: schedulerFixtureInput(
+      workspaceIdForOwner(turn.owner),
+      turn.id,
+      'Operation invariant'
+    ),
     requestedAgentId: environmentPackage.agent.agentId,
   });
   recordTestExecutionAttempt(f.coreDb, {

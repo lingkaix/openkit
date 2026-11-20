@@ -62,6 +62,7 @@ import {
   settleUnfinishedClaims,
   validateCanonicalLoad,
 } from './pending-requests.js';
+import { readFrozenSchedulerInputForTurn } from './scheduler-dispatch-input.js';
 import { createDefaultWorkerMcpGateway, type WorkerMcpGateway } from './worker-mcp-gateway.js';
 
 const NOW = '2026-09-30T00:00:00.000Z';
@@ -387,23 +388,26 @@ describe('pending requests', () => {
         { agentId: 'agent_demo' }
       );
       const input = approvalRaise(original.id, 'ap_pause_successor', 'pause');
+      const sibling = approvalRaise(original.id, 'ap_pause_sibling', 'pause sibling');
       await raiseRecordedPendingRequest(store, db.sqlite, input);
+      await raiseRecordedPendingRequest(store, db.sqlite, sibling);
       await store.updateTurn(original.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
-      await respondRecordedApproval({
-        store,
-        sqlite: db.sqlite,
-        workspaceId,
-        threadId,
-        approvalRequestId: input.requestId,
-        decision: 'denied',
-        actorId: userId,
-        coreDb,
-        requestActor: { kind: 'local', userId },
-        dependencies,
-      });
+      for (const record of [input, sibling])
+        await respondRecordedApproval({
+          store,
+          sqlite: db.sqlite,
+          workspaceId,
+          threadId,
+          approvalRequestId: record.requestId,
+          decision: 'denied',
+          actorId: userId,
+          coreDb,
+          requestActor: { kind: 'local', userId },
+          dependencies,
+        });
       expect(readPendingRequest(db.sqlite, input.requestId)).toMatchObject({
         resolution: 'denied',
         delivery: 'undelivered',
@@ -416,6 +420,11 @@ describe('pending requests', () => {
           .map((turn) => turn.id)
       ).toEqual([original.id]);
       expect(startTurn).not.toHaveBeenCalled();
+      const expectedOrder = db.sqlite
+        .prepare(
+          'SELECT request_id AS requestId FROM pending_requests WHERE request_id IN (?, ?) ORDER BY decided_at, request_id'
+        )
+        .all(input.requestId, sibling.requestId);
       paused = false;
       await admitIfIdle(store, dependencies, workspaceId, threadId);
       const turnId = await delivered.promise;
@@ -425,6 +434,25 @@ describe('pending requests', () => {
         delivery: 'frozen',
         deliveryTurnId: turnId,
       });
+      const scope = { workspaceId, threadId, turnId };
+      const originalBatch = readFrozenSchedulerInputForTurn(dataRoot, scope);
+      expect(originalBatch?.map(({ text }) => ({ requestId: JSON.parse(text).requestId }))).toEqual(
+        expectedOrder
+      );
+      expect(new Set(originalBatch?.map(({ input: ref }) => ref.inputId)).size).toBe(2);
+      await shutdownControlStoreWorkerClient();
+      // The captured projection survives a later change to the original delivery rows.
+      db.sqlite
+        .prepare(
+          "UPDATE pending_requests SET delivery = 'delivered', held_result_json = NULL WHERE delivery_turn_id = ?"
+        )
+        .run(turnId);
+      expect(readFrozenSchedulerInputForTurn(dataRoot, scope)).toEqual(originalBatch);
+      const removed = db.sqlite
+        .prepare('DELETE FROM workspace_work_inputs WHERE input_id = ?')
+        .run(turnId);
+      expect(removed.changes).toBe(1);
+      expect(readFrozenSchedulerInputForTurn(dataRoot, scope)).toBeNull();
     } finally {
       db.sqlite.close();
       coreDb.sqlite.close();

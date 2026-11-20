@@ -168,6 +168,7 @@ import {
   CoreSchedulerResultSchema,
   type CoreSchedulerWire,
   CoreSchedulerWireSchema,
+  WorkspaceQueueInputWriteSchema,
 } from './control-store-admission-codecs.js';
 import {
   type ControlCapabilityCommandResult,
@@ -435,7 +436,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 97;
+export const CONTROL_WORKER_VERSION = 98;
 
 /** Original admitted slot identity; the relay derives these from real host/opening bindings. */
 export const ControlPolicyBorrowerSchema = z
@@ -559,6 +560,19 @@ export const ControlSchemaApplicationInputSchema = z
 
 /** Complete typed payload transported through the original binary content account. */
 export type ControlSchemaApplicationInput = z.infer<typeof ControlSchemaApplicationInputSchema>;
+
+/** The original Workspace input reference and its bounded UTF-8 frame. */
+export const ControlWorkspaceQueueInputWireSchema = WorkspaceQueueInputWriteSchema.omit({
+  text: true,
+})
+  .extend(ControlScalarTextSchema.shape)
+  .refine(
+    (wire) =>
+      wire.input.owner.workspaceId === wire.workspaceId &&
+      wire.digest === `sha256:${wire.input.digest}` &&
+      wire.byteLength <= CONTROL_PRODUCT_LIMITS.immutableBodyBytes &&
+      Buffer.byteLength(JSON.stringify(wire)) <= CONTROL_PRODUCT_LIMITS.metadataBytes
+  );
 
 /** Exact original scalar frame; reports have no new per-report maximum. */
 export const ControlSchemaApplicationWireSchema = ControlScalarTextSchema.extend({
@@ -947,6 +961,11 @@ export type ControlWorkerCommand =
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
       | {
+          readonly operation: 'workspace-queue-input';
+          readonly input: z.infer<typeof ControlWorkspaceQueueInputWireSchema>;
+          readonly content: ArrayBuffer;
+        }
+      | {
           readonly operation: 'schema-application';
           readonly input: ControlSchemaApplicationWire;
           readonly content: ArrayBuffer;
@@ -1123,6 +1142,7 @@ export function controlWorkerInputBytes(
                 (command.transition.kind === 'command-receipt' ||
                   command.transition.kind === 'scheduler-work')) ||
               command.operation === 'standalone-audit' ||
+              command.operation === 'workspace-queue-input' ||
               command.operation === 'thread-read-membership' ||
               command.operation === 'execution-attempt' ||
               command.operation === 'worker-control-final-status' ||
@@ -1404,6 +1424,7 @@ export type ControlWorkerReply = {
       readonly result: ControlWorkspaceBackendHandoffResult;
     }
   | { readonly status: 'ok'; readonly operation: 'standalone-audit'; readonly result: null }
+  | { readonly status: 'ok'; readonly operation: 'workspace-queue-input'; readonly result: null }
   | {
       readonly status: 'ok';
       readonly operation: 'resolved-agent-setup';
@@ -2065,7 +2086,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'private-workspace')
     return ControlPrivateWorkspaceResultSchema.safeParse(reply.result).success;
-  if (reply.operation === 'standalone-audit') return reply.result === null;
+  if (reply.operation === 'standalone-audit' || reply.operation === 'workspace-queue-input')
+    return reply.result === null;
   if (reply.operation === 'resolved-agent-setup')
     return ControlResolvedAgentSetupResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'scoped-notebook-sql') return reply.result === null;
@@ -2731,6 +2753,14 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       ControlPrivateWorkspaceInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
+  if (value.operation === 'workspace-queue-input') {
+    const parsed = ControlWorkspaceQueueInputWireSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
   if (value.operation === 'standalone-audit') {
     const parsed = ControlScalarTextSchema.safeParse(value.input);
     return (

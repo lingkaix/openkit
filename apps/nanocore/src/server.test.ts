@@ -226,6 +226,10 @@ import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import {
+  createTestQueueEntry,
+  schedulerFixtureInput,
+} from './test-support/scheduler-admissions.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -359,7 +363,7 @@ async function recordWorkerRetryLease(
     ownerUserId: LOCAL_USER_ID,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor: { kind: 'user', id: LOCAL_USER_ID },
     profileRef: 'agent_codex_host',
@@ -368,7 +372,7 @@ async function recordWorkerRetryLease(
     requestedAgentId: 'agent_codex_host',
     threadId: input.threadId,
     turnId: input.turnId,
-    turnInput: 'Run interrupted-worker retry fixture.',
+    text: 'Run interrupted-worker retry fixture.',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const attemptId = testEntityId('attempt', `lease_${input.turnId}`);
@@ -3294,7 +3298,11 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: 'tu_00000000-0000-777f-9b05-89fc6d6891c8',
-      turnInput: 'First queued turn with /Users/private local path hidden from response.',
+      inputRef: schedulerFixtureInput(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-777f-9b05-89fc6d6891c8',
+        'First queued turn with /Users/private local path hidden from response.'
+      ),
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
       now: () => '2026-07-07T00:00:00.000Z',
@@ -3307,7 +3315,11 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: 'tu_00000000-0000-78d5-b6f6-5e03599a2ed1',
-      turnInput: 'Second queued turn.',
+      inputRef: schedulerFixtureInput(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-78d5-b6f6-5e03599a2ed1',
+        'Second queued turn.'
+      ),
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
       now: () => '2026-07-07T00:00:01.000Z',
@@ -3320,7 +3332,11 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: 'tu_00000000-0000-7be3-96be-e753c24d94e4',
-      turnInput: 'Denied turn.',
+      inputRef: schedulerFixtureInput(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7be3-96be-e753c24d94e4',
+        'Denied turn.'
+      ),
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
       now: () => '2026-07-07T00:00:02.000Z',
@@ -3337,7 +3353,11 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
       threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2',
       turnId: 'tu_00000000-0000-7e18-a597-336d92a699e9',
-      turnInput: 'Other workspace turn.',
+      inputRef: schedulerFixtureInput(
+        'ws_00000000-0000-71f5-922f-6fd42f52f580',
+        'tu_00000000-0000-7e18-a597-336d92a699e9',
+        'Other workspace turn.'
+      ),
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
     });
@@ -3788,7 +3808,11 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: 'tu_00000000-0000-7461-9396-1a85f85f1b50',
-      turnInput: 'Retry scheduler admission.',
+      inputRef: schedulerFixtureInput(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-7461-9396-1a85f85f1b50',
+        'Retry scheduler admission.'
+      ),
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
     });
@@ -3859,7 +3883,11 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
       turnId: 'tu_00000000-0000-730e-bde0-71d82b6498fc',
-      turnInput: 'Cancel scheduler admission.',
+      inputRef: schedulerFixtureInput(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-730e-bde0-71d82b6498fc',
+        'Cancel scheduler admission.'
+      ),
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
     });
@@ -5944,7 +5972,7 @@ describe('nanocore server', () => {
           }
         },
       });
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: { kind: 'user', id: LOCAL_USER_ID },
         profileRef: 'agent_codex_host',
@@ -5953,7 +5981,7 @@ describe('nanocore server', () => {
         requestedAgentId: 'agent_codex_host',
         threadId: taskThreadId,
         turnId: turn.id,
-        turnInput: 'Conversation-owned worker Turn',
+        text: 'Conversation-owned worker Turn',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       createSchedulerExecutionAttempt(coreDb, {
@@ -10855,10 +10883,11 @@ describe('nanocore server', () => {
       ownerUserId: LOCAL_USER_ID,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    const turnInput = 'Interrupt this running turn';
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
-      'Interrupt this running turn',
+      turnInput,
       {
         kind: 'user',
         id: 'usr_00000000-0000-7000-8000-000000000001',
@@ -10866,7 +10895,7 @@ describe('nanocore server', () => {
     );
     const executor = new FakeTurnExecutor();
     const app = await createApp({ coreDb, store, turnExecutor: executor }, true);
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       triggerActor: turn.triggerActor,
       profileRef: 'agent_codex_host',
@@ -10875,7 +10904,7 @@ describe('nanocore server', () => {
       requestedAgentId: 'agent_codex_host',
       threadId: turn.threadId,
       turnId: turn.id,
-      turnInput: 'Interrupt this running turn',
+      text: turnInput,
       workspaceId: workspaceIdForOwner(turn.owner),
     });
     const environmentPackage = await resolveAgentEnvironmentPackage({
@@ -10887,7 +10916,7 @@ describe('nanocore server', () => {
       requestId: entry.requestId,
       triggerActor: turn.triggerActor,
       turn,
-      turnInput: entry.turnInput,
+      turnInput,
       workspaceRoots: [],
     });
     const attempt = recordTestExecutionAttempt(coreDb, {

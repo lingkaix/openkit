@@ -6,10 +6,7 @@ import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry';
-import {
-  createSchedulerAdmissionEntry,
-  requireSchedulerAdmissionEntry,
-} from '../scheduler-records';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records';
 import { openCoreDb } from '../storage/db';
 import { applyMigrations } from '../storage/migrate';
 import {
@@ -20,6 +17,7 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { commandInputHash } from './idempotent-command.js';
@@ -135,7 +133,7 @@ describe('scheduler dispatch service', () => {
           },
         }
       );
-      createSchedulerAdmissionEntry(coreDb, {
+      await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         priorityClass: 'interactive',
         queueEntryId: 'queue_transient_background',
@@ -144,7 +142,7 @@ describe('scheduler dispatch service', () => {
         requiredPoolConstraints: ['openshell.local'],
         threadId: thread.id,
         turnId: 'tu_00000000-0000-706e-9292-377535f93b73',
-        turnInput: 'Prepare background work',
+        text: 'Prepare background work',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7908-92ea-57819d2fa45f' },
         workspaceId: workspace.id,
       });
@@ -282,7 +280,7 @@ describe('scheduler dispatch service', () => {
         workspaceId: workspace.id,
       });
       await recordTestNativeRuntimeTarget(coreDb);
-      createSchedulerAdmissionEntry(coreDb, {
+      await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         priorityClass: 'interactive',
         profileRef: null,
@@ -292,7 +290,7 @@ describe('scheduler dispatch service', () => {
         requiredPoolConstraints: ['openshell.local'],
         threadId: thread.id,
         turnId: 'tu_00000000-0000-7a20-9839-a54e7149be4d',
-        turnInput: 'Run from the owner store',
+        text: 'Run from the owner store',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7908-92ea-57819d2fa45f' },
         workspaceId: workspace.id,
         workspaceCwd: '/workspace/background',

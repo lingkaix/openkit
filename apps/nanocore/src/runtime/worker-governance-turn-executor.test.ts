@@ -67,7 +67,7 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { policyDigest } from '@openkit/protocol/digest';
+import { policyDigest, sha256Hex } from '@openkit/protocol/digest';
 import {
   buildWorkerCanonicalTerminalEventRecord,
   type WorkerCanonicalEventRecord,
@@ -230,6 +230,10 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
+import {
+  createTestQueueEntry,
+  schedulerFixtureInput,
+} from '../test-support/scheduler-admissions.js';
 import { closeTestCoreDb, createTestUserDb, createTestWorkspaceDb } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
@@ -302,6 +306,11 @@ import {
   type WorkerProviderProtectionProof,
 } from './provider-credential-binding.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
+import { readFrozenSchedulerInput } from './scheduler-dispatch-frozen-input.js';
+import {
+  PENDING_WORKER_TRIGGER_INPUT,
+  readFrozenSchedulerInputForTurn,
+} from './scheduler-dispatch-input.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
@@ -329,6 +338,7 @@ import {
   WORKER_ARTIFACT_COLLECTION_INVALID,
   WORKER_ARTIFACT_RECOVERY_REQUIRED,
   WorkerGovernanceCapacityUnavailableError,
+  WorkerInputRecoveryRequiredError,
   WorkerNativeProofValidationError,
 } from './worker-governance-backend.js';
 import {
@@ -423,7 +433,7 @@ async function recordExecutorAttempt(
       ready: true,
     });
   }
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor: input.triggerActor ?? {
       kind: 'user',
@@ -436,7 +446,7 @@ async function recordExecutorAttempt(
     requestedAgentId: 'agent_codex_host',
     threadId: input.threadId,
     turnId: input.turnId,
-    turnInput: input.turnInput ?? 'Run governed worker',
+    text: input.turnInput ?? 'Run governed worker',
     workspaceId: input.workspaceId ?? 'ws_00000000-0000-7000-8000-000000000001',
     now: () => input.admittedAt ?? '2026-07-15T00:00:01.000Z',
   });
@@ -1390,6 +1400,123 @@ function remoteGitInputFixture() {
 }
 
 describe('WorkerGovernanceTurnExecutor', () => {
+  it('holds original Worker outcome delivery when the reopened manifest presents a different order', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-original-manifest-'));
+    let coreDb = openCoreDb(dataRoot);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const triggerActor = { kind: 'user', id: LOCAL_USER_ID } as const;
+    const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: LOCAL_USER_ID });
+    const turn = await store.createTurn(
+      workspaceId,
+      threadId,
+      PENDING_WORKER_TRIGGER_INPUT,
+      triggerActor,
+      undefined,
+      { status: 'pending', agentId: 'agent_codex_host', executorKind: 'worker' }
+    );
+    const scope = { workspaceId, threadId, turnId: turn.id };
+    const owner = { kind: 'workspace', workspaceId } as const;
+    const members = ['approval-a', 'approval-b'].map((requestId) => {
+      const text = JSON.stringify({ requestId });
+      return { inputId: requestId, text, digest: sha256Hex(text) };
+    });
+    const manifest = (ordered: typeof members) =>
+      JSON.stringify(ordered.map(({ inputId, digest }) => ({ inputId, digest })));
+    const original = manifest(members);
+    const inputRef = { owner, inputId: turn.id, digest: sha256Hex(original) };
+    const workspace = openTestWorkspaceDb(coreDb);
+    try {
+      const insert = workspace.sqlite.prepare(`INSERT INTO workspace_work_inputs
+        (input_id, thread_id, turn_id, invocation_id, input_digest, input_bytes, schema_version)
+        VALUES (?, ?, ?, ?, ?, ?, 1)`);
+      workspace.sqlite
+        .transaction(() => {
+          for (const row of [
+            ...members,
+            { inputId: turn.id, text: original, digest: inputRef.digest },
+          ])
+            insert.run(row.inputId, threadId, turn.id, turn.id, row.digest, Buffer.from(row.text));
+        })
+        .immediate();
+    } finally {
+      workspace.sqlite.close();
+    }
+    const requestId = '00000000-0000-4000-8000-000000000293';
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      ...scope,
+      backendId: 'nanohost',
+      inputRef,
+      queueEntryId: `queue_${turn.id}`,
+      requestId,
+      triggerActor,
+      requestedAgentId: 'agent_codex_host',
+    });
+    const agentSessionId = testEntityId('as', 'as_frozen_worker_delivery');
+    const attemptId = testEntityId('attempt', 'frozen-worker-delivery');
+    const sandboxBindingRef = 'fixture-original-delivery-binding';
+    recordTestExecutionAttempt(coreDb, {
+      entry,
+      attemptId,
+      agentSessionId,
+      inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
+      bindingRef: sandboxBindingRef,
+      sessionCompatibilityKey: 'fixture-original-delivery-compatibility',
+      now: () => '2026-07-15T00:00:02.000Z',
+    });
+    expect(
+      readFrozenSchedulerInput(dataRoot, scope, entry.inputRef)?.map(({ text }) => text)
+    ).toEqual(members.map(({ text }) => text));
+
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+    coreDb = openCoreDb(dataRoot);
+    const reopened = openTestWorkspaceDb(coreDb);
+    try {
+      const reordered = manifest([...members].reverse());
+      expect(
+        reopened.sqlite
+          .prepare(
+            'UPDATE workspace_work_inputs SET input_digest = ?, input_bytes = ? WHERE input_id = ?'
+          )
+          .run(sha256Hex(reordered), Buffer.from(reordered), turn.id).changes
+      ).toBe(1);
+    } finally {
+      reopened.sqlite.close();
+    }
+    expect(readFrozenSchedulerInputForTurn(dataRoot, scope)?.map(({ text }) => text)).toEqual(
+      [...members].reverse().map(({ text }) => text)
+    );
+    expect(readFrozenSchedulerInput(dataRoot, scope, entry.inputRef)).toBeNull();
+    const backend = new FakeWorkerGovernanceBackend();
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+    const attempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+    const reopenedStore = new FsStore({ dataRoot });
+    await expect(
+      executor.startTurn(reopenedStore, turn.id, PENDING_WORKER_TRIGGER_INPUT, {
+        attemptId,
+        agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId,
+        sandboxBindingRef,
+        triggerActor,
+        workspaceCwd: null,
+        workspaceRoots: [],
+      })
+    ).rejects.toBeInstanceOf(WorkerInputRecoveryRequiredError);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(backend.calls).toEqual([]);
+    expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toEqual(attempt);
+  });
+
   it('closes Harness length as a blocked Task after fencing with zero successor launches', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-length-seam-'));
     const coreDb = openCoreDb(dataRoot);
@@ -1971,14 +2098,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       coreDb,
     });
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const plannedInput = 'Prepare planned successor';
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queue_planned_successor',
       requestId,
       workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
-      turnInput: 'Prepare planned successor',
+      text: plannedInput,
       requestedAgentId: 'agent_codex_host',
       triggerActor: turn.triggerActor,
     });
@@ -2053,7 +2181,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             requestId: entry.requestId,
             triggerActor: turn.triggerActor,
             turn,
-            turnInput: entry.turnInput,
+            turnInput: plannedInput,
             workspaceCwd: null,
             workspaceRoots: [],
           });
@@ -2128,8 +2256,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
           .run(attemptId);
       } else if (proof === 'lineage-conflict') {
         coreDb.sqlite
-          .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE queue_entry_id = ?')
-          .run('A different immutable request', entry.queueEntryId);
+          .prepare(
+            'UPDATE scheduler_admission_entries SET input_digest = ? WHERE queue_entry_id = ?'
+          )
+          .run('a'.repeat(64), entry.queueEntryId);
       }
       const beforeRecovery = store.getTurnById(turn.id);
       const beforeAttempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
@@ -6341,21 +6471,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
           stopReason: 'completed',
         }),
       });
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const incomingText = 'Continue after the MCP binding change';
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: 'queue_refused_predecessor',
         requestId: '00000000-0000-4000-8000-000000000291',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: testEntityId('tu', 'turn_binding_change'),
-        turnInput: 'Continue after the MCP binding change',
+        text: incomingText,
         requestedAgentId: 'agent_codex_host',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       });
       await store.createTurn(
         entry.workspaceId,
         entry.threadId,
-        entry.turnInput,
+        incomingText,
         entry.triggerActor,
         undefined,
         {
@@ -10369,6 +10500,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     async (cause) => {
       const triggerInput = 'Receive pending request outcomes.';
       const pendingRequestId = 'pending_context_question';
+      const laterRequestId = 'pending_context_question_later';
       const now = '2026-07-15T00:00:03.000Z';
       const questions = [
         {
@@ -10380,6 +10512,67 @@ describe('WorkerGovernanceTurnExecutor', () => {
           isSecret: false,
         },
       ];
+      const prepareQuestion = async (
+        store: FsStore,
+        threadId: string,
+        requestId: string,
+        raisingTurnId: string,
+        requestItemId: string
+      ) => {
+        const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+        const raising = await createAssignedTurn(
+          store,
+          workspaceId,
+          threadId,
+          'Ask the preceding question.',
+          raisingTurnId
+        );
+        const requestItem = await store.createItem({
+          id: requestItemId,
+          owner: { kind: 'workspace', workspaceId },
+          threadId,
+          turnId: raising.id,
+          type: 'user-input-request',
+          responsibleUserId: LOCAL_USER_ID,
+          userInputRequestId: requestId,
+          prompt: 'Which tone?',
+          questions,
+          status: 'completed',
+          createdAt: now,
+          completedAt: now,
+        });
+        return { raising, requestItem, workspaceId, threadId, requestId };
+      };
+      const raiseQuestion = async (
+        store: FsStore,
+        question: Awaited<ReturnType<typeof prepareQuestion>>
+      ) => {
+        const { raising, requestItem, workspaceId, threadId, requestId } = question;
+        const db = openWorkspaceDb(store.getDataRoot()!, workspaceId);
+        try {
+          await raiseRecordedPendingRequest(
+            store,
+            db.sqlite,
+            {
+              requestId,
+              workspaceId,
+              threadId,
+              raisingTurnId: raising.id,
+              requestItemId: requestItem.id,
+              kind: 'user-input',
+              requesterKind: 'worker',
+              agentId: raising.agentId,
+              responsibleUserId: LOCAL_USER_ID,
+              questions,
+              now,
+            },
+            requestItem
+          );
+        } finally {
+          db.sqlite.close();
+        }
+      };
+      let laterQuestion: Awaited<ReturnType<typeof prepareQuestion>> | undefined;
       const fixture = await createWorkerContextExecutorFixture(`pending-${cause}`, {
         prepareTaskCheckpoint: false,
         workerRequest: triggerInput,
@@ -10387,52 +10580,29 @@ describe('WorkerGovernanceTurnExecutor', () => {
           ? { turnStartReceipt: { input: triggerInput, profileId: 'profile_worker' } }
           : {}),
         prepareThread: async (store, threadId) => {
-          const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-          const raising = await createAssignedTurn(
+          const originalQuestion = await prepareQuestion(
             store,
-            workspaceId,
             threadId,
-            'Ask the preceding question.',
-            testEntityId('tu', 'tu_previous_question')
+            pendingRequestId,
+            testEntityId('tu', 'tu_previous_question'),
+            'it_00000000-0000-726a-90f0-84fe3c95037f'
           );
-          const requestItem = await store.createItem({
-            id: 'it_00000000-0000-726a-90f0-84fe3c95037f',
-            owner: { kind: 'workspace', workspaceId },
-            threadId,
-            turnId: raising.id,
-            type: 'user-input-request',
-            responsibleUserId: LOCAL_USER_ID,
-            userInputRequestId: pendingRequestId,
-            prompt: 'Which tone?',
-            questions,
+          await raiseQuestion(store, originalQuestion);
+          await store.completeTurn(originalQuestion.raising.id, {
             status: 'completed',
-            createdAt: now,
             completedAt: now,
           });
-          const db = openWorkspaceDb(store.getDataRoot()!, workspaceId);
-          try {
-            await raiseRecordedPendingRequest(
-              store,
-              db.sqlite,
-              {
-                requestId: pendingRequestId,
-                workspaceId,
-                threadId,
-                raisingTurnId: raising.id,
-                requestItemId: requestItem.id,
-                kind: 'user-input',
-                requesterKind: 'worker',
-                agentId: raising.agentId,
-                responsibleUserId: LOCAL_USER_ID,
-                questions,
-                now,
-              },
-              requestItem
-            );
-            await store.completeTurn(raising.id, { status: 'completed', completedAt: now });
-          } finally {
-            db.sqlite.close();
-          }
+          laterQuestion = await prepareQuestion(
+            store,
+            threadId,
+            laterRequestId,
+            testEntityId('tu', 'tu_next_question'),
+            testEntityId('it', 'it_next_question')
+          );
+          await store.completeTurn(laterQuestion.raising.id, {
+            status: 'completed',
+            completedAt: now,
+          });
         },
       });
       const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
@@ -10535,8 +10705,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         createAgentSessionId: () => fixture.agentSessionId,
         now: () => now,
       });
-      try {
-        await executor.startTurn(fixture.store, fixture.turn.id, triggerInput, {
+      const start = () =>
+        executor.startTurn(fixture.store, fixture.turn.id, triggerInput, {
           attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
           agentSessionId: fixture.agentSessionId,
           agentSetup: createTestAgentSetup(),
@@ -10545,7 +10715,42 @@ describe('WorkerGovernanceTurnExecutor', () => {
           triggerActor: fixture.turn.triggerActor,
           workspaceRoots: [],
         });
+      try {
+        const member = workspaceDb.sqlite
+          .prepare(`SELECT input_id AS inputId, input_bytes AS bytes FROM workspace_work_inputs
+            WHERE invocation_id = ? AND input_id <> ?`)
+          .get(fixture.turn.id, fixture.turn.id) as { inputId: string; bytes: Buffer };
+        const replaceMember = workspaceDb.sqlite.prepare(
+          'UPDATE workspace_work_inputs SET input_bytes = ? WHERE input_id = ?'
+        );
+        replaceMember.run(Buffer.from('{}'), member.inputId);
+        await expect(start()).rejects.toMatchObject({ code: 'recovery_required' });
+        expect(backend.calls).toEqual([]);
+        expect(launch).not.toHaveBeenCalled();
+        replaceMember.run(member.bytes, member.inputId);
+        // A second ready outcome changes the Thread census after the original batch froze.
+        if (!laterQuestion) throw new Error('Expected the prepared independent question.');
+        const laterAnswer = 'Independent ready answer';
+        const workspaceId = workspaceIdForOwner(fixture.turn.owner);
+        await raiseQuestion(fixture.store, laterQuestion);
+        await fixture.store.applyPendingRequestCommand(workspaceId, {
+          action: 'answer',
+          workspaceId,
+          threadId: fixture.turn.threadId,
+          requestId: laterRequestId,
+          actor: { kind: 'user', id: LOCAL_USER_ID },
+          answers: { tone: [laterAnswer] },
+          now,
+        });
+        expect(readPendingRequest(workspaceDb.sqlite, laterRequestId)).toMatchObject({
+          delivery: 'undelivered',
+          answerMap: { tone: [laterAnswer] },
+        });
+
+        await start();
         expect(launch).toHaveBeenCalledOnce();
+        expect(backend.lastPackage?.extensions?.openkit?.turnInput).toContain(frozenInput);
+        expect(backend.lastPackage?.extensions?.openkit?.turnInput).not.toContain(laterAnswer);
         expect(
           getWorkerCheckpoint(
             workspaceDb,
@@ -16735,7 +16940,11 @@ describe('retained-record failure publication', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: testEntityId('th', 'th_unrelated'),
         turnId: testEntityId('tu', 'tu_unrelated'),
-        turnInput: 'Unrelated private input',
+        inputRef: schedulerFixtureInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('tu', 'tu_unrelated'),
+          'Unrelated private input'
+        ),
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestedAgentId: 'agent_codex_host',
         profileRef: null,
@@ -16957,7 +17166,11 @@ function acquireCommitFixtureAttempt(
     threadId: preparation.turn.threadId,
     turnId: preparation.turn.id,
     workspaceId: workspaceIdForOwner(preparation.turn.owner),
-    turnInput: preparation.turnInput,
+    inputRef: schedulerFixtureInput(
+      workspaceIdForOwner(preparation.turn.owner),
+      preparation.turn.id,
+      preparation.turnInput
+    ),
     triggerActor: preparation.turn.triggerActor,
     requestedAgentId: preparation.agentSetup.manifest.id,
   });
@@ -17445,6 +17658,7 @@ async function launchFinalReviewWorker(
   let turn: ReturnType<FsStore['getTurnById']>;
   let nativeEntry: ReturnType<typeof createSchedulerAdmissionEntry> | undefined;
   if (options.realNative) {
+    const closeoutText = 'Exercise worker closeout';
     const turnId = deriveEntityId('tu', [
       JSON.stringify({ kind: 'user', id: LOCAL_USER_ID }),
       'ws_00000000-0000-7000-8000-000000000001',
@@ -17452,7 +17666,7 @@ async function launchFinalReviewWorker(
       requestId,
       null,
     ]);
-    nativeEntry = createSchedulerAdmissionEntry(coreDb, {
+    nativeEntry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       triggerActor: { kind: 'user', id: LOCAL_USER_ID },
       queueEntryId: `queue_${turnId}`,
@@ -17460,7 +17674,7 @@ async function launchFinalReviewWorker(
       requestedAgentId: 'agent_codex_host',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId,
-      turnInput: 'Exercise worker closeout',
+      text: closeoutText,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => new Date().toISOString(),
     });
@@ -17469,7 +17683,7 @@ async function launchFinalReviewWorker(
     turn = await store.createTurn(
       nativeEntry.workspaceId,
       nativeEntry.threadId,
-      nativeEntry.turnInput,
+      closeoutText,
       nativeEntry.triggerActor,
       undefined,
       {
@@ -17487,7 +17701,7 @@ async function launchFinalReviewWorker(
           },
           commandInputHash({
             queueEntryId: nativeEntry.queueEntryId,
-            turnInput: nativeEntry.turnInput,
+            turnInput: closeoutText,
           })
         ),
       }
@@ -20617,7 +20831,7 @@ describe('Login publication under the original Goal Task decision', () => {
         );
         // Image metadata is explicit module preparation, not physical readiness or native execution.
         admitTestNativeEnvironment(coreDb, setup.manifest);
-        const entry = createSchedulerAdmissionEntry(coreDb, {
+        const entry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue_${requestId}`,
           requestId,
@@ -20625,7 +20839,7 @@ describe('Login publication under the original Goal Task decision', () => {
           workspaceId,
           threadId: thread.id,
           turnId: turn.id,
-          turnInput: prompt,
+          text: prompt,
           requestedAgentId: agentId,
         });
         const environmentInput = {

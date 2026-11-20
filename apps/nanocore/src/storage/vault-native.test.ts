@@ -37,6 +37,7 @@ import {
   resolveAgentEnvironmentPackage,
   resolveAgentSessionCompatibilityKey,
 } from '../test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createVaultGrant, getVaultGrant } from '../vault/vault-grants.js';
 import {
   advanceActiveVaultReferenceVersion,
@@ -716,7 +717,7 @@ it('joins Provider receipt generations at the actual sequential native decision'
     requestedAgentId: setup.manifest.id,
     threadId: turn.threadId,
     turnId: turn.id,
-    turnInput: 'Native Provider generation one',
+    inputRef: schedulerFixtureInput(DEMO_WORKSPACE_ID, turn.id, 'Native Provider generation one'),
     workspaceId: DEMO_WORKSPACE_ID,
     now: () => timestamp,
   });
@@ -1053,7 +1054,11 @@ it('joins Provider receipt generations at the actual sequential native decision'
       requestedAgentId: secondSetup.manifest.id,
       threadId: secondThread.id,
       turnId: secondTurn.id,
-      turnInput: 'Native independent current generation',
+      inputRef: schedulerFixtureInput(
+        DEMO_WORKSPACE_ID,
+        secondTurn.id,
+        'Native independent current generation'
+      ),
       workspaceId: DEMO_WORKSPACE_ID,
       now: () => secondTimestamp,
     });

@@ -4,13 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ListWorkspaceReconciliationRecordsResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished } from 'vitest';
-
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identity.js';
 import {
@@ -69,13 +68,13 @@ describe('workspace reconciliation records', () => {
           workspaceId: db.workspaceId,
           ownerUserId: userId,
         });
-        const entry = createSchedulerAdmissionEntry(coreDb, {
+        const entry = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: userId },
           profileRef: 'profile_worker',
           queueEntryId: 'queue_capture_receipt',
           requestedAgentId: 'agent_codex_host',
-          turnInput: 'Collect work',
+          text: 'Collect work',
           workspaceId: db.workspaceId,
           threadId: identity.threadId,
           turnId: identity.turnId,

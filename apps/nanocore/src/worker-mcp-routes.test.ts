@@ -14,6 +14,7 @@ import {
 } from './storage/control-store-worker-protocol.js';
 import { importWorkspaceVaultGrants } from './storage/test-support/vault-retained-fixtures.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 
 // openkit-test-platform: posix
 
@@ -246,7 +247,7 @@ function recordMcpWorkerLineage(
       workspaceId: scope.workspaceId,
       threadId: scope.threadId,
       turnId: scope.turnId,
-      turnInput: 'Call MCP tool',
+      inputRef: schedulerFixtureInput(scope.workspaceId, scope.turnId, 'Call MCP tool'),
       requestedAgentId: environmentPackage.agent.agentId,
     });
   const submittedAttempt = recordTestExecutionAttempt(coreDb, {

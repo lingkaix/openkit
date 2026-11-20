@@ -19,6 +19,7 @@ import {
   queueTestPreparedHarnessOperation as queueNanoHostHarnessOperation,
   recordTestExecutionAttempt,
 } from '../test-support/execution-attempt.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   copyNanoHostMeasuredHarnessIdentity,
@@ -4017,7 +4018,11 @@ async function seedSubmittedAttempt(
     threadId: testEntityId('th', `thread-${index}`),
     triggerActor: { id: 'usr_00000000-0000-7bb1-ad15-a58cc38146bf', kind: 'user' },
     turnId: testEntityId('tu', `turn-${index}`),
-    turnInput: 'Wait for a human decision',
+    inputRef: schedulerFixtureInput(
+      testEntityId('ws', 'workspace-1'),
+      testEntityId('tu', `turn-${index}`),
+      'Wait for a human decision'
+    ),
     workspaceId: testEntityId('ws', 'workspace-1'),
   });
   recordTestExecutionAttempt(coreDb, {

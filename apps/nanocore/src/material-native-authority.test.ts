@@ -68,6 +68,7 @@ import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { selectQueuedThreadMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -530,7 +531,7 @@ async function preparedMaterial(
     requestedAgentId: agentSetup.manifest.id,
     threadId: f.thread.id,
     turnId: turn.id,
-    turnInput: workerRequest,
+    inputRef: schedulerFixtureInput(f.workspace.id, turn.id, workerRequest),
     workspaceId: f.workspace.id,
     now,
   });

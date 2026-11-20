@@ -34,6 +34,7 @@ import {
   workerContextPackageDeliveryInventory,
   workerContextPackageOriginalPath,
 } from '../context/worker-context-package.js';
+import { TurnStartValidationError } from '../operation-error.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { CapturedWorkerFile } from '../storage/artifacts/worker-file-transfer.js';
 import type { WorkspaceDb } from '../storage/db.js';
@@ -303,6 +304,17 @@ export class WorkerGovernanceCapacityUnavailableError extends Error {
   public constructor(message = 'Worker runtime capacity is saturated.') {
     super(message);
     this.name = 'WorkerGovernanceCapacityUnavailableError';
+  }
+}
+
+/** Original Workspace input could not be proved before Worker preparation or contact. */
+export class WorkerInputRecoveryRequiredError extends TurnStartValidationError {
+  constructor() {
+    super(
+      'recovery_required',
+      'Worker input cannot be verified from its original Workspace records.',
+      409
+    );
   }
 }
 

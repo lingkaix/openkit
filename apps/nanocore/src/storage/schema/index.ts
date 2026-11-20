@@ -137,3 +137,4 @@ export {
   workspaceInputSnapshots,
   workspaceMaterializationRecords,
 } from './workspace-sync-records.js';
+export { workspaceWorkInputs } from './workspace-work-inputs.js';

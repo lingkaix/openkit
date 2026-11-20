@@ -17,6 +17,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
 import { acceptNanoHostAttemptHeartbeat } from './nanohost-attempt-records.js';
@@ -184,7 +185,11 @@ async function dispatchLease(
     requestedAgentId: 'agent_codex_host',
     threadId: testEntityId('th', `thread_${suffix}`),
     turnId: testEntityId('tu', `turn_${suffix}`),
-    turnInput: `Run ${suffix}`,
+    inputRef: schedulerFixtureInput(
+      'ws_00000000-0000-7000-8000-000000000001',
+      testEntityId('tu', `turn_${suffix}`),
+      `Run ${suffix}`
+    ),
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     now: () => '2026-07-05T00:00:01.000Z',
   });

@@ -12,6 +12,7 @@ import type { CoreDb } from '../storage/db.js';
 import type { ExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
+import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
 
 /** Reads the original source occurrence without creating or repairing accepted work. */
 export function readExternalTriggerPollSource(coreDb: CoreDb, sourceTurnId: string) {
@@ -38,6 +39,7 @@ export function inspectExternalTriggerAdmission(
       admission.sourceTurnId
     );
     const entry = requireSchedulerAdmissionEntry(coreDb, admission.queueEntryId);
+    const staged = readWorkspaceQueueInput(coreDb.dataRoot, entry, entry.inputRef);
     const thread = store.getThread(entry.workspaceId, entry.threadId);
     const dataRoot = store.getDataRoot();
     const turn: z.infer<typeof TurnSchema> | null = dataRoot
@@ -55,6 +57,8 @@ export function inspectExternalTriggerAdmission(
       !isDeepStrictEqual(sourceEntry.triggerActor, entry.triggerActor) ||
       entry.triggerActor.kind !== 'automation' ||
       entry.triggerActor.id !== admission.scheduleId ||
+      !staged ||
+      staged.originalInvocationId !== entry.requestId ||
       schedulerAdmissionInputHash(entry) !== entry.inputHash ||
       turn.id !== entry.turnId ||
       workspaceIdForOwner(turn.owner) !== entry.workspaceId ||

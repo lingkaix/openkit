@@ -60,6 +60,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import {
   closeTestCoreDb,
   createTestCoreDb,
@@ -480,7 +481,11 @@ async function workerFixture() {
     requestedAgentId: environmentPackage.agent.agentId,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput: 'Exercise the original allocated Worker package.',
+    inputRef: schedulerFixtureInput(
+      workspaceId,
+      turn.id,
+      'Exercise the original allocated Worker package.'
+    ),
     workspaceId,
   });
   expect(entry.status).toBe('queued');

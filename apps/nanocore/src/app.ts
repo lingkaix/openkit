@@ -210,6 +210,7 @@ import {
   setPendingRequestAttentionObserver,
 } from './runtime/pending-request-flow.js';
 import { cancelOwnedQueuedAdmission, startProductTurn } from './runtime/product-turn-start.js';
+import { PENDING_WORKER_TRIGGER_INPUT } from './runtime/scheduler-dispatch-input.js';
 import { createCoordinatorTaskTool } from './runtime/task-admission.js';
 import { waitForWorkerTurnTerminalState } from './runtime/task-turn-wait.js';
 import {
@@ -257,6 +258,7 @@ import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './st
 import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
+import { findWorkspaceQueueInputRef } from './storage/workspace-queue-inputs.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
@@ -2519,8 +2521,28 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           .get(turn.id)
       )
         return;
+      const workspaceId = workspaceIdForOwner(turn.owner);
+      const root = store.getDataRoot();
+      let inputRef: ReturnType<typeof findWorkspaceQueueInputRef> = null;
+      try {
+        if (root && root === options.coreDb?.dataRoot) {
+          inputRef = findWorkspaceQueueInputRef(
+            root,
+            { workspaceId, threadId: turn.threadId, turnId: turn.id },
+            { inputId: turn.id, originalInvocationId: turn.id }
+          );
+        }
+      } catch {
+        // The admitted Workspace could not prove the original delivery input.
+      }
+      if (!inputRef)
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The original outcome batch is unavailable.',
+          409
+        );
       const identity = createHash('sha256')
-        .update(JSON.stringify([workspaceIdForOwner(turn.owner), turn.threadId, turn.id]))
+        .update(JSON.stringify([workspaceId, turn.threadId, turn.id]))
         .digest('hex');
       const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
 
@@ -2529,11 +2551,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
         ...setupProviderSupply,
         input: {
-          input: 'Receive pending request outcomes.',
+          input: PENDING_WORKER_TRIGGER_INPUT,
           requestId,
-          workspaceId: workspaceIdForOwner(turn.owner),
+          workspaceId,
           threadId: turn.threadId,
         },
+        inputRef,
         requestedAgentId: turn.agentId,
         reservedTurnId: turn.id,
         onTurnCreated: () => admitted.resolve(),
@@ -2547,9 +2570,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       })
         .catch(async (error: unknown) => {
           // Only this refused outcome attempt retires its still-queued scheduler ownership.
-          if (options.coreDb && error instanceof TurnStartValidationError) {
+          if (
+            options.coreDb &&
+            error instanceof TurnStartValidationError &&
+            error.code !== 'recovery_required'
+          ) {
             const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
-              workspaceId: workspaceIdForOwner(turn.owner),
+              workspaceId,
               statuses: ['queued'],
             }).find(
               (candidate) => candidate.turnId === turn.id && candidate.requestId === requestId
@@ -2557,7 +2584,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             if (entry)
               await cancelOwnedQueuedAdmission(options.coreDb, {
                 queueEntryId: entry.queueEntryId,
-                workspaceId: workspaceIdForOwner(turn.owner),
+                workspaceId,
               });
           }
           throw error;

@@ -81,6 +81,7 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recoveryJournalFact } from './test-support/recovery-journal.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { createWorkerEnvironmentOperations } from './worker-environments/worker-environment-operations.js';
 import { WORKSPACE_DELETION_LEGAL_HOLD_OWNERS } from './workspace-deletion-evidence.js';
 import * as deletionRequestOwner from './workspace-deletion-request.js';
@@ -1120,7 +1121,7 @@ function insertDeletionQuiescenceLease(
     workspaceId: input.workspaceId,
     threadId,
     turnId,
-    turnInput: 'Deletion quiescence fixture',
+    inputRef: schedulerFixtureInput(input.workspaceId, turnId, 'Deletion quiescence fixture'),
     requestedAgentId: 'agent_codex_host',
     now: () => timestamp,
   });

@@ -10,13 +10,13 @@ import {
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { ExecutionBackend } from './execution-backend.js';
@@ -197,7 +197,8 @@ function expectNoRuntimeEffects(f: ReturnType<typeof fixture>) {
 
 /** Publishes a real queued request, pending Turn and command receipt for scheduler re-evaluation. */
 async function enqueue(f: ReturnType<typeof fixture>) {
-  const entry = createSchedulerAdmissionEntry(f.coreDb, {
+  const turnInput = 'Recheck current provider supply.';
+  const entry = await createTestQueueEntry(f.coreDb, {
     backendId: f.backend.id,
     modelId: null,
     profileRef: null,
@@ -206,32 +207,25 @@ async function enqueue(f: ReturnType<typeof fixture>) {
     requestedAgentId: f.manifest.id,
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: 'tu_00000000-0000-7f8d-8f63-56fe4f577045',
-    turnInput: 'Recheck current provider supply.',
+    text: turnInput,
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     workspaceCwd: null,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     workspaceRoots: [],
   });
-  await f.store.createTurn(
-    entry.workspaceId,
-    entry.threadId,
-    entry.turnInput,
-    entry.triggerActor,
-    null,
-    {
-      turnId: entry.turnId,
-      status: 'pending',
+  await f.store.createTurn(entry.workspaceId, entry.threadId, turnInput, entry.triggerActor, null, {
+    turnId: entry.turnId,
+    status: 'pending',
+    agentId: f.manifest.id,
+    executorKind: 'worker',
+    commandReceipt: commandReceipt({
+      requestId: entry.requestId,
+      workspaceId: entry.workspaceId,
+      threadId: entry.threadId,
       agentId: f.manifest.id,
-      executorKind: 'worker',
-      commandReceipt: commandReceipt({
-        requestId: entry.requestId,
-        workspaceId: entry.workspaceId,
-        threadId: entry.threadId,
-        agentId: f.manifest.id,
-        input: entry.turnInput,
-      }),
-    }
-  );
+      input: turnInput,
+    }),
+  });
 }
 
 /** Prepares the original command facts for the native Turn owner, before admission or dispatch. */

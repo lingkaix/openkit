@@ -38,7 +38,7 @@ export function createAutomationOperationImplementations(
           ? requireSchedulerAdmissionEntry(dependencies.coreDb!, record.queueEntryId)
           : null;
         const publicationIssue = queued
-          ? recurringTurnPublicationIssue(dependencies.store!, queued)
+          ? recurringTurnPublicationIssue(dependencies.coreDb!, dependencies.store!, queued)
           : null;
         const publicationUncertainSince =
           input.includePublicationDiagnostics && queued && publicationIssue

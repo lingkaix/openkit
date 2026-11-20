@@ -21,6 +21,7 @@ import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
 import { recurringTurnPublicationIssue } from '../runtime/recurring-turn-publication.js';
+import { readScheduledAdmissionText } from '../runtime/scheduler-dispatch-input.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
@@ -334,10 +335,12 @@ describe('Workspace JSON transfer cutover', () => {
       db,
       schedules.getOccurrence(occurrence.id).queueEntryId!
     );
+    const originalText = readScheduledAdmissionText(db, entry);
+    if (originalText === null) throw new Error('The recurring fixture has no original input.');
     const turn = await store.createTurn(
       entry.workspaceId,
       entry.threadId,
-      entry.turnInput,
+      originalText,
       entry.triggerActor,
       null,
       {
@@ -369,7 +372,7 @@ describe('Workspace JSON transfer cutover', () => {
       nativeDb.sqlite.close();
     }
     expect(store.getTurn(DEMO_WORKSPACE_ID, thread.id, turn.id)).toEqual(turn);
-    expect(recurringTurnPublicationIssue(store, entry)).toBeNull();
+    expect(recurringTurnPublicationIssue(db, store, entry)).toBeNull();
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );

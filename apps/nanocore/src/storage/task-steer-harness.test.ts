@@ -24,7 +24,6 @@ import { taskSteerInputItemId } from '../runtime/task-steer.js';
 import { readTaskSteerState } from '../runtime/task-steer-receipt.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -38,6 +37,7 @@ import {
   createNativeTaskAdmissionFixture,
 } from '../test-support/native-task-admission.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { createThreadOperationImplementations } from '../thread-operation-implementations.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -99,7 +99,8 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
     null,
   ]);
   const scope = { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, actorId: userId };
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const originalInput = 'Original Task work';
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     requestId,
     queueEntryId: `steer-original-${turnId}`,
@@ -107,7 +108,7 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
     workspaceId: DEMO_WORKSPACE_ID,
     threadId: DEMO_THREAD_ID,
     turnId,
-    turnInput: 'Original Task work',
+    text: originalInput,
     triggerActor: actor,
   });
   await createNativeCommandTurn(
@@ -115,7 +116,7 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
     { requestId, agentId: manifest.id },
     entry.workspaceId,
     entry.threadId,
-    entry.turnInput,
+    originalInput,
     actor,
     undefined,
     { turnId, status: 'pending', agentId: manifest.id, executorKind: 'worker' }

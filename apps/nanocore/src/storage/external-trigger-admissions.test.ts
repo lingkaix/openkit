@@ -9,6 +9,7 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import {
@@ -46,14 +47,15 @@ function queue(
   key: string,
   targetWorkspaceId = workspaceId
 ) {
+  const turnId = testEntityId('tu', key);
   return createSchedulerAdmissionEntry(db, {
     queueEntryId: `queue_${randomUUID()}_event`,
     backendId: 'backend',
     triggerActor: schedule.actor,
     workspaceId: targetWorkspaceId,
     threadId: testEntityId('th', key),
-    turnId: testEntityId('tu', key),
-    turnInput: `Handle ${key}`,
+    turnId,
+    inputRef: schedulerFixtureInput(targetWorkspaceId, turnId, `Handle ${key}`),
     requestedAgentId: 'worker',
   });
 }
@@ -101,8 +103,8 @@ describe('ExternalTriggerAdmission Core joins', () => {
       })
     )();
     expect(duplicate).toEqual(original);
-    expect(requireSchedulerAdmissionEntry(reopened, original.queueEntryId).turnInput).toBe(
-      'Handle mail:one'
+    expect(requireSchedulerAdmissionEntry(reopened, original.queueEntryId).inputRef).toEqual(
+      schedulerFixtureInput(workspaceId, testEntityId('tu', 'mail:one'), 'Handle mail:one')
     );
     expect(listWorkspaceExternalTriggerAdmissions(reopened, workspaceId)).toHaveLength(2);
   });

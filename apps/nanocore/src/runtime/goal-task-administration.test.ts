@@ -34,7 +34,6 @@ import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
@@ -47,6 +46,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalTools } from './goal-coordinator.js';
 import { executeGoalOperation } from './goal-owner.js';
@@ -415,7 +415,7 @@ async function fixture() {
     createdAt: turn.startedAt!,
     completedAt: turn.startedAt!,
   });
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue_${requestId}`,
     requestId,
@@ -423,7 +423,7 @@ async function fixture() {
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput,
+    text: turnInput,
     requestedAgentId: 'issue-worker',
   });
   const attempt = recordTestExecutionAttempt(coreDb, {

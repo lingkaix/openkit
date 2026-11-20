@@ -20,7 +20,6 @@ import {
 import { loadRuntimeConfig } from '../config/runtime-config.js';
 import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
@@ -38,6 +37,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   markSchedulerAttemptForTerminalTurn,
@@ -441,14 +441,14 @@ async function faultFixture() {
       },
     }
   );
-  createSchedulerAdmissionEntry(coreDb, {
+  await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'fault-queue',
     requestId,
     requestedAgentId: setup.manifest.id,
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: testEntityId('tu', 'fault-turn'),
-    turnInput: 'Exercise a bounded worker fault',
+    text: 'Exercise a bounded worker fault',
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });

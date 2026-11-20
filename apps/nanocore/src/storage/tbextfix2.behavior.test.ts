@@ -16,7 +16,6 @@ import {
 import { ProviderRegistry } from '../providers/registry.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { raiseRecordedPendingRequest } from '../runtime/pending-request-flow.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -31,6 +30,7 @@ import {
   createNativeTaskAdmissionFixture,
 } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
@@ -95,7 +95,8 @@ async function liveWorkerFixture() {
     null,
   ]);
   const _scope = { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, actorId: f.userId };
-  const entry = createSchedulerAdmissionEntry(f.coreDb, {
+  const turnInput = 'Original admitted Task';
+  const entry = await createTestQueueEntry(f.coreDb, {
     backendId: 'nanohost',
     requestId,
     queueEntryId: `tbextfix2-original-${turnId}`,
@@ -103,7 +104,7 @@ async function liveWorkerFixture() {
     workspaceId: DEMO_WORKSPACE_ID,
     threadId: DEMO_THREAD_ID,
     turnId,
-    turnInput: 'Original admitted Task',
+    text: turnInput,
     triggerActor: actor,
   });
   // The original Store publisher owns the Turn and its command acknowledgement.
@@ -112,7 +113,7 @@ async function liveWorkerFixture() {
     { requestId, agentId: manifest.id },
     entry.workspaceId,
     entry.threadId,
-    entry.turnInput,
+    turnInput,
     actor,
     undefined,
     { turnId, status: 'pending', agentId: manifest.id, executorKind: 'worker' }

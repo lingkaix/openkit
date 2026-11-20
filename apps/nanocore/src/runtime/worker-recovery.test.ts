@@ -36,7 +36,6 @@ import { GatewayUnsupportedFeatureError } from '../llm/pi-ai-client.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { OperationError } from '../operation-error.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
@@ -59,6 +58,7 @@ import {
 } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -227,7 +227,7 @@ async function createCheckpointCloseoutFixture(
   const attemptId = testEntityId('attempt', `checkpoint:${turn.id}`);
   const snapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
   const bindingRef = `binding:${turn.id}`;
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'queue_checkpoint_closeout',
     requestId,
@@ -236,7 +236,7 @@ async function createCheckpointCloseoutFixture(
     workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,
-    turnInput: input,
+    text: input,
   });
   recordTestExecutionAttempt(coreDb, {
     entry,

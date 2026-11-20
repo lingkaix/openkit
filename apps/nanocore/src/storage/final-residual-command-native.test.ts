@@ -35,6 +35,7 @@ import {
 } from '../scheduler-records.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -507,7 +508,7 @@ async function fixture(kind: Kind) {
       workspaceId,
       threadId: thread.id,
       turnId: turn.id,
-      turnInput: 'Original residual scheduler input.',
+      inputRef: schedulerFixtureInput(workspaceId, turn.id, 'Original residual scheduler input.'),
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
     });

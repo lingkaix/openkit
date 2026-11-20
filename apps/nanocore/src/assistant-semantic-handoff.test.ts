@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -40,6 +41,7 @@ import {
   raisePendingRequest,
   readPendingRequest,
 } from './runtime/pending-requests.js';
+import { readScheduledAdmissionText } from './runtime/scheduler-dispatch-input.js';
 import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
@@ -51,10 +53,7 @@ import {
 } from './runtime/worker-checkpoints.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import { prepareWorkerTurnContextPackage } from './runtime/worker-governance-turn-executor.js';
-import {
-  createSchedulerAdmissionEntry,
-  listSchedulerAdmissionEntriesForWorkspace,
-} from './scheduler-records.js';
+import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -75,6 +74,7 @@ import {
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
+import { createTestQueueEntry } from './test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 // Storage 65: accepted queued work must not retain an invocation-owned Main reader.
@@ -580,7 +580,7 @@ describe('Assistant semantic Task handoff', () => {
       }),
       now: () => now,
     });
-    const admission = createSchedulerAdmissionEntry(f.coreDb, {
+    const admission = await createTestQueueEntry(f.coreDb, {
       backendId: f.executor.id,
       queueEntryId: 'queue_predecessor_assistant',
       requestId: workerRequestId,
@@ -588,7 +588,7 @@ describe('Assistant semantic Task handoff', () => {
       workspaceId: f.workspace.id,
       threadId: receiving.id,
       turnId,
-      turnInput,
+      text: turnInput,
       requestedAgentId: f.selected.manifest.id,
       modelId: f.modelId,
       now: () => now,
@@ -869,11 +869,13 @@ describe('Assistant semantic Task handoff', () => {
         )
       ).toEqual([]);
 
-      const workerInput = JSON.parse(admission!.turnInput);
+      const originalInput = readScheduledAdmissionText(f.coreDb, admission!);
+      assert.ok(originalInput !== null, 'The admitted Workspace input must resolve after handoff.');
+      const workerInput = JSON.parse(originalInput);
       expect(workerInput.objective).toBe(brief);
       expect(workerInput.constraints.maxWorkerIterations).toBe(1);
-      expect(admission!.turnInput).not.toContain(privateMarker);
-      expect(admission!.turnInput).not.toContain('Confirm exact handoff');
+      expect(originalInput).not.toContain(privateMarker);
+      expect(originalInput).not.toContain('Confirm exact handoff');
       expect(JSON.stringify(f.store.listThreadTurns(f.workspace.id, receiving.id))).not.toContain(
         privateMarker
       );
@@ -895,7 +897,7 @@ describe('Assistant semantic Task handoff', () => {
         getWorkerCheckpoint(f.workspaceDb, f.workspace.id, receiving.id, worker.id)!,
         {
           agentSessionId: allocateEntityId('as'),
-          workerRequest: admission!.turnInput,
+          workerRequest: originalInput,
           requestId: admission!.requestId,
           workspaceId: f.workspace.id,
           threadId: receiving.id,
@@ -923,7 +925,7 @@ describe('Assistant semantic Task handoff', () => {
         threadId: receiving.id,
         turnId: worker.id,
         requestId: admission!.requestId!,
-        workerRequest: admission!.turnInput,
+        workerRequest: originalInput,
       };
       expect(authority.readAssistantTaskHandoffSource?.(sourceBinding)).toMatchObject({
         sourceTurnId: delivered.deliveryTurnId,

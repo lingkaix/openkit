@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TurnSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { AgentSessionRecordSchema } from '../storage/workspace-file-records.js';
@@ -17,6 +16,7 @@ import {
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -239,7 +239,7 @@ it.each([
         predecessorFenced: true,
         ready: true,
       });
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: actor,
         queueEntryId: `queue_${turn.id}`,
@@ -247,7 +247,7 @@ it.each([
         requestedAgentId: 'agent_opencode_server',
         threadId: turn.threadId,
         turnId: turn.id,
-        turnInput: 'Try OpenCode again',
+        text: 'Try OpenCode again',
         workspaceId: workspaceIdForOwner(turn.owner),
       });
       recordTestExecutionAttempt(coreDb, {

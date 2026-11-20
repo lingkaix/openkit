@@ -25,6 +25,7 @@ import {
   StoredGoalV1Schema,
 } from '../runtime/goal-retained-v1.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
+import { readFrozenSchedulerInput } from '../runtime/scheduler-dispatch-frozen-input.js';
 import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
@@ -93,6 +94,7 @@ import {
 } from './recurring-attempt-native.js';
 import { StoredItemV1Schema } from './retained-work-items-v1.js';
 import { nativeProductScope } from './workspace-file-records.js';
+import { hasCommittedWorkspaceQueueInput } from './workspace-queue-inputs.js';
 
 /** Verifies the actual physical receipt owner, without treating extra resource selectors as new authority. */
 function assertReceiptOwner(owner: ControlProductOwner, scope: Record<string, string>): void {
@@ -929,6 +931,22 @@ function admitCoreSchedulerWork(db: CoreDb, raw: CoreSchedulerInput): CoreSchedu
         .get(input.entry.workspaceId, input.entry.threadId, input.entry.turnId)
     )
       throw new OperationError('thread_busy', 'Thread already has a nonterminal Turn.', 409);
+    const { entry: candidate } = input;
+    const inputAvailable =
+      candidate.inputRef.inputId === candidate.turnId
+        ? readFrozenSchedulerInput(db.dataRoot, candidate, candidate.inputRef) !== null
+        : hasCommittedWorkspaceQueueInput(
+            db.dataRoot,
+            candidate,
+            candidate.inputRef,
+            candidate.requestId ?? candidate.queueEntryId
+          );
+    if (!inputAvailable)
+      throw new OperationError(
+        'recovery_required',
+        'Original Workspace input is unavailable.',
+        409
+      );
     const entry = createSchedulerAdmissionEntry(
       db,
       presentControlFacts({

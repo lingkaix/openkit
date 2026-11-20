@@ -23,6 +23,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './db.js';
@@ -79,7 +80,11 @@ async function fixture(capture = false, drain = true, idle = false) {
     workspaceId,
     threadId,
     turnId,
-    turnInput: 'Exercise admission restoration without a physical effect.',
+    inputRef: schedulerFixtureInput(
+      workspaceId,
+      turnId,
+      'Exercise admission restoration without a physical effect.'
+    ),
     triggerActor: { id: ownerUserId, kind: 'user' },
     now: () => timestamp,
   });

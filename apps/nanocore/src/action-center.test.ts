@@ -30,6 +30,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -1403,7 +1404,11 @@ describe('action center app API', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: queuedThread.id,
         turnId: 'tu_00000000-0000-759a-99ef-aac3b45895dd',
-        turnInput: 'Run when capacity is available.',
+        inputRef: schedulerFixtureInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-759a-99ef-aac3b45895dd',
+          'Run when capacity is available.'
+        ),
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
         now: () => timestamp,
@@ -1415,7 +1420,11 @@ describe('action center app API', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: deniedThread.id,
         turnId: 'tu_00000000-0000-797c-b78d-19110d9c6bdc',
-        turnInput: 'Run after pool configuration.',
+        inputRef: schedulerFixtureInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-797c-b78d-19110d9c6bdc',
+          'Run after pool configuration.'
+        ),
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
         now: () => timestamp,
@@ -1516,7 +1525,11 @@ describe('action center app API', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: shared.id,
         turnId: 'tu_00000000-0000-7443-9631-34586a5154c5',
-        turnInput: 'Show the Workspace admission to current authorized editors.',
+        inputRef: schedulerFixtureInput(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-7443-9631-34586a5154c5',
+          'Show the Workspace admission to current authorized editors.'
+        ),
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
         now: () => timestamp,

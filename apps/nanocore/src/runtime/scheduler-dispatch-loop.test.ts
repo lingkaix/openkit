@@ -32,6 +32,7 @@ import {
   nativeProductScope,
   readPublishedTurnFileRecords,
 } from '../storage/workspace-file-records.js';
+import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -47,6 +48,8 @@ import {
 } from '../test-support/native-environment.js';
 import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import * as attemptRecords from './execution-attempt-records.js';
@@ -60,9 +63,11 @@ import { TurnStartValidationError } from './orchestrator';
 import { startProductTurn as executeProductTurn } from './product-turn-start.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
+import { readScheduledAdmissionText } from './scheduler-dispatch-input.js';
 import { getSchedulerPreparationClaims, runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
 import * as schedulerDispatchLoop from './scheduler-dispatch-loop.js';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service.js';
+import { stageSchedulerStartInput } from './scheduler-input-staging.js';
 import {
   runSchedulerRecoveryMaintenance,
   runSchedulerRestartRecovery,
@@ -358,10 +363,13 @@ async function publishTestAdmission(
   store: FsStore,
   entry: ReturnType<typeof createSchedulerAdmissionEntry>
 ) {
+  const dataRoot = store.getDataRoot();
+  const staged = dataRoot && readWorkspaceQueueInput(dataRoot, entry, entry.inputRef);
+  if (!staged) throw new Error('Fixture input is unavailable.');
   await store.createTurn(
     entry.workspaceId,
     entry.threadId,
-    entry.turnInput,
+    staged.text,
     entry.triggerActor,
     undefined,
     {
@@ -522,7 +530,7 @@ describe('route B durable intent before effects', () => {
     });
     const executor = await RecordingTurnExecutor.create(coreDb);
     const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Paused dispatch');
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: executor.executionBackend.id,
       queueEntryId: fixtureRequestId('paused-queue'),
       requestId: fixtureRequestId('paused-dispatch'),
@@ -531,7 +539,7 @@ describe('route B durable intent before effects', () => {
       turnId: testEntityId('tu', 'paused-dispatch'),
       requestedAgentId: agentManifest().id,
       triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
-      turnInput: 'Already admitted',
+      text: 'Already admitted',
       profileRef: 'default',
       modelId: 'openai/gpt-5.2',
     });
@@ -602,9 +610,11 @@ describe('route B durable intent before effects', () => {
       expect(admission).toHaveLength(1);
       expect(admission[0]).toMatchObject({
         requestId: '00000000-0000-4000-8000-00000000d301',
-        turnInput: 'Persist intent before preparation.',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
       });
+      expect(readScheduledAdmissionText(coreDb, admission[0]!)).toBe(
+        'Persist intent before preparation.'
+      );
       expect(executor.prepareCalls).toEqual([
         { threadId: 'th_00000000-0000-7000-8000-000000000001', turnId: admission[0]!.turnId },
       ]);
@@ -676,7 +686,7 @@ describe('route B durable intent before effects', () => {
 });
 
 describe('scheduler dispatch loop', () => {
-  it('dispatches one monthly UTC occurrence in its existing Thread through the ordinary modeled Worker port', async () => {
+  it('dispatches the original monthly occurrence after editing its schedule and reopening the owner', async () => {
     const coreDb = createMigratedCoreDb(false);
     const root = coreDb.dataRoot;
     const store = await createDemoStore({ dataRoot: root });
@@ -740,34 +750,56 @@ describe('scheduler dispatch loop', () => {
       expect(entry).toMatchObject({
         threadId: thread.id,
         turnId: accepted.turnId,
-        turnInput: 'Exact monthly input',
       });
-      const dispatched = await runSchedulerDispatchLoop({
-        coreDb,
-        store,
-        turnExecutor: executor,
-        executionBackend: executor.executionBackend,
-        agentManifests: [manifest],
-        gatewayConfig: createTestGatewayConfig(),
-        providerRegistry: localProviderRegistry(),
+      service.stop();
+      const paused = await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+        expectedRevision: 2,
+        status: 'paused',
       });
-      expect(
-        dispatched.startedTurns.map(({ dispatch, handle }) => ({
-          queueEntryId: dispatch.entry.queueEntryId,
-          threadId: handle.turn.threadId,
-          turnId: handle.turn.id,
-        }))
-      ).toEqual([{ queueEntryId: entry.queueEntryId, threadId: thread.id, turnId: entry.turnId }]);
-      expect(executor.prepareCalls).toEqual([{ threadId: thread.id, turnId: accepted.turnId }]);
-      expect(executor.calls).toEqual([
-        expect.objectContaining({ input: 'Exact monthly input', turnId: accepted.turnId }),
-      ]);
-      expect(store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toHaveLength(1);
-      expect(store.getTurnById(entry.turnId).threadId).toBe(thread.id);
-      expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+      await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+        expectedRevision: paused.revision,
+        prompt: 'Replacement schedule input',
+      });
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      const reopened = openCoreDb(root);
+      try {
+        const reopenedStore = createTestStore({ dataRoot: root });
+        const reopenedExecutor = await RecordingTurnExecutor.create(reopened);
+        expect(readScheduledAdmissionText(reopened, entry)).toBe('Exact monthly input');
+        const dispatched = await runSchedulerDispatchLoop({
+          coreDb: reopened,
+          store: reopenedStore,
+          turnExecutor: reopenedExecutor,
+          executionBackend: reopenedExecutor.executionBackend,
+          agentManifests: [manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: localProviderRegistry(),
+        });
+        expect(
+          dispatched.startedTurns.map(({ dispatch, handle }) => ({
+            queueEntryId: dispatch.entry.queueEntryId,
+            threadId: handle.turn.threadId,
+            turnId: handle.turn.id,
+          }))
+        ).toEqual([
+          { queueEntryId: entry.queueEntryId, threadId: thread.id, turnId: entry.turnId },
+        ]);
+        expect(reopenedExecutor.prepareCalls).toEqual([
+          { threadId: thread.id, turnId: accepted.turnId },
+        ]);
+        expect(reopenedExecutor.calls).toEqual([
+          expect.objectContaining({ input: 'Exact monthly input', turnId: accepted.turnId }),
+        ]);
+        expect(reopenedStore.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toHaveLength(1);
+        expect(reopenedStore.getTurnById(entry.turnId).threadId).toBe(thread.id);
+        expect(new AutomationStore(reopened).getOccurrence(accepted.id)).toEqual(accepted);
+      } finally {
+        reopened.sqlite.close();
+      }
     } finally {
       service.stop();
-      coreDb.sqlite.close();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -891,7 +923,7 @@ describe('scheduler dispatch loop', () => {
         expect(update).not.toHaveBeenCalled();
         expect(executor.prepareCalls).toEqual([]);
         expect(executor.calls).toEqual([]);
-        expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
+        expect(recurringTurnPublicationIssue(coreDb, store, entry)).toBe('turn_contradictory');
         expect(
           readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
         ).toEqual(published);
@@ -972,6 +1004,14 @@ describe('scheduler dispatch loop', () => {
         'conversation',
         { visibility: 'workspace', threadSource: 'worker', parentThreadId: pollThread.id }
       );
+      const caseTurnId = testEntityId('tu', 'tu_external_dispatch');
+      const text = 'Only this case brief.';
+      const caseInputRef = await stageSchedulerStartInput(
+        coreDb.dataRoot,
+        { workspaceId: DEMO_WORKSPACE_ID, threadId: caseThread.id, turnId: caseTurnId },
+        'external-event-request',
+        text
+      );
       const entry = coreDb.sqlite.transaction(() => {
         const accepted = createSchedulerAdmissionEntry(coreDb, {
           backendId: executor.executionBackend.id,
@@ -979,10 +1019,10 @@ describe('scheduler dispatch loop', () => {
           requestId: 'external-event-request',
           workspaceId: DEMO_WORKSPACE_ID,
           threadId: caseThread.id,
-          turnId: testEntityId('tu', 'tu_external_dispatch'),
+          turnId: caseTurnId,
           requestedAgentId: manifest.id,
           triggerActor: schedule.actor,
-          turnInput: 'Only this case brief.',
+          inputRef: caseInputRef,
           profileRef: 'default',
           modelId: 'openai/gpt-5.2',
         });
@@ -994,19 +1034,12 @@ describe('scheduler dispatch loop', () => {
         });
         return accepted;
       })();
-      await store.createTurn(
-        DEMO_WORKSPACE_ID,
-        caseThread.id,
-        entry.turnInput,
-        schedule.actor,
-        null,
-        {
-          turnId: entry.turnId,
-          status: 'pending',
-          agentId: manifest.id,
-          executorKind: 'worker',
-        }
-      );
+      await store.createTurn(DEMO_WORKSPACE_ID, caseThread.id, text, schedule.actor, null, {
+        turnId: entry.turnId,
+        status: 'pending',
+        agentId: manifest.id,
+        executorKind: 'worker',
+      });
       const app = createApp({
         coreDb,
         dataRoot: coreDb.dataRoot,
@@ -1179,7 +1212,7 @@ describe('scheduler dispatch loop', () => {
               ? 'turn_contradictory'
               : 'turn_missing';
         // A cache entry created before a failed file write is not durable publication proof.
-        expect(recurringTurnPublicationIssue(store, entry)).toBe(expectedIssue);
+        expect(recurringTurnPublicationIssue(coreDb, store, entry)).toBe(expectedIssue);
         service.stop();
         initialCreate.mockRestore();
         coreDb.sqlite.close();
@@ -1603,14 +1636,14 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: fixtureRequestId('queue_claim_foreign'),
           requestId: fixtureRequestId('queue_claim_foreign'),
           turnId: testEntityId('tu', 'turn_claim_foreign'),
           workspaceId: foreignWorkspace.id,
           threadId: foreignThread.id,
-          turnInput: 'Private foreign work',
+          text: 'Private foreign work',
           requestedAgentId: manifest.id,
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7417-adb6-8c98a2b20e22' },
           now: () => '2026-07-05T00:00:00.000Z',
@@ -1754,14 +1787,14 @@ describe('scheduler dispatch loop', () => {
       const thread = await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue_image_${suffix}`,
           requestId: fixtureRequestId(`request_image_${suffix}`),
           turnId: testEntityId('tu', `turn_image_${suffix}`),
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: thread.id,
-          turnInput: suffix,
+          text: suffix,
           requestedAgentId: manifest.id,
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         })
@@ -1850,14 +1883,14 @@ describe('scheduler dispatch loop', () => {
         const thread = await store.createThread(DEMO_WORKSPACE_ID, `Deadline ${index}`);
         await publishTestAdmission(
           store,
-          createSchedulerAdmissionEntry(coreDb, {
+          await createTestQueueEntry(coreDb, {
             backendId: executor.executionBackend.id,
             queueEntryId: `queue_preparation_deadline_${index}`,
             requestId: fixtureRequestId(`preparation_deadline_${index}`),
             turnId,
             workspaceId: DEMO_WORKSPACE_ID,
             threadId: thread.id,
-            turnInput: `Input ${index}`,
+            text: `Input ${index}`,
             requestedAgentId: manifest.id,
             triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
           })
@@ -1984,14 +2017,14 @@ describe('scheduler dispatch loop', () => {
       const thread = await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue_claim_${suffix}`,
           requestId: fixtureRequestId(`queue_claim_${suffix}`),
           turnId: testEntityId('tu', `turn_claim_${suffix}`),
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: thread.id,
-          turnInput: suffix,
+          text: suffix,
           requestedAgentId: manifest.id,
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           now: () => `2026-07-05T00:00:0${index}.000Z`,
@@ -2078,7 +2111,7 @@ describe('scheduler dispatch loop', () => {
         await seedLocalSchedulerTarget(coreDb);
         await publishTestAdmission(
           store,
-          createSchedulerAdmissionEntry(coreDb, {
+          await createTestQueueEntry(coreDb, {
             backendId: 'nanohost',
             profileRef: null,
             queueEntryId: fixtureRequestId('queue_foreign_race'),
@@ -2086,7 +2119,7 @@ describe('scheduler dispatch loop', () => {
             requestedAgentId: manifest.id,
             threadId: thread.id,
             turnId: testEntityId('tu', 'turn_foreign_race'),
-            turnInput: 'Foreign private work',
+            text: 'Foreign private work',
             triggerActor: { kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
             workspaceId: workspace.id,
             now: () => '2026-07-05T00:00:00.000Z',
@@ -2199,14 +2232,14 @@ describe('scheduler dispatch loop', () => {
 
         await publishTestAdmission(
           store,
-          createSchedulerAdmissionEntry(coreDb, {
+          await createTestQueueEntry(coreDb, {
             backendId: 'nanohost',
             queueEntryId: fixtureRequestId('queue_later_race'),
             requestId: fixtureRequestId('queue_later_race'),
             requestedAgentId: manifest.id,
             threadId: thread.id,
             turnId: testEntityId('tu', 'turn_later_race'),
-            turnInput: 'Later work',
+            text: 'Later work',
             triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
@@ -2324,7 +2357,7 @@ describe('scheduler dispatch loop', () => {
         await seedLocalSchedulerTarget(coreDb);
         await publishTestAdmission(
           store,
-          createSchedulerAdmissionEntry(coreDb, {
+          await createTestQueueEntry(coreDb, {
             backendId: 'nanohost',
             profileRef: null,
             queueEntryId: 'queue_other_failure',
@@ -2332,7 +2365,7 @@ describe('scheduler dispatch loop', () => {
             requestedAgentId: manifest.id,
             threadId: thread.id,
             turnId: testEntityId('tu', 'turn_other_failure'),
-            turnInput: 'Other user private work',
+            text: 'Other user private work',
             triggerActor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
             workspaceId: workspace.id,
             now: () => '2026-07-05T00:00:00.000Z',
@@ -2433,14 +2466,14 @@ describe('scheduler dispatch loop', () => {
           onTurnCreated: async () => {
             await publishTestAdmission(
               store,
-              createSchedulerAdmissionEntry(coreDb, {
+              await createTestQueueEntry(coreDb, {
                 backendId: 'nanohost',
                 queueEntryId: 'queue_later_foreign',
                 requestId: fixtureRequestId('req_later_foreign'),
                 requestedAgentId: manifest.id,
                 threadId: thread.id,
                 turnId: testEntityId('tu', 'turn_later_foreign'),
-                turnInput: 'Private foreign work',
+                text: 'Private foreign work',
                 triggerActor: { kind: 'user', id: 'usr_00000000-0000-766c-b011-9a833a1b0fa6' },
                 workspaceId: workspace.id,
                 now: () => '2099-01-01T00:00:00.000Z',
@@ -2671,7 +2704,7 @@ describe('scheduler dispatch loop', () => {
         workspaceIds: [],
       });
       if (earlierDeniedQueue) {
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-782a-ba65-4f53b1392e0b' },
           queueEntryId: 'queue_earlier_denied',
@@ -2679,7 +2712,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: testEntityId('th', 'th_other'),
           turnId: testEntityId('tu', 'turn_other'),
-          turnInput: 'A prior request',
+          text: 'A prior request',
           requestedAgentId: manifest.id,
           profileRef: null,
         });
@@ -2988,7 +3021,7 @@ describe('scheduler dispatch loop', () => {
     await seedLocalSchedulerTarget(coreDb);
     await publishTestAdmission(
       store,
-      createSchedulerAdmissionEntry(coreDb, {
+      await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         profileRef: null,
         queueEntryId: fixtureRequestId('queue_older_workspace'),
@@ -2996,7 +3029,7 @@ describe('scheduler dispatch loop', () => {
         requestedAgentId: manifest.id,
         threadId: queuedThread.id,
         turnId: testEntityId('tu', 'turn_older_workspace'),
-        turnInput: 'Use the queued Workspace catalog',
+        text: 'Use the queued Workspace catalog',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         workspaceCwd: '/workspace/queued',
         workspaceId: queuedWorkspace.id,
@@ -3105,7 +3138,7 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       let activated: ReturnType<typeof managedThreadPolicy> = { schemaVersion: 1, statements: [] };
       store.setWorkspaceResourcePolicyProjection(() => activated);
-      const entry = createSchedulerAdmissionEntry(coreDb, {
+      const entry = await createTestQueueEntry(coreDb, {
         backendId: executor.executionBackend.id,
         queueEntryId: `queue_activated_policy_${stage}`,
         requestId: fixtureRequestId(`req_activated_policy_${stage}`),
@@ -3114,7 +3147,7 @@ describe('scheduler dispatch loop', () => {
         workspaceId,
         threadId,
         turnId: testEntityId('tu', `turn_activated_policy_${stage}`),
-        turnInput: 'Do not launch after current activated policy denies this Thread.',
+        text: 'Do not launch after current activated policy denies this Thread.',
       });
       await publishTestAdmission(store, entry);
       const deny = () => {
@@ -3232,7 +3265,7 @@ describe('scheduler dispatch loop', () => {
         await seedLocalSchedulerTarget(coreDb);
         await publishTestAdmission(
           store,
-          createSchedulerAdmissionEntry(coreDb, {
+          await createTestQueueEntry(coreDb, {
             backendId: 'nanohost',
             triggerActor: { kind: 'user', id: 'usr_00000000-0000-7997-b89e-2b3070b94b62' },
             queueEntryId: 'queue_revoked_dispatch',
@@ -3242,7 +3275,7 @@ describe('scheduler dispatch loop', () => {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: testEntityId('tu', 'turn_revoked_dispatch'),
-            turnInput: 'Do not launch this stale admission',
+            text: 'Do not launch this stale admission',
             requestedAgentId: 'agent_codex_host',
             profileRef: null,
           })
@@ -3337,7 +3370,7 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: 'queue_admin_race',
           requestId: fixtureRequestId('req_admin_race'),
@@ -3346,7 +3379,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_admin_race'),
-          turnInput: 'Do not launch after revocation',
+          text: 'Do not launch after revocation',
           requestedAgentId: 'agent_codex_host',
         })
       );
@@ -3411,7 +3444,7 @@ describe('scheduler dispatch loop', () => {
         await seedLocalSchedulerTarget(coreDb);
         await publishTestAdmission(
           store,
-          createSchedulerAdmissionEntry(coreDb, {
+          await createTestQueueEntry(coreDb, {
             backendId: 'nanohost',
             triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             queueEntryId: 'queue_replacement_blocker',
@@ -3419,7 +3452,7 @@ describe('scheduler dispatch loop', () => {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: testEntityId('tu', 'turn_replacement_blocker'),
-            turnInput: 'Hold the Thread scheduler lease',
+            text: 'Hold the Thread scheduler lease',
             requestedAgentId: 'agent_codex_host',
             profileRef: null,
           })
@@ -3482,7 +3515,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
         await setup(coreDb, store);
-        const candidate = createSchedulerAdmissionEntry(coreDb, {
+        const candidate = await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_replacement_candidate',
@@ -3490,7 +3523,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_replacement_candidate'),
-          turnInput: 'Use incompatible future static inputs',
+          text: 'Use incompatible future static inputs',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
         });
@@ -3554,7 +3587,7 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_00000000-0000-4000-8000-00000000d201_loop_1',
@@ -3562,7 +3595,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_loop_1'),
-          turnInput: 'Run the scheduled worker',
+          text: 'Run the scheduled worker',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
           now: () => '2026-07-05T00:00:01.000Z',
@@ -3657,7 +3690,7 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_busy_active',
@@ -3665,7 +3698,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_busy_active'),
-          turnInput: 'Hold the first Thread lease',
+          text: 'Hold the first Thread lease',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
           now: () => '2026-07-05T00:00:00.000Z',
@@ -3681,7 +3714,7 @@ describe('scheduler dispatch loop', () => {
         now: () => '2026-07-05T00:00:01.000Z',
       });
       expect(blocker.phase).toBe('open');
-      const followup = createSchedulerAdmissionEntry(coreDb, {
+      const followup = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId: 'queue_busy_followup',
@@ -3689,7 +3722,7 @@ describe('scheduler dispatch loop', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: testEntityId('tu', 'turn_busy_followup'),
-        turnInput: 'Stay queued while the Thread is busy',
+        text: 'Stay queued while the Thread is busy',
         requestedAgentId: 'agent_codex_host',
         profileRef: null,
         now: () => '2026-07-05T00:00:02.000Z',
@@ -3697,7 +3730,7 @@ describe('scheduler dispatch loop', () => {
       expect(() => store.getTurnById(followup.turnId)).toThrow();
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_later_dispatchable',
@@ -3705,7 +3738,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: laterThread.id,
           turnId: testEntityId('tu', 'turn_later_dispatchable'),
-          turnInput: 'Start the later dispatchable Thread',
+          text: 'Start the later dispatchable Thread',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
           now: () => '2026-07-05T00:00:03.000Z',
@@ -3795,7 +3828,7 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           profileRef: null,
           queueEntryId: 'queue_commit_failed',
@@ -3803,7 +3836,7 @@ describe('scheduler dispatch loop', () => {
           requestedAgentId: 'agent_codex_host',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_commit_failed'),
-          turnInput: 'Reject after scheduler dispatch',
+          text: 'Reject after scheduler dispatch',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
@@ -3855,7 +3888,7 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_continuity_live',
@@ -3863,7 +3896,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_continuity_live'),
-          turnInput: 'Run with continuity',
+          text: 'Run with continuity',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
           now: () => '2026-07-05T00:00:01.000Z',
@@ -4070,7 +4103,7 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_setup_ledger',
@@ -4078,7 +4111,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_setup_ledger'),
-          turnInput: 'Run the scheduled worker',
+          text: 'Run the scheduled worker',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
           now: () => '2026-07-05T00:00:01.000Z',
@@ -4167,7 +4200,7 @@ describe('scheduler dispatch loop', () => {
     try {
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_terminal_busy',
@@ -4175,7 +4208,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_terminal_busy'),
-          turnInput: 'Refuse after terminal publication',
+          text: 'Refuse after terminal publication',
           requestedAgentId: 'agent_codex_host',
         })
       );
@@ -4231,7 +4264,7 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: fixtureRequestId('queue_loop_failed'),
@@ -4239,7 +4272,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_loop_failed'),
-          turnInput: 'Fail the scheduled worker',
+          text: 'Fail the scheduled worker',
           requestedAgentId: 'agent_codex_host',
           profileRef: null,
           now: () => '2026-07-05T00:00:01.000Z',
@@ -4349,7 +4382,7 @@ describe('scheduler dispatch loop', () => {
       await seedLocalSchedulerTarget(coreDb);
       await publishTestAdmission(
         store,
-        createSchedulerAdmissionEntry(coreDb, {
+        await createTestQueueEntry(coreDb, {
           backendId: 'nanohost',
           profileRef: null,
           queueEntryId: 'queue_cleanup_pending',
@@ -4357,7 +4390,7 @@ describe('scheduler dispatch loop', () => {
           requestedAgentId: 'agent_codex_host',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: testEntityId('tu', 'turn_cleanup_pending'),
-          turnInput: 'Fail with backend cleanup pending',
+          text: 'Fail with backend cleanup pending',
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })

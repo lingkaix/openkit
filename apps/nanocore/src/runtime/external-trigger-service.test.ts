@@ -56,6 +56,8 @@ import {
 } from './external-trigger-service.js';
 import { inspectExternalTriggerAdmission } from './external-trigger-source.js';
 import { dispatchOpenkitWorkTool } from './openkit-work-mcp.js';
+import { readScheduledAdmissionText } from './scheduler-dispatch-input.js';
+import { stageSchedulerStartInput } from './scheduler-input-staging.js';
 import type { TurnExecutor } from './types.js';
 import { prepareWorkerTurnJournalIntents } from './worker-governance-turn-executor.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
@@ -157,7 +159,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
     const turn = await store.createTurn(
       workspace.id,
       thread.id,
-      entry.turnInput,
+      schedule.prompt,
       schedule.actor,
       snapshot.version,
       {
@@ -403,7 +405,7 @@ describe('bounded scheduled poll event admission', () => {
         const replay = await f.admit({ input: 'No replacement after publication uncertainty.' });
         expect(replay.admission).toEqual(accepted);
         expect(replay.entry).toEqual(entry);
-        expect(replay.entry.turnInput).toBe(f.dependencies.input);
+        expect(readScheduledAdmissionText(f.db, replay.entry)).toBe(f.dependencies.input);
         expect(replay.admission.sourceTurnId).toBe(f.source.turnId);
         expect(replay.turn.status).toBe('pending');
         expect(replay.turn.agentSessionId ?? null).toBeNull();
@@ -589,7 +591,7 @@ describe('bounded scheduled poll event admission', () => {
       releaseFirst.resolve();
       const winner = await first;
       expect(winner.duplicate).toBe(false);
-      expect(winner.entry.turnInput).toBe(f.dependencies.input);
+      expect(readScheduledAdmissionText(f.db, winner.entry)).toBe(f.dependencies.input);
       releaseSecond.resolve();
       const duplicate = await second;
       expect(duplicate).toEqual({ ...winner, duplicate: true });
@@ -640,7 +642,7 @@ describe('bounded scheduled poll event admission', () => {
       eventKey: 'mail:message-2',
       input: 'Handle the second message.',
     });
-    expect(replay.entry.turnInput).toBe(first.entry.turnInput);
+    expect(replay.entry.inputRef).toEqual(first.entry.inputRef);
     expect(second.entry.threadId).not.toBe(first.entry.threadId);
     expect(second.entry.turnId).not.toBe(first.entry.turnId);
     for (const result of [first, second]) {
@@ -659,7 +661,7 @@ describe('bounded scheduled poll event admission', () => {
       expect(result.entry.triggerActor).toEqual(f.schedule.actor);
       expect(result.admission.sourceTurnId).toBe(f.source.turnId);
     }
-    expect(first.entry.turnInput).toBe(
+    expect(readScheduledAdmissionText(f.db, first.entry)).toBe(
       first.duplicate ? 'Concurrent changed source content' : f.dependencies.input
     );
     expect(queueCount(f.db)).toBe(3);
@@ -809,6 +811,12 @@ describe('bounded scheduled poll event admission', () => {
     expect(new TextEncoder().encode(turnInput)).toHaveLength(1_048_604);
     const queueEntryId = 'queue_large_exact_input';
     const turnId = allocateEntityId('tu');
+    const inputRef = await stageSchedulerStartInput(
+      f.root,
+      { workspaceId: f.schedule.workspaceId, threadId: target.id, turnId },
+      'request_large_exact_input',
+      turnInput
+    );
     const scope = nativeProductScope(f.root, { kind: 'server' });
     const database = `core:${scope.path}`;
     const client = getControlStoreWorkerClient();
@@ -835,7 +843,10 @@ describe('bounded scheduled poll event admission', () => {
           workspaceId: f.schedule.workspaceId,
           threadId: target.id,
           turnId,
-          turnInput,
+          inputRef: {
+            ...inputRef,
+            owner: { kind: 'workspace', workspaceId: f.schedule.workspaceId },
+          },
         },
       },
     });
@@ -843,7 +854,7 @@ describe('bounded scheduled poll event admission', () => {
     if (result.kind !== 'queue') throw new Error('Native scheduler admission omitted its queue.');
     const retained = requireSchedulerAdmissionEntry(f.db, queueEntryId);
     expect(retained).toEqual(result.entry);
-    expect(retained.turnInput).toBe(turnInput);
+    expect(readScheduledAdmissionText(f.db, retained)).toBe(turnInput);
     expect(retained.inputHash).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 

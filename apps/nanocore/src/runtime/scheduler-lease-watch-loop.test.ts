@@ -13,6 +13,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
@@ -72,7 +73,11 @@ async function fixture() {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: testEntityId('th', `thread_${suffix}`),
       turnId: testEntityId('tu', `turn_${suffix}`),
-      turnInput: `Run ${suffix}`,
+      inputRef: schedulerFixtureInput(
+        'ws_00000000-0000-7000-8000-000000000001',
+        testEntityId('tu', `turn_${suffix}`),
+        `Run ${suffix}`
+      ),
       requestedAgentId: 'agent_codex_host',
       now: () => '2026-07-05T00:00:01.000Z',
     });

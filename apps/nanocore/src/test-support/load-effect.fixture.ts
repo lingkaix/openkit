@@ -18,6 +18,7 @@ import {
   acceptSchedulerExecutionObservation,
   schedulerExecutionCorrelation,
 } from '../runtime/execution-attempt-records.js';
+import { stageSchedulerStartInput } from '../runtime/scheduler-input-staging.js';
 import type { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -197,15 +198,22 @@ export async function createMeasurementEffectFixture(input: {
           agentSessionId: aep.scope.agentSessionId,
           status: 'running',
         });
-        const admission = await createSchedulerAdmissionEntry(input.coreDb, {
+        const queueEntryId = randomUUID();
+        const inputRef = await stageSchedulerStartInput(
+          input.coreDb.dataRoot,
+          { workspaceId, threadId: thread.id, turnId: turn.id },
+          aep.scope.requestId ?? queueEntryId,
+          'Measured echo effects'
+        );
+        const admission = createSchedulerAdmissionEntry(input.coreDb, {
           backendId: 'nanohost',
-          queueEntryId: randomUUID(),
+          queueEntryId,
           ...(aep.scope.requestId === undefined ? {} : { requestId: aep.scope.requestId }),
           triggerActor: aep.scope.triggerActor,
           workspaceId,
           threadId: thread.id,
           turnId: turn.id,
-          turnInput: 'Measured echo effects',
+          inputRef,
           requestedAgentId: setup.manifest.id,
         });
         const attempt = await recordTestExecutionAttempt(input.coreDb, {

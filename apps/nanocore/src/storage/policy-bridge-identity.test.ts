@@ -38,6 +38,7 @@ import {
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, createTestStore, createTestWorkspaceDb } from '../test-support/store.js';
 import { refreshWorkerCodexLogin } from '../vault/codex-login-refresh.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
@@ -427,7 +428,7 @@ async function fixture() {
     workspaceId,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput: 'Prepare binding',
+    inputRef: schedulerFixtureInput(workspaceId, turn.id, 'Prepare binding'),
     triggerActor: turn.triggerActor,
     now,
   });

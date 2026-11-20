@@ -23,6 +23,7 @@ import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
+import { readScheduledAdmissionText } from '../runtime/scheduler-dispatch-input.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -195,10 +196,12 @@ beforeAll(async () => {
     expect(entry.status).toBe('queued');
     queueEntryId = entry.queueEntryId;
     turnId = entry.turnId;
+    const originalText = readScheduledAdmissionText(recCore, entry);
+    if (originalText === null) throw new Error('The recurring fixture has no original input.');
     await recurringStore.createTurn(
       entry.workspaceId,
       entry.threadId,
-      entry.turnInput,
+      originalText,
       entry.triggerActor,
       null,
       {

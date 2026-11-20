@@ -11,6 +11,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import {
   createTestCoreDb,
   disposeTestStore,
@@ -78,7 +79,11 @@ function attempt(db: CoreDb, suffix: string, submitted = false) {
     requestedAgentId: 'agent_codex_host',
     threadId: testEntityId('th', suffix),
     turnId: testEntityId('tu', suffix),
-    turnInput: 'Recover original attempt',
+    inputRef: schedulerFixtureInput(
+      workspaceId,
+      testEntityId('tu', suffix),
+      'Recover original attempt'
+    ),
     workspaceId,
     now: () => '2026-07-05T00:00:01.000Z',
   });

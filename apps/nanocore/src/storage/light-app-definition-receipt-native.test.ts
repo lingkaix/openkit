@@ -21,6 +21,7 @@ import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
@@ -664,7 +665,7 @@ it('preserves the real admitted Worker agent actor in both original definition r
     workspaceId: f.workspaceId,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput: 'Publish a definition',
+    inputRef: schedulerFixtureInput(f.workspaceId, turn.id, 'Publish a definition'),
     requestedAgentId: agentId,
   });
   recordTestExecutionAttempt(f.coreDb, {

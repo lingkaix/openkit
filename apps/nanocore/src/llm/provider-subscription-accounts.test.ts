@@ -53,6 +53,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { closeRevokedCredentialBindings } from '../vault/vault-operation-implementations.js';
@@ -5045,7 +5046,11 @@ async function createObservedInferenceRouteFixture(
       workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
-      turnInput: 'Inference observation regression',
+      inputRef: schedulerFixtureInput(
+        workspaceIdForOwner(turn.owner),
+        turn.id,
+        'Inference observation regression'
+      ),
       requestedAgentId: environmentPackage.agent.agentId,
     });
     recordTestExecutionAttempt(fixture.coreDb, {

@@ -1,3 +1,4 @@
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -1394,16 +1395,21 @@ describe('D0-2 same-deployment restore', () => {
           ['sibling', siblingId, siblingThread.id],
         ] as const) {
           const queueEntryId = randomUUID();
+          const fixtureTurnId = allocateEntityId('tu');
           createSchedulerAdmissionEntry(core, {
             backendId: 'nanohost',
             queueEntryId,
             requestId: randomUUID(),
             requestedAgentId: 'agent_codex_host',
             triggerActor: { kind: 'user', id: current.ownerId },
-            turnInput: 'Retain the original recovery queue boundary.',
+            inputRef: schedulerFixtureInput(
+              selectedWorkspaceId,
+              fixtureTurnId,
+              'Retain the original recovery queue boundary.'
+            ),
             workspaceId: selectedWorkspaceId,
             threadId,
-            turnId: allocateEntityId('tu'),
+            turnId: fixtureTurnId,
           });
           if (kind === 'queued') queuedId = queueEntryId;
           if (kind === 'denied') {
@@ -2564,7 +2570,11 @@ describe('D0-2 same-deployment restore', () => {
           requestId,
           requestedAgentId: 'agent_codex_host',
           triggerActor: { kind: 'user', id: f.ownerId },
-          turnInput: 'Cancelled before Turn publication.',
+          inputRef: schedulerFixtureInput(
+            identity.workspaceId,
+            identity.turnId,
+            'Cancelled before Turn publication.'
+          ),
           ...identity,
         });
         cancelSchedulerAdmissionEntry(core, { queueEntryId, workspaceId: sibling.id });

@@ -28,6 +28,7 @@ import { createTestSessionActor } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkerEnvironmentOperations } from './worker-environment-operations.js';
 
@@ -222,7 +223,11 @@ describe('Worker environment operations', () => {
       threadId: fixture.threadId,
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turnId: testEntityId('tu', 'turn-queued-storage-work'),
-      turnInput: 'Continue existing work.',
+      inputRef: schedulerFixtureInput(
+        fixture.workspaceId,
+        testEntityId('tu', 'turn-queued-storage-work'),
+        'Continue existing work.'
+      ),
       workerStorageChoice: {
         expectedRevision: fixture.binding.revision,
         goalId: null,
@@ -267,7 +272,7 @@ describe('Worker environment operations', () => {
       threadId: fixture.threadId,
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       turnId: turn.id,
-      turnInput: 'Continue existing work.',
+      inputRef: schedulerFixtureInput(fixture.workspaceId, turn.id, 'Continue existing work.'),
       workerStorageChoice: {
         expectedRevision: fixture.binding.revision,
         goalId: null,

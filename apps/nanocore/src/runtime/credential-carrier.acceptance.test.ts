@@ -44,7 +44,7 @@ import * as operationRoutes from '../operation-json-routes.js';
 import { PolicyInterception } from '../policy/interception.js';
 import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import type { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
@@ -68,6 +68,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { closeTestCoreDb, createTestCoreDb, createTestWorkspaceDb } from '../test-support/store.js';
 import {
   createVaultGrant,
@@ -169,14 +170,15 @@ async function fixture(
       requestId,
       null,
     ]);
-    entry = createSchedulerAdmissionEntry(coreDb, {
+    const turnInput = 'Use synthetic file';
+    entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue:${turnId}`,
       requestedAgentId: 'agent_codex_host',
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: DEMO_THREAD_ID,
       turnId,
-      turnInput: 'Use synthetic file',
+      text: turnInput,
       triggerActor: { kind: 'user', id: userId },
       requestId,
     });
@@ -186,7 +188,7 @@ async function fixture(
     turn = await store.createTurn(
       entry.workspaceId,
       entry.threadId,
-      entry.turnInput,
+      turnInput,
       entry.triggerActor,
       undefined,
       {
@@ -203,7 +205,7 @@ async function fixture(
           inputHash: commandInputHash({
             ...scope,
             requestId: entry.requestId,
-            input: entry.turnInput,
+            input: turnInput,
           }),
           responseKind: 'turn',
           createdAt,
@@ -245,14 +247,14 @@ async function fixture(
         ),
     });
     await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
-    entry = createSchedulerAdmissionEntry(coreDb, {
+    entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue:${turn.id}`,
       requestedAgentId: 'agent_codex_host',
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: turn.threadId,
       turnId: turn.id,
-      turnInput: 'Use synthetic file',
+      text: 'Use synthetic file',
       triggerActor: turn.triggerActor,
       requestId,
     });
@@ -1424,7 +1426,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
         ],
       });
       const nextRequestId = randomUUID();
-      createSchedulerAdmissionEntry(f.coreDb, {
+      await createTestQueueEntry(f.coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${nextTurn.id}`,
         requestId: nextRequestId,
@@ -1432,7 +1434,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: nextThread.id,
         turnId: nextTurn.id,
-        turnInput: 'Use synthetic file',
+        text: 'Use synthetic file',
         triggerActor: nextTurn.triggerActor,
       });
       const beforeEffects = native.effects.length;

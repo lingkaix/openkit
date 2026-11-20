@@ -22,6 +22,7 @@ import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { corruptTestWorkspaceNotebookCommit } from '../test-support/workspace-notebook-corruption.js';
 import { publishTestWorkspaceNotebook } from '../test-support/workspace-notebook-publication.js';
@@ -367,7 +368,7 @@ describe('native Light App meaning discovery', () => {
       workspaceId: f.workspace.id,
       threadId: thread.id,
       turnId: turn.id,
-      turnInput: 'Interpret case state',
+      inputRef: schedulerFixtureInput(f.workspace.id, turn.id, 'Interpret case state'),
       requestedAgentId: agentId,
     });
     recordTestExecutionAttempt(f.coreDb, {

@@ -82,6 +82,7 @@ import { PolicyInterception } from '../policy/interception.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import {
   findSchedulerAdmissionForTurn,
+  requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
@@ -180,11 +181,7 @@ import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
 import { requireReleasedLoginPredecessor } from './nanohost-harness-records.js';
 import { selectThreadNativeResumeSource } from './native-resume-selection.js';
 import { TurnStartValidationError } from './orchestrator.js';
-import {
-  frozenPendingOutcomeInput,
-  listThreadPendingRequests,
-  pendingRequestSystemActor,
-} from './pending-requests.js';
+import { listThreadPendingRequests, pendingRequestSystemActor } from './pending-requests.js';
 import {
   readConfiguredWorkerProviderAccessShape,
   requireWorkerProviderBindings,
@@ -193,6 +190,8 @@ import {
   workerProviderBackendSummary,
 } from './provider-credential-binding.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
+import { readFrozenSchedulerInput } from './scheduler-dispatch-frozen-input.js';
+import { readFrozenSchedulerInputForTurn } from './scheduler-dispatch-input.js';
 import type {
   AgentSessionReadModel,
   CommitPreparedAgentSessionForTurnInput,
@@ -245,6 +244,7 @@ import {
   WorkerGovernanceCapacityUnavailableError,
   type WorkerGovernanceNativeResume,
   type WorkerGovernanceWorkspaceChangeRecord,
+  WorkerInputRecoveryRequiredError,
   WorkerNativeProofValidationError,
   workerCredentialFileBinding,
 } from './worker-governance-backend.js';
@@ -3302,6 +3302,38 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       throw new Error('Governed execution has no prepared attempt binding.');
     context = { ...context, sandboxBindingRef: executionAttempt.bindingRef };
     const turn = store.getTurnById(turnId);
+    let workerInput = input;
+    try {
+      const scope = {
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
+        turnId: turn.id,
+      };
+      const admission = requireSchedulerExecutionAttemptAdmissionContext(
+        this.coreDb,
+        executionAttempt.attemptId
+      );
+      if (
+        admission.workspaceId !== scope.workspaceId ||
+        admission.threadId !== scope.threadId ||
+        admission.turnId !== scope.turnId ||
+        (admission.status !== 'queued' && admission.status !== 'admitted')
+      )
+        throw new Error('Original Worker admission is unavailable.');
+      const members =
+        admission.inputRef.inputId === scope.turnId
+          ? readFrozenSchedulerInput(this.coreDb.dataRoot, scope, admission.inputRef)
+          : readFrozenSchedulerInputForTurn(this.coreDb.dataRoot, scope);
+      if (!members) throw new Error('Original Pending delivery is incomplete.');
+      if (members.length > 0)
+        workerInput = JSON.stringify({
+          triggerInput: input,
+          pendingOutcomes: members.map(({ text }) => JSON.parse(text)),
+        });
+    } catch {
+      // Preserve the original attempt for recovery before preparing or contacting a Worker.
+      throw new WorkerInputRecoveryRequiredError();
+    }
     const requestId = context.requestId ?? null;
     let agentSessionId: string | null = context.agentSessionId ?? null;
     let workspaceDb: WorkspaceDb | null = null;
@@ -3383,9 +3415,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const checkpoint = workspaceDb
         ? getWorkerCheckpoint(workspaceDb, workspaceIdForOwner(turn.owner), turn.threadId, turn.id)
         : null;
-      const workerInput = workspaceDb
-        ? frozenPendingOutcomeInput(workspaceDb.sqlite, turn.id, input)
-        : input;
       // Delivery cause owns initiating-request identity; carried outcomes do not replace it.
       const outcomeInitiated = workspaceDb
         ? listThreadPendingRequests(

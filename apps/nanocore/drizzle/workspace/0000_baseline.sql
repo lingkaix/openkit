@@ -677,6 +677,20 @@ CREATE TABLE `workspace_materials` (
 	CONSTRAINT `workspace_materials_sensitivity_check` CHECK (`sensitivity` IN ('public', 'internal', 'restricted'))
 );
 --> statement-breakpoint
+CREATE TABLE `workspace_work_inputs` (
+  `input_id` text PRIMARY KEY NOT NULL,
+  `thread_id` text NOT NULL,
+  `turn_id` text NOT NULL,
+  `invocation_id` text NOT NULL,
+  `input_digest` text NOT NULL,
+  `input_bytes` blob NOT NULL,
+  `schema_version` integer NOT NULL,
+  CONSTRAINT `workspace_work_inputs_identity_check` CHECK (length(`input_id`) > 0 AND length(`thread_id`) > 0 AND length(`turn_id`) > 0 AND length(`invocation_id`) > 0),
+  CONSTRAINT `workspace_work_inputs_digest_check` CHECK (length(`input_digest`) = 64 AND `input_digest` NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT `workspace_work_inputs_bytes_check` CHECK (typeof(`input_bytes`) = 'blob'),
+  CONSTRAINT `workspace_work_inputs_version_check` CHECK (`schema_version` = 1)
+);
+--> statement-breakpoint
 CREATE TABLE workspace_quarantine_records (
   quarantine_record_id TEXT NOT NULL,
   workspace_id TEXT NOT NULL,

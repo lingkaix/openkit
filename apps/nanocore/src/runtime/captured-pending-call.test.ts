@@ -37,6 +37,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
@@ -609,7 +610,7 @@ describe('captured pending MCP schema identity at grant', () => {
       workspaceId: scope.workspaceId,
       threadId: scope.threadId,
       turnId: scope.turnId,
-      turnInput: 'Capture echo',
+      inputRef: schedulerFixtureInput(scope.workspaceId, scope.turnId, 'Capture echo'),
       requestedAgentId: f.environmentPackage.agent.agentId,
     });
     const attempt = recordTestExecutionAttempt(f.coreDb, {

@@ -24,6 +24,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -242,7 +243,11 @@ describe('Pending Request operations', () => {
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
         triggerActor: fixture.turn.triggerActor,
-        turnInput: fixture.turnInput,
+        inputRef: schedulerFixtureInput(
+          workspaceIdForOwner(fixture.turn.owner),
+          fixture.turn.id,
+          fixture.turnInput
+        ),
         requestedAgentId: 'agent_codex_host',
         now: () => now,
       });
@@ -290,7 +295,11 @@ describe('Pending Request operations', () => {
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
         triggerActor: fixture.turn.triggerActor,
-        turnInput: fixture.turnInput,
+        inputRef: schedulerFixtureInput(
+          workspaceIdForOwner(fixture.turn.owner),
+          fixture.turn.id,
+          fixture.turnInput
+        ),
         requestedAgentId: 'agent_codex_host',
         now: () => now,
       });

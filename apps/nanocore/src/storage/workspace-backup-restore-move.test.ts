@@ -14,6 +14,7 @@ import { pendingRequestItemId } from '../runtime/pending-requests.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
@@ -145,7 +146,11 @@ async function fixture(history = false, withPending = true, pendingCount = 1) {
         workspaceId,
         threadId: DEMO_THREAD_ID,
         turnId: turn.id,
-        turnInput: 'Captured queue must never dispatch on the target',
+        inputRef: schedulerFixtureInput(
+          workspaceId,
+          turn.id,
+          'Captured queue must never dispatch on the target'
+        ),
         requestedAgentId: 'agent_d0_history',
         triggerActor: { kind: 'user', id: ownerId },
       });

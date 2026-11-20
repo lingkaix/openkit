@@ -11,6 +11,7 @@ import {
   requireSchedulerAdmissionEntry,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
+import type { WorkInputRef } from './control-kernel-port.js';
 import type { CoreDb } from './db.js';
 import {
   StoredRecurringAttemptCodeV1Schema,
@@ -75,6 +76,11 @@ export function readRecurringOccurrence(json: string): RecurringOccurrence {
     record.id !== deriveEntityId('occ', [record.scheduleId, record.scheduledAt]) ||
     record.requestId !== recurringRequestId(record.scheduleId, record.scheduledAt) ||
     record.snapshot.actor.id !== record.scheduleId ||
+    (record.inputRef !== undefined &&
+      (record.inputRef.owner.workspaceId !== record.workspaceId ||
+        record.inputRef.inputId !==
+          deriveEntityId('it', ['task-user', recurringTurnId(record)]))) ||
+    (record.state === 'admission-accepted' && (!record.inputRef || !record.resolvedPayload)) ||
     (record.snapshot.monthlyUtc !== undefined &&
       !recurringNominalMatches(
         { monthlyUtc: record.snapshot.monthlyUtc },
@@ -89,10 +95,16 @@ export function readRecurringOccurrence(json: string): RecurringOccurrence {
   return record;
 }
 
+/** Resolves the original recurring Turn without consulting current definition state. */
+function recurringTurnId(occurrence: RecurringOccurrence) {
+  return deriveEntityId('tu', ['recurring', occurrence.scheduleId, occurrence.scheduledAt]);
+}
+
 /** Builds the one exact queue primitive input for admission and later native tuple verification. */
 export function recurringSchedulerAdmissionInput(
   occurrence: RecurringOccurrence,
   payload: RecurringAdmissionPayload,
+  inputRef: WorkInputRef,
   timestamp: string
 ): CreateSchedulerAdmissionEntryInput {
   const { reasoningEffort, requiredFeatures: _requiredFeatures, ...resolved } = payload;
@@ -103,8 +115,8 @@ export function recurringSchedulerAdmissionInput(
     requestId: occurrence.requestId,
     workspaceId: occurrence.workspaceId,
     threadId: occurrence.snapshot.threadId,
-    turnId: deriveEntityId('tu', ['recurring', occurrence.scheduleId, occurrence.scheduledAt]),
-    turnInput: occurrence.snapshot.prompt,
+    turnId: recurringTurnId(occurrence),
+    inputRef,
     triggerActor: occurrence.snapshot.actor,
     now: () => timestamp,
   };
@@ -121,11 +133,12 @@ export function findAcceptedRecurringOccurrenceForQueue(
     .get(queueEntryId) as { schemaVersion: unknown; record_json: string } | undefined;
   if (!row) return null;
   const occurrence = readRetainedV1(row, () => readRecurringOccurrence(row.record_json));
-  if (!occurrence.resolvedPayload)
-    throw new Error('Accepted RecurringOccurrence has no exact admission payload.');
+  if (!occurrence.resolvedPayload || !occurrence.inputRef)
+    throw new Error('Accepted RecurringOccurrence has no exact admission payload and input.');
   const request = recurringSchedulerAdmissionInput(
     occurrence,
     occurrence.resolvedPayload,
+    occurrence.inputRef,
     occurrence.createdAt
   );
   const entry = requireSchedulerAdmissionEntry(coreDb, queueEntryId);
