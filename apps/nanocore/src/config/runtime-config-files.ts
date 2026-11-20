@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import {
   type RuntimeConfigFileDeleteRequest,
   type RuntimeConfigFileDiagnostic,
@@ -49,6 +52,7 @@ import {
 } from '@openkit/protocol';
 import {
   assertCanonicalDirectory,
+  CanonicalPublicationError,
   createPrivateTreeSync,
   ensureCanonicalDirectory,
   populatePrivateOverlayContentsSync,
@@ -294,13 +298,7 @@ export class RuntimeConfigFileService {
       );
     }
 
-    if (existsSync(spec.absolutePath)) {
-      throw new RuntimeConfigFileServiceError(
-        'config_file_exists',
-        `${input.id} already exists.`,
-        409
-      );
-    }
+    assertConfigFileAbsent(spec);
 
     const content = input.content ?? this.templateForSpec(spec);
     const diagnostics = this.validateSingleFile(spec, content);
@@ -310,6 +308,15 @@ export class RuntimeConfigFileService {
     }
 
     this.assertSupportedWorkspaceMaterialization(spec, content);
+    if (isSupplyConfigFile(spec)) {
+      const file = await saveSupplyConfigFile({
+        dataRoot: this.dataRoot,
+        spec,
+        content,
+        change: { kind: 'create' },
+      });
+      return RuntimeConfigFileWriteResponseSchema.parse({ file, diagnostics });
+    }
     const credentialChanges = this.prepareCredentialBindingAudit(spec, null, content);
     this.writeFileAtomically(spec, content);
     await this.auditCatalogAuthorityChanges(spec, null, content, credentialChanges);
@@ -346,16 +353,22 @@ export class RuntimeConfigFileService {
       throw invalidConfigContentError(diagnostics);
     }
 
+    if (isSupplyConfigFile(spec)) {
+      const file = await saveSupplyConfigFile({
+        dataRoot: this.dataRoot,
+        spec,
+        content: input.content,
+        change: { kind: 'update', expectedRevision: input.expectedRevision },
+      });
+      return RuntimeConfigFileWriteResponseSchema.parse({ file, diagnostics });
+    }
+
     const currentRevision = existsSync(spec.absolutePath)
       ? this.summaryForSpec(spec).revision
       : null;
 
     if (input.expectedRevision !== currentRevision) {
-      throw new RuntimeConfigFileServiceError(
-        'config_revision_conflict',
-        `Runtime config file ${input.id} changed on disk.`,
-        409
-      );
+      throw configRevisionConflict(input.id);
     }
 
     const currentContent = existsSync(spec.absolutePath)
@@ -431,64 +444,62 @@ export class RuntimeConfigFileService {
    */
   public async deleteFile(input: RuntimeConfigFileDeleteRequest): Promise<void> {
     const spec = this.resolveFileSpec(input.id, input.kind);
-    if (!existsSync(spec.absolutePath)) {
-      throw new RuntimeConfigFileServiceError(
-        'config_file_not_found',
-        'Runtime config file not found.',
-        404
-      );
-    }
-    if (input.expectedRevision !== this.summaryForSpec(spec).revision) {
-      throw new RuntimeConfigFileServiceError(
-        'config_revision_conflict',
-        `Runtime config file ${input.id} changed on disk.`,
-        409
-      );
-    }
-    const content = readFileSync(spec.absolutePath, 'utf8');
-    const diagnostics = this.validateSingleFile(spec, content);
-    if (hasBlockingDiagnostics(diagnostics)) throw invalidConfigContentError(diagnostics);
-    const profile = readRetainedV1(parse(content), (record) =>
-      AuthoredProviderProfileSchema.parse(record)
-    );
-    if (profile.secretRef) {
-      if (!this.revokeProviderSecret) {
-        throw new RuntimeConfigFileServiceError(
-          'vault_storage_unavailable',
-          'Vault storage is unavailable.',
-          503
-        );
-      }
+    const remove = () => {
+      this.assertInsideConfigRoot(spec.absolutePath, false);
+      if (input.expectedRevision !== this.summaryForSpec(spec).revision)
+        throw configRevisionConflict(input.id);
       try {
-        await this.revokeProviderSecret(profile.secretRef);
-      } catch (error) {
-        if (error instanceof RuntimeConfigFileServiceError) throw error;
+        removeAuthoredFileSync(spec.absolutePath);
+      } catch {
         throw new RuntimeConfigFileServiceError(
-          error instanceof VaultBackendError && error.code === 'vault-locked'
-            ? 'vault_backend_not_available'
-            : 'vault_mutation_failed',
-          'Vault mutation failed; inspect inventory before a new request.',
-          error instanceof VaultBackendError && error.code === 'vault-locked' ? 423 : 409
+          'config_file_delete_failed',
+          'Provider file removal failed; inspect the file and Vault inventory before a new request.',
+          409
         );
       }
-    }
-    // Runtime closure may await. Preserve an authored edit made while the old key was revoked.
-    this.assertInsideConfigRoot(spec.absolutePath, false);
-    if (input.expectedRevision !== this.summaryForSpec(spec).revision)
-      throw new RuntimeConfigFileServiceError(
-        'config_revision_conflict',
-        `Runtime config file ${input.id} changed on disk.`,
-        409
+    };
+    const secretRef = await serializeSupplyConfigMutation(() => {
+      this.assertInsideConfigRoot(spec.absolutePath, true);
+      if (!existsSync(spec.absolutePath)) {
+        throw new RuntimeConfigFileServiceError(
+          'config_file_not_found',
+          'Runtime config file not found.',
+          404
+        );
+      }
+      if (input.expectedRevision !== this.summaryForSpec(spec).revision)
+        throw configRevisionConflict(input.id);
+      const content = readFileSync(spec.absolutePath, 'utf8');
+      const diagnostics = this.validateSingleFile(spec, content);
+      if (hasBlockingDiagnostics(diagnostics)) throw invalidConfigContentError(diagnostics);
+      const profile = readRetainedV1(parse(content), (record) =>
+        AuthoredProviderProfileSchema.parse(record)
       );
+      if (!profile.secretRef) remove();
+      return profile.secretRef;
+    });
+    if (!secretRef) return;
+    if (!this.revokeProviderSecret) {
+      throw new RuntimeConfigFileServiceError(
+        'vault_storage_unavailable',
+        'Vault storage is unavailable.',
+        503
+      );
+    }
     try {
-      removeAuthoredFileSync(spec.absolutePath);
-    } catch {
+      await this.revokeProviderSecret(secretRef);
+    } catch (error) {
+      if (error instanceof RuntimeConfigFileServiceError) throw error;
       throw new RuntimeConfigFileServiceError(
-        'config_file_delete_failed',
-        'Provider file removal failed; inspect the file and Vault inventory before a new request.',
-        409
+        error instanceof VaultBackendError && error.code === 'vault-locked'
+          ? 'vault_backend_not_available'
+          : 'vault_mutation_failed',
+        'Vault mutation failed; inspect inventory before a new request.',
+        error instanceof VaultBackendError && error.code === 'vault-locked' ? 423 : 409
       );
     }
+    // Recheck after revocation so a concurrently saved revision survives.
+    await serializeSupplyConfigMutation(remove);
   }
 
   /**
@@ -1016,34 +1027,15 @@ export class RuntimeConfigFileService {
    * @param content Source content to write.
    */
   private writeFileAtomically(spec: RuntimeConfigFileSpec, content: string): void {
-    // Historical kind normalization belongs to retained reads, never new writes.
-    if (spec.kind === 'provider' && !ProviderKindSchema.safeParse(parse(content).kind).success) {
-      throw new RuntimeConfigFileServiceError(
-        'config_file_invalid',
-        'Provider kind must use a current supported value.',
-        400
-      );
-    }
-    ensureCanonicalDirectory(dirname(spec.absolutePath), 0o777);
-    if (isWorkspaceScopedKind(spec.kind)) {
-      this.assertInsideWorkspaceConfigRoot(
-        spec.workspaceId ?? '',
-        dirname(spec.absolutePath),
-        true
-      );
-    } else if (spec.kind === 'user') {
-      this.assertInsideUserConfigRoot(spec.userId ?? '', dirname(spec.absolutePath), true);
-    } else {
-      this.assertInsideConfigRoot(dirname(spec.absolutePath), true);
-    }
-    let preservedMode: number | undefined;
-    if (existsSync(spec.absolutePath)) {
-      const current = lstatSync(spec.absolutePath);
-      if (current.isFile()) {
-        preservedMode = current.mode & 0o777;
+    writeRuntimeConfigFileAtomically(spec, content, (directory) => {
+      if (isWorkspaceScopedKind(spec.kind)) {
+        this.assertInsideWorkspaceConfigRoot(spec.workspaceId ?? '', directory, true);
+      } else if (spec.kind === 'user') {
+        this.assertInsideUserConfigRoot(spec.userId ?? '', directory, true);
+      } else {
+        this.assertInsideConfigRoot(directory, true);
       }
-    }
-    writeFileAtomic(spec.absolutePath, content, preservedMode ?? 0o666 & ~process.umask());
+    });
   }
 
   /** Validates exact old/new binding authority and the Audit owner before file publication. */
@@ -1383,6 +1375,199 @@ export class RuntimeConfigFileService {
   ): void {
     assertInsideWorkspaceConfigSourceRoot(this.dataRoot, workspaceId, path, allowMissing);
   }
+}
+
+function configRevisionConflict(id: string): RuntimeConfigFileServiceError {
+  return new RuntimeConfigFileServiceError(
+    'config_revision_conflict',
+    `Runtime config file ${id} changed on disk.`,
+    409
+  );
+}
+
+function isSupplyConfigFile(spec: RuntimeConfigFileSpec): boolean {
+  return spec.kind === 'provider' || spec.kind === 'gateway';
+}
+
+/** Shares the creation check with its repeat under the save worker's publication turn. */
+function assertConfigFileAbsent(spec: RuntimeConfigFileSpec): void {
+  if (existsSync(spec.absolutePath)) {
+    throw new RuntimeConfigFileServiceError(
+      'config_file_exists',
+      `${spec.relativePath} already exists.`,
+      409
+    );
+  }
+}
+
+/** Uses the canonical publisher and preserves creation and replacement permissions. */
+function writeRuntimeConfigFileAtomically(
+  spec: RuntimeConfigFileSpec,
+  content: string,
+  assertDirectory: (directory: string) => void
+): void {
+  // Historical kind normalization belongs to retained reads, never new writes.
+  if (spec.kind === 'provider' && !ProviderKindSchema.safeParse(parse(content).kind).success) {
+    throw new RuntimeConfigFileServiceError(
+      'config_file_invalid',
+      'Provider kind must use a current supported value.',
+      400
+    );
+  }
+  const directory = dirname(spec.absolutePath);
+  ensureCanonicalDirectory(directory, 0o777);
+  assertDirectory(directory);
+  let preservedMode: number | undefined;
+  if (existsSync(spec.absolutePath)) {
+    const current = lstatSync(spec.absolutePath);
+    if (current.isFile()) preservedMode = current.mode & 0o777;
+  }
+  writeFileAtomic(spec.absolutePath, content, preservedMode ?? 0o666 & ~process.umask());
+}
+
+type SupplyConfigSave = {
+  readonly dataRoot: string;
+  readonly spec: RuntimeConfigFileSpec;
+  readonly content: string;
+  readonly change:
+    | { readonly kind: 'create' }
+    | { readonly kind: 'update'; readonly expectedRevision: string | null | undefined };
+};
+
+type SupplyConfigSaveResult =
+  | { kind: 'saved'; file: RuntimeConfigFileSummary }
+  | { kind: 'refused'; code: string; message: string; status: number }
+  | { kind: 'unacknowledged-publication' }
+  | { kind: 'write-failed' };
+
+let supplyConfigMutation: Promise<void> = Promise.resolve();
+let supplyConfigWriter: Worker | undefined;
+
+/** Keeps a revision check and its write exclusive across file service instances and Provider deletion. */
+function serializeSupplyConfigMutation<T>(mutate: () => T | Promise<T>): Promise<T> {
+  const result = supplyConfigMutation.then(mutate);
+  supplyConfigMutation = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
+
+/** Rechecks the already admitted path and owns the complete CAS and durability acknowledgement. */
+function saveSupplyConfigFileInWorker(input: SupplyConfigSave): SupplyConfigSaveResult {
+  const { spec, dataRoot, content, change } = input;
+  try {
+    assertInsideRuntimeConfigRoot(dataRoot, spec.absolutePath, true);
+    if (change.kind === 'create') {
+      assertConfigFileAbsent(spec);
+    } else if (change.expectedRevision !== runtimeConfigFileSummary(spec).revision) {
+      throw configRevisionConflict(spec.relativePath);
+    }
+    writeRuntimeConfigFileAtomically(spec, content, (directory) =>
+      assertInsideRuntimeConfigRoot(dataRoot, directory, true)
+    );
+  } catch (error) {
+    if (error instanceof RuntimeConfigFileServiceError) {
+      return { kind: 'refused', code: error.code, message: error.message, status: error.status };
+    }
+    if (error instanceof CanonicalPublicationError) return { kind: 'unacknowledged-publication' };
+    return { kind: 'write-failed' };
+  }
+  try {
+    return { kind: 'saved', file: runtimeConfigFileSummary(spec, content) };
+  } catch {
+    return { kind: 'unacknowledged-publication' };
+  }
+}
+
+/** Keeps the idle writer from holding NanoCore open. One serialized request owns each reply. */
+function startSupplyConfigWriter(): Worker {
+  const options = { workerData: { runtimeSupplyConfigWriter: true } };
+  const entry = new URL(import.meta.url);
+  const loader = entry.pathname.endsWith('.ts')
+    ? pathToFileURL(createRequire(import.meta.url).resolve('tsx/esm/api'))
+    : null;
+  const worker = loader
+    ? new Worker(
+        `import(${JSON.stringify(loader.href)}).then(({register}) => {register(); return import(${JSON.stringify(entry.href)});});`,
+        { ...options, eval: true }
+      )
+    : new Worker(entry, options);
+  const forget = () => {
+    if (supplyConfigWriter === worker) supplyConfigWriter = undefined;
+  };
+  worker.once('error', forget);
+  worker.once('exit', forget);
+  return worker;
+}
+
+function saveSupplyConfigFile(input: SupplyConfigSave): Promise<RuntimeConfigFileSummary> {
+  return serializeSupplyConfigMutation(
+    () =>
+      new Promise((resolveWrite, rejectWrite) => {
+        supplyConfigWriter ??= startSupplyConfigWriter();
+        const worker = supplyConfigWriter;
+        const cleanup = () => {
+          worker.off('message', onReply);
+          worker.off('error', onFailure);
+          worker.off('exit', onFailure);
+          worker.unref();
+        };
+        const onFailure = () => {
+          cleanup();
+          rejectWrite(
+            new RuntimeConfigFileServiceError(
+              'config_file_write_unknown',
+              'The configuration save outcome is unknown. Inspect the file before retrying.',
+              409
+            )
+          );
+        };
+        const onReply = (result: SupplyConfigSaveResult) => {
+          cleanup();
+          switch (result.kind) {
+            case 'saved':
+              resolveWrite(result.file);
+              break;
+            case 'refused':
+              rejectWrite(
+                new RuntimeConfigFileServiceError(result.code, result.message, result.status)
+              );
+              break;
+            case 'unacknowledged-publication':
+              rejectWrite(
+                new RuntimeConfigFileServiceError(
+                  'recovery_required',
+                  'The configuration file was published, but the save could not be acknowledged. Read back the file and its revision before retrying.',
+                  409
+                )
+              );
+              break;
+            case 'write-failed':
+              rejectWrite(
+                new Error('Configuration save failed. Inspect the file before retrying.')
+              );
+              break;
+          }
+        };
+        worker.ref();
+        worker.once('message', onReply);
+        worker.once('error', onFailure);
+        worker.once('exit', onFailure);
+        try {
+          worker.postMessage(input);
+        } catch {
+          onFailure();
+        }
+      })
+  );
+}
+
+if (!isMainThread && parentPort && workerData?.runtimeSupplyConfigWriter === true) {
+  const port = parentPort;
+  port.on('message', (input: SupplyConfigSave) =>
+    port.postMessage(saveSupplyConfigFileInWorker(input))
+  );
 }
 
 /** Exact config-source selectors; native callers cannot choose a path or a User preference file. */

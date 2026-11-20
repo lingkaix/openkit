@@ -31,6 +31,52 @@ import { operationRequest } from './test-support/operation-request.js';
 import { disposeTestStore, initializeTestCore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  // Apply faults inside the real save worker, scoped to the synthetic draft and its exact target.
+  const preload = `
+    const fs = require('node:fs');
+    const { syncBuiltinESMExports } = require('node:module');
+    const { parentPort } = require('node:worker_threads');
+    let target, fault, replaced;
+    const on = parentPort.on.bind(parentPort);
+    parentPort.on = (event, listener) => on(event, event === 'message' ? (request) => {
+      target = request.spec.absolutePath;
+      fault = /\\/\\/ save test fault: (directory-fsync|receipt-stat)\\n$/.exec(request.content)?.[1];
+      replaced = false;
+      listener(request);
+    } : listener);
+    const { renameSync, fsyncSync, statSync } = fs;
+    fs.renameSync = (source, destination) => {
+      renameSync(source, destination);
+      if (destination === target) replaced = true;
+    };
+    fs.fsyncSync = (fd) => {
+      if (replaced && fault === 'directory-fsync') throw new Error('Test directory sync failure.');
+      return fsyncSync(fd);
+    };
+    fs.statSync = (path, ...args) => {
+      if (replaced && path === target && fault === 'receipt-stat')
+        throw new Error('Test save receipt failure.');
+      return statSync(path, ...args);
+    };
+    syncBuiltinESMExports();
+  `;
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(source: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        if (!options?.workerData?.runtimeSupplyConfigWriter) {
+          super(source, options);
+          return;
+        }
+        const entry = options.eval ? String(source) : `import(${JSON.stringify(String(source))});`;
+        super(preload + entry, { ...options, eval: true });
+      }
+    },
+  };
+});
+
 /**
  * Creates a temporary NanoCore data root for config file API tests.
  *
@@ -519,6 +565,106 @@ describe('runtime config file API', () => {
     expect(agentTemplate).toContain('"path": "/opt/openkit/venv/bin/pip"');
     expect(agentTemplate).not.toContain('/sandbox/.venv');
   });
+
+  it.each([
+    ['providers/agent-openrouter.provider.jsonc', 'provider'],
+    ['gateway.jsonc', 'gateway'],
+  ] as const)(
+    'acknowledges %s off Main and admits only one same-revision save',
+    async (id, kind) => {
+      const dataRoot = createDataRoot();
+      writeServerConfig(dataRoot);
+      const manager = createRuntimeConfigManager({ dataRoot });
+      const options = {
+        dataRoot,
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: manager.status,
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceIds: [],
+      };
+      const first = new RuntimeConfigFileService(options);
+      const second = new RuntimeConfigFileService(options);
+      const current = first.readFile(id);
+      const path = join(dataRoot, 'config', id);
+      chmodSync(path, 0o640);
+      const fsync = vi.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+        throw new Error('Physical config sync ran on Main.');
+      });
+      syncBuiltinESMExports();
+      try {
+        const left = `${current.content}\n// first candidate\n`;
+        const right = `${current.content}\n// second candidate\n`;
+        const input = { id, kind, expectedRevision: current.file.revision };
+        const [saved, refused] = await Promise.allSettled([
+          first.updateFile({ ...input, content: left }),
+          second.updateFile({ ...input, content: right }),
+        ]);
+        expect(saved).toMatchObject({
+          status: 'fulfilled',
+          value: {
+            file: { revision: `sha256:${createHash('sha256').update(left).digest('hex')}` },
+          },
+        });
+        expect(refused).toMatchObject({
+          status: 'rejected',
+          reason: { code: 'config_revision_conflict', status: 409 },
+        });
+        expect(fsync).not.toHaveBeenCalled();
+        expect(readFileSync(path, 'utf8')).toBe(left);
+        expect(statSync(path).mode & 0o777).toBe(0o640);
+      } finally {
+        fsync.mockRestore();
+        syncBuiltinESMExports();
+        await shutdownControlStoreWorkerClient();
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
+    }
+  );
+
+  it.each(['directory-fsync', 'receipt-stat'])(
+    'reports recovery and permits exact readback after a replaced file loses %s',
+    async (fault) => {
+      const dataRoot = createDataRoot();
+      writeServerConfig(dataRoot);
+      try {
+        const app = createApp({ dataRoot });
+        const id = 'gateway.jsonc';
+        const before = await app.request(...operationRequest('runtime.file-read', { id }));
+        expect(before.status).toBe(200);
+        const original = await before.json();
+        const content = `${original.content}\n// save test fault: ${fault}\n`;
+        const response = await app.request(
+          ...operationRequest(
+            'runtime.file-update',
+            { id },
+            {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                kind: 'gateway',
+                expectedRevision: original.file.revision,
+                content,
+              }),
+            }
+          )
+        );
+        const readback = await app.request(...operationRequest('runtime.file-read', { id }));
+        expect(readback.status).toBe(200);
+        expect(await readback.json()).toMatchObject({
+          content,
+          file: { revision: `sha256:${createHash('sha256').update(content).digest('hex')}` },
+        });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({
+          code: 'recovery_required',
+          message: expect.stringMatching(/read back the file and its revision before retrying/i),
+        });
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
+    }
+  );
 
   it('updates config files with revision guards and rejects stale writes', async () => {
     const dataRoot = createDataRoot();
