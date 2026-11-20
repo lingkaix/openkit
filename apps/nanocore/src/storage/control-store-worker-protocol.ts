@@ -860,6 +860,8 @@ export type ControlWorkerCommand =
           readonly physicalScope?: ControlAppScope;
           /** Independent service or extension writer with no legacy raw SQL entry. */
           readonly serverOwner?: ServerOwnerDescriptor;
+          /** Trusted existing-owner migration under writer exclusion, with a verified pre-DDL copy. */
+          readonly migrateServerOwner?: true;
           /** Exact admitted root for same-connection scoped domain bodies; never inferred from a caller-selected database key. */
           readonly dataRoot?: string;
           /** Admitted private Storage binding; never derived from an incoming content locator. */
@@ -2387,13 +2389,23 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(
         value,
         [...scoped, 'path', 'create'],
-        ['initialize', 'productOwner', 'physicalScope', 'dataRoot', 'contentMount', 'serverOwner']
+        [
+          'initialize',
+          'productOwner',
+          'physicalScope',
+          'dataRoot',
+          'contentMount',
+          'serverOwner',
+          'migrateServerOwner',
+        ]
       ) &&
       typeof value.path === 'string' &&
       isAbsolute(value.path) &&
       typeof value.create === 'boolean' &&
       (value.dataRoot === undefined ||
         (typeof value.dataRoot === 'string' && isAbsolute(value.dataRoot))) &&
+      (value.migrateServerOwner === undefined ||
+        (value.migrateServerOwner === true && value.serverOwner !== undefined && !value.create)) &&
       (value.serverOwner === undefined ||
         (isRecord(value.serverOwner) &&
           exactFields(value.serverOwner, ['owner']) &&

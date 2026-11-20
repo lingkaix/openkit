@@ -28,6 +28,13 @@ export interface DataRootLock {
   release(): void;
 }
 
+const liveDataRootLocks = new WeakMap<DataRootLock, (path: string) => (() => void) | null>();
+
+/** Keeps this exact acquired root locked until a trusted storage operation has settled. */
+export function retainDataRootLock(lock: DataRootLock, dataRoot: string): (() => void) | null {
+  return liveDataRootLocks.get(lock)?.(dataRootLockPath(dataRoot)) ?? null;
+}
+
 /** Durable-safe summary of one data-root lock acquisition. */
 export interface DataRootLockAcquisition {
   /** Lock acquisition outcome. */
@@ -118,9 +125,18 @@ export function acquireDataRootLock(dataRoot: string, input: DataRootLockInput):
       writeLockRecord(lockPath, { ...record, updatedAt: now() });
     }, HEARTBEAT_MS);
     heartbeat.unref();
-    let released = false;
-
-    return {
+    let releasing = false;
+    let retained = 0;
+    const close = () => {
+      clearInterval(heartbeat);
+      try {
+        // The runtime directory inode stays fixed; only diagnostic metadata is removed.
+        unlinkSync(lockPath);
+      } finally {
+        closeSync(fd);
+      }
+    };
+    const lock: DataRootLock = {
       acquisition: {
         status: stale ? 'stale_broken' : 'acquired',
         lockPath,
@@ -128,17 +144,23 @@ export function acquireDataRootLock(dataRoot: string, input: DataRootLockInput):
       },
       path: lockPath,
       release() {
-        if (released) return;
-        released = true;
-        clearInterval(heartbeat);
-        try {
-          // The runtime directory inode stays fixed; only diagnostic metadata is removed.
-          unlinkSync(lockPath);
-        } finally {
-          closeSync(fd);
-        }
+        if (releasing) return;
+        releasing = true;
+        liveDataRootLocks.delete(lock);
+        if (retained === 0) close();
       },
     };
+    liveDataRootLocks.set(lock, (path) => {
+      if (path !== lockPath) return null;
+      retained += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (--retained === 0 && releasing) close();
+      };
+    });
+    return lock;
   } catch (error) {
     closeSync(fd);
     throw error;

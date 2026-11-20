@@ -26,6 +26,7 @@ import {
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { createDataRootAdminOperationImplementations } from '../storage/data-root-admin-operations.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
@@ -2103,14 +2104,34 @@ describe('definition-derived deployment administration cutover', () => {
       expect(
         (await f.mcp('openkit_read', { operation: 'storage.layout-report', input: {} })).result
       ).toEqual(layout);
-      const created = await f.mcp('openkit_call', { operation: 'backup.create', input: {} });
-      expect(created.isError).toBe(false);
-      expect(created.result.manifest.consistency).toBe('crash-consistent');
-      expect(created.result.checkedFiles).toContain('server/db/core.sqlite');
-      expect(JSON.stringify(created.result)).not.toContain(f.dataRoot);
+      expect(await f.mcp('openkit_call', { operation: 'backup.create', input: {} })).toMatchObject({
+        isError: true,
+        result: { code: 'data_root_backup_unavailable' },
+      });
+      const refused = await f.app.request(
+        ...operationRequest('backup.create', {}, { method: 'POST', headers: f.headers })
+      );
+      expect(refused.status).toBe(503);
+      await expect(refused.json()).resolves.toMatchObject({
+        code: 'data_root_backup_unavailable',
+      });
+      expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
+
+      // This disposable root has no connected NanoHost or other file publishers.
+      const fixtureBackup = await createDataRootAdminOperationImplementations(
+        f.dataRoot,
+        undefined,
+        async (dataRoot) => {
+          expect(dataRoot).toBe(f.dataRoot);
+          return () => {};
+        }
+      )['backup.create']();
+      expect(fixtureBackup.manifest.consistency).toBe('crash-consistent');
+      expect(fixtureBackup.checkedFiles).toContain('server/db/core.sqlite');
+      expect(JSON.stringify(fixtureBackup)).not.toContain(f.dataRoot);
       expect(
-        await f.client.operations['backup.verify']({ backupId: created.result.backupId })
-      ).toEqual(created.result);
+        await f.client.operations['backup.verify']({ backupId: fixtureBackup.backupId })
+      ).toEqual(fixtureBackup);
       // @ts-expect-error The bundled CLI catalog is JavaScript.
       const { operationCatalog, operationExclusions } = await import(
         '../../../../skills/openkit-operations.mjs'

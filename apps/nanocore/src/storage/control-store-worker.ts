@@ -298,6 +298,7 @@ import {
   applyServerOwnerJournal,
   assertCurrentServerOwnerSchema,
   assertSupportedNativeLedger,
+  readServerOwnerJournal,
   ServerOwnerAdmissionError,
 } from './migrate.js';
 import {
@@ -4129,6 +4130,68 @@ function provisionServerOwnerFile(path: string, descriptor: ServerOwnerDescripto
   syncCanonicalDirectory(parent);
 }
 
+/**
+ * Copies the committed SQLite view before admitting pending DDL. The owner path stays reserved
+ * through copy, verification and migration. Preserve a synchronized copy if any later write fails.
+ */
+async function preserveServerOwnerBeforeMigration(
+  request: OpenRequest,
+  path: string,
+  descriptor: ServerOwnerDescriptor,
+  expectedIdentity: string
+): Promise<boolean> {
+  const source = new Database(path, { fileMustExist: true, readonly: true, timeout: 5 });
+  try {
+    if (source.pragma('quick_check', { simple: true }) !== 'ok')
+      throw new ServerOwnerAdmissionError('corrupt');
+    const before = readServerOwnerJournal(source, descriptor.owner, openServerOwnerSchemaReference);
+    if (before.current) return false;
+    const sourceVersion = source.pragma('data_version', { simple: true });
+    const bytes =
+      Number(source.pragma('page_count', { simple: true })) *
+      Number(source.pragma('page_size', { simple: true }));
+    if (!Number.isSafeInteger(bytes) || bytes <= 0)
+      throw new ServerOwnerAdmissionError('recovery-required');
+    const parent = dirname(path);
+    await admitPhysicalPublication(undefined, request, [{ path: parent, publicationBytes: bytes }]);
+    const stage = await createPrivateTree(parent, '.owner-migration-');
+    try {
+      // Keep the immutable copy out of the live-SQLite snapshot pass.
+      const copyPath = join(stage, 'state.sqlite.before');
+      await source.backup(copyPath);
+      const copy = new Database(copyPath, { fileMustExist: true });
+      try {
+        if (
+          copy.pragma('journal_mode = DELETE', { simple: true }) !== 'delete' ||
+          copy.pragma('integrity_check', { simple: true }) !== 'ok' ||
+          !isDeepStrictEqual(
+            readServerOwnerJournal(copy, descriptor.owner, openServerOwnerSchemaReference).rows,
+            before.rows
+          )
+        )
+          throw new ServerOwnerAdmissionError('recovery-required');
+      } finally {
+        copy.close();
+      }
+      const current = await inspectServerOwnerFile(request.dataRoot!, descriptor.owner);
+      if (
+        !current ||
+        `${current.dev}:${current.ino}` !== expectedIdentity ||
+        source.pragma('data_version', { simple: true }) !== sourceVersion
+      )
+        throw new ServerOwnerAdmissionError('recovery-required');
+      syncCanonicalTree(stage);
+      syncCanonicalDirectory(parent);
+      return true;
+    } catch (error) {
+      await removePrivateTree(stage);
+      throw error;
+    }
+  } finally {
+    source.close();
+  }
+}
+
 async function openDatabase(request: OpenRequest): Promise<void> {
   if (databases.has(request.database)) {
     reply(failure(request.id, 'invalid-request'));
@@ -4237,10 +4300,13 @@ async function openDatabase(request: OpenRequest): Promise<void> {
         appInspection.schemaDigest
       );
     }
+    let migrate = false;
     if (split) {
       if (!existing) {
         if (!request.create) throw new ServerOwnerAdmissionError('missing');
         provisionServerOwnerFile(path, split);
+      } else if (request.migrateServerOwner) {
+        migrate = await preserveServerOwnerBeforeMigration(request, path, split, existingIdentity!);
       } else {
         const { files } = await inspectExistingSqliteCopy(
           request,
@@ -4270,6 +4336,8 @@ async function openDatabase(request: OpenRequest): Promise<void> {
     });
     try {
       if (migrationScope !== undefined) assertSupportedNativeLedger(sqlite, migrationScope);
+      if (split && migrate)
+        applyServerOwnerJournal(sqlite, split.owner, openServerOwnerSchemaReference);
       assertSavepointSafeSchema(sqlite);
       if (request.physicalScope) {
         sqlite.pragma('busy_timeout = 1000');

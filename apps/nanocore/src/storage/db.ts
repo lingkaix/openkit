@@ -24,6 +24,7 @@ import {
   workspaceDbPath,
 } from './fs-layout.js';
 import {
+  assertCurrentServerOwnerSchema,
   assertSupportedNativeLedger,
   ServerOwnerAdmissionError,
   SPLIT_STORAGE_JOURNALS,
@@ -249,6 +250,16 @@ export function openSupportedScopeReadOnlySqlite(
   busyTimeoutMs = 5
 ): Database.Database {
   return openOwnedSqlite(path, scope, { fileMustExist: true, readonly: true }, busyTimeoutMs);
+}
+
+/** Checks a private restore copy against its exact split owner's shipped journal and schema. */
+export function verifyServerOwnerRestoreCopy(path: string, owner: SplitStorageOwner): void {
+  const sqlite = openSqliteConnection(path, { fileMustExist: true, readonly: true });
+  try {
+    assertCurrentServerOwnerSchema(sqlite, owner, () => openSqliteConnection(':memory:', {}));
+  } finally {
+    sqlite.close();
+  }
 }
 
 /** Opens an existing Core reader without layout creation or migration; the caller owns its lifetime. */

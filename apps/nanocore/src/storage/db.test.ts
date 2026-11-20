@@ -18,10 +18,13 @@ import Database from 'better-sqlite3';
 import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listServerAuditEvents, recordServerAuditEvent } from '../audit-events.js';
+import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { CONTROL_STORE_BUDGET } from './control-store.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -1338,5 +1341,123 @@ describe('split Server owner admission through the native worker', () => {
       reason: 'recovery-required',
     });
     expect(readFileSync(path)).toEqual(before);
+  });
+
+  it.each([false, true])(
+    'verifies committed WAL before owner DDL and retains the copy when migration fails=%s',
+    async (failMigration) => {
+      writeJournal('extensions/nanohost', baseline);
+      const client = getControlStoreWorkerClient();
+      await client.provisionServerOwner(dataRoot, nanoHost);
+      await client.closeServerOwner(dataRoot, nanoHost.owner);
+      const path = serverStoragePath(dataRoot, nanoHost.owner);
+      const source = new Database(path, { fileMustExist: true });
+      try {
+        source.pragma('synchronous = FULL');
+        source.pragma('wal_autocheckpoint = 0');
+        source.pragma('wal_checkpoint(TRUNCATE)');
+        const before = readFileSync(path);
+        source.prepare('INSERT INTO owner_rows VALUES (?, ?)').run(4, 'WAL only');
+        expect(readFileSync(path)).toEqual(before);
+        const alter = 'ALTER TABLE owner_rows ADD COLUMN revision INTEGER;';
+        writeJournal(
+          'extensions/nanohost',
+          baseline,
+          failMigration
+            ? `${alter}
+--> statement-breakpoint
+INVALID OWNER SQL;`
+            : alter
+        );
+        ensureLayout(dataRoot);
+        const lock = acquireDataRootLock(dataRoot, { bootId: 'owner-migration' });
+        const migration = client.migrateServerOwner(dataRoot, nanoHost, lock);
+        lock.release();
+        let migrated: Awaited<typeof migration>;
+        try {
+          expect(() =>
+            acquireDataRootLock(dataRoot, { bootId: 'competing-holder' }).release()
+          ).toThrow(DataRootLockError);
+        } finally {
+          migrated = await migration;
+        }
+        acquireDataRootLock(dataRoot, { bootId: 'successor-holder' }).release();
+        expect(migrated).toEqual(
+          failMigration
+            ? { state: 'unavailable', owner: nanoHost.owner, reason: 'migration-failed' }
+            : { state: 'ready', owner: nanoHost.owner }
+        );
+        const copy = readdirSync(dirname(path)).filter((name) =>
+          name.startsWith('.owner-migration-')
+        );
+        expect(copy).toHaveLength(1);
+        const snapshot = new Database(join(dirname(path), copy[0]!, 'state.sqlite.before'), {
+          readonly: true,
+          fileMustExist: true,
+        });
+        try {
+          expect(snapshot.pragma('integrity_check', { simple: true })).toBe('ok');
+          expect(snapshot.prepare('SELECT * FROM owner_rows').all()).toEqual([
+            { id: 4, content: 'WAL only' },
+          ]);
+          expect(
+            snapshot.prepare('SELECT created_at FROM __drizzle_migrations').pluck().all()
+          ).toEqual([1000]);
+        } finally {
+          snapshot.close();
+        }
+        expect(
+          source
+            .prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at')
+            .pluck()
+            .all()
+        ).toEqual(failMigration ? [1000] : [1000, 2000]);
+        expect(source.pragma('table_info(owner_rows)')).toHaveLength(failMigration ? 2 : 3);
+      } finally {
+        source.close();
+      }
+    }
+  );
+
+  it('refuses a migration before copy or DDL when the native copy forecast cannot reserve space', async () => {
+    writeJournal('extensions/nanohost', baseline);
+    const client = getControlStoreWorkerClient();
+    await client.provisionServerOwner(dataRoot, nanoHost);
+    await client.closeServerOwner(dataRoot, nanoHost.owner);
+    writeJournal(
+      'extensions/nanohost',
+      baseline,
+      'ALTER TABLE owner_rows ADD COLUMN revision INTEGER;'
+    );
+    const path = serverStoragePath(dataRoot, nanoHost.owner);
+    const before = readFileSync(path);
+    client.setFileStorageAdmission(
+      dataRoot,
+      new FileStorageAdmission(
+        dataRoot,
+        () => 0n,
+        () => BigInt(CONTROL_STORE_BUDGET.maxWalBytes) + 4_096n
+      )
+    );
+    ensureLayout(dataRoot);
+    const lock = acquireDataRootLock(dataRoot, { bootId: 'owner-migration-without-space' });
+    try {
+      await expect(client.migrateServerOwner(dataRoot, nanoHost, lock)).resolves.toEqual({
+        state: 'unavailable',
+        owner: nanoHost.owner,
+        reason: 'full',
+      });
+    } finally {
+      lock.release();
+    }
+    await expect(client.migrateServerOwner(dataRoot, nanoHost, lock)).resolves.toEqual({
+      state: 'unavailable',
+      owner: nanoHost.owner,
+      reason: 'recovery-required',
+    });
+    expect(readFileSync(path)).toEqual(before);
+    expect(
+      readdirSync(dirname(path)).filter((name) => name.startsWith('.owner-migration-'))
+    ).toEqual([]);
   });
 });

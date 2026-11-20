@@ -23,7 +23,7 @@ import {
   assertCanonicalRegularFile,
   copyBackupTree,
   copyMissingBackupDefinitions,
-  copyVerifiedFile,
+  copyPortableOriginalFile,
   createPrivateTree,
   ensureCanonicalDirectory,
   readLayoutDirectory,
@@ -34,8 +34,18 @@ import {
 import Database from 'better-sqlite3';
 import { writeFileAtomic } from './canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
-import { openSupportedScopeReadOnlySqlite } from './db.js';
-import { assertNativeBaseline, type StorageMigrationScope } from './migrate.js';
+import {
+  inspectServerOwnerFile,
+  openSupportedScopeReadOnlySqlite,
+  verifyServerOwnerRestoreCopy,
+} from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
+import {
+  assertNativeBaseline,
+  SPLIT_STORAGE_JOURNALS,
+  type SplitStorageOwner,
+  type StorageMigrationScope,
+} from './migrate.js';
 
 /** File name for the data-root backup manifest. */
 export const DATA_ROOT_BACKUP_MANIFEST_FILE = 'openkit-data-root-backup.json';
@@ -257,8 +267,8 @@ export function writeColdDataRootBackupManifest(
 }
 
 /**
- * Captures the live tree, SQLite snapshots and verified manifest during one continuous Core pause.
- * The Promise contract is retained, but capture does not yield to pending Core writers.
+ * Captures the live tree, SQLite snapshots and verified manifest. The serving caller holds the
+ * Data Root publishers and native writer pool paused until this capture settles.
  *
  * @param input Live data root and backup destination.
  * @returns Parsed manifest plus checked inventory paths.
@@ -514,7 +524,13 @@ export async function restoreDataRootBackup(
 
   let predecessor: 'original' | 'unacknowledged' | 'moved' = 'original';
   try {
-    await assertSupportedRestoreDatabases(stagingRoot, verified.manifest.contentInventory);
+    if (readDataRootLayoutMarker(stagingRoot).deploymentId !== verified.manifest.sourceDeploymentId)
+      throw new Error('Backup manifest deployment does not match the staged Data Root.');
+    await assertSupportedRestoreDatabases(
+      stagingRoot,
+      verified.manifest.contentInventory,
+      input.dataRoot
+    );
     closeWorkspaceProductReadHandles(input.dataRoot);
     syncCanonicalTree(stagingRoot);
     syncCanonicalDirectory(stagingParent);
@@ -705,43 +721,76 @@ function assertCapturedAppDefinition(
  *
  * @param root Backup or staged data-root copy.
  * @param inventory Exact verified source inventory; opaque content is never opened as a scope.
+ * @param targetRoot Existing target whose split owner files must have archive coverage.
  * @throws When an owned ledger is unsupported or App definition bytes are missing or mismatched.
  */
 async function assertSupportedRestoreDatabases(
   root: string,
-  inventory: DataRootBackupManifest['contentInventory']
+  inventory: DataRootBackupManifest['contentInventory'],
+  targetRoot: string
 ): Promise<void> {
   const entries = new Map(inventory.map((entry) => [entry.path, entry]));
+  if (!entries.has('server/db/core.sqlite'))
+    throw new Error('Restore backup is missing its canonical Core database.');
+  for (const owner of Object.keys(SPLIT_STORAGE_JOURNALS) as SplitStorageOwner[]) {
+    const path = `server/${SPLIT_STORAGE_JOURNALS[owner]}/state.sqlite`;
+    if (!entries.has(path) && (await inspectServerOwnerFile(targetRoot, owner)))
+      throw new Error(`Restore backup is missing the target's existing Server owner: ${path}.`);
+  }
+  const targetServer = join(targetRoot, 'server');
+  for (const { name: kind } of readLayoutDirectory(targetServer)) {
+    if (kind !== 'services' && kind !== 'extensions') continue;
+    const ownerRoot = join(targetServer, kind);
+    for (const owner of readLayoutDirectory(ownerRoot)) {
+      if (!owner.isDirectory()) continue;
+      const hasDatabase = readLayoutDirectory(join(ownerRoot, owner.name)).some(({ name }) =>
+        /^state\.sqlite(?:-(?:wal|shm|journal))?$/.test(name)
+      );
+      if (!hasDatabase) continue;
+      const path = `server/${kind}/${owner.name}/state.sqlite`;
+      restoreDatabaseBinding(path, 'target');
+      if (!entries.has(path))
+        throw new Error(`Restore backup is missing the target's existing Server owner: ${path}.`);
+    }
+  }
   for (const { path } of inventory) {
-    let scope: StorageMigrationScope;
-    if (path === 'server/db/core.sqlite') scope = 'core';
-    else if (/^users\/[^/]+\/db\/user\.sqlite$/.test(path)) scope = 'user';
-    else if (/^workspaces\/[^/]+\/db\/workspace\.sqlite$/.test(path)) scope = 'workspace';
-    else if (
-      /^workspaces\/[^/]+\/light-apps\/[^/]+\/(?:data\.sqlite|snapshots\/[^/]+\.sqlite)$/.test(path)
-    )
-      scope = 'app';
-    else continue;
+    const basePath = path.replace(/-(?:wal|shm|journal)$/, '');
+    const binding = restoreDatabaseBinding(basePath);
+    if (!binding) continue;
+    if (path !== basePath) {
+      if (!entries.has(basePath))
+        throw new Error(`Restore backup has a SQLite sidecar without its database: ${basePath}.`);
+      continue;
+    }
     const inspectionRoot = await createPrivateTree(dirname(root), '.ledger-admission-');
     const dbPath = join(inspectionRoot, basename(path));
     let sqlite: Database.Database | undefined;
     try {
-      // SHM is disposable cache. The committed WAL remains part of the inspected authority.
-      for (const suffix of ['', '-wal']) {
+      // SHM is disposable cache. Journal and committed WAL bytes can affect admission.
+      for (const suffix of ['', '-wal', '-journal']) {
         const entry = entries.get(`${path}${suffix}`);
         if (!entry) continue;
-        await copyVerifiedFile({
-          sourcePath: join(root, entry.path),
-          destinationPath: `${dbPath}${suffix}`,
-          expectedBytes: entry.bytes,
-          expectedSha256: entry.digest,
-          maxBytes: entry.bytes,
-          mode: 0o600,
-        });
+        const source = join(root, entry.path);
+        const copy = `${dbPath}${suffix}`;
+        const metadata = assertCanonicalRegularFile(source);
+        if (metadata.nlink !== 1 || metadata.size !== entry.bytes)
+          throw new Error(`Restore database member changed: ${entry.path}.`);
+        // This unpublished stage can sit below a search-only ancestor. Check the copy
+        // against the sealed inventory before giving any bytes to SQLite.
+        copyPortableOriginalFile(source, copy, entry.bytes);
+        if (
+          assertCanonicalRegularFile(copy).size !== entry.bytes ||
+          digestFile(copy) !== entry.digest
+        )
+          throw new Error(`Restore database copy does not match the backup: ${entry.path}.`);
       }
-      sqlite = openSupportedScopeReadOnlySqlite(dbPath, scope);
-      assertNativeBaseline(sqlite, scope);
-      if (scope !== 'app' || !path.endsWith('/data.sqlite')) continue;
+      if ('owner' in binding) {
+        verifyServerOwnerRestoreCopy(dbPath, binding.owner);
+        continue;
+      }
+      sqlite = openSupportedScopeReadOnlySqlite(dbPath, binding.scope);
+      assertNativeBaseline(sqlite, binding.scope);
+      if (binding.scope !== 'app' || !path.endsWith('/data.sqlite')) continue;
       const appPath = dirname(path);
       const row = sqlite
         .prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1')
@@ -755,6 +804,26 @@ async function assertSupportedRestoreDatabases(
       }
     }
   }
+}
+
+/** Maps a canonical database path to the journal that owns its bytes. */
+function restoreDatabaseBinding(
+  path: string,
+  location: 'backup' | 'target' = 'backup'
+): { scope: StorageMigrationScope } | { owner: SplitStorageOwner } | undefined {
+  if (path === 'server/db/core.sqlite') return { scope: 'core' };
+  if (/^users\/[^/]+\/db\/user\.sqlite$/.test(path)) return { scope: 'user' };
+  if (/^workspaces\/[^/]+\/db\/workspace\.sqlite$/.test(path)) return { scope: 'workspace' };
+  if (
+    /^workspaces\/[^/]+\/light-apps\/[^/]+\/(?:data\.sqlite|snapshots\/[^/]+\.sqlite)$/.test(path)
+  )
+    return { scope: 'app' };
+  if (!/^server\/(?:services|extensions)\/[^/]+\/state\.sqlite$/.test(path)) return undefined;
+  const owner = (Object.keys(SPLIT_STORAGE_JOURNALS) as SplitStorageOwner[]).find(
+    (id) => path === `server/${SPLIT_STORAGE_JOURNALS[id]}/state.sqlite`
+  );
+  if (!owner) throw new Error(`Restore ${location} has an unsupported Server owner: ${path}.`);
+  return { owner };
 }
 
 /** Binds recovery placement to the original ordered inventory encoding, after all writers close. */

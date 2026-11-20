@@ -25,7 +25,6 @@ import { getRequestListener } from '@hono/node-server';
 import {
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
-  DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyResponseSchema,
   KnowledgeRetrievalTraceSchema,
   ListHumanAttentionResponseSchema,
@@ -194,6 +193,7 @@ import {
 } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import {
   type CoreDb,
   openCoreDb,
@@ -2067,19 +2067,24 @@ describe('nanocore server', () => {
     });
   });
 
-  it('creates and verifies data-root hot backups through server-managed handles', async () => {
+  it('refuses an unproved hot cut and verifies an admitted data-root backup through server-managed handles', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-backup-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     coreDb.sqlite.close();
+    const created = await createDataRootAdminOperationImplementations(
+      dataRoot,
+      undefined,
+      async () => () => {}
+    )['backup.create']();
     const app = createDeterministicTestApp({ dataRoot, store: new FsStore() });
 
     const createRes = await app.request(
       ...operationRequest('backup.create', {}, { method: 'POST' })
     );
 
-    expect(createRes.status).toBe(200);
-    const created = DataRootBackupCreateResponseSchema.parse(await createRes.json());
+    expect(createRes.status).toBe(503);
+    await expect(createRes.json()).resolves.toMatchObject({ code: 'data_root_backup_unavailable' });
     expect(created).toMatchObject({
       manifest: {
         recordType: 'data-root-backup',

@@ -56,9 +56,20 @@ import {
   writeHotDataRootBackup,
 } from './data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';
+
+function initializeRestoreSource(dataRoot: string): string {
+  const core = openCoreDb(dataRoot);
+  try {
+    applyMigrations(core);
+  } finally {
+    core.sqlite.close();
+  }
+  return readDataRootLayoutMarker(dataRoot).deploymentId;
+}
 
 vi.mock('node:fs', async (load) => {
   const { publicationFileSystem } = await import('../test-support/sync-publication.js');
@@ -121,6 +132,7 @@ describe('data-root backup manifest', () => {
 
       it('leaves a failed capture of a restored root unverifiable under its prior ID', async () => {
         const { parent, backupRoot, relativeFile, input } = backupPublicationFixture();
+        input.sourceDeploymentId = initializeRestoreSource(input.dataRoot);
         const nestedManifestName = join('files', DATA_ROOT_BACKUP_MANIFEST_FILE);
         writeFileSync(join(input.dataRoot, nestedManifestName), 'retained payload\n');
         const sourceManifest = await captureBackup('cold', input);
@@ -152,7 +164,27 @@ describe('data-root backup manifest', () => {
         expect(readFileSync(join(retryRoot, nestedManifestName), 'utf8')).toBe(
           'retained payload\n'
         );
-        assertBackupMatchesPredecessor(retried, inventoryRegularFiles(restoredRoot));
+        const predecessor = inventoryRegularFiles(restoredRoot);
+        if (mode === 'cold') {
+          assertBackupMatchesPredecessor(retried, predecessor);
+        } else {
+          const coreMember = 'server/db/core.sqlite';
+          const keep = ({ path }: { path: string }) =>
+            path !== coreMember && !path.startsWith(`${coreMember}-`);
+          assertBackupMatchesPredecessor(
+            {
+              ...retried,
+              manifest: {
+                ...retried.manifest,
+                contentInventory: retried.manifest.contentInventory.filter(keep),
+              },
+            },
+            predecessor.filter(keep)
+          );
+          const restoredAgain = join(parent, 'restored-hot-copy');
+          await restoreDataRootBackup({ backupRoot: retryRoot, dataRoot: restoredAgain });
+          expect(existsSync(join(restoredAgain, coreMember))).toBe(true);
+        }
         expect(statSync(join(retryRoot, DATA_ROOT_BACKUP_MANIFEST_FILE)).mode & 0o777).toBe(0o640);
       });
     });
@@ -320,9 +352,9 @@ describe('data-root backup manifest', () => {
       });
 
       mkdirSync(vaultDir, { recursive: true, mode: 0o700 });
+      const sourceDeploymentId = initializeRestoreSource(dataRoot);
       chmodSync(vaultDir, 0o700);
       chmodSync(join(dataRoot, 'server'), 0o755);
-      writeFileSync(join(dataRoot, 'server', 'layout.json'), '{"layoutVersion":1}\n');
       writeFileSync(vaultFile, 'secret\n', { mode: 0o600 });
       chmodSync(vaultFile, 0o600);
       const readonlyDir = join(dataRoot, 'server', 'readonly');
@@ -341,7 +373,7 @@ describe('data-root backup manifest', () => {
         dataRoot,
         backupRoot,
         backupId: testEntityId('drb', 'drbak_vault_mode'),
-        sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
+        sourceDeploymentId,
         startedAt: timestamp,
         completedAt: timestamp,
       });
@@ -751,13 +783,13 @@ describe('data-root backup manifest', () => {
   it('restores a verified backup by replacing the target data root', async () => {
     const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-restore-backup-'));
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-restore-target-'));
-    mkdirSync(join(backupRoot, 'server'), { recursive: true });
-    writeFileSync(join(backupRoot, 'server', 'layout.json'), '{"layoutVersion":1}\n');
+    const sourceDeploymentId = initializeRestoreSource(backupRoot);
+    const originalMarker = readFileSync(join(backupRoot, 'server', 'layout.json'), 'utf8');
     writeFileSync(join(dataRoot, 'stale.txt'), 'stale\n');
     writeColdDataRootBackupManifest({
       backupRoot,
       backupId: testEntityId('drb', 'drbak_restore'),
-      sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
+      sourceDeploymentId,
       startedAt: timestamp,
       completedAt: timestamp,
     });
@@ -766,15 +798,14 @@ describe('data-root backup manifest', () => {
 
     expect(restored.manifest.id).toBe(testEntityId('drb', 'drbak_restore'));
     expect(existsSync(join(dataRoot, 'stale.txt'))).toBe(false);
-    expect(readFileSync(join(dataRoot, 'server', 'layout.json'), 'utf8')).toBe(
-      '{"layoutVersion":1}\n'
-    );
+    expect(readFileSync(join(dataRoot, 'server', 'layout.json'), 'utf8')).toBe(originalMarker);
     expect(existsSync(join(dataRoot, DATA_ROOT_BACKUP_MANIFEST_FILE))).toBe(true);
   });
 
   describe('stopped restore durability', () => {
     function restorePublicationFixture() {
       const { parent, backupRoot, dataRoot, relativeFile, input } = backupPublicationFixture();
+      input.sourceDeploymentId = initializeRestoreSource(dataRoot);
       copyColdDataRoot(input);
       writeColdDataRootBackupManifest(input);
       writeFileSync(join(dataRoot, 'previous.txt'), 'previous bytes\n');
