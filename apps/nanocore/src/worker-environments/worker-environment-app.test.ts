@@ -45,6 +45,7 @@ import { admitTestNativeEnvironment } from '../test-support/native-environment.j
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { remoteMcpInvocation } from '../test-support/remote-mcp-invocation.js';
 import {
   ensureUserQuickChatWorkspace,
   recordWorkspaceOwnerMembership,
@@ -386,7 +387,7 @@ describe('Worker environment App composition', () => {
               jsonrpc: '2.0',
               id: 1,
               method: 'tools/call',
-              params: { name: 'openkit_call', arguments: { operation, input } },
+              params: remoteMcpInvocation(operation, input),
             }),
           });
           expect(remote.status).toBe(200);
@@ -431,7 +432,7 @@ describe('Worker environment App composition', () => {
               jsonrpc: '2.0',
               id: 2,
               method: 'tools/call',
-              params: { name: 'openkit_call', arguments: { operation, input } },
+              params: remoteMcpInvocation(operation, input),
             }),
           });
           const remoteBody = await remoteConflict.json();
@@ -504,7 +505,7 @@ describe('Worker environment App composition', () => {
                 jsonrpc: '2.0',
                 id: 3,
                 method: 'tools/call',
-                params: { name: 'openkit_call', arguments: { operation, input: refusedInput } },
+                params: remoteMcpInvocation(operation, refusedInput),
               }),
             });
             const remoteBody = await remote.json();

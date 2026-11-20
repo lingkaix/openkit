@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +7,7 @@ import { expect, it, onTestFinished } from 'vitest';
 import { findSchedulerAdmissionForTurn } from '../scheduler-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { createTestCoreDb, createTestStore, disposeTestStore } from '../test-support/store.js';
@@ -15,9 +16,25 @@ import { createOpenKitAccessTokenRecord } from './access-token-store.js';
 import { createBetterAuth } from './better-auth.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from './operation-authorizer.js';
 
-it.each(['token', 'session'] as const)(
-  'keeps the actual initiating %s current through native asynchronous Task admission',
-  async (kind) => {
+it.each([
+  {
+    name: 'keeps the initiating token current through native asynchronous Task admission',
+    kind: 'token',
+    handOff: false,
+  },
+  {
+    name: 'keeps the initiating session current through native asynchronous Task admission',
+    kind: 'session',
+    handOff: false,
+  },
+  {
+    name: 'reads a remote hand-off before and after Worker completion with the same bearer',
+    kind: 'token',
+    handOff: true,
+  },
+] as const)(
+  '$name',
+  async ({ kind, handOff }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-async-credential-'));
     const coreDb = createTestCoreDb(dataRoot);
     onTestFinished(() => disposeTestStore(dataRoot, coreDb));
@@ -99,23 +116,23 @@ it.each(['token', 'session'] as const)(
       requestId: randomUUID(),
       input: 'Retain the initiating credential during this actual Task.',
     };
+    const call = (name: string, arguments_: unknown) =>
+      app.request('http://127.0.0.1/mcp', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${client.token}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name, arguments: arguments_ },
+        }),
+      });
     const task =
-      kind === 'token'
-        ? await app.request('http://127.0.0.1/mcp', {
-            method: 'POST',
-            headers: {
-              authorization: `Bearer ${client.token}`,
-              'content-type': 'application/json',
-              accept: 'application/json, text/event-stream',
-            },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 1,
-              method: 'tools/call',
-              params: { name: 'openkit_call', arguments: { operation: 'task.start', input } },
-            }),
-          })
-        : await command('task.start', input);
+      kind === 'token' ? await call('task_start', input) : await command('task.start', input);
     expect(task.status, await task.clone().text()).toBe(kind === 'token' ? 200 : 202);
     const reply = await task.json();
     if (kind === 'token') expect(reply.result.isError, JSON.stringify(reply)).not.toBe(true);
@@ -123,6 +140,59 @@ it.each(['token', 'session'] as const)(
     const execution = native.executionFor(accepted.turn.id);
     try {
       await execution.launched.promise;
+      if (handOff) {
+        const { threadId, id: turnId } = accepted.turn;
+        expect(threadId).toBe(thread.id);
+        const readTurn = async () => {
+          const response = await call('turn_read', { workspaceId: workspace.id, threadId, turnId });
+          expect(response.status).toBe(200);
+          const { result } = await response.json();
+          expect(result.isError, JSON.stringify(result)).not.toBe(true);
+          return JSON.parse(result.content[0].text);
+        };
+        const before = await readTurn();
+        expect(before).toMatchObject({ id: turnId, threadId, status: 'running' });
+        expect(before.items).not.toContainEqual(
+          expect.objectContaining({ type: 'artifact-reference' })
+        );
+
+        // Simulate the controlled Worker's output through the real Artifact publication owner.
+        const body = 'Result from the controlled Worker.';
+        const title = 'Hand-off result';
+        const requestId = randomUUID();
+        const now = new Date().toISOString();
+        const artifact = await store.createArtifact({
+          id: testEntityId('ar', 'remote-handoff-result'),
+          workspaceId: workspace.id,
+          threadId,
+          turnId,
+          title,
+          kind: 'summary',
+          status: 'draft',
+          summary: null,
+          version: 1,
+          content: { format: 'text', body },
+          contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+          lastMutationRequestId: requestId,
+          origin: { kind: 'turn-output', threadId, turnId, requestId },
+          createdAt: now,
+          updatedAt: now,
+        });
+        execution.completion.resolve();
+        await execution.execution;
+
+        const after = await readTurn();
+        expect(after).toMatchObject({ id: turnId, threadId, status: 'completed' });
+        expect(after.items).toContainEqual(
+          expect.objectContaining({
+            type: 'artifact-reference',
+            artifactId: artifact.id,
+            artifactVersion: artifact.version,
+            title,
+          })
+        );
+        return;
+      }
       const admission = findSchedulerAdmissionForTurn(coreDb, {
         workspaceId: workspace.id,
         threadId: accepted.turn.threadId,

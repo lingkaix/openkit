@@ -77,6 +77,7 @@ export const TURN_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'turn.read': {
+    remoteMcp: 'native',
     stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,

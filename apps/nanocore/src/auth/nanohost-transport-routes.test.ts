@@ -30,6 +30,7 @@ import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { remoteMcpInvocation } from '../test-support/remote-mcp-invocation.js';
 import { createOpenKitAccessTokenRecord } from './access-token-store.js';
 import type { BetterAuthServer } from './middleware.js';
 import { createNanoHostOperationImplementations } from './nanohost-operations.js';
@@ -1821,7 +1822,7 @@ describe('definition-derived deployment administration cutover', () => {
           expect(native['nanohost.runtime-target']()).toEqual(expected);
           expect(await f.client.operations['nanohost.runtime-target']({})).toEqual(expected);
           expect(
-            await f.mcp('openkit_call', { operation: 'nanohost.runtime-target', input: {} })
+            await f.mcp('openkit_read', { operation: 'nanohost.runtime-target', input: {} })
           ).toEqual({
             isError: false,
             result: expected,
@@ -1981,7 +1982,7 @@ describe('definition-derived deployment administration cutover', () => {
         );
         expect(response.status).toBe(400);
         expect(await response.json()).toMatchObject({ code: 'invalid_request' });
-        const mcp = await f.mcp('openkit_call', { operation: 'nanohost.runtime-target', input });
+        const mcp = await f.mcp('openkit_read', { operation: 'nanohost.runtime-target', input });
         expect(mcp).toMatchObject({
           isError: true,
           result: { code: 'invalid_request' },
@@ -2047,7 +2048,7 @@ describe('definition-derived deployment administration cutover', () => {
       const target = await f.client.operations['nanohost.runtime-target']({});
       expect(target.connectionGeneration).toBe(generation.connectionGeneration);
       expect(
-        (await f.mcp('openkit_call', { operation: 'nanohost.runtime-target', input: {} })).result
+        (await f.mcp('openkit_read', { operation: 'nanohost.runtime-target', input: {} })).result
       ).toEqual(target);
       const enrolled = await f.mcp('openkit_call', {
         operation: 'nanohost.enroll',
@@ -2100,7 +2101,7 @@ describe('definition-derived deployment administration cutover', () => {
       );
       const layout = await f.client.operations['storage.layout-report']({});
       expect(
-        (await f.mcp('openkit_call', { operation: 'storage.layout-report', input: {} })).result
+        (await f.mcp('openkit_read', { operation: 'storage.layout-report', input: {} })).result
       ).toEqual(layout);
       const created = await f.mcp('openkit_call', { operation: 'backup.create', input: {} });
       expect(created.isError).toBe(false);
@@ -2221,7 +2222,7 @@ describe('definition-derived deployment administration cutover', () => {
       expect(readdirSync(f.slotRoot)).toEqual([]);
       expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
       expect(
-        (await f.mcp('openkit_call', { operation: 'credential.list', input: {} })).result
+        (await f.mcp('openkit_read', { operation: 'credential.list', input: {} })).result
       ).toMatchObject({ canManageServerCredentials: true });
     } finally {
       await shutdownControlStoreWorkerClient();
@@ -2272,7 +2273,8 @@ describe('definition-derived deployment administration cutover', () => {
             ? 'workspace_access_denied'
             : 'deployment_admin_required',
         });
-        expect(await f.mcp('openkit_call', { operation: id, input }, headers)).toMatchObject({
+        const call = remoteMcpInvocation(id, input);
+        expect(await f.mcp(call.name, call.arguments, headers)).toMatchObject({
           isError: true,
           result: {
             code: id.startsWith('credential.')

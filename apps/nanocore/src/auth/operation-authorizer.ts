@@ -1233,7 +1233,11 @@ export function isUsablePresentedServerAdminToken(
  * @param now Current time for Token usability evaluation.
  * @returns True when the actual presented credential remains current, or no durable credential is presented.
  */
-function isUsablePresentedCredential(coreDb: CoreDb, actor: Actor, now = new Date()): boolean {
+export function isUsablePresentedCredential(
+  coreDb: CoreDb,
+  actor: Actor,
+  now = new Date()
+): boolean {
   if (actor.kind === 'session' && actor.sessionId) {
     const session = coreDb.sqlite
       .prepare('SELECT user_id AS userId, expires_at AS expiresAt FROM session WHERE id = ?')

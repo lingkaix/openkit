@@ -11,7 +11,7 @@ The engineer ruled on the interface unification proposal on 2026-10-02.
 
 1. The operation is the interface primitive. The Web UI's API, a remote MCP endpoint, internal agent tools, and worker MCP tools perform the same operations and differ only in the acting identity and its permissions. No registry, message bus, generic approval entity, inbox, or universal resource object is added for unification.
 2. The parallel operation definitions are unified onto that primitive as far as possible in the current redesign and reimplementation. The concrete single-definition architecture is decided separately.
-3. NanoCore serves a remote MCP endpoint for users' own agent clients. Where clients do not yet support a newer standard mechanism, such as loading Skills over MCP, the endpoint offers a plain MCP call instead, for example one that returns the manual or instructions, and adopts the standard mechanism once protocol, SDKs, and clients support it well.
+3. NanoCore serves one remote MCP endpoint for users' own agent clients. Until the applicable three-client default-on adoption gate, the endpoint projects a small definition-declared native set and effect-split plain fallbacks, including on-demand Workspace Skill discovery and reads. Desktop catalog delivery requires no local Skill and has no local installation path. There is no second remote tool surface.
 4. An external agent that presents a user's own credential acts as that user for authorization, including approval responses. OpenKit adds no mechanical agent-versus-human check; the agent-facing instructions in tools, guidance, and the manual tell the external agent to ask the user for each approval.
 5. Every agent, whether a user's external agent, a NanoCore internal agent, or a worker, is intended to receive its own identity and permissions, resolved by the NGAC Policy Kernel with fine-grained policy over resources, users, and agents. This is not yet designed in detail; current architecture leaves room for it.
 6. When an agent raises a Task in conversation, the person approves or rejects the exact proposal. A note that adds or changes a requirement is written into the Task's admitted input before the start operation runs, and the started work cites it; a note that does not change the effect stays on the decision record and is not a requirement; the decision is delivered to the requester's Thread. Tool approvals and reviews keep their current responses.
@@ -22,6 +22,8 @@ The engineer ruled on the interface unification proposal on 2026-10-02.
 Foundation owns rules 1, 4, and 5 and the forward-looking principle behind rule 3. The remote MCP interface, operation definition, Pending Requests, Chat Mode Assistant, and knowledge owners take the remaining rules as their amendments land; the Goal Mode Coordination specification stays frozen until the engineer activates the Goal redesign.
 
 ## Reason
+
+The conditional C2 preference for one call is superseded: documented tool-name approvals cannot distinguish effect by operation argument. Nonmutating and mutating fallback invocations are separate tools, with server-enforced effect checks.
 
 Translated from Chinese. The engineer agreed with the research findings and with the proposal's core conclusion that unification needs no registry, bus, approval entity, inbox, or resource object, and that operations are the primitive: different interfaces perform the same operations with different identities and permissions, which matches the intended direction of development. OpenKit built its Policy Kernel on the NGAC model; it is not widely used yet, and permission resolution through it will later be added to every operation.
 
@@ -50,7 +52,7 @@ Source: change record 202610020440000000-interface_unification.
 ## Revisit When
 
 - The Policy Kernel's per-operation resolution or independent agent identities are designed, which reopens rule 4.
-- The target clients support Skills over MCP or progressive tool loading, which retires the rule 3 fallback for those clients.
+- The applicable three-client default-on gate is met; replace that capability's fallback under the MCP standard adoption decision.
 - An operation cannot be expressed once for two surfaces without changing its meaning, which bounds rule 2.
 - The Goal redesign is activated, which takes rule 9 as input rather than as settled design.
 

@@ -51,6 +51,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'material.create': {
+    remoteMcp: 'native',
     stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,

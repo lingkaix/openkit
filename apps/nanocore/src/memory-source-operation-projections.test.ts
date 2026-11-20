@@ -14,6 +14,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { remoteMcpInvocation } from './test-support/remote-mcp-invocation.js';
 
 /** Actual User authority and isolated canonical files exercise explicit Source intake through HTTP. */
 function fixture() {
@@ -221,7 +222,7 @@ describe('public explicit self Source intake', () => {
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'openkit_call', arguments: { operation, input } },
+          params: remoteMcpInvocation(operation, input),
         }),
       });
       expect(response.status).toBe(200);

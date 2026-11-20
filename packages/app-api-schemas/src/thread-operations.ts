@@ -52,6 +52,7 @@ export const ThreadMarkReadResponseSchema = z.discriminatedUnion('scope', [
 /** Thread commands and audience-scoped reads retain the protocol, closeout and dashboard owners. */
 export const THREAD_OPERATION_DEFINITIONS = {
   'thread.list': {
+    remoteMcp: 'native',
     stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -109,6 +110,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'thread.read': {
+    remoteMcp: 'native',
     stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,

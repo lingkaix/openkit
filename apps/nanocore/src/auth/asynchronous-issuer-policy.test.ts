@@ -163,7 +163,7 @@ it.each(['token'] as const)(
               jsonrpc: '2.0',
               id: 1,
               method: 'tools/call',
-              params: { name: 'openkit_call', arguments: { operation: 'task.start', input } },
+              params: { name: 'task_start', arguments: input },
             }),
           })
         : await command('task.start', input);

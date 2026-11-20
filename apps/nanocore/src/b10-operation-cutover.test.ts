@@ -17,6 +17,7 @@ import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { remoteMcpInvocation } from './test-support/remote-mcp-invocation.js';
 import { disposeTestStore } from './test-support/store.js';
 import * as workerOwner from './worker-environments/worker-environment-operations.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -205,7 +206,7 @@ async function admittedFixture() {
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'openkit_call', arguments: { operation, input } },
+          params: remoteMcpInvocation(operation, input),
         }),
       });
       expect(response.status).toBe(200);

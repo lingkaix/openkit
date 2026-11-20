@@ -13,7 +13,7 @@ The first rule is internal. The MCP Gateway serves a new standard, beside the ol
 
 The second rule is external. The MCP that OpenKit exposes to user agents changes to a new form as soon as Claude Code, Codex, and Grok all support that technique. Grok here is the Grok assistant, which reaches MCP servers through custom connectors. It is a separate product from Grok Build, which this rule does not consider. A client supports a technique when its stable release has it on by default. A disabled or under-development flag does not count. The change replaces the old form. OpenKit does not keep two remote tool surfaces, as NONNEG-001 already requires. [Remote MCP Interface](../specs/20261002-remote_mcp_interface.md) owns this rule.
 
-A released protocol revision that the official SDK negotiates beside the older one falls under the first rule on every face, including the remote endpoint, because no existing client loses anything. Retiring the older revision, or replacing the four meta-tools, falls under the second rule.
+A released protocol revision that the official SDK negotiates beside the older one falls under the first rule on every face, including the remote endpoint, because no existing client loses anything. Retiring the older revision or replacing the interim remote projection with a standard mechanism falls under the second rule; the fallback and promotion distinction retires when the corresponding full native mechanism replaces it.
 
 A draft that no official SDK release supports triggers neither rule. OpenKit may shape internal models after it, and retained contracts do not take its wire shape.
 

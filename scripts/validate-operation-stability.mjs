@@ -29,6 +29,7 @@ export function semanticDigest(definition) {
     binding: _binding,
     successStatus: _status,
     successStatuses: _statuses,
+    remoteMcp: _remoteMcp,
     inputSchema,
     outputSchema,
     ...meaning

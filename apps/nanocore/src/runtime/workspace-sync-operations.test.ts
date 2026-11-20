@@ -3,6 +3,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
+import { remoteMcpInvocation } from '../test-support/remote-mcp-invocation.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -404,7 +405,7 @@ async function fixture(
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
-        params: { name: 'openkit_call', arguments: { operation: id, input } },
+        params: remoteMcpInvocation(id, input),
       }),
     });
     expect(response.status).toBe(200);
@@ -1488,7 +1489,7 @@ describe('Workspace synchronization native projections', () => {
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'openkit_call', arguments: { operation: id, input } },
+          params: remoteMcpInvocation(id, input),
         }),
       });
       expect(revokedMcp.status).toBe(401);

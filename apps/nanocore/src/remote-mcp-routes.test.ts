@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,20 +7,29 @@ import {
   CreateOpenKitAccessTokenResponseSchema,
   OPERATION_DEFINITIONS,
   operationMcpEligible,
+  operationToolName,
   RotateOpenKitAccessTokenResponseSchema,
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { listServerAuditEvents } from './audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
+import {
+  importWorkspaceSkill,
+  purgeWorkspaceSkillVersion,
+  setWorkspaceSkillPin,
+  skillSnapshotPath,
+} from './catalog/resource-catalog.js';
 import { createLightApp, getLightApp, listRecords } from './generative-kernel/commands.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { AutomationStore } from './lib/automation-store.js';
 import * as invocation from './operation-composition.js';
+import { OperationError } from './operation-error.js';
 import { feedbackFilePath } from './runtime/feedback.js';
 import * as goalCoordinator from './runtime/goal-coordinator.js';
 import {
@@ -113,11 +122,14 @@ async function fixture(
       ],
     });
   }
-  const token = (scope: 'workspace' | 'workspace-readonly' = 'workspace') =>
+  const token = (
+    scope: 'workspace' | 'workspace-readonly' = 'workspace',
+    workspaceIds = [DEMO_WORKSPACE_ID]
+  ) =>
     createOpenKitAccessTokenRecord(coreDb, {
       ownerUserId: testEntityId('usr', 'user_remote_mcp'),
       scope,
-      workspaceIds: [DEMO_WORKSPACE_ID],
+      workspaceIds,
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
   const automationStore = new AutomationStore(coreDb);
@@ -234,6 +246,7 @@ describe('remote MCP App endpoint', () => {
       expect(body.error).toBeUndefined();
       expect(body.result.supportedVersions).toContain('2026-07-28');
       expect(body.result.capabilities.tools).toBeDefined();
+      expect(body.result.instructions).toBe('Search OpenKit Skills before acting.');
       // Remote MCP owns one attributed audit for each admitted request, including discovery.
       const audits = listServerAuditEvents(f.coreDb).filter(
         (event) => event.action === 'remote-mcp.request'
@@ -251,7 +264,30 @@ describe('remote MCP App endpoint', () => {
     }
   });
 
-  it('lists the same four tools for modern and legacy stateless requests', async () => {
+  it('initializes the legacy protocol with only the short Skill instruction', async () => {
+    const f = await fixture();
+    const token = f.token();
+    try {
+      const response = await f.message(
+        'initialize',
+        {
+          protocolVersion: '2025-11-25',
+          capabilities: {},
+          clientInfo: { name: 'fixture', version: '1' },
+        },
+        token.secret
+      );
+      expect(response.status).toBe(200);
+      expect((await response.json()).result.instructions).toBe(
+        'Search OpenKit Skills before acting.'
+      );
+    } finally {
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('lists the same tools for modern and legacy stateless requests', async () => {
     const f = await fixture();
     const token = f.token();
     try {
@@ -265,13 +301,9 @@ describe('remote MCP App endpoint', () => {
       expect(legacy.status).toBe(200);
       const legacyBody = await legacy.json();
       expect(legacyBody.error).toBeUndefined();
-      // Operation Definition owns exactly these four tools; the wire era adds no tool surface.
-      expect(modernBody.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
-        'openkit_call',
-        'openkit_describe',
-        'openkit_guide',
-        'openkit_search',
-      ]);
+      expect(modernBody.result.tools.map((tool: { name: string }) => tool.name)).toContain(
+        'openkit_read'
+      );
       expect(modernBody.result.tools).toEqual(legacyBody.result.tools);
       expect(
         listServerAuditEvents(f.coreDb).filter((event) => event.action === 'remote-mcp.request')
@@ -290,7 +322,7 @@ describe('remote MCP App endpoint', () => {
       const read = await f.modernMessage(
         'tools/call',
         {
-          name: 'openkit_call',
+          name: 'openkit_read',
           arguments: { operation: 'kernel.apps.get', input: f.selectors },
         },
         token.secret
@@ -454,15 +486,11 @@ describe('remote MCP App endpoint', () => {
         });
       }
       const guide = await f.call('openkit_guide', {}, admin.secret);
-      expect(guide.content[0].text).toContain('knowledge.package.export');
-      expect(guide.content[0].text).toContain('knowledge.package.import');
-      expect(guide.content[0].text).toContain('authenticated native App API');
-      expect(guide.content[0].text).toContain('ordinary users use their Web file controls');
+      expect(guide.content[0].text).toContain('use a streaming binding');
+      expect(guide.content[0].text).toContain('existing authenticated streaming App API binding');
+      expect(guide.content[0].text).toContain('authorized Web file controls');
       expect(guide.content[0].text).toContain(
-        'Workspace archives and Artifact import/download are streaming-only'
-      );
-      expect(guide.content[0].text).toContain(
-        'File bytes never enter a JSON MCP argument or result'
+        'Bytes from streaming-only operations do not enter JSON MCP arguments or results.'
       );
       expect(guide.content[0].text).toContain('administrator CLI');
     } finally {
@@ -482,10 +510,10 @@ describe('remote MCP App endpoint', () => {
     const member = f.token();
     try {
       for (const operation of ['diagnostics.app', 'diagnostics.setup']) {
-        const permitted = await f.call('openkit_call', { operation, input: {} }, admin.secret);
+        const permitted = await f.call('openkit_read', { operation, input: {} }, admin.secret);
         expect(permitted.isError).not.toBe(true);
         expect(JSON.parse(permitted.content[0].text)).toMatchObject({ service: 'nanocore' });
-        const denied = await f.call('openkit_call', { operation, input: {} }, member.secret);
+        const denied = await f.call('openkit_read', { operation, input: {} }, member.secret);
         expect(denied.isError).toBe(true);
         expect(JSON.parse(denied.content[0].text)).toMatchObject({
           code: 'deployment_admin_required',
@@ -515,7 +543,7 @@ describe('remote MCP App endpoint', () => {
         expect(http.status).toBe(200);
         expect(await http.json()).toEqual({ items: [] });
 
-        const mcp = await f.call('openkit_call', { operation: 'app.search', input }, bearer.secret);
+        const mcp = await f.call('openkit_read', { operation: 'app.search', input }, bearer.secret);
         expect(mcp.isError).not.toBe(true);
         expect(JSON.parse(mcp.content[0].text)).toEqual({ items: [] });
       } finally {
@@ -675,11 +703,7 @@ describe('remote MCP App endpoint', () => {
       message: 'NanoCore is not accepting product work during the current boot readiness state.',
       status: 503,
     });
-    const read = await f.call(
-      'openkit_call',
-      { operation: 'workspace.list', input: {} },
-      token.secret
-    );
+    const read = await f.call('workspace_list', {}, token.secret);
     expect(read.isError).not.toBe(true);
     expect(JSON.parse(read.content[0].text).items).toEqual([
       expect.objectContaining({ workspace: expect.objectContaining({ id: DEMO_WORKSPACE_ID }) }),
@@ -1153,15 +1177,12 @@ describe('remote MCP App endpoint', () => {
     const native = vi.fn(async () => ({ reached: true }));
     vi.spyOn(invocation, 'createOperationInvocation').mockReturnValue(native);
     try {
-      const result = await f.call(
-        'openkit_call',
-        { operation: 'workspace.list', input: {} },
-        token.secret
-      );
+      const result = await f.call('workspace_list', {}, token.secret);
       expect(result.isError).not.toBe(true);
       expect(native).toHaveBeenCalledWith('workspace.list', {}, expect.any(Object));
       const guide = await f.call('openkit_guide', {}, token.secret);
-      expect(guide.content[0].text).toContain('Use openkit_search');
+      expect(guide.content[0].text).toContain('use openkit_search');
+      expect(guide.content[0].text).toContain('openkit_read');
       expect(guide.content[0].text).toContain('openkit_describe');
       expect(guide.content[0].text).toContain('openkit_call');
       for (const name of ['search', 'describe', 'guide', 'call', 'openkit.call']) {
@@ -1175,28 +1196,44 @@ describe('remote MCP App endpoint', () => {
     }
   });
 
-  it('derives exactly four tools and per-operation annotations and bounded ranked search from all definitions', async () => {
+  it('derives native tools and truthful annotations, with bounded ranked tail search', async () => {
     const f = await fixture();
     const token = f.token();
     // Real Token and native Audit owners each settle before the next metadata request.
     try {
       const listed = await (await f.message('tools/list', {}, token.secret)).json();
+      const promoted = Object.entries(OPERATION_DEFINITIONS).filter(
+        ([, definition]) => 'remoteMcp' in definition && definition.remoteMcp === 'native'
+      );
+      expect(promoted).toHaveLength(7);
       expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
         'openkit_search',
         'openkit_describe',
         'openkit_guide',
+        'openkit_read',
         'openkit_call',
+        ...promoted.map(([id]) => operationToolName(id)),
       ]);
+      for (const [id, definition] of promoted) {
+        const tool = listed.result.tools.find(
+          (item: { name: string }) => item.name === operationToolName(id)
+        );
+        expect(tool.annotations).toMatchObject({
+          readOnlyHint: !definition.mutating,
+          destructiveHint: definition.mutating,
+        });
+        expect(tool.inputSchema).toEqual(z.toJSONSchema(definition.inputSchema, { io: 'input' }));
+      }
       expect(
         listed.result.tools
-          .slice(0, 3)
+          .slice(0, 4)
           .every(
             (tool: { annotations: { readOnlyHint: boolean } }) => tool.annotations.readOnlyHint
           )
       ).toBe(true);
-      expect(listed.result.tools[3].annotations.readOnlyHint).toBe(false);
+      expect(listed.result.tools[4].annotations.readOnlyHint).toBe(false);
       for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS).filter(
-        ([, definition]) => operationMcpEligible(definition)
+        ([, definition]) => operationMcpEligible(definition) && !('remoteMcp' in definition)
       )) {
         const result = await f.call('openkit_describe', { operation: id }, token.secret);
         const data = JSON.parse(result.content[0].text);
@@ -1215,6 +1252,7 @@ describe('remote MCP App endpoint', () => {
       );
       expect(a).toEqual(b);
       expect(a.items[0].id).toBe('kernel.records.create');
+      expect(a.items[0].inputContract).toMatchObject({ type: 'object' });
       expect(
         a.items.every(
           (item: { id: keyof typeof OPERATION_DEFINITIONS; stability: string }) =>
@@ -1243,8 +1281,392 @@ describe('remote MCP App endpoint', () => {
     }
   });
 
+  it('discovers pinned Skills and presents only the exact root bytes with the admitted file inventory', async () => {
+    const f = await fixture();
+    const token = f.token('workspace-readonly');
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const header = '---\nname: guide-fixture\ndescription: Exercise Skill discovery.\n---\n';
+    const root = `${header}# Fixture\n${'A durable reference.\n'.repeat(4000)}`;
+    const sibling = Buffer.from([0, 255, 12, 99]).toString('base64');
+    const seed = (text: string, expectedRevision: number) =>
+      importWorkspaceSkill({
+        activate: true,
+        createdAt: new Date().toISOString(),
+        dataRoot: f.dataRoot,
+        workspaceId,
+        displayName: 'Guide Fixture',
+        id: 'guide-fixture',
+        expectedRevision,
+        producer: { kind: 'user', id: f.command.actor.id },
+        tree: [
+          { kind: 'file', path: 'SKILL.md', contentBase64: Buffer.from(text).toString('base64') },
+          { kind: 'file', path: 'reference.bin', contentBase64: sibling, executable: true },
+        ],
+      });
+    const search = async (scope: Record<string, string>) =>
+      JSON.parse(
+        (
+          await f.call(
+            'openkit_search',
+            {
+              query: 'guide fixture',
+              kind: 'skill',
+              ...scope,
+            },
+            token.secret
+          )
+        ).content[0].text
+      );
+    try {
+      const old = seed(root, 0);
+      const latest = seed(`${header}# New default`, old.catalog.revision);
+      const identity = { workspaceId, skillId: 'guide-fixture', digest: old.version.digest };
+      const admitted: string[] = [];
+      const create = invocation.createOperationInvocation;
+      vi.spyOn(invocation, 'createOperationInvocation').mockImplementation((deps) => {
+        const invoke = create(deps);
+        return ((...args: Parameters<typeof invoke>) => {
+          admitted.push(args[0]);
+          return invoke(...args);
+        }) as typeof invoke;
+      });
+      expect(await search({ workspaceId })).toEqual({
+        items: [
+          {
+            workspaceId,
+            skillId: identity.skillId,
+            name: 'Guide Fixture',
+            description: null,
+            digest: latest.version.digest,
+            pinDigest: null,
+          },
+        ],
+        total: 1,
+        hasMore: false,
+      });
+      expect(admitted.splice(0)).toEqual(['catalog.read']);
+      const pinned = setWorkspaceSkillPin({
+        ...identity,
+        dataRoot: f.dataRoot,
+        entryId: identity.skillId,
+        expectedRevision: latest.catalog.revision,
+      });
+      expect(await search({})).toMatchObject({
+        items: [{ ...identity, pinDigest: identity.digest }],
+        total: 1,
+      });
+      expect(admitted.splice(0)).toEqual(['workspace.list', 'catalog.read']);
+      const foreign = await f.call(
+        'openkit_search',
+        {
+          query: '',
+          kind: 'skill',
+          workspaceId: testEntityId('ws', 'foreign-skill-workspace'),
+        },
+        token.secret
+      );
+      expect(JSON.parse(foreign.content[0].text).code).toBe('workspace_access_denied');
+      admitted.length = 0;
+      const verify = await f.call(
+        'catalog_skill-content-read',
+        { ...identity, path: 'SKILL.md' },
+        token.secret
+      );
+      expect(verify.isError).not.toBe(true);
+      expect(verify.content).toHaveLength(3);
+      expect(JSON.parse(verify.content[0].text)).toEqual({
+        contentBase64: Buffer.from(root).toString('base64'),
+        path: 'SKILL.md',
+        digest: identity.digest,
+        entryId: identity.skillId,
+      });
+      expect(verify.content[1].text).toBe(root);
+      expect(admitted.splice(0)).toEqual([
+        'catalog.skill-content-read',
+        'catalog.skill-version-read',
+      ]);
+      const http = await f.app.request('/api/app/operations/catalog.skill-content-read', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token.secret}` },
+        body: JSON.stringify({ ...identity, path: 'SKILL.md' }),
+      });
+      expect(http.status).toBe(200);
+      expect(await http.json()).toEqual(JSON.parse(verify.content[0].text));
+      expect(JSON.parse(verify.content[2].text).inventory).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: 'SKILL.md' }),
+          expect.objectContaining({ path: 'reference.bin', executable: true }),
+        ])
+      );
+      expect(JSON.stringify(verify.content)).not.toContain(sibling);
+      expect(admitted.splice(0)).toEqual(['catalog.skill-content-read']);
+      const ref = await f.call(
+        'catalog_skill-content-read',
+        { ...identity, path: 'reference.bin' },
+        token.secret
+      );
+      expect(ref.content).toHaveLength(1);
+      expect(JSON.parse(ref.content[0].text).contentBase64).toBe(sibling);
+      expect(admitted.splice(0)).toEqual(['catalog.skill-content-read']);
+      for (const path of ['../reference.bin', 'missing.md']) {
+        const refused = await f.call(
+          'catalog_skill-content-read',
+          { ...identity, path },
+          token.secret
+        );
+        expect(refused.isError).toBe(true);
+        expect(refused.content).toHaveLength(1);
+      }
+      const snapshot = skillSnapshotPath(
+        f.dataRoot,
+        workspaceId,
+        identity.skillId,
+        identity.digest
+      );
+      writeFileSync(join(snapshot, 'reference.bin'), 'corrupt sibling');
+      const corrupt = await f.call(
+        'catalog_skill-content-read',
+        { ...identity, path: 'SKILL.md' },
+        token.secret
+      );
+      expect(corrupt.isError).toBe(true);
+      expect(JSON.parse(corrupt.content[0].text).code).toBe('recovery_required');
+      const unpinned = setWorkspaceSkillPin({
+        ...identity,
+        dataRoot: f.dataRoot,
+        digest: null,
+        entryId: identity.skillId,
+        expectedRevision: pinned.revision,
+      });
+      await purgeWorkspaceSkillVersion({
+        ...identity,
+        dataRoot: f.dataRoot,
+        entryId: identity.skillId,
+        expectedRevision: unpinned.revision,
+        retainedReferences: [],
+      });
+      const purged = await f.call(
+        'catalog_skill-content-read',
+        { ...identity, path: 'SKILL.md' },
+        token.secret
+      );
+      expect(purged.isError).toBe(true);
+      expect(JSON.parse(purged.content[0].text).code).toBe('resource_unavailable');
+      const history = await f.call(
+        'openkit_read',
+        { operation: 'catalog.skill-version-read', input: identity },
+        token.secret
+      );
+      expect(history.isError).not.toBe(true);
+      expect(JSON.parse(history.content[0].text).version).toMatchObject({
+        digest: identity.digest,
+        contentState: 'purged',
+      });
+      revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
+      const revoked = await f.message(
+        'tools/call',
+        {
+          name: 'openkit_search',
+          arguments: {
+            kind: 'skill',
+            query: '',
+            workspaceId,
+          },
+        },
+        token.secret
+      );
+      expect(revoked.status).toBe(401);
+    } finally {
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('counts only admitted, retained Skill matches in unscoped search', async () => {
+    const f = await fixture();
+    const peer = testEntityId('ws', 'skill-search-peer');
+    const denied = testEntityId('ws', 'skill-search-denied');
+    const outside = testEntityId('ws', 'skill-search-outside');
+    const token = f.token('workspace-readonly', [DEMO_WORKSPACE_ID, peer, denied]);
+    const digest = 'a'.repeat(64);
+    const purged = 'b'.repeat(64);
+    const skill = {
+      id: 'sample',
+      displayName: 'Sample',
+      description: 'A sample Skill',
+      availability: 'available',
+      currentDigest: digest,
+      pinDigest: null,
+      versions: [
+        { digest, contentState: 'retained' },
+        { digest: purged, contentState: 'purged' },
+      ],
+    };
+    const calls: string[] = [];
+    const invoke = vi.fn(async (id: string, input: { workspaceId?: string }) => {
+      calls.push(input.workspaceId ?? id);
+      if (id === 'workspace.list') {
+        return {
+          items: [DEMO_WORKSPACE_ID, peer, denied, outside].map((id) => ({ workspace: { id } })),
+        };
+      }
+      if (id !== 'catalog.read') throw new Error('Discovery must not read Skill bytes.');
+      if (input.workspaceId === denied)
+        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      return {
+        skills: [
+          skill,
+          { ...skill, id: 'removed', availability: 'removed' },
+          { ...skill, id: 'bad-pin', pinDigest: purged },
+        ],
+      };
+    });
+    vi.spyOn(invocation, 'createOperationInvocation').mockReturnValue(invoke);
+    try {
+      const response = await f.call('openkit_search', { kind: 'skill', query: '' }, token.secret);
+      expect(response.isError).not.toBe(true);
+      expect(JSON.parse(response.content[0].text)).toEqual({
+        items: [DEMO_WORKSPACE_ID, peer].sort().map((workspaceId) => ({
+          workspaceId,
+          skillId: skill.id,
+          digest,
+          pinDigest: null,
+          name: skill.displayName,
+          description: skill.description,
+        })),
+        total: 2,
+        hasMore: false,
+      });
+      expect(calls).toEqual(['workspace.list', DEMO_WORKSPACE_ID, peer, denied]);
+    } finally {
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['denied', 'admitted'] as const)(
+    'discards unscoped Skill rows when the bearer is revoked during a later %s catalog read',
+    async (laterRead) => {
+      const f = await fixture();
+      const peer = testEntityId('ws', 'skill-search-after-revocation');
+      const token = f.token('workspace-readonly', [DEMO_WORKSPACE_ID, peer]);
+      const digest = 'a'.repeat(64);
+      const catalog = {
+        skills: [
+          {
+            id: 'previously-admitted',
+            displayName: 'Previously admitted Skill',
+            description: null,
+            availability: 'available',
+            currentDigest: digest,
+            pinDigest: null,
+            versions: [{ digest, contentState: 'retained' }],
+          },
+        ],
+      };
+      const reads: string[] = [];
+      const invoke = vi.fn(async (id: string, input: { workspaceId?: string }) => {
+        if (id === 'workspace.list') {
+          return { items: [DEMO_WORKSPACE_ID, peer].map((id) => ({ workspace: { id } })) };
+        }
+        if (id !== 'catalog.read' || input.workspaceId === undefined)
+          throw new Error('Unexpected Skill search invocation.');
+        reads.push(input.workspaceId);
+        if (input.workspaceId === peer) {
+          // Let the earlier read settle before revoking the real bearer during fan-out.
+          await Promise.resolve();
+          revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
+          if (laterRead === 'denied') {
+            throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+          }
+        }
+        return catalog;
+      });
+      vi.spyOn(invocation, 'createOperationInvocation').mockReturnValue(invoke);
+      try {
+        const response = await f.call('openkit_search', { kind: 'skill', query: '' }, token.secret);
+        expect(reads).toEqual([DEMO_WORKSPACE_ID, peer]);
+        expect(response.isError).toBe(true);
+        expect(response.content).toHaveLength(1);
+        expect(JSON.parse(response.content[0].text)).toEqual({
+          code: 'workspace_access_denied',
+          message: 'Workspace access denied.',
+          status: 403,
+        });
+      } finally {
+        f.coreDb.sqlite.close();
+        rmSync(f.dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it('correlates wrong invocation routes without dispatching to the owner or recording arguments', async () => {
+    const f = await fixture();
+    const token = f.token();
+    const invoke = vi.spyOn(invocation, 'createOperationInvocation');
+    const marker = 'audit must not retain this argument';
+    try {
+      const attempts = [
+        { operation: 'kernel.records.create', requestId: randomUUID() },
+        { operation: 'material.create', requestId: randomUUID() },
+        { operation: 'kernel.records.create', requestId: 'not-a-request-uuid' },
+      ];
+      for (const { operation, requestId } of attempts) {
+        const refused = await f.call(
+          'openkit_read',
+          { operation, input: { requestId, marker } },
+          token.secret
+        );
+        expect(refused.isError).toBe(true);
+        expect(JSON.parse(refused.content[0].text).code).toBe('unsupported_operation');
+      }
+      const unrelatedId = randomUUID();
+      await f.call(
+        'openkit_read',
+        { operation: 'not.a.definition', input: { requestId: unrelatedId } },
+        token.secret
+      );
+      await f.call(
+        'openkit_read',
+        { operation: 'kernel.records.create', input: unrelatedId },
+        token.secret
+      );
+      await f.call('openkit_describe', { operation: 'material.create' }, token.secret);
+      expect(invoke).not.toHaveBeenCalled();
+      const rows = listServerAuditEvents(f.coreDb).filter(
+        (row) => row.action === 'remote-mcp.request'
+      );
+      expect(rows).toHaveLength(6);
+      for (const { operation, requestId } of attempts.slice(0, 2)) {
+        expect(rows).toContainEqual(
+          expect.objectContaining({
+            resource: `operation:${operation}`,
+            requestId,
+            outcome: 'denied',
+          })
+        );
+      }
+      expect(rows).toContainEqual(
+        expect.objectContaining({
+          resource: 'operation:kernel.records.create',
+          requestId: null,
+          outcome: 'denied',
+        })
+      );
+      expect(
+        rows.filter(
+          (row) => row.resource === '/mcp' && row.requestId === null && row.outcome === 'denied'
+        )
+      ).toHaveLength(3);
+      expect(JSON.stringify(rows)).not.toContain(marker);
+      expect(JSON.stringify(rows)).not.toContain(unrelatedId);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it.each([0, 1])(
-    'reaches every eligible definition through search, describe and native call with the exact Token actor (cohort %i)',
+    'reaches each eligible definition through only its declared route as the exact Token actor (cohort %i)',
     async (cohort) => {
       const f = await fixture();
       const token = f.token();
@@ -1280,11 +1702,28 @@ describe('remote MCP App endpoint', () => {
           const described = await f.call('openkit_describe', { operation }, token.secret);
           const input = { requestId: randomUUID(), reachProbe: operation };
           const before = native.mock.calls.length;
-          const called = await f.call('openkit_call', { operation, input }, token.secret);
+          const tailName = definition.mutating ? 'openkit_call' : 'openkit_read';
+          const other = definition.mutating ? 'openkit_read' : 'openkit_call';
+          const tail = await f.call(tailName, { operation, input }, token.secret);
+          const wrong = await f.call(other, { operation, input }, token.secret);
+          const ids = search.items.map((item: { id: string }) => item.id);
+          const promoted = 'remoteMcp' in definition && definition.remoteMcp === 'native';
           if (operationMcpEligible(definition)) {
-            expect(search.items.map((item: { id: string }) => item.id)).toContain(operation);
-            expect(JSON.parse(described.content[0].text).id).toBe(operation);
-            expect(called.isError).not.toBe(true);
+            expect(JSON.parse(wrong.content[0].text).code).toBe('unsupported_operation');
+            if (promoted) {
+              expect(ids).not.toContain(operation);
+              for (const result of [described, tail]) {
+                expect(result.isError).toBe(true);
+                expect(JSON.parse(result.content[0].text).code).toBe('unsupported_operation');
+              }
+              expect(native.mock.calls.length).toBe(before);
+              const called = await f.call(operationToolName(operation), input, token.secret);
+              expect(called.isError).not.toBe(true);
+            } else {
+              expect(ids).toContain(operation);
+              expect(JSON.parse(described.content[0].text).id).toBe(operation);
+              expect(tail.isError).not.toBe(true);
+            }
             expect(native).toHaveBeenLastCalledWith(
               operation,
               input,
@@ -1300,7 +1739,7 @@ describe('remote MCP App endpoint', () => {
             expect(native.mock.calls.length).toBe(before + 1);
           } else {
             expect(search.items.map((item: { id: string }) => item.id)).not.toContain(operation);
-            for (const result of [described, called]) {
+            for (const result of [described, tail, wrong]) {
               expect(result.isError).toBe(true);
               expect(JSON.parse(result.content[0].text).code).toBe(
                 definition.returnsOneTimeSecret
@@ -1324,16 +1763,33 @@ describe('remote MCP App endpoint', () => {
     const f = await fixture();
     const token = f.token();
     const guide = await f.call('openkit_guide', {}, token.secret);
-    expect(guide.content[0].text.split('\n\n')[2]).toBe(
+    expect(guide.content[0].text.split('\n\n')[3]).toBe(
       'Follow the product loop: select a Workspace, inspect authorized resources and data sources, select or create a Thread, and read its durable state. Inspect repositories only when a Git source or code host is selected. Use Chat for a lightweight answer, Task for bounded delegated work, or Goal for a continuous outcome with immutable Plan approval and completion acceptance. Describe Goal operations before use; card and intent edits do not steer running workers, and there is no Goal step, pause or resume. Formal Task/Goal Threads use workspace visibility explicitly. Read Action Center, the exact receiving Thread and Turn, artifacts, evidence, audit and usage before reporting completion. Command acceptance and configured Worker health do not prove Worker success. Private audiences and credential limits remain enforced even when operation metadata is visible.'
     );
-    expect(guide.content[0].text.split('\n\n')[3]).toBe(
+    expect(guide.content[0].text.split('\n\n')[4]).toBe(
       'Read durable state after a mutation. A transport failure does not prove that an effect did not happen. Inspect the owner outcome before retrying; reuse the exact requestId only for an exact replay with unchanged input. Never claim cancellation from a disconnected client. Follow long work through bounded reads with a deadline. For recovery_required, stale lineage, denied admission or contradictory evidence, retain the typed refusal and inspect the owning records; do not manufacture receipts, edit storage, silently substitute Worker storage or automatically rerun work. Worker storage selection is an eligibility preview, not attachment or retained work-slot recovery. Preserve exact storage revisions and predecessor work-slot lineage. Administrator-originated Tasks retain the presented credential for later effect revalidation.'
     );
     expect(guide.content[0].text).toContain('Ask the user');
-    expect(guide.content[0].text).toContain('default_tools_approval_mode');
+    expect(guide.content[0].text).toContain(
+      'allow only the read tools you intend to trust and ask on mutations'
+    );
+    expect(guide.content[0].text).toMatch(
+      /Deposit —.*material_create.*material\.revision-save.*expectedRevisionId.*material\.revision-read.*compare content and digest/
+    );
+    expect(guide.content[0].text).toMatch(
+      /Hand-off —.*task_start.*acceptance is not completion.*turn_read.*bounded polling deadline/
+    );
+    const malformedGuide = await f.call(
+      'openkit_guide',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      token.secret
+    );
+    expect(malformedGuide.isError).toBe(true);
+    expect(JSON.parse(malformedGuide.content[0].text).code).toBe('invalid_request');
+    expect(guide.content[0].text).not.toContain('default_tools_approval_mode');
+    expect(guide.content[0].text).toContain('Search OpenKit Skills before acting:');
     expect(guide.content[0].text).not.toMatch(
-      /OpenKit Skill|not yet migrated|Goal execution remains unavailable/
+      /not yet migrated|Goal execution remains unavailable/
     );
     for (const criterion of [
       'Chat',
@@ -1366,6 +1822,78 @@ describe('remote MCP App endpoint', () => {
     expect(
       (await f.app.request('http://127.0.0.1/.well-known/oauth-protected-resource')).status
     ).toBe(404);
+  });
+
+  it('deposits local text through create and revision save, then reads back the exact revision', async () => {
+    const f = await fixture();
+    const token = f.token();
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const content = 'Independent readback of the deposited result.\n';
+    const contentDigest = materialDigest(content);
+    try {
+      const created = await f.call(
+        'material_create',
+        {
+          workspaceId,
+          title: 'Local result',
+          kind: 'text',
+          sensitivity: 'internal',
+          requestId: randomUUID(),
+        },
+        token.secret
+      );
+      expect(created.isError).not.toBe(true);
+      const { materialId } = JSON.parse(created.content[0].text);
+      expect(typeof materialId).toBe('string');
+      expect(JSON.parse(created.content[0].text)).toEqual({ materialId });
+      const input = {
+        workspaceId,
+        materialId,
+        content,
+        contentDigest,
+        expectedRevisionId: null,
+        requestId: randomUUID(),
+      };
+      const saved = await f.call(
+        'openkit_call',
+        { operation: 'material.revision-save', input },
+        token.secret
+      );
+      expect(saved.isError).not.toBe(true);
+      const { revisionId } = JSON.parse(saved.content[0].text);
+      expect(typeof revisionId).toBe('string');
+      const read = () =>
+        f.call(
+          'openkit_read',
+          {
+            operation: 'material.revision-read',
+            input: { workspaceId, materialId, revisionId },
+          },
+          token.secret
+        );
+      const observed = await read();
+      expect(observed.isError).not.toBe(true);
+      expect(JSON.parse(observed.content[0].text).revision).toMatchObject({
+        revisionId,
+        materialId,
+        content,
+        contentDigest,
+      });
+      const stale = await f.call(
+        'openkit_call',
+        {
+          operation: 'material.revision-save',
+          input: { ...input, requestId: randomUUID() },
+        },
+        token.secret
+      );
+      expect(stale.isError).toBe(true);
+      expect(JSON.parse(stale.content[0].text)).toMatchObject({ code: 'conflict', status: 409 });
+      expect(await read()).toEqual(observed);
+    } finally {
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('invokes natively as the Token user and records server-owned channel and credential attribution', async () => {
@@ -1434,7 +1962,7 @@ describe('remote MCP App endpoint', () => {
     expect(audit?.resource).toBe('operation:kernel.records.create');
     expect(JSON.stringify(audit)).not.toContain(token.secret);
     const read = await f.call(
-      'openkit_call',
+      'openkit_read',
       { operation: 'kernel.apps.get', input: f.selectors },
       token.secret
     );
@@ -1449,7 +1977,7 @@ describe('remote MCP App endpoint', () => {
     expect(
       (
         await f.call(
-          'openkit_call',
+          'openkit_read',
           { operation: 'kernel.apps.get', input: f.selectors },
           token.secret
         )
@@ -1502,7 +2030,7 @@ describe('remote MCP App endpoint', () => {
         status: error.status,
       }));
     const result = await f.call(
-      'openkit_call',
+      'openkit_read',
       { operation: 'nanohost.runtime-target', input: {} },
       token.secret
     );
@@ -1909,7 +2437,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         contentDigest: materialDigest('New exact bytes'),
       };
       const read = await f.call(
-        'openkit_call',
+        'openkit_read',
         { operation: 'material.revision-read', input: readInput },
         token.secret
       );
@@ -1919,16 +2447,13 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         token.secret
       );
       const create = await f.call(
-        'openkit_call',
+        'material_create',
         {
-          operation: 'material.create',
-          input: {
-            workspaceId: DEMO_WORKSPACE_ID,
-            requestId: randomUUID(),
-            title: 'MCP create',
-            kind: 'text',
-            sensitivity,
-          },
+          workspaceId: DEMO_WORKSPACE_ID,
+          requestId: randomUUID(),
+          title: 'MCP create',
+          kind: 'text',
+          sensitivity,
         },
         token.secret
       );
@@ -1945,7 +2470,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         expect(records()).toEqual(before);
         expect(contentRead).not.toHaveBeenCalled();
         const metadata = await f.call(
-          'openkit_call',
+          'openkit_read',
           { operation: 'material.read', input: selectors },
           token.secret
         );
@@ -1958,7 +2483,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
           expiresAt: '2099-01-01T00:00:00.000Z',
         });
         const adminRead = await f.call(
-          'openkit_call',
+          'openkit_read',
           { operation: 'material.revision-read', input: readInput },
           admin.secret
         );
@@ -1968,7 +2493,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         });
         expect(records()).toEqual(before);
         const injected = await f.call(
-          'openkit_call',
+          'openkit_read',
           { operation: 'material.revision-read', input: { ...readInput, delivery: 'human' } },
           token.secret
         );
@@ -2014,7 +2539,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         expect(records().materials).toHaveLength(before.materials.length + 1);
         expect(records().revisions).toHaveLength(before.revisions.length + 1);
         const saved = await f.call(
-          'openkit_call',
+          'openkit_read',
           { operation: 'material.revision-read', input: { ...selectors, revisionId: savedId } },
           token.secret
         );
@@ -2070,11 +2595,7 @@ for (const projection of ['HTTP', 'MCP'] as const) {
         expect(response.status).toBe(503);
         expect(await response.json()).toMatchObject({ code: 'product_work_unavailable' });
       } else {
-        const result = await f.call(
-          'openkit_call',
-          { operation: 'material.create', input },
-          token.secret
-        );
+        const result = await f.call('material_create', input, token.secret);
         expect(result.isError).toBe(true);
         expect(JSON.parse(result.content[0].text)).toMatchObject({
           code: 'product_work_unavailable',

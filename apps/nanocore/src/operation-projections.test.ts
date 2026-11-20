@@ -73,6 +73,7 @@ import { recordTestExecutionAttempt } from './test-support/execution-attempt.js'
 import { testGoalDomainProposal } from './test-support/goal-domain.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { remoteMcpInvocation } from './test-support/remote-mcp-invocation.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { resolveWorkspaceMembershipRelation } from './workspace-sharing.js';
@@ -2585,7 +2586,7 @@ describe('personal Login operation projections', () => {
             jsonrpc: '2.0',
             id: randomUUID(),
             method: 'tools/call',
-            params: { name: 'openkit_call', arguments: { operation, input: value } },
+            params: remoteMcpInvocation(operation, value),
           }),
         });
         expect(response.status).toBe(200);

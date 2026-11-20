@@ -28,6 +28,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
+import { remoteMcpInvocation } from '../test-support/remote-mcp-invocation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   ControlStoreWorkerError,
@@ -658,7 +659,7 @@ describe('Workspace JSON transfer cutover', () => {
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
-        params: { name: 'openkit_call', arguments: { operation, input } },
+        params: remoteMcpInvocation(operation, input),
       }),
     });
     expect(rpc.status).toBe(200);
