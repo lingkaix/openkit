@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import type Database from 'better-sqlite3';
 import {
   activateWorkerStorageAttachment,
   admitWorkerStorageContributor,
@@ -12,13 +13,17 @@ import {
   workerStorageSchedulerRows,
 } from '../runtime/worker-storage-binding-records.js';
 import { presentControlFacts } from './control-store-input.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import type { ControlWorkerStorageInput } from './worker-storage-binding-codecs.js';
 
-/** Executes the complete existing binding tuple inside the admitted Core savepoint and covering FULL commit. */
-export function applyControlWorkerStorageBinding(db: CoreDb, input: ControlWorkerStorageInput) {
-  assertControlProductWriter(db.sqlite);
+/** Applies the binding CAS against an admitted NanoHost handle after its external authority decision. */
+function applyLocalWorkerStorageBinding(
+  owner: { readonly sqlite: Database.Database },
+  input: Exclude<ControlWorkerStorageInput, { kind: 'purge-pending' }>
+) {
+  assertControlProductWriter(owner.sqlite);
   switch (input.kind) {
     case 'create-and-reserve':
     case 'reserve-existing':
@@ -26,35 +31,47 @@ export function applyControlWorkerStorageBinding(db: CoreDb, input: ControlWorke
       const authorizeContributor = (contributor: { contributorRef: string }) =>
         input.authorizedContributorRefs.includes(contributor.contributorRef);
       if (input.kind === 'create-and-reserve')
-        createWorkerStorageBinding(db, presentControlFacts(input));
+        createWorkerStorageBinding(owner, presentControlFacts(input));
       return input.kind === 'admit-contributor'
-        ? admitWorkerStorageContributor(db, presentControlFacts({ ...input, authorizeContributor }))
+        ? admitWorkerStorageContributor(
+            owner,
+            presentControlFacts({ ...input, authorizeContributor })
+          )
         : reserveWorkerStorageAttachment(
-            db,
+            owner,
             presentControlFacts({ ...input, authorizeContributor })
           );
     }
     case 'activate':
-      return activateWorkerStorageAttachment(db, presentControlFacts(input));
+      return activateWorkerStorageAttachment(owner, presentControlFacts(input));
     case 'release':
-      return releaseWorkerStorageAttachment(db, presentControlFacts(input));
+      return releaseWorkerStorageAttachment(owner, presentControlFacts(input));
     case 'mark-unknown':
-      return markWorkerStorageAttachmentUnknown(db, presentControlFacts(input));
-    case 'purge-pending':
-      if (!isDeepStrictEqual(workerStorageSchedulerRows(db, input.storageRef), input.schedulerRows))
-        throw new WorkerStorageBindingError(
-          'purge_blocked',
-          'Worker storage still has an attachment or surviving reference.'
-        );
-      return markWorkerStoragePurgePending(
-        db,
-        presentControlFacts({
-          ...input,
-          authorizePurge: () => true,
-          hasSurvivingReferences: () => false,
-        })
-      );
+      return markWorkerStorageAttachmentUnknown(owner, presentControlFacts(input));
     case 'purge-settle':
-      return settleWorkerStoragePurge(db, presentControlFacts(input));
+      return settleWorkerStoragePurge(owner, presentControlFacts(input));
   }
+}
+
+/** Applies the binding tuple on the admitted owner. The purge census requires Core. */
+export function applyControlWorkerStorageBinding(
+  db: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
+  input: ControlWorkerStorageInput
+) {
+  if (input.kind !== 'purge-pending') return applyLocalWorkerStorageBinding(db, input);
+  assertControlProductWriter(db.sqlite);
+  if (db.scope !== 'core') throw new ControlProductPreconditionError();
+  if (!isDeepStrictEqual(workerStorageSchedulerRows(db, input.storageRef), input.schedulerRows))
+    throw new WorkerStorageBindingError(
+      'purge_blocked',
+      'Worker storage still has an attachment or surviving reference.'
+    );
+  return markWorkerStoragePurgePending(
+    db,
+    presentControlFacts({
+      ...input,
+      authorizePurge: () => true,
+      hasSurvivingReferences: () => false,
+    })
+  );
 }

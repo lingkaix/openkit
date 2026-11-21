@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { canonicalJsonText } from '@openkit/protocol';
+import type Database from 'better-sqlite3';
 import {
   acceptNanoHostAttemptHeartbeatByBinding,
   adoptNanoHostAttemptReconnectHash,
@@ -12,6 +13,7 @@ import { ControlProductPreconditionError } from './control-store-product-records
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import {
+  type ControlWorkerHeartbeatCommand,
   type ControlWorkerHeartbeatInput,
   ControlWorkerHeartbeatPayloadSchema,
   type ControlWorkerHeartbeatResult,
@@ -79,29 +81,21 @@ export function applyControlWorkerHeartbeat(
       now: () => acceptedAt,
     });
     if (resolution.status === 'rejected') refuseBinding(resolution.reason);
-    const sequence = acceptWorkerControlSequence(db, {
-      lineage: input.lineage,
-      operation: 'heartbeat',
-      sequence: payload.request.sequence,
-      fingerprint,
-    });
-    if (sequence.status !== 'accepted')
-      throw new WorkerHeartbeatRefusal(sequence.code, sequence.message, 409);
-    if (!sequence.duplicate)
-      acceptNanoHostAttemptHeartbeatByBinding(db, {
-        acceptedAt,
-        lineage: input.lineage,
-        sandboxBindingRef: input.sandboxBindingRef,
-        workerSequence: payload.request.sequence,
-        ...(payload.request.body.processKeyHash
-          ? { workerProcessKeyHash: payload.request.body.processKeyHash }
-          : {}),
-      });
-    return {
-      duplicate: sequence.duplicate,
-      nextExpectedSequence: sequence.nextExpectedSequence,
+    return settleNanoHostWorkerHeartbeat(
+      db.sqlite,
+      { lineage: input.lineage, payload },
       acceptedAt,
-    };
+      () =>
+        acceptNanoHostAttemptHeartbeatByBinding(db, {
+          acceptedAt,
+          lineage: input.lineage,
+          sandboxBindingRef: input.sandboxBindingRef,
+          workerSequence: payload.request.sequence,
+          ...(payload.request.body.processKeyHash
+            ? { workerProcessKeyHash: payload.request.body.processKeyHash }
+            : {}),
+        })
+    );
   } catch (error) {
     if (!(error instanceof NanoHostAttemptHeartbeatRejectedError)) throw error;
     if (error.reason === 'heartbeat-already-accepted')
@@ -127,8 +121,38 @@ export function applyControlWorkerHeartbeat(
   }
 }
 
+/** Commits the admitted Native heartbeat fingerprint and liveness CAS in one writer savepoint. */
+function settleNanoHostWorkerHeartbeat(
+  sqlite: Database.Database,
+  input: Pick<ControlWorkerHeartbeatCommand, 'lineage' | 'payload'>,
+  acceptedAt: string,
+  applyLiveness: () => void
+): ControlWorkerHeartbeatResult {
+  assertControlProductWriter(sqlite);
+  const { request } = input.payload;
+  if (!isDeepStrictEqual(request.lineage, input.lineage))
+    throw new ControlProductPreconditionError();
+  const sequence = acceptWorkerControlSequence(
+    { sqlite },
+    {
+      lineage: input.lineage,
+      operation: 'heartbeat',
+      sequence: request.sequence,
+      fingerprint: canonicalJsonText(request),
+    }
+  );
+  if (sequence.status !== 'accepted')
+    throw new WorkerHeartbeatRefusal(sequence.code, sequence.message, 409);
+  if (!sequence.duplicate) applyLiveness();
+  return {
+    duplicate: sequence.duplicate,
+    nextExpectedSequence: sequence.nextExpectedSequence,
+    acceptedAt,
+  };
+}
+
 /** Requires the current exact route-token family hashes on the deciding Core connection. */
-export function assertWorkerControlHash(db: CoreDb, input: ControlWorkerHeartbeatInput): void {
+function assertWorkerControlHash(db: CoreDb, input: ControlWorkerHeartbeatInput): void {
   // Credential proof remains valid only against the current exact attempt, not Main's earlier view.
   const hashes = db.sqlite
     .prepare(`SELECT worker_control_token_hash AS control, worker_inference_token_hash AS inference,

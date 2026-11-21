@@ -35,8 +35,8 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
@@ -46,7 +46,6 @@ import { createVaultReference } from '../vault/vault-references.js';
 import * as workerMcpRoutes from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
   admitCapturedPendingCall,
   evaluateCapturedPendingCall,
@@ -133,7 +132,6 @@ async function fixture(
   cleanups.push(() => disposeTestStore(dataRoot, db, coreDb));
   await openTestNativeWorkspace(db);
   const setup = createTestAgentSetup({ agentId: 'agent_demo', mcpIds: ['echo-server'] });
-  admitTestNativeEnvironment(coreDb, setup.manifest);
   let manifest: typeof setup.manifest | null = setup.manifest;
   let catalog: WorkspaceMcpServerCatalog = {
     schemaVersion: 1,

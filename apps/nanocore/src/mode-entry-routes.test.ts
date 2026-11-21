@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import {
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
@@ -59,11 +60,17 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from './storage/db.js';
 import { ensureConfigTemplateSurface } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
+import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
-import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
+import {
+  createApp,
+  createAppWithLocalIdentity,
+  createAppWithWorkspaceAuthority,
+  prepareTestAppOptions,
+} from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -72,7 +79,10 @@ import {
   observeExecutionAttempts,
   SELECTED_CHOICE,
 } from './test-support/mode-entry-fixture.js';
-import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
+import {
+  admitTestNativeEnvironment,
+  recordTestNativeRuntimeTarget,
+} from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
@@ -2830,6 +2840,9 @@ describe('route B queued Task receipts', () => {
     { failPreparation: true, entry: 'selected-conversation' },
     { failPreparation: true, entry: 'direct', proofGap: 'native' },
     { failPreparation: true, entry: 'direct', proofGap: 'input' },
+    { failPreparation: true, entry: 'direct', proofGap: 'owner-missing' },
+    { failPreparation: true, entry: 'direct', proofGap: 'owner-unreadable' },
+    { failPreparation: true, entry: 'direct', proofGap: 'owner-effect' },
   ] as const)(
     'publishes the receipt while preparation is held through $entry and preserves the original Turn on later failure=$failPreparation replayBeforeCollection=$replayBeforeCollection proofGap=$proofGap',
     async ({ failPreparation, entry, ...scenario }) => {
@@ -2840,14 +2853,22 @@ describe('route B queued Task receipts', () => {
       const store = await createDemoStore({ dataRoot });
       const executor = new HoldingTurnExecutor(coreDb);
       const setup = createTestAgentSetup();
-      const app = createAppWithWorkspaceAuthority({
-        coreDb,
+      const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
+      const nativePath = serverStoragePath(dataRoot, 'nanohost');
+      const sqlite = new Database(nativePath, { fileMustExist: true });
+      try {
+        admitTestNativeEnvironment({ sqlite }, setup.manifest);
+      } finally {
+        sqlite.close();
+      }
+      const options = prepareTestAppOptions({
         dataRoot,
         store,
         turnExecutor: executor,
         agentManifests: [setup.manifest],
         openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
       });
+      let app = createAppWithLocalIdentity({ ...options, coreDb, nanoHostStorage });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3003,7 +3024,95 @@ describe('route B queued Task receipts', () => {
             const attemptId = observeExecutionAttempts(coreDb).find(
               (a) => a.turn_id === admittedId
             )!.attempt_id;
-            if ('proofGap' in scenario && scenario.proofGap === 'native') {
+            const proofGap = 'proofGap' in scenario ? scenario.proofGap : undefined;
+            if (
+              proofGap === 'owner-missing' ||
+              proofGap === 'owner-unreadable' ||
+              proofGap === 'owner-effect'
+            ) {
+              if (proofGap === 'owner-missing')
+                await getControlStoreWorkerClient().closeServerOwner(dataRoot, 'nanohost');
+              const movedPath = `${nativePath}.held`;
+              const nativeFault = proofGap !== 'owner-effect';
+              if (nativeFault) renameSync(nativePath, movedPath);
+              const nativeWrite =
+                proofGap === 'owner-effect'
+                  ? new Database(nativePath, { fileMustExist: true })
+                  : null;
+              try {
+                nativeWrite
+                  ?.prepare(`INSERT INTO worker_control_sequence_fingerprints
+                    (workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+                     request_id, operation, sequence, fingerprint, accepted_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                  .run(
+                    checkpoint.workspaceId,
+                    checkpoint.threadId,
+                    admittedId,
+                    'as_00000000-0000-7000-8000-000000000001',
+                    'aep_00000000-0000-7000-8000-000000000001',
+                    requestId,
+                    'heartbeat',
+                    1,
+                    createHash('sha256').update('accepted heartbeat').digest('hex'),
+                    new Date().toISOString()
+                  );
+                const attemptBefore = observeExecutionAttempts(coreDb);
+                const turnBefore = store.getTurnById(admittedId);
+                const eventsBefore = store.getTurnEvents(admittedId);
+                const refused = await replay();
+                const reason =
+                  proofGap === 'owner-effect'
+                    ? 'The sessionless Task has contradictory execution evidence.'
+                    : 'The sessionless Task NanoHost evidence is unavailable.';
+                expect(refused.status, await refused.clone().text()).toBe(409);
+                expect(await refused.json()).toMatchObject({ code: 'recovery_required' });
+                await expect(
+                  classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                    coreDb,
+                    store,
+                    workspaceDb: checkpointDb,
+                    checkpoint,
+                  })
+                ).rejects.toMatchObject({ code: 'recovery_required', message: reason });
+                expect(
+                  getWorkerCheckpoint(
+                    checkpointDb,
+                    checkpoint.workspaceId,
+                    checkpoint.threadId,
+                    admittedId
+                  )
+                ).toEqual(checkpoint);
+                expect(observeExecutionAttempts(coreDb)).toEqual(attemptBefore);
+                expect(store.getTurnById(admittedId)).toEqual(turnBefore);
+                expect(store.getTurnEvents(admittedId)).toEqual(eventsBefore);
+                expect(executor.launches).toBe(0);
+              } finally {
+                try {
+                  nativeWrite
+                    ?.prepare('DELETE FROM worker_control_sequence_fingerprints WHERE turn_id = ?')
+                    .run(admittedId);
+                } finally {
+                  nativeWrite?.close();
+                  if (nativeFault) renameSync(movedPath, nativePath);
+                }
+              }
+              if (proofGap === 'owner-missing') {
+                const reopened = await openAdmittedTestNanoHost(coreDb);
+                app = createAppWithLocalIdentity({ ...options, coreDb, nanoHostStorage: reopened });
+              }
+              const recovered = await replay();
+              expect(recovered.status, await recovered.clone().text()).toBe(202);
+              expect(await recovered.json()).toMatchObject({
+                state: 'failed',
+                turn: { id: admittedId, status: 'failed' },
+              });
+              expect(executor.launches).toBe(0);
+              expect(prepare).toHaveBeenCalledTimes(1);
+              expect(observeExecutionAttempts(coreDb)).toHaveLength(1);
+              return;
+            }
+            if (proofGap === 'native') {
               for (const patch of [
                 {
                   worker_process_key_hash: 'retained-process-proof',
@@ -3066,7 +3175,7 @@ describe('route B queued Task receipts', () => {
               expect(observeExecutionAttempts(coreDb)).toHaveLength(1);
               return;
             }
-            if ('proofGap' in scenario && scenario.proofGap === 'input') {
+            if (proofGap === 'input') {
               const { input_id: inputId } = coreDb.sqlite
                 .prepare('SELECT input_id FROM scheduler_admission_entries WHERE turn_id = ?')
                 .get(admittedId) as { input_id: string };

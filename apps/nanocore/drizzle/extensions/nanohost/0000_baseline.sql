@@ -154,7 +154,11 @@ CREATE TABLE `worker_backend_sessions` (
 	`origin_physical_epoch` text NOT NULL,
 	`backend_lineage_json` text,
 	`sandbox_binding_ref` text,
-	`schema_version` integer DEFAULT 1 NOT NULL
+	`worker_route_binding_json` text,
+	`schema_version` integer DEFAULT 1 NOT NULL,
+	CONSTRAINT `worker_backend_sessions_route_binding_v1_check` CHECK (
+		`worker_route_binding_json` IS NULL OR (json_valid(`worker_route_binding_json`) AND json_extract(`worker_route_binding_json`, '$.version') IS 1)
+	)
 );
 --> statement-breakpoint
 CREATE TABLE `worker_control_records` (

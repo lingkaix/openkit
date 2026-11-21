@@ -113,7 +113,6 @@
     "apps/nanocore/src/storage/knowledge-package/operations.ts :: exportKnowledgePackage.check :: auth-code:workspace_access_denied": 1,
     "apps/nanocore/src/storage/knowledge-package/operations.ts :: exportKnowledgePackage.revalidateDisclosure :: auth-code:workspace_access_denied": 1,
     "apps/nanocore/src/storage/knowledge-package/routes.ts :: registerKnowledgePackageRoutes.<anon#1>.revalidate :: auth-code:workspace_access_denied": 1,
-    "apps/nanocore/src/storage/physical-epoch-cutover.ts :: assertIndexes :: canonical-json": 1,
     "apps/nanocore/src/storage/retrieval-traces.ts :: readRetrievalTrace :: auth-code:workspace_access_denied": 1,
     "apps/nanocore/src/storage/workspace-backup.ts :: assertWorkspaceBackupCut.databaseDigest :: digest-framing": 1,
     "apps/nanocore/src/storage/workspace-file-records.ts :: snapshotDigest :: digest-framing": 1,

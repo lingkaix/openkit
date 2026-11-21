@@ -115,8 +115,10 @@ import {
   ArtifactPayloadCleanupError,
   stageArtifactPayload,
 } from '../storage/artifacts/file-payload.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker, resolveDataRootPath } from '../storage/fs-layout.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
@@ -374,8 +376,10 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         )
       : false;
     const backendSessions = this.coreDb
-      ? listWorkerBackendSessions(this.coreDb).filter(
-          (session) => session.agentSessionId === current.id
+      ? requireNanoHostObservation(this.coreDb, (sqlite) =>
+          listWorkerBackendSessions({ sqlite }).filter(
+            (session) => session.agentSessionId === current.id
+          )
         )
       : [];
     const runtimeReady =
@@ -526,8 +530,10 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         )
       : false;
     const backendSessions = this.coreDb
-      ? listWorkerBackendSessions(this.coreDb).filter(
-          (session) => session.agentSessionId === current.id
+      ? requireNanoHostObservation(this.coreDb, (sqlite) =>
+          listWorkerBackendSessions({ sqlite }).filter(
+            (session) => session.agentSessionId === current.id
+          )
         )
       : [];
     if (
@@ -830,6 +836,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       const environmentBackend = { kind: 'openshell' } as const;
       const resolvedEnvironmentPackage = captureCoverage
         ? await resolveAgentEnvironmentPackage({
+            readNanoHostEnvironment: (query) =>
+              getControlStoreWorkerClient().readAdmittedNanoHost(this.coreDb!.dataRoot, query),
             captureCoverage,
             agentSessionId,
             agentSetup: context.agentSetup,
@@ -958,9 +966,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           ? (() => {
               if (!environmentPackage || !context.attemptId)
                 throw new Error('Simulator journal requires its original package and attempt.');
-              const target = this.coreDb.sqlite
-                .prepare('SELECT target_id AS targetId FROM nanohost_runtime_targets LIMIT 1')
-                .get() as { targetId: string } | undefined;
+              const target = requireNanoHostObservation(this.coreDb, readSimulatorRuntimeTarget);
               if (!target) throw new Error('Simulator journal RuntimeTarget is unavailable.');
               const attempt = requireSchedulerExecutionAttempt(this.coreDb, context.attemptId);
               return prepareWorkerTurnJournalIntents(workspaceDb, environmentPackage, attempt, {
@@ -1008,9 +1014,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           environmentPackage.runtime.image,
           environmentPackage.runtime.environment?.imageDigest
         );
-        const runtimeTarget = this.coreDb.sqlite
-          .prepare(`SELECT target_id AS targetId FROM nanohost_runtime_targets LIMIT 1`)
-          .get() as { readonly targetId: string } | undefined;
+        const runtimeTarget = requireNanoHostObservation(this.coreDb, readSimulatorRuntimeTarget);
         if (!runtimeTarget) {
           throw new Error('Internal self-check scheduler RuntimeTarget is unavailable.');
         }
@@ -1329,19 +1333,28 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     try {
       if (!this.coreDb) throw new Error('Self-check recovery requires Core authority.');
       const turn = store.getTurnById(session.turnId);
-      const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
-        agentSessionId: session.agentSessionId,
-        packageSnapshotId: session.packageSnapshotId,
-        requestId: requireSchedulerExecutionAttemptAdmissionContext(this.coreDb, session.attemptId)
-          .requestId,
-        threadId: session.threadId,
-        turnId: session.turnId,
-        workspaceId: session.workspaceId,
-      });
+      const originalRequestId = requireSchedulerExecutionAttemptAdmissionContext(
+        this.coreDb,
+        session.attemptId
+      ).requestId;
+      const { accepted, backendSession } = requireNanoHostObservation(this.coreDb, (sqlite) => ({
+        backendSession: getWorkerBackendSession({ sqlite }, session.attemptId),
+        accepted: getWorkerControlAcceptedFinalStatus(
+          { sqlite },
+          {
+            agentSessionId: session.agentSessionId,
+            packageSnapshotId: session.packageSnapshotId,
+            requestId: originalRequestId,
+            threadId: session.threadId,
+            turnId: session.turnId,
+            workspaceId: session.workspaceId,
+          }
+        ),
+      }));
       // Real backend identities and incomplete output keep their existing exclusion.
       if (
         session.backendSessionId !== `self-check_${session.packageSnapshotId}` ||
-        !isDeepStrictEqual(getWorkerBackendSession(this.coreDb, session.attemptId), session) ||
+        !isDeepStrictEqual(backendSession, session) ||
         session.state !== 'cleaned' ||
         session.workspaceHandoffState !== 'complete' ||
         workspaceIdForOwner(turn.owner) !== session.workspaceId ||
@@ -2164,4 +2177,16 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     });
     store.emitTurnEvent(state.turnId, agentSessionUpdatedEvent);
   }
+}
+
+/** The self-check still uses its one acknowledged synthetic target on the Native file. */
+function readSimulatorRuntimeTarget(
+  sqlite: CoreDb['sqlite']
+): { readonly targetId: string } | undefined {
+  const rows = sqlite
+    .prepare(
+      'SELECT target_id AS targetId FROM nanohost_runtime_targets WHERE ready=1 AND fresh_empty=1 AND predecessor_fenced=1 LIMIT 2'
+    )
+    .all() as { readonly targetId: string }[];
+  return rows.length === 1 ? rows[0] : undefined;
 }

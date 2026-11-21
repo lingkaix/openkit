@@ -28,6 +28,7 @@ import {
 } from '../scheduler-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import { projectTurnEventRequestId } from '../storage/retained-work-events-v1.js';
 import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
 import {
@@ -319,16 +320,50 @@ export function hasWorkerCheckpointNeverSubmittedProof(
       checkpoint.contextDigest
   )
     throw new Error('Never-submitted checkpoint has contradictory input or product lineage.');
+  const native = getControlStoreWorkerClient().readAdmittedNanoHost(coreDb.dataRoot, (sqlite) =>
+    sqlite
+      .transaction(() => {
+        const owner = { sqlite };
+        if (
+          attempts.some(
+            (sibling, index) =>
+              sibling.attemptId !== attempt.attemptId &&
+              (!isSchedulerExecutionBusyRefusal(sibling) ||
+                index >= attempts.indexOf(attempt) ||
+                sibling.createdAt > attempt.createdAt ||
+                !hasNanoHostAttemptPreEffectProof(coreDb, sibling.attemptId, owner))
+          )
+        )
+          return false;
+        if (
+          sqlite
+            .prepare(`SELECT 1 FROM worker_backend_sessions
+          WHERE (turn_id = ? OR agent_session_id = ?) AND attempt_id <> ? LIMIT 1`)
+            .get(turn.id, session.id, attempt.attemptId)
+        )
+          return false;
+        if (
+          sqlite
+            .prepare(`SELECT 1 FROM worker_control_records WHERE turn_id = @turn
+        UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = @turn
+        UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = @turn LIMIT 1`)
+            .get({ turn: turn.id })
+        )
+          return false;
+        return attempt.terminalCause === 'restart-before-effects'
+          ? hasNanoHostAttemptPreEffectProof(coreDb, attempt.attemptId, owner)
+          : hasNanoHostUnusedFailedStartAnchorProof(
+              coreDb,
+              workspaceDb,
+              pkg,
+              attempt.attemptId,
+              owner
+            );
+      })
+      .deferred()
+  );
+  if (native.state !== 'ready' || !native.value) return false;
   if (
-    // The attempt owner enumerates rowid creation order; equal timestamps alone prove no order.
-    attempts.some(
-      (sibling, index) =>
-        sibling.attemptId !== attempt.attemptId &&
-        (!isSchedulerExecutionBusyRefusal(sibling) ||
-          index >= attempts.indexOf(attempt) ||
-          sibling.createdAt > attempt.createdAt ||
-          !hasNanoHostAttemptPreEffectProof(coreDb, sibling.attemptId))
-    ) ||
     coreDb.sqlite
       .prepare(
         'SELECT 1 FROM scheduler_admission_entries WHERE turn_id = ? AND queue_entry_id <> ? LIMIT 1'
@@ -339,16 +374,6 @@ export function hasWorkerCheckpointNeverSubmittedProof(
         "SELECT 1 FROM scheduler_execution_attempts WHERE agent_session_id = ? AND attempt_id <> ? AND phase <> 'closed' LIMIT 1"
       )
       .get(session.id, attempt.attemptId) ||
-    coreDb.sqlite
-      .prepare(
-        'SELECT 1 FROM worker_backend_sessions WHERE (turn_id = ? OR agent_session_id = ?) AND attempt_id <> ? LIMIT 1'
-      )
-      .get(turn.id, session.id, attempt.attemptId) ||
-    coreDb.sqlite
-      .prepare(`SELECT 1 FROM worker_control_records WHERE turn_id = ?
-      UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = ?
-      UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = ? LIMIT 1`)
-      .get(turn.id, turn.id, turn.id) ||
     workspaceDb.sqlite
       .prepare(
         'SELECT 1 FROM pending_requests WHERE raising_turn_id = ? OR delivery_turn_id = ? LIMIT 1'
@@ -380,15 +405,13 @@ export function hasWorkerCheckpointNeverSubmittedProof(
           other.agentSessionId === session.id &&
           !['completed', 'failed', 'cancelled', 'interrupted'].includes(other.status)
       ) ||
-    !(attempt.terminalCause === 'restart-before-effects'
-      ? hasNanoHostAttemptPreEffectProof(coreDb, attempt.attemptId) &&
-        !listBackendWorkspaceHandles(workspaceDb, attempt.workspaceId).some(
+    (attempt.terminalCause === 'restart-before-effects' &&
+      (listBackendWorkspaceHandles(workspaceDb, attempt.workspaceId).some(
+        (row) => row.packageSnapshotId === pkg.snapshotId
+      ) ||
+        listWorkspaceMaterializationRecords(workspaceDb, attempt.workspaceId).some(
           (row) => row.packageSnapshotId === pkg.snapshotId
-        ) &&
-        !listWorkspaceMaterializationRecords(workspaceDb, attempt.workspaceId).some(
-          (row) => row.packageSnapshotId === pkg.snapshotId
-        )
-      : hasNanoHostUnusedFailedStartAnchorProof(coreDb, workspaceDb, pkg, attempt.attemptId))
+        )))
   )
     return false;
   // Validate existing partial publications before invoking a lifecycle owner that can repair missing writes.
@@ -539,7 +562,6 @@ export async function cancelNeverAllocatedWorkerJournal(
     !materialize.control.target ||
     materialize.control.target.allocationRef !== bindingRef ||
     materialize.control.target.backendKind !== pkg.backend.preferred ||
-    !getNanoHostRuntimeTarget(coreDb, materialize.control.target.targetId) ||
     !isDeepStrictEqual(release.control.target, materialize.control.target) ||
     terminal.control.target !== null ||
     steps.some(
@@ -562,6 +584,11 @@ export async function cancelNeverAllocatedWorkerJournal(
         k.bindingRef !== bindingRef ||
         (c.kind !== 'terminal-publication' && c.outputRefs.length !== 0)
     )
+  )
+    throw new Error('Native no-allocation obligations conflict.');
+  const { targetId } = materialize.control.target;
+  if (
+    !requireNanoHostObservation(coreDb, (sqlite) => getNanoHostRuntimeTarget({ sqlite }, targetId))
   )
     throw new Error('Native no-allocation obligations conflict.');
   for (const step of [materialize, release]) {

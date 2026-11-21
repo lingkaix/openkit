@@ -241,6 +241,12 @@ import {
   type NanoHostRuntimeTargetTransition,
   NanoHostRuntimeTargetTransitionSchema,
 } from './nanohost-epoch-invalidation-codecs.js';
+import {
+  type NanoHostEpochKernelInput,
+  NanoHostEpochKernelInputSchema,
+  type NanoHostEpochKernelReply,
+  NanoHostEpochKernelReplySchema,
+} from './nanohost-epoch-kernel-codecs.js';
 import type { NanoHostEpochInvalidation, NanoHostEpochReceipt } from './nanohost-port.js';
 import {
   type ControlPrivateWorkspaceInput,
@@ -803,6 +809,31 @@ const nanoHostEpochReceipt = z.discriminatedUnion('disposition', [
   }),
 ]) satisfies z.ZodType<NanoHostEpochReceipt>;
 
+/** Build results and defaults whose writes complete in the NanoHost file. */
+export type NanoHostLocalWorkerImageInput =
+  | Extract<ControlWorkerImageInput, { kind: 'environment' }>
+  | {
+      readonly kind: 'settlement';
+      readonly value: Extract<ControlWorkerImageInput, { kind: 'settlement' }>['value'] & {
+        readonly operation: 'image.build';
+      };
+    };
+
+type BackendSessionTransition = Extract<ControlBackendSessionInput, { kind: 'transition' }>;
+
+/** Original backend tuples whose SQL writes and decisions are local to NanoHost. */
+export type NanoHostLocalBackendSessionInput =
+  | Extract<ControlBackendSessionInput, { kind: 'handoff' }>
+  | (BackendSessionTransition & {
+      readonly toState: Exclude<BackendSessionTransition['toState'], 'launching'>;
+    });
+
+/** Original storage tuples after the caller's governing decision. */
+export type NanoHostLocalWorkerStorageInput = Exclude<
+  ControlWorkerStorageInput,
+  { kind: 'purge-pending' }
+>;
+
 const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('transport'), input: ControlNanoHostTransportInputSchema }),
   z.strictObject({
@@ -812,6 +843,27 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('begin-retirement'), input: nanoHostEpochPlacement }),
   z.strictObject({ kind: z.literal('stage-invalidation'), input: nanoHostEpochIntent }),
   z.strictObject({ kind: z.literal('settle-invalidation'), input: nanoHostEpochReceipt }),
+  z.strictObject({
+    kind: z.literal('harness-lifecycle'),
+    input: ControlHarnessLifecycleInputSchema.nanoHostLocal,
+  }),
+  z.strictObject({
+    kind: z.literal('worker-image'),
+    input: ControlWorkerImageInputSchema.refine(
+      (input) => input.kind === 'environment' || input.value.operation === 'image.build'
+    ),
+  }),
+  z.strictObject({
+    kind: z.literal('backend-session'),
+    input: ControlBackendSessionInputSchema.refine(
+      (input) =>
+        input.kind === 'handoff' || (input.kind === 'transition' && input.toState !== 'launching')
+    ),
+  }),
+  z.strictObject({
+    kind: z.literal('worker-storage-binding'),
+    input: ControlWorkerStorageInputSchema.refine((input) => input.kind !== 'purge-pending'),
+  }),
 ]);
 
 /** Original local tuples posted only on a specific acknowledged NanoHost opening. */
@@ -820,7 +872,14 @@ export type NanoHostOwnerMutation =
   | { readonly kind: 'runtime-target'; readonly input: NanoHostRuntimeTargetTransition }
   | { readonly kind: 'begin-retirement'; readonly input: NanoHostEpochPlacement }
   | { readonly kind: 'stage-invalidation'; readonly input: NanoHostEpochInvalidation }
-  | { readonly kind: 'settle-invalidation'; readonly input: NanoHostEpochReceipt };
+  | { readonly kind: 'settle-invalidation'; readonly input: NanoHostEpochReceipt }
+  | {
+      readonly kind: 'harness-lifecycle';
+      readonly input: z.output<typeof ControlHarnessLifecycleInputSchema.nanoHostLocal>;
+    }
+  | { readonly kind: 'worker-image'; readonly input: NanoHostLocalWorkerImageInput }
+  | { readonly kind: 'backend-session'; readonly input: NanoHostLocalBackendSessionInput }
+  | { readonly kind: 'worker-storage-binding'; readonly input: NanoHostLocalWorkerStorageInput };
 
 const nanoHostTargetResultSchema = z.discriminatedUnion('state', [
   z.strictObject({ state: z.literal('ready'), value: ControlRuntimeTargetResultSchema }),
@@ -845,14 +904,32 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('begin-retirement'), value: z.null() }),
   z.strictObject({ kind: z.literal('stage-invalidation'), value: z.null() }),
   z.strictObject({ kind: z.literal('settle-invalidation'), value: z.null() }),
+  z.strictObject({ kind: z.literal('harness-lifecycle'), value: z.null() }),
+  z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),
+  z.strictObject({ kind: z.literal('backend-session'), value: ControlBackendSessionResultSchema }),
+  z.strictObject({
+    kind: z.literal('worker-storage-binding'),
+    value: ControlWorkerStorageResultSchema,
+  }),
 ]);
 
 /** Correlates the original tuple's local result with the covering FULL acknowledgement. */
-export type NanoHostOwnerMutationResult = z.infer<typeof nanoHostOwnerResultSchema>;
+export type NanoHostOwnerMutationResult =
+  | Exclude<z.infer<typeof nanoHostOwnerResultSchema>, { kind: 'worker-storage-binding' }>
+  | {
+      readonly kind: 'worker-storage-binding';
+      readonly value: import('../runtime/worker-storage-binding-records.js').WorkerStorageBinding;
+    };
 
-const nanoHostOwnerRefusalSchema = ControlRuntimeTargetRefusalSchema.extend({
-  operation: z.literal('nanohost-owner'),
-});
+const nanoHostOwnerOperation = { operation: z.literal('nanohost-owner') };
+/** Existing domain refusals on the captured NanoHost wire operation. */
+export const NanoHostOwnerRefusalSchema = z.union([
+  ControlRuntimeTargetRefusalSchema.extend(nanoHostOwnerOperation),
+  ControlHarnessLifecycleRefusalSchema.extend(nanoHostOwnerOperation),
+  ControlWorkerImageRefusalSchema.extend(nanoHostOwnerOperation),
+  ControlBackendSessionRefusalSchema.extend(nanoHostOwnerOperation),
+  ControlWorkerStorageRefusalSchema.extend(nanoHostOwnerOperation),
+]);
 
 const communicationKernelInputSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('reserve'), envelope: ChannelInboundEnvelopeSchema }),
@@ -1274,6 +1351,11 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'nanohost-transport'; readonly input: ControlNanoHostTransportInput }
       | {
+          readonly operation: 'nanohost-epoch-kernel';
+          readonly openingRequestId: number;
+          readonly input: NanoHostEpochKernelInput;
+        }
+      | {
           readonly operation: 'repair-kernel';
           readonly openingRequestId: number;
           readonly input: RepairWorkerInput;
@@ -1325,10 +1407,18 @@ export type ControlWorkerCommand =
           readonly content?: ArrayBuffer;
         }
       | { readonly operation: 'worker-storage-binding'; readonly input: ControlWorkerStorageInput }
-      | { readonly operation: 'core-journal'; readonly input: ControlCoreJournalInput }
+      | {
+          readonly operation: 'core-journal';
+          readonly input: ControlCoreJournalInput;
+          readonly nanoHostOwnerIdentity?: string;
+        }
       | { readonly operation: 'worker-image'; readonly input: ControlWorkerImageInput }
       | { readonly operation: 'runtime-target'; readonly input: ControlRuntimeTargetInput }
-      | { readonly operation: 'backend-session'; readonly input: ControlBackendSessionInput }
+      | {
+          readonly operation: 'backend-session';
+          readonly input: ControlBackendSessionInput;
+          readonly simulatorCoreIdentity?: string;
+        }
       | {
           readonly operation: 'workspace-backend-handoff';
           readonly input: ControlWorkspaceBackendHandoff;
@@ -1395,6 +1485,7 @@ export type ControlWorkerCommand =
           readonly operation: 'execution-attempt';
           readonly input: ControlExecutionAttemptInput;
           readonly content?: ArrayBuffer;
+          readonly simulatorCoreIdentity?: string;
         }
       | {
           readonly operation: 'worker-control-final-status';
@@ -1628,7 +1719,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlCoreJournalRefusalSchema>
   | z.infer<typeof ControlWorkerImageRefusalSchema>
   | z.infer<typeof ControlRuntimeTargetRefusalSchema>
-  | z.infer<typeof nanoHostOwnerRefusalSchema>
+  | z.infer<typeof NanoHostOwnerRefusalSchema>
   | z.infer<typeof ControlBackendSessionRefusalSchema>
   | z.infer<typeof ControlHarnessLifecycleRefusalSchema>
   | z.infer<typeof ControlRecoveryTargetRegistrationRefusalSchema>
@@ -1707,6 +1798,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'recovery-safety';
       readonly result: ControlRecoverySafetyResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'nanohost-epoch-kernel';
+      readonly result: NanoHostEpochKernelReply;
     }
   | {
       readonly status: 'ok';
@@ -2128,7 +2224,7 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
   if (isRecord(value) && value.operation === 'worker-image')
     return ControlWorkerImageRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'nanohost-owner')
-    return nanoHostOwnerRefusalSchema.safeParse(value).success;
+    return NanoHostOwnerRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'communication-owner')
     return communicationOwnerRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'runtime-target')
@@ -2289,6 +2385,11 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'runtime-policy-publication')
     return RuntimePolicyPublicationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'vault') return ControlVaultResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'nanohost-epoch-kernel')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      NanoHostEpochKernelReplySchema.safeParse(reply.result).success
+    );
   if (reply.operation === 'repair-kernel')
     return RepairWorkerReplySchema.safeParse(reply.result).success;
   if (reply.operation === 'server-work-kernel')
@@ -2926,6 +3027,14 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     }
     return Buffer.byteLength(JSON.stringify(boundedInput)) <= CONTROL_PRODUCT_LIMITS.payloadBytes;
   }
+  if (value.operation === 'nanohost-epoch-kernel')
+    return (
+      exactFields(value, [...scoped, 'openingRequestId', 'input']) &&
+      Number.isSafeInteger(value.openingRequestId) &&
+      (value.openingRequestId as number) >= 0 &&
+      NanoHostEpochKernelInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'repair-kernel')
     return (
       exactFields(value, [...scoped, 'openingRequestId', 'input']) &&
@@ -3079,7 +3188,20 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   }
   if (value.operation === 'execution-attempt') {
     const parsed = ControlExecutionAttemptInputSchema.safeParse(value.input);
-    if (!parsed.success || !exactFields(value, [...scoped, 'input'], ['content'])) return false;
+    if (
+      !parsed.success ||
+      !exactFields(value, [...scoped, 'input'], ['content', 'simulatorCoreIdentity'])
+    )
+      return false;
+    if (
+      value.simulatorCoreIdentity !== undefined &&
+      (parsed.data.kind !== 'simulator-final' ||
+        !z
+          .string()
+          .regex(/^\d+:\d+$/)
+          .safeParse(value.simulatorCoreIdentity).success)
+    )
+      return false;
     return (
       Buffer.byteLength(JSON.stringify(parsed.data)) <= CONTROL_PRODUCT_LIMITS.payloadBytes &&
       (parsed.data.kind === 'create'
@@ -3090,7 +3212,10 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   }
   if (value.operation === 'core-journal')
     return (
-      exactFields(value, [...scoped, 'input']) &&
+      exactFields(value, [...scoped, 'input'], ['nanoHostOwnerIdentity']) &&
+      (value.nanoHostOwnerIdentity === undefined ||
+        (typeof value.nanoHostOwnerIdentity === 'string' &&
+          /^\d+:\d+$/.test(value.nanoHostOwnerIdentity))) &&
       ControlCoreJournalInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
@@ -3246,12 +3371,22 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkspaceApplyPlanSchema.safeParse(value.input).success
     );
-  if (value.operation === 'backend-session')
+  if (value.operation === 'backend-session') {
+    const parsed = ControlBackendSessionInputSchema.safeParse(value.input);
     return (
-      exactFields(value, [...scoped, 'input']) &&
-      ControlBackendSessionInputSchema.safeParse(value.input).success &&
+      exactFields(value, [...scoped, 'input'], ['simulatorCoreIdentity']) &&
+      parsed.success &&
+      (value.simulatorCoreIdentity === undefined ||
+        (z
+          .string()
+          .regex(/^\d+:\d+$/)
+          .safeParse(value.simulatorCoreIdentity).success &&
+          (parsed.data.kind === 'materializing' ||
+            parsed.data.kind === 'handoff' ||
+            (parsed.data.kind === 'transition' && parsed.data.toState !== 'launching')))) &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
+  }
   if (value.operation === 'harness-lifecycle')
     return (
       exactFields(value, [...scoped, 'input']) &&

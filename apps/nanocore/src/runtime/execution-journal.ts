@@ -22,6 +22,7 @@ import type {
   ExecutionGrant,
   ExecutionProofIntent,
   ExecutionProofReceipt,
+  NanoHostCoreReads,
   RepairCallInspection,
   RepairCallIntent,
   RepairCallOutcome,
@@ -62,6 +63,7 @@ import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
 } from './nanohost-effect-identity.js';
+import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target-records.js';
 import type { WorkerBackendSessionRecord } from './worker-backend-session-records.js';
 
 /** Release-authored interpretation for the first existing administrative image-acquisition invocation. */
@@ -89,26 +91,20 @@ export interface ExecutionCandidate {
   readonly revision: number;
 }
 
-/** Pages current draining residents, then addresses their exact originals, including CLOSED roots. */
+/** Resolves exact original journal entries for the admitted NanoHost resident page. */
 export function listExecutionCandidates(
   db: CoreDb,
-  after: string | null = null
+  after: string | null,
+  nanoHost: Pick<NanoHostCoreReads, 'listDrainingResidents'>
 ): { readonly candidates: readonly ExecutionCandidate[]; readonly next: string | null } {
-  // Residents disappear at release; retained execution history must not become periodic work.
   const limit = 128;
-  const rows = (
-    after === null
-      ? db.sqlite
-          .prepare(`SELECT sandbox_binding_ref AS binding FROM sandbox_runtime_records
-        WHERE drain_state = 'draining' ORDER BY sandbox_binding_ref LIMIT ?`)
-          .all(limit)
-      : db.sqlite
-          .prepare(`SELECT sandbox_binding_ref AS binding FROM sandbox_runtime_records
-        WHERE drain_state = 'draining' AND sandbox_binding_ref > ?
-        ORDER BY sandbox_binding_ref LIMIT ?`)
-          .all(after, limit)
-  ) as { binding: string }[];
-  // Match the Core partial expression index exactly; no backend-history or creator-only lookup.
+  const page = nanoHost.listDrainingResidents(after, limit);
+  if (
+    page.state !== 'ready' ||
+    page.value.bindings.length > limit ||
+    (page.value.next !== null && page.value.next === after)
+  )
+    throw new NanoHostCleanupFencePendingError();
   const originals = db.sqlite.prepare(`SELECT s.execution_id AS executionId,
     s.step_id AS stepId, r.revision FROM control_execution_steps s
     JOIN control_executions r ON r.id = s.execution_id
@@ -118,7 +114,7 @@ export function listExecutionCandidates(
       AND json_extract(s.control_json, '$.kind') <> 'consume-receipt'
     ORDER BY s.execution_id, s.step_id`);
   return {
-    candidates: rows.flatMap(({ binding }) =>
+    candidates: page.value.bindings.flatMap((binding) =>
       (originals.all(binding) as { executionId: string; stepId: string; revision: number }[]).map(
         (row) => ({
           ref: {
@@ -129,7 +125,7 @@ export function listExecutionCandidates(
         })
       )
     ),
-    next: rows.length === limit ? rows[rows.length - 1]!.binding : null,
+    next: page.value.next,
   };
 }
 

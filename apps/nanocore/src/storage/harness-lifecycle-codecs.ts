@@ -35,19 +35,17 @@ const RuntimeEnvCheckVersionCoreSchema = z.object({
   planId: identity,
   receiptId: identity,
 });
-export const RuntimeEnvCheckVersionInputSchema = RuntimeEnvCheckVersionCoreSchema.strict().refine(
+const RuntimeEnvCheckVersionInputSchema = RuntimeEnvCheckVersionCoreSchema.strict().refine(
   (value) =>
     Number(value.targetEnvVarName !== undefined) + Number(value.targetPath !== undefined) === 1
 );
 /** Retained descriptive additions remain in the original value; validation never rewrites existing entries. */
-export const RetainedRuntimeEnvCheckVersionSchema =
-  RuntimeEnvCheckVersionCoreSchema.passthrough().refine(
-    (value) =>
-      Number(value.targetEnvVarName !== undefined) + Number(value.targetPath !== undefined) === 1
-  );
+const retainedRuntimeEnvCheckVersionSchema = RuntimeEnvCheckVersionCoreSchema.passthrough().refine(
+  (value) =>
+    Number(value.targetEnvVarName !== undefined) + Number(value.targetPath !== undefined) === 1
+);
 
-/** Exact private Harness tuples; every domain lineage and replay predicate stays in the existing record body. */
-export const ControlHarnessLifecycleInputSchema = z.discriminatedUnion('kind', [
+const harnessLifecycleInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('runtime.create'),
@@ -233,7 +231,41 @@ export const ControlHarnessLifecycleInputSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 /** Exact domain input, with no SQL, callback or executable selector. */
-export type ControlHarnessLifecycleInput = z.infer<typeof ControlHarnessLifecycleInputSchema>;
+export type ControlHarnessLifecycleInput = z.infer<typeof harnessLifecycleInputSchema>;
+
+const nanoHostLocalHarnessKinds = [
+  'runtime.create',
+  'sandbox.remove-for-harness',
+  'sandbox.remove-by-binding',
+  'harness.drain',
+  'sandbox.drain',
+  'sandbox.fence',
+  'session-binding.open',
+  'session-binding.initialize-check-versions',
+  'session-binding.append-check-version',
+  'measured-identity.copy',
+  'operation.expire',
+  'operation.unknown',
+] as const satisfies readonly ControlHarnessLifecycleInput['kind'][];
+
+const nanoHostLocalHarnessKindSet: ReadonlySet<ControlHarnessLifecycleInput['kind']> = new Set(
+  nanoHostLocalHarnessKinds
+);
+
+/** Original Harness codec and its constrained NanoHost projection share the same tuple definitions. */
+export const ControlHarnessLifecycleInputSchema = Object.assign(harnessLifecycleInputSchema, {
+  retainedRuntimeEnvCheckVersion: retainedRuntimeEnvCheckVersionSchema,
+  nanoHostLocal: harnessLifecycleInputSchema.refine(
+    (
+      input
+    ): input is Extract<
+      ControlHarnessLifecycleInput,
+      { kind: (typeof nanoHostLocalHarnessKinds)[number] }
+    > => nanoHostLocalHarnessKindSet.has(input.kind),
+    'Harness tuple requires deciding Core authority.'
+  ),
+});
+
 /** Existing method results only; void publication is represented by null on the private peer. */
 export const ControlHarnessLifecycleResultSchema = z.union([
   z.null(),

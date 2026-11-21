@@ -8,7 +8,13 @@ import { readConfiguredNanoHostRuntimeTargetStatus } from '../runtime/nanohost-r
 export function observeOperationalReadiness(
   dependencies: Pick<
     OperationInvocationDependencies,
-    'coreDb' | 'store' | 'inflightCommands' | 'nanoHostConfig' | 'mode' | 'appUpdateServices'
+    | 'coreDb'
+    | 'store'
+    | 'inflightCommands'
+    | 'nanoHostConfig'
+    | 'mode'
+    | 'appUpdateServices'
+    | 'readNanoHostTarget'
   >,
   boot: BootReadinessSnapshot,
   now: () => number = Date.now
@@ -31,6 +37,9 @@ export function observeOperationalReadiness(
       coreDb: dependencies.coreDb,
       mode: dependencies.mode ?? 'local',
       nanoHostConfig: dependencies.nanoHostConfig,
+      ...(dependencies.readNanoHostTarget
+        ? { readNanoHostTarget: dependencies.readNanoHostTarget }
+        : {}),
     });
     if (result.ok) {
       const age = now() - Date.parse(result.status.observedAt);

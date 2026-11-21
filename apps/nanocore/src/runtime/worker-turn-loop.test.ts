@@ -1,6 +1,8 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deriveEntityId } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
@@ -12,41 +14,42 @@ import {
 } from '../scheduler-records.js';
 import {
   ControlStoreWorkerError,
+  getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import {
-  admitTestNativeEnvironment,
-  recordTestNativeRuntimeTarget,
-} from '../test-support/native-environment.js';
-import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
-import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import * as attempts from './execution-attempt-records.js';
-import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
+import { commandInputHash } from './idempotent-command.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
-} from './nanohost-harness.js';
-import { TurnStartValidationError } from './orchestrator.js';
-import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
+} from './nanohost-harness-records.js';
 import {
-  markWorkerBackendSessionLaunching,
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target-records.js';
+import { TurnStartValidationError } from './orchestrator.js';
+import {
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
   workerBackendLineageFromRuntimeImage,
-} from './worker-backend-sessions.js';
+} from './worker-backend-session-records.js';
 import { getWorkerCheckpoint, updateWorkerCheckpoint } from './worker-checkpoints.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 import {
@@ -54,7 +57,10 @@ import {
   endWorkerTurnMaterialization,
   prepareWorkerTurnJournalIntents,
 } from './worker-governance-turn-executor.js';
-import { resolveInterruptedWorkerRetryDecision } from './worker-recovery.js';
+import {
+  hasWorkerCheckpointNeverSubmittedProof,
+  resolveInterruptedWorkerRetryDecision,
+} from './worker-recovery.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import type { RunWorkerTurnLoopInput, WorkerTurnLoopStartWorkerInput } from './worker-turn-loop.js';
 import { runWorkerTurnLoop } from './worker-turn-loop.js';
@@ -88,6 +94,21 @@ function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
+}
+
+/** Seeds only the admitted Native fixture file, whose read handle remains independently open. */
+function writeNanoHostFixture(
+  coreDb: CoreDb,
+  write: (owner: { sqlite: Database.Database }) => void
+) {
+  const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+    fileMustExist: true,
+  });
+  try {
+    sqlite.transaction(() => write({ sqlite })).immediate();
+  } finally {
+    sqlite.close();
+  }
 }
 
 /** Returns the shared prepared worker input used by loop boundary tests. */
@@ -538,7 +559,7 @@ function admittedWorker(
   requestActor?: import('../auth/identity.js').Actor,
   hooks: {
     execute?: (turnId: string) => Promise<void>;
-    interruptedRecovery?: true;
+    nativeRecovery?: 'submitted' | 'never-submitted';
     observe?: WorkerTurnLoopStartWorkerInput['onAdmitted'];
   } = {}
 ) {
@@ -554,7 +575,7 @@ function admittedWorker(
         agentId: manifest.id,
         workspaceId,
         threadId,
-        status: 'busy',
+        status: hooks.nativeRecovery === 'never-submitted' ? 'created' : 'busy',
         message: null,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -594,16 +615,31 @@ function admittedWorker(
     );
     await onAdmitted(admitted, agentSessionId);
     await hooks.observe?.(admitted, agentSessionId);
-    if (hooks.interruptedRecovery) {
+    if (hooks.nativeRecovery) {
       const setup = createTestAgentSetup();
-      admitTestNativeEnvironment(coreDb, manifest);
-      const target = await recordTestNativeRuntimeTarget(coreDb);
+      const native = await openAdmittedTestNanoHost(coreDb);
+      writeNanoHostFixture(coreDb, (owner) => admitTestNativeEnvironment(owner, manifest));
       const db = openWorkspaceDb(coreDb.dataRoot, workspaceId);
       try {
+        if (hooks.nativeRecovery === 'never-submitted')
+          await store.createItem({
+            id: deriveEntityId('it', ['task-user', turnId]),
+            type: 'user-message',
+            owner: { kind: 'workspace', workspaceId },
+            actor: admitted.triggerActor,
+            threadId,
+            turnId,
+            text: prompt,
+            status: 'completed',
+            createdAt: timestamp,
+            completedAt: timestamp,
+          });
         const environmentPackage = await resolveAgentEnvironmentPackage({
           coreDb,
           agentSessionId,
           agentSetup: setup,
+          readNanoHostEnvironment: native.value.owner.read,
+          captureCoverage: { scope: 'server', value: 'off' },
           backend: { kind: 'openshell' },
           createdAt: timestamp,
           requestId,
@@ -626,29 +662,78 @@ function admittedWorker(
         );
         const hex = turnId.slice(3).replaceAll('-', '');
         const backendSessionId = `nh-${hex.slice(0, 16)}-${hex.slice(16)}`;
-        // This explicit outside peer allocates no physical process or Workspace inputs.
-        await recordWorkerBackendSessionMaterializing(coreDb, {
-          identity: {
-            agentSessionId,
-            backendKind: 'openshell',
-            backendSessionId,
-            deploymentId: target.deploymentId,
-            packageSnapshotId: environmentPackage.snapshotId,
-            runtimeTargetId: target.targetId,
-            stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
-            transientProviderInstanceId: null,
-          },
-          backendVersion: 'test',
-          backendLineage: workerBackendLineageFromRuntimeImage(environmentPackage.runtime.image),
-          lineage: { workspaceId, threadId, turnId },
-          sandboxBindingRef: attempt.bindingRef!,
+        // The outside peer's fixture records model exact placement without starting a process.
+        writeNanoHostFixture(coreDb, (owner) => {
+          const allocation = allocateNanoHostRuntimeTargetConnectionGeneration(owner, {
+            deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+            identityId: 'identity_local',
+            observedAt: timestamp,
+            targetId: 'target_local',
+          });
+          const target = upsertNanoHostRuntimeTarget(owner, {
+            ...allocation,
+            freshEmpty: true,
+            observedAt: timestamp,
+            physicalEpoch: 'a'.repeat(64),
+            predecessorFenced: true,
+            ready: true,
+          });
+          recordWorkerBackendSessionMaterializing(
+            coreDb,
+            {
+              identity: {
+                agentSessionId,
+                backendKind: 'openshell',
+                backendSessionId,
+                deploymentId: target.deploymentId,
+                packageSnapshotId: environmentPackage.snapshotId,
+                runtimeTargetId: target.targetId,
+                stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
+                transientProviderInstanceId: null,
+              },
+              backendVersion: 'test',
+              backendLineage: workerBackendLineageFromRuntimeImage(
+                environmentPackage.runtime.image
+              ),
+              lineage: { workspaceId, threadId, turnId },
+              sandboxBindingRef: attempt.bindingRef!,
+            },
+            owner
+          );
+          if (hooks.nativeRecovery === 'never-submitted') {
+            transitionWorkerBackendSessionState(owner, {
+              attemptId: attempt.attemptId,
+              fromState: 'materializing',
+              toState: 'cleanup-pending',
+            });
+            transitionWorkerBackendSessionState(owner, {
+              attemptId: attempt.attemptId,
+              fromState: 'cleanup-pending',
+              toState: 'physical-cleaned',
+            });
+            transitionWorkerBackendSessionState(owner, {
+              attemptId: attempt.attemptId,
+              fromState: 'physical-cleaned',
+              toState: 'cleaned',
+            });
+          } else {
+            transitionWorkerBackendSessionState(owner, {
+              attemptId: attempt.attemptId,
+              fromState: 'materializing',
+              toState: 'materialized',
+            });
+            markWorkerBackendWorkspaceHandoffComplete(owner, { attemptId: attempt.attemptId });
+          }
         });
-        await transitionWorkerBackendSessionState(coreDb, {
-          attemptId: attempt.attemptId,
-          fromState: 'materializing',
-          toState: 'materialized',
-        });
-        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: attempt.attemptId });
+        if (hooks.nativeRecovery === 'never-submitted') {
+          attempts.closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+            attemptId: attempt.attemptId,
+            cause: 'turn-start-failed',
+            noOutstandingEffects: true,
+          });
+          await hooks.execute?.(turnId);
+          return { workerSessionId: agentSessionId };
+        }
         const submitted = attempts.recordSchedulerExecutionOperation(coreDb, {
           attemptId: attempt.attemptId,
           operationId: `worker-loop:${turnId}`,
@@ -661,7 +746,13 @@ function admittedWorker(
             deadline: submitted.deadline!,
           })
         );
-        await markWorkerBackendSessionLaunching(coreDb, { attemptId: attempt.attemptId });
+        writeNanoHostFixture(coreDb, (owner) => {
+          transitionWorkerBackendSessionState(owner, {
+            attemptId: attempt.attemptId,
+            fromState: 'materialized',
+            toState: 'launching',
+          });
+        });
         await endWorkerTurnMaterialization(store, db, turnId, 'completed', [backendSessionId]);
       } finally {
         db.sqlite.close();
@@ -814,7 +905,7 @@ it.each(['authority-denial', 'restart-cleanup', 'incomplete-lease'] as const)(
             'usr_00000000-0000-7000-8000-000000000001',
             undefined,
             {
-              interruptedRecovery: true,
+              nativeRecovery: 'submitted',
               execute: async (turnId) => {
                 launches++;
                 const at = new Date().toISOString();
@@ -861,40 +952,64 @@ it.each(['authority-denial', 'restart-cleanup', 'incomplete-lease'] as const)(
         agentSessionId: sessionId,
         packageSnapshotId: original!.inputRef!,
       };
-      expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toBeNull();
+      const readFinal = () =>
+        getControlStoreWorkerClient().readAdmittedNanoHost(coreDb.dataRoot, (sqlite) =>
+          getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
+        );
+      expect(readFinal()).toEqual({ state: 'ready', value: null });
       if (failure !== 'authority-denial') {
-        const runtime = createConfiguredWorkerLifecycleRuntime({
-          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
-          coreDb,
-          store,
-          env: {},
+        // Supply the retained cleanup tuple for this classifier fixture while K7 holds the
+        // production mixed recovery writer pending K8.
+        writeNanoHostFixture(coreDb, (owner) => {
+          transitionWorkerBackendSessionState(owner, {
+            attemptId: original!.attemptId,
+            fromState: 'launching',
+            toState: 'cleanup-pending',
+          });
+          transitionWorkerBackendSessionState(owner, {
+            attemptId: original!.attemptId,
+            fromState: 'cleanup-pending',
+            toState: 'physical-cleaned',
+          });
+          const cleaned = transitionWorkerBackendSessionState(owner, {
+            attemptId: original!.attemptId,
+            fromState: 'physical-cleaned',
+            toState: 'cleaned',
+          });
+          expect(cleaned).toMatchObject({
+            agentSessionId: sessionId,
+            packageSnapshotId: original!.inputRef,
+            physicalCleanedAt: expect.any(String),
+          });
         });
-        await runNanoHostAttemptRecoveryMaintenance(coreDb, {
-          store,
-          executionBackend: runtime.turnExecutor.executionBackend!,
-          // The outside peer acknowledges deletion of only its modeled allocation.
-          cleanupBackendSession: async (identity) => {
-            expect(identity).toMatchObject({
-              agentSessionId: sessionId,
-              packageSnapshotId: original!.inputRef,
-            });
-          },
-          reconcileExecutions: async () => {},
-          prepareBackendCleanup: () => false,
-          restoreBackendSession: async () => {},
-          reconcileAcceptedFinalStatus: async () => {
-            throw new Error('No final was reported.');
-          },
-          projectRecoveredTurn: async (subject) => {
-            const turn = store.getTurnById(subject.turnId);
-            if (turn.status !== 'interrupted') throw new Error('Original interruption is missing.');
-            return { status: turn.status };
-          },
+        expect(store.getTurnById(checkpoint.turnId).status).toBe('interrupted');
+        const settled = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+          attemptId: original!.attemptId,
+          cause: 'turn-interrupted',
+          outcomeRef: `turn:${checkpoint.turnId}:interrupted`,
         });
-        const closed = attempts.requireSchedulerExecutionAttempt(coreDb, original!.attemptId);
+        const correlation = attempts.schedulerExecutionCorrelation(settled);
+        const proof = {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        } as const;
+        const release = await new SimulatedTurnExecutor({ coreDb }).release({
+          ...correlation,
+          proof,
+        });
+        expect(release.state).toBe('released');
+        const closed = attempts.closeSchedulerExecutionAttemptWithFence(coreDb, {
+          correlation,
+          proof,
+          fenceRef: release.fenceRef!,
+        });
         expect(closed).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
         await endWorkerTurnJournalRelease(store, workspaceDb, checkpoint.turnId, closed.fenceRef!);
-        expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toBeNull();
+        expect(readFinal()).toEqual({ state: 'ready', value: null });
       }
       if (failure === 'incomplete-lease')
         coreDb.sqlite
@@ -909,8 +1024,14 @@ it.each(['authority-denial', 'restart-cleanup', 'incomplete-lease'] as const)(
         'ws_00000000-0000-7000-8000-000000000001'
       );
       await openTestNativeWorkspace(reopenedWorkspace);
+      const reopenedNative = await openAdmittedTestNanoHost(reopenedCore);
       try {
         const reopenedStore = await createDemoStore({ dataRoot: coreDb.dataRoot });
+        expect(
+          reopenedNative.value.owner.read((sqlite) =>
+            getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
+          )
+        ).toEqual({ state: 'ready', value: null });
         expect(
           getWorkerCheckpoint(
             reopenedWorkspace,
@@ -1177,94 +1298,167 @@ it('a late completion error preserves an already terminal checkpoint and its exa
   }
 });
 
-it('removes only its live never-leased cancelled preparation and retains cancellation before refusal', async () => {
-  const coreDb = await createCoreDb();
-  const workspaceDb = createWorkspaceDb(coreDb);
-  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-  try {
-    const independent = await runWorkerTurnLoop({
-      coreDb,
-      store,
-      workspaceDb,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      requestId: 'req_independent',
-      requestInputHash: 'sha256:independent',
-      reviewRequired: false,
-      prepare: () => preparedWorkerTurn(false),
-      reservedTurnId: 'tu_00000000-0000-75a0-878a-b5fb1687f8c1',
-      reserveTurn: () => ({ turnId: 'tu_00000000-0000-75a0-878a-b5fb1687f8c1' }),
-      startWorker: () => {
-        throw new TurnStartValidationError('recovery_required', 'Retain preparation.', 409);
-      },
-      awaitWorker: () => ({ stopReason: 'completed' }),
-    }).catch(() =>
-      getWorkerCheckpoint(
-        workspaceDb,
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        'tu_00000000-0000-75a0-878a-b5fb1687f8c1'
-      )
-    );
-    await expect(
-      runWorkerTurnLoop({
+it.each([true, false])(
+  'replays the original cancellation refusal and requires an admitted Native absence proof (owner %s)',
+  async (admitted) => {
+    const coreDb = await createCoreDb();
+    const native = admitted ? await openAdmittedTestNanoHost(coreDb) : null;
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    try {
+      const independent = await runWorkerTurnLoop({
         coreDb,
         store,
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        requestId: 'req_cancelled',
-        requestInputHash: 'sha256:cancelled',
+        requestId: 'req_independent',
+        requestInputHash: 'sha256:independent',
         reviewRequired: false,
         prepare: () => preparedWorkerTurn(false),
-        reservedTurnId: 'tu_00000000-0000-7545-87f1-1b9ca5ac5e2b',
-        reserveTurn: () => ({ turnId: 'tu_00000000-0000-7545-87f1-1b9ca5ac5e2b' }),
-        startWorker: cancelledWorker(coreDb, 'req_cancelled'),
-        awaitWorker: () => {
-          throw new Error('No worker outcome exists.');
+        reservedTurnId: 'tu_00000000-0000-75a0-878a-b5fb1687f8c1',
+        reserveTurn: () => ({ turnId: 'tu_00000000-0000-75a0-878a-b5fb1687f8c1' }),
+        startWorker: () => {
+          throw new TurnStartValidationError('recovery_required', 'Retain preparation.', 409);
         },
-      })
-    ).rejects.toThrow('Controlled pre-admission preparation refusal.');
-    expect(
-      coreDb.sqlite
-        .prepare('SELECT status FROM scheduler_admission_entries WHERE request_id=?')
-        .get('req_cancelled')
-    ).toEqual({ status: 'cancelled' });
-    expect(
-      getWorkerCheckpoint(
+        awaitWorker: () => ({ stopReason: 'completed' }),
+      }).catch(() =>
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-75a0-878a-b5fb1687f8c1'
+        )
+      );
+      await expect(
+        runWorkerTurnLoop({
+          coreDb,
+          store,
+          workspaceDb,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          requestId: 'req_cancelled',
+          requestInputHash: 'sha256:cancelled',
+          reviewRequired: false,
+          prepare: () => preparedWorkerTurn(false),
+          reservedTurnId: 'tu_00000000-0000-7545-87f1-1b9ca5ac5e2b',
+          reserveTurn: () => ({ turnId: 'tu_00000000-0000-7545-87f1-1b9ca5ac5e2b' }),
+          startWorker: cancelledWorker(coreDb, 'req_cancelled'),
+          awaitWorker: () => {
+            throw new Error('No worker outcome exists.');
+          },
+        })
+      ).rejects.toThrow('Controlled pre-admission preparation refusal.');
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_admission_entries WHERE request_id=?')
+          .get('req_cancelled')
+      ).toEqual({ status: 'cancelled' });
+      const cancelled = getWorkerCheckpoint(
         workspaceDb,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'tu_00000000-0000-7545-87f1-1b9ca5ac5e2b'
-      )
-    ).toBeNull();
-    expect(
-      getWorkerCheckpoint(
-        workspaceDb,
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        'tu_00000000-0000-75a0-878a-b5fb1687f8c1'
-      )
-    ).toEqual(independent);
-    expect(
-      store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )
-    ).toEqual([]);
-    for (const table of ['worker_backend_sessions', 'worker_control_records'])
-      expect(coreDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({
-        count: 0,
-      });
-    expect(
-      workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM runtime_evidence').get()
-    ).toEqual({ count: 0 });
-    expect(
-      workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM permission_decisions').get()
-    ).toEqual({ count: 2 });
-    expect(store.listCommandRequests()).toEqual([]);
+      );
+      if (admitted) expect(cancelled).toBeNull();
+      else expect(cancelled).toMatchObject({ stage: 'preparing', requestId: 'req_cancelled' });
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-75a0-878a-b5fb1687f8c1'
+        )
+      ).toEqual(independent);
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual([]);
+      if (native)
+        expect(
+          native.value.owner.read((sqlite) =>
+            ['worker_backend_sessions', 'worker_control_records'].map((table) =>
+              sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()
+            )
+          )
+        ).toEqual({ state: 'ready', value: [{ count: 0 }, { count: 0 }] });
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM runtime_evidence').get()
+      ).toEqual({ count: 0 });
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM permission_decisions').get()
+      ).toEqual({ count: 2 });
+      expect(store.listCommandRequests()).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  }
+);
+
+it('proves an attached never-submitted checkpoint only from the exact admitted Native anchor', async () => {
+  const coreDb = await createCoreDb();
+  const workspaceDb = createWorkspaceDb(coreDb);
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  const invocation = cancelledLoopInput(coreDb, workspaceDb, store);
+  const sessionId = testEntityId('as', 'attached-never-submitted');
+  const prepared = preparedWorkerTurn(false);
+  const refusal = new TurnStartValidationError(
+    'recovery_required',
+    'Retain the attached checkpoint.',
+    409
+  );
+  try {
+    await expect(
+      runWorkerTurnLoop({
+        ...invocation,
+        prepare: () => ({
+          ...prepared,
+          knowledgeSelectionInput: null,
+          contextPackageDigest: commandInputHash(
+            JSON.parse(serializeStructuredWorkerDelegationRequest(prepared.delegationRequest))
+          ),
+        }),
+        startWorker: admittedWorker(
+          coreDb,
+          store,
+          invocation.requestId,
+          sessionId,
+          undefined,
+          undefined,
+          {
+            nativeRecovery: 'never-submitted',
+            execute: async () => {
+              throw refusal;
+            },
+          }
+        ),
+      })
+    ).rejects.toBe(refusal);
+    const { workspaceId, threadId, reservedTurnId } = invocation;
+    const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, reservedTurnId!)!;
+    expect(checkpoint).toMatchObject({ stage: 'running_worker', workerSessionId: sessionId });
+    const prove = () =>
+      hasWorkerCheckpointNeverSubmittedProof(coreDb, store, workspaceDb, checkpoint);
+    expect(prove()).toBe(true);
+    await shutdownControlStoreWorkerClient();
+    expect(prove()).toBe(false);
+    await openAdmittedTestNanoHost(coreDb);
+    expect(prove()).toBe(true);
+    writeNanoHostFixture(coreDb, ({ sqlite }) => {
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET physical_cleaned_at=NULL WHERE turn_id=?')
+        .run(reservedTurnId);
+    });
+    expect(prove()).toBe(false);
+    expect(getWorkerCheckpoint(workspaceDb, workspaceId, threadId, reservedTurnId!)).toEqual(
+      checkpoint
+    );
   } finally {
     await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
@@ -1353,6 +1547,7 @@ it.each([
     const coreDb = await createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    await openAdmittedTestNanoHost(coreDb);
     const at = '2026-10-06T00:00:00.000Z';
     let before: ReturnType<typeof getWorkerCheckpoint>;
     if (kind === 'cancellation-failed')
@@ -1398,55 +1593,61 @@ it.each([
         );
       }
       if (kind === 'session') {
-        coreDb.sqlite
-          .prepare(`INSERT INTO nanohost_runtime_targets (
+        writeNanoHostFixture(coreDb, (owner) => {
+          owner.sqlite
+            .prepare(`INSERT INTO nanohost_runtime_targets (
         target_id, identity_id, deployment_id, connection_generation, predecessor_fenced,
         ready, fresh_empty, physical_epoch, observed_at, slot_count
       ) VALUES ('nanohost', 'identity', 'deployment', 1, 1, 1, 1, ?, ?, 1)`)
-          .run('e'.repeat(64), at);
-        await createNanoHostHarnessRuntime(coreDb, {
-          adapterId: 'codex',
-          adapterVersion: '0.153.4',
-          harnessBindingRef: 'harness-binding',
-          harnessCompatibilityKey: 'd'.repeat(64),
-          harnessInstanceId: 'harness',
-          imageDigest: `sha256:${'f'.repeat(64)}`,
-          originPhysicalEpoch: 'e'.repeat(64),
-          sandboxBindingRef: 'sandbox-binding',
-          sandboxCompatibilityKey: 'a'.repeat(64),
-          sandboxIntegrationBindingRef: 'integration-binding',
-          sandboxRuntimeId: 'sandbox',
-          runtimeTargetId: 'nanohost',
-          timestamp: at,
+            .run('e'.repeat(64), at);
+          createNanoHostHarnessRuntime(owner, {
+            adapterId: 'codex',
+            adapterVersion: '0.153.4',
+            harnessBindingRef: 'harness-binding',
+            harnessCompatibilityKey: 'd'.repeat(64),
+            harnessInstanceId: 'harness',
+            imageDigest: `sha256:${'f'.repeat(64)}`,
+            originPhysicalEpoch: 'e'.repeat(64),
+            sandboxBindingRef: 'sandbox-binding',
+            sandboxCompatibilityKey: 'a'.repeat(64),
+            sandboxIntegrationBindingRef: 'integration-binding',
+            sandboxRuntimeId: 'sandbox',
+            runtimeTargetId: 'nanohost',
+            timestamp: at,
+          });
+          openNanoHostAgentSessionBinding(owner, {
+            agentSessionCompatibilityKey: 'b'.repeat(64),
+            agentSessionId: 'as_00000000-0000-7c9b-868b-c8bf0628ce98',
+            agentSessionRuntimeBindingId: 'as-binding',
+            effectiveSetupGeneration: 1,
+            harnessInstanceId: 'harness',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            timestamp: at,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          });
+          owner.sqlite
+            .prepare('UPDATE agent_session_runtime_bindings SET current_turn_id=?')
+            .run('tu_00000000-0000-7952-9279-bc2b017e274b');
         });
-        await openNanoHostAgentSessionBinding(coreDb, {
-          agentSessionCompatibilityKey: 'b'.repeat(64),
-          agentSessionId: 'as_00000000-0000-7c9b-868b-c8bf0628ce98',
-          agentSessionRuntimeBindingId: 'as-binding',
-          effectiveSetupGeneration: 1,
-          harnessInstanceId: 'harness',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          timestamp: at,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        });
-        coreDb.sqlite
-          .prepare('UPDATE agent_session_runtime_bindings SET current_turn_id=?')
-          .run('tu_00000000-0000-7952-9279-bc2b017e274b');
       }
       if (kind === 'backend')
-        coreDb.sqlite
-          .prepare(`INSERT INTO worker_backend_sessions (
+        writeNanoHostFixture(coreDb, ({ sqlite }) =>
+          sqlite
+            .prepare(`INSERT INTO worker_backend_sessions (
         attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, backend_kind, deployment_id,
         backend_session_id, staging_directory_ref, workspace_handoff_state, state, created_at, updated_at, origin_physical_epoch
         ) VALUES ('lease_refusal', 'ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001', 'tu_00000000-0000-7952-9279-bc2b017e274b', 'as_00000000-0000-7c9b-868b-c8bf0628ce98', 'aepsnap_refusal', 'openshell', 'deployment',
         'backend', 'staging', 'pending', 'materializing', ?, ?, ?)`)
-          .run(at, at, 'e'.repeat(64));
+            .run(at, at, 'e'.repeat(64))
+        );
       if (kind === 'control')
-        coreDb.sqlite
-          .prepare(`INSERT INTO worker_control_records (
+        writeNanoHostFixture(coreDb, ({ sqlite }) =>
+          sqlite
+            .prepare(`INSERT INTO worker_control_records (
         workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id, operation, record_key, sequence, record_json, accepted_at
         ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001', 'tu_00000000-0000-7952-9279-bc2b017e274b', 'as_00000000-0000-7c9b-868b-c8bf0628ce98', 'aepsnap_refusal', 'req_refusal', 'observe', 'key', 1, '{}', ?)`)
-          .run(at);
+            .run(at)
+        );
       if (kind === 'runtime-evidence')
         workspaceDb.sqlite
           .prepare(`INSERT INTO runtime_evidence (
@@ -1462,6 +1663,7 @@ it.each([
           )
           .run();
         await openTestNativeWorkspace(workspaceDb);
+        await openAdmittedTestNanoHost(coreDb);
       }
       if (kind === 'changed-admission')
         coreDb.sqlite
@@ -1474,6 +1676,7 @@ it.each([
         workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_removal
         BEFORE DELETE ON worker_turn_checkpoints BEGIN SELECT RAISE(ABORT, 'Workspace removal failure'); END`);
         await openTestNativeWorkspace(workspaceDb);
+        await openAdmittedTestNanoHost(coreDb);
       }
       before = getWorkerCheckpoint(
         workspaceDb,
@@ -1590,6 +1793,7 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
   const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  await openAdmittedTestNanoHost(coreDb);
   await expect(runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))).rejects.toThrow();
   await shutdownControlStoreWorkerClient();
   workspaceDb.sqlite.close();
@@ -1600,6 +1804,7 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
     'ws_00000000-0000-7000-8000-000000000001'
   );
   await openTestNativeWorkspace(reopenedWorkspace);
+  await openAdmittedTestNanoHost(reopenedCore);
   try {
     const replay = cancelledLoopInput(
       reopenedCore,
@@ -1637,6 +1842,7 @@ it.each(['usr_00000000-0000-73d4-904a-d4c4b905df7c', 'usr_00000000-0000-7000-800
     const coreDb = await createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    await openAdmittedTestNanoHost(coreDb);
     try {
       // Request UUID alone is not command identity: actor and Thread scope remain exact.
       const unrelated = await createTestQueueEntry(coreDb, {

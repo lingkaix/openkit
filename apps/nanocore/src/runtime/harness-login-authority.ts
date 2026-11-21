@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { bindWorkspaceSqlite, type CoreDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import {
   HarnessLoginContextSchema,
   HarnessLoginNativeEffectSchema,
@@ -224,8 +225,9 @@ export function requireHarnessLoginBinding(
   input: HarnessLoginContext,
   now: string
 ): string {
-  const row = coreDb.sqlite
-    .prepare(`SELECT b.schema_version AS schemaVersion,
+  const { row, target } = requireNanoHostObservation(coreDb, (sqlite) => {
+    const row = sqlite
+      .prepare(`SELECT b.schema_version AS schemaVersion,
     h.schema_version AS harnessVersion,
     b.agent_session_id AS agentSessionId, b.workspace_id AS workspaceId, b.thread_id AS threadId,
     b.lifecycle_state AS bindingState, b.current_turn_id AS turnId, b.current_attempt_id AS leaseId,
@@ -240,32 +242,34 @@ export function requireHarnessLoginBinding(
     JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
     JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
     WHERE b.agent_session_runtime_binding_id=?`)
-    .get(input.agentSessionRuntimeBindingId) as
-    | {
-        schemaVersion: number;
-        harnessVersion: number;
-        agentSessionId: string;
-        workspaceId: string;
-        threadId: string;
-        bindingState: string;
-        turnId: string | null;
-        leaseId: string | null;
-        nextSequence: number;
-        bindingCleanup: string;
-        harnessState: string;
-        harnessDrain: string;
-        operationState: string;
-        operation: string | null;
-        command: string | null;
-        integrationRef: string;
-        targetId: string;
-        physicalEpoch: string;
-        sandboxState: string;
-        sandboxHealth: string;
-        sandboxDrain: string;
-        sandboxCleanup: string;
-      }
-    | undefined;
+      .get(input.agentSessionRuntimeBindingId) as
+      | {
+          schemaVersion: number;
+          harnessVersion: number;
+          agentSessionId: string;
+          workspaceId: string;
+          threadId: string;
+          bindingState: string;
+          turnId: string | null;
+          leaseId: string | null;
+          nextSequence: number;
+          bindingCleanup: string;
+          harnessState: string;
+          harnessDrain: string;
+          operationState: string;
+          operation: string | null;
+          command: string | null;
+          integrationRef: string;
+          targetId: string;
+          physicalEpoch: string;
+          sandboxState: string;
+          sandboxHealth: string;
+          sandboxDrain: string;
+          sandboxCleanup: string;
+        }
+      | undefined;
+    return { row, target: row && getNanoHostRuntimeTarget({ sqlite }, row.targetId) };
+  });
   const refuse = (): never => {
     throw new Error('Native Login consumer binding is unavailable.');
   };
@@ -282,7 +286,6 @@ export function requireHarnessLoginBinding(
   if (resolution.status !== 'accepted' || resolution.attempt.attemptId !== input.leaseId)
     return refuse();
   const attempt = resolution.attempt;
-  const target = getNanoHostRuntimeTarget(coreDb, row.targetId);
   if (
     row.agentSessionId !== input.agentSessionId ||
     row.workspaceId !== input.workspaceId ||

@@ -5,6 +5,7 @@ import {
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
 import type { StorageResult } from '../storage/storage-owner.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import type { Actor } from './identity.js';
@@ -117,10 +118,35 @@ export interface NanoHostTransportTokenRecord {
 /** Verified durable NanoHost transport Token record. */
 export type VerifiedNanoHostTransportTokenRecord = NanoHostTransportTokenRecord;
 
-/** Opens the existing Core native owner; callers retain this distinct pre-submission stage. */
+type NanoHostTransportReadDb = { readonly sqlite: Pick<CoreDb['sqlite'], 'prepare'> };
+type NanoHostTransportMutationStorage = CoreDb | AdmittedNanoHostTransportStorage;
+interface PreparedNanoHostTransportWriter {
+  submit(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
+}
+
+type TransportVerificationOptions = { channel?: string; now?: Date; source?: string };
+
+/** Admits the owner before submission so an open failure carries no credential-commit uncertainty. */
 export async function prepareNanoHostTransportWriter(
-  coreDb: CoreDb
-): Promise<{ client: ReturnType<typeof getControlStoreWorkerClient>; database: string }> {
+  storage: NanoHostTransportMutationStorage
+): Promise<PreparedNanoHostTransportWriter> {
+  if ('owner' in storage) {
+    if (storage.owner.read(() => undefined).state !== 'ready')
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    return {
+      async submit(input) {
+        const local = ControlNanoHostTransportInputSchema.parse(input);
+        if (
+          local.kind === 'lifecycle-audit' ||
+          local.kind === 'decommission-audit' ||
+          ('actor' in local && local.actor)
+        )
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        return storage.owner.transport(local);
+      },
+    };
+  }
+  const coreDb = storage;
   if (!coreDb.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
   const client = getControlStoreWorkerClient();
   const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
@@ -135,7 +161,7 @@ export async function prepareNanoHostTransportWriter(
     contentMount: scope.contentMount,
   });
   if (!coreDb.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
-  return { client, database };
+  return { submit: (input) => client.nanoHostTransport(database, input) };
 }
 
 /** Reads the existing storage certainty before a public error projection can hide its cause. */
@@ -160,14 +186,14 @@ function nativeResult<K extends ControlNanoHostTransportResult['kind']>(
 
 /** Submits one complete domain stage after opening the existing owner. */
 async function commitNanoHostTransportStage(
-  coreDb: CoreDb,
+  storage: NanoHostTransportMutationStorage,
   input: ControlNanoHostTransportInput,
   beforeSubmit?: () => Promise<void>
 ) {
   const admitted = ControlNanoHostTransportInputSchema.parse(input);
-  const { client, database } = await prepareNanoHostTransportWriter(coreDb);
+  const writer = await prepareNanoHostTransportWriter(storage);
   await beforeSubmit?.();
-  return client.nanoHostTransport(database, admitted);
+  return writer.submit(admitted);
 }
 
 /** Copies an explicit caller clock before waits while retaining the live omitted-clock semantics. */
@@ -197,7 +223,7 @@ function issuanceFacts(
 
 /** Creates one native-owned Token and pairs the acknowledged original row with its one-time Main secret. */
 export async function createNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  storage: NanoHostTransportMutationStorage,
   input: CreateNanoHostTransportTokenRecordInput,
   actor?: Actor,
   beforeSubmit?: () => Promise<void>
@@ -205,7 +231,7 @@ export async function createNanoHostTransportTokenRecord(
   const tokenId = input.tokenId ?? allocateEntityId('nhtok');
   const secret = input.secret ?? createOpenKitAccessTokenSecret();
   const result = await commitNanoHostTransportStage(
-    coreDb,
+    storage,
     { kind: 'issue', record: issuanceFacts(input, tokenId, secret), ...adminFacts(actor) },
     beforeSubmit
   );
@@ -216,13 +242,13 @@ export async function createNanoHostTransportTokenRecord(
 
 /** Shared enrollment submission; its caller has already distinguished native-open failure. */
 export async function submitNanoHostTransportEnrollment(
-  writer: Awaited<ReturnType<typeof prepareNanoHostTransportWriter>>,
+  writer: PreparedNanoHostTransportWriter,
   input: EnrollNanoHostTransportIdentityInput,
   actor?: Actor
 ): Promise<NanoHostTransportTokenIssueResult> {
   const tokenId = input.tokenId;
   const secret = input.secret;
-  const result = await writer.client.nanoHostTransport(writer.database, {
+  const result = await writer.submit({
     kind: 'enroll',
     record: issuanceFacts(input, tokenId, secret),
     ...adminFacts(actor),
@@ -234,14 +260,14 @@ export async function submitNanoHostTransportEnrollment(
 
 /** Atomically enrolls or reactivates the exact identity and first Token through the existing native owner. */
 export async function enrollNanoHostTransportIdentity(
-  coreDb: CoreDb,
+  storage: NanoHostTransportMutationStorage,
   input: EnrollNanoHostTransportIdentityInput,
   actor?: Actor
 ): Promise<NanoHostTransportTokenIssueResult> {
   const snapshot = { ...input, ...explicitClock(input.now) };
   const authority = actor ? { ...actor } : undefined;
   return submitNanoHostTransportEnrollment(
-    await prepareNanoHostTransportWriter(coreDb),
+    await prepareNanoHostTransportWriter(storage),
     snapshot,
     authority
   );
@@ -249,13 +275,35 @@ export async function enrollNanoHostTransportIdentity(
 
 /** Proves the presented secret on Main, then repeats its exact current hash/owner/usability inside native last-use SQL. */
 export async function verifyNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  storage: NanoHostTransportMutationStorage,
   secret: string,
-  options: { channel?: string; now?: Date; source?: string } = {}
+  options: TransportVerificationOptions = {}
 ): Promise<VerifiedNanoHostTransportTokenRecord | null> {
+  const admitted =
+    'owner' in storage
+      ? storage.owner.read((sqlite) =>
+          prepareNanoHostTransportVerification({ sqlite }, secret, options)
+        )
+      : {
+          state: 'ready' as const,
+          value: prepareNanoHostTransportVerification(storage, secret, options),
+        };
+  if (admitted.state !== 'ready')
+    throw new ControlStoreWorkerError('precondition', 'not-committed');
+  const input = admitted.value;
+  if (!input) return null;
+  return nativeResult(await commitNanoHostTransportStage(storage, input), 'record').record;
+}
+
+/** Prepares the hash-only writer tuple from the exact admitted token and active identity. */
+export function prepareNanoHostTransportVerification(
+  owner: NanoHostTransportReadDb,
+  secret: string,
+  options: TransportVerificationOptions = {}
+): Extract<ControlNanoHostTransportInput, { kind: 'verify' }> | null {
   if (!isOpenKitAccessTokenSecret(secret)) return null;
   const tokenHash = hashOpenKitAccessTokenSecret(secret);
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare('SELECT * FROM nanohost_transport_tokens WHERE token_hash = ?')
     .get(tokenHash) as NanoHostTransportTokenRow | undefined;
   if (
@@ -263,7 +311,7 @@ export async function verifyNanoHostTransportTokenRecord(
     !verifyOpenKitAccessTokenSecret(secret, row.token_hash) ||
     row.token_type !== NANOHOST_TRANSPORT_TOKEN_TYPE ||
     row.scope !== NANOHOST_TRANSPORT_TOKEN_SCOPE ||
-    !isNanoHostTransportIdentityActive(coreDb, row.owner_nanohost_identity_id, row.deployment_id) ||
+    !isNanoHostTransportIdentityActive(owner, row.owner_nanohost_identity_id, row.deployment_id) ||
     !evaluateNanoHostTransportTokenUsability(
       {
         expiresAt: row.expires_at,
@@ -274,20 +322,12 @@ export async function verifyNanoHostTransportTokenRecord(
     ).usable
   )
     return null;
-  return nativeResult(
-    await commitNanoHostTransportStage(coreDb, {
-      kind: 'verify',
-      tokenHash,
-      ...options,
-      ...explicitClock(options.now),
-    }),
-    'record'
-  ).record;
+  return { kind: 'verify', tokenHash, ...options, ...explicitClock(options.now) };
 }
 
 /** Revokes one Token in native SQL; repeated/missing results retain their original full-row semantics. */
 export async function revokeNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  storage: NanoHostTransportMutationStorage,
   tokenId: string,
   options: { now?: Date } = {},
   actor?: Actor,
@@ -295,20 +335,20 @@ export async function revokeNanoHostTransportTokenRecord(
 ): Promise<NanoHostTransportTokenRecord | null> {
   const snapshot = { ...explicitClock(options.now) };
   const authority = actor ? { ...actor } : undefined;
-  const writer = await prepareNanoHostTransportWriter(coreDb);
+  const writer = await prepareNanoHostTransportWriter(storage);
   await beforeSubmit?.();
   return submitNanoHostTransportRevocation(writer, tokenId, snapshot, authority);
 }
 
 /** Submits only the revocation stage, so open/admission uncertainty cannot be mistaken for its commit. */
 export async function submitNanoHostTransportRevocation(
-  writer: Awaited<ReturnType<typeof prepareNanoHostTransportWriter>>,
+  writer: PreparedNanoHostTransportWriter,
   tokenId: string,
   options: { now?: Date } = {},
   actor?: Actor
 ): Promise<NanoHostTransportTokenRecord | null> {
   return nativeResult(
-    await writer.client.nanoHostTransport(writer.database, {
+    await writer.submit({
       kind: 'revoke',
       tokenId,
       ...explicitClock(options.now),
@@ -320,7 +360,7 @@ export async function submitNanoHostTransportRevocation(
 
 /** Rotates the original two-row tuple atomically without moving its one-time secret into the worker wire. */
 export async function rotateNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  storage: NanoHostTransportMutationStorage,
   tokenId: string,
   input: RotateNanoHostTransportTokenRecordInput,
   actor?: Actor,
@@ -330,7 +370,7 @@ export async function rotateNanoHostTransportTokenRecord(
   const secret = createOpenKitAccessTokenSecret();
   const result = nativeResult(
     await commitNanoHostTransportStage(
-      coreDb,
+      storage,
       {
         kind: 'rotate',
         tokenId,
@@ -349,12 +389,12 @@ export async function rotateNanoHostTransportTokenRecord(
 
 /** Submits the existing all-Token plus identity tuple after preparation has settled. */
 export async function submitNanoHostTransportDecommission(
-  writer: Awaited<ReturnType<typeof prepareNanoHostTransportWriter>>,
+  writer: PreparedNanoHostTransportWriter,
   input: { identityId: string; deploymentId: string; now?: Date },
   actor?: Actor
 ): Promise<NanoHostTransportTokenRecord[]> {
   return nativeResult(
-    await writer.client.nanoHostTransport(writer.database, {
+    await writer.submit({
       kind: 'decommission',
       ...input,
       ...explicitClock(input.now),
@@ -366,12 +406,12 @@ export async function submitNanoHostTransportDecommission(
 
 /** Keeps the original cutover conditional so an already revoked predecessor cannot be revived. */
 export async function completeNanoHostTransportTokenCutover(
-  coreDb: CoreDb,
+  storage: NanoHostTransportMutationStorage,
   predecessorTokenId: string,
   options: { now?: Date } = {}
 ): Promise<NanoHostTransportTokenRecord | null> {
   return nativeResult(
-    await commitNanoHostTransportStage(coreDb, {
+    await commitNanoHostTransportStage(storage, {
       kind: 'cutover',
       tokenId: predecessorTokenId,
       ...options,
@@ -383,7 +423,7 @@ export async function completeNanoHostTransportTokenCutover(
 
 /** Atomically revokes the successor and restores the predecessor before any external cleanup. */
 export async function abortNanoHostTransportTokenRotation(
-  coreDb: CoreDb,
+  storage: NanoHostTransportMutationStorage,
   input: { predecessorTokenId: string; successorTokenId: string; now?: Date },
   actor?: Actor,
   beforeSubmit?: () => Promise<void>
@@ -393,14 +433,14 @@ export async function abortNanoHostTransportTokenRotation(
 } | null> {
   const snapshot = { ...input, ...explicitClock(input.now) };
   const authority = actor ? { ...actor } : undefined;
-  const writer = await prepareNanoHostTransportWriter(coreDb);
+  const writer = await prepareNanoHostTransportWriter(storage);
   await beforeSubmit?.();
   return submitNanoHostTransportRotationAbort(writer, snapshot, authority);
 }
 
 /** Submits only the original abort tuple, preserving uncertainty until pending-process cleanup is decided. */
 export async function submitNanoHostTransportRotationAbort(
-  writer: Awaited<ReturnType<typeof prepareNanoHostTransportWriter>>,
+  writer: PreparedNanoHostTransportWriter,
   input: { predecessorTokenId: string; successorTokenId: string; now?: Date },
   actor?: Actor
 ): Promise<{
@@ -408,7 +448,7 @@ export async function submitNanoHostTransportRotationAbort(
   successor: NanoHostTransportTokenRecord;
 } | null> {
   return nativeResult(
-    await writer.client.nanoHostTransport(writer.database, {
+    await writer.submit({
       kind: 'abort',
       ...input,
       ...explicitClock(input.now),
@@ -428,12 +468,12 @@ export async function recordNanoHostTransportAudit(
 
 /** Existing Main read; this function has no mutation or post-ACK reconstruction. */
 export function isNanoHostTransportIdentityActive(
-  coreDb: CoreDb,
+  owner: NanoHostTransportReadDb,
   identityId: string,
   deploymentId: string
 ): boolean {
   return Boolean(
-    coreDb.sqlite
+    owner.sqlite
       .prepare(
         `SELECT 1 FROM nanohost_integration_identities
          WHERE identity_id = ? AND deployment_id = ? AND status = 'active'`
@@ -449,10 +489,10 @@ export type NanoHostTransportTokenReader = () => StorageResult<
 >;
 
 /** Reads the redacted inventory on the caller's already admitted owner handle. */
-export function listNanoHostTransportTokenRecords(db: {
-  readonly sqlite: Pick<CoreDb['sqlite'], 'prepare'>;
-}): NanoHostTransportTokenRecord[] {
-  const rows = db.sqlite
+export function listNanoHostTransportTokenRecords(
+  owner: NanoHostTransportReadDb
+): NanoHostTransportTokenRecord[] {
+  const rows = owner.sqlite
     .prepare(`SELECT token_id, owner_nanohost_identity_id, token_type, scope, deployment_id,
       status, issued_at, expires_at, revoked_at, predecessor_token_id,
       rotation_overlap_expires_at, responsible_server_admin_actor_id,
@@ -465,10 +505,10 @@ export function listNanoHostTransportTokenRecords(db: {
 
 /** Existing Main read; this function has no mutation or post-ACK reconstruction. */
 export function getNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  owner: NanoHostTransportReadDb,
   tokenId: string
 ): NanoHostTransportTokenRecord | null {
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare('SELECT * FROM nanohost_transport_tokens WHERE token_id = ?')
     .get(tokenId) as NanoHostTransportTokenRow | undefined;
 

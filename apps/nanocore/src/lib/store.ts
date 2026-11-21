@@ -495,7 +495,6 @@ export interface TerminalTurnPublication {
 export type CommandRequestName =
   | 'task.steer'
   | 'scheduler.external-trigger.admit'
-  | 'channel.discord.inbound'
   | 'knowledge.tell'
   | 'knowledge.maintain'
   | 'knowledge.server.maintain'
@@ -606,7 +605,6 @@ export type CommandRequestName =
  */
 export type CommandRequestResponseKind =
   | 'scheduler_entry'
-  | 'discord_inbound'
   | 'catalog_mcp'
   | 'vault_reference'
   | 'vault_grant'

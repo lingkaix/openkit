@@ -20,7 +20,6 @@ import {
   recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
 } from '../runtime/aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
@@ -37,8 +36,8 @@ import {
 import { createApp } from '../test-support/app.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { getVaultInjectionPlan, listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
@@ -887,7 +886,6 @@ describe('reviewed Workspace grant to User Login material boundary', () => {
         ]),
         setup.logicalModels.allowed.map((model) => model.id)
       );
-      admitTestNativeEnvironment(f.coreDb, setup.manifest);
       const pkg = await resolveAgentEnvironmentPackage({
         coreDb: f.coreDb,
         captureCoverage: { scope: 'server', value: 'off' },

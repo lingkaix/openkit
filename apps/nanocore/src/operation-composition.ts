@@ -9,13 +9,9 @@ import { createWorkerOperationImplementations } from './agents/workspace-workers
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createAppUpdateOperationImplementations } from './app-update/app-update-operations.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
-import {
-  createCommunicationCredentialOperationImplementations,
-  createCredentialOperationImplementations,
-} from './auth/credential-operations.js';
+import { createCommunicationCredentialOperationImplementations } from './auth/credential-operations.js';
 import { createNanoHostOperationImplementations } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
-import { listNanoHostTransportTokenRecords } from './auth/nanohost-transport-token-store.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { createCallerOperationImplementations } from './caller-operation-implementations.js';
 import {
@@ -59,7 +55,11 @@ import type {
   AssistantOperationInvocationContext,
   OperationImplementations,
 } from './operation-contract.js';
-import { createInternalOperationEngine, createOperationEngine } from './operation-invocation.js';
+import {
+  createInternalOperationEngine,
+  createOperationEngine,
+  type OperationInvoker,
+} from './operation-invocation.js';
 import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
 import {
   checkResourcePolicyOperationIntent,
@@ -70,6 +70,7 @@ import type { ProviderCredentialConfigured } from './providers/registry.js';
 import { createEnvironmentOperationImplementations } from './runtime/environment-operation-implementations.js';
 import type { GoalOwnerServices } from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
+import type { NanoHostRuntimeTargetRecord } from './runtime/nanohost-runtime-target.js';
 import { createSchedulerAdmissionOperationImplementations } from './runtime/scheduler-admission-operations.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { createRecoveryOperationImplementations } from './runtime/worker-recovery-operations.js';
@@ -78,6 +79,7 @@ import { createServerThreadOperations } from './server-thread-operations.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import type { StorageResult } from './storage/storage-owner.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { createWorkspaceRestoreOperationImplementations } from './storage/workspace-restore.js';
 import { createWorkspaceTransferOperationImplementations } from './storage/workspace-transfer-operations.js';
@@ -93,11 +95,15 @@ import { createWorkspaceOperationImplementations } from './workspace-operation-i
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 export type CommunicationCredentialBinding = Pick<
   Parameters<typeof createCommunicationCredentialOperationImplementations>[0],
-  'communicationCredentials' | 'listNanoHostTransportTokens'
+  'communicationCredentials' | 'listNanoHostTransportTokens' | 'revokeNanoHostTransportToken'
 >;
 
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
+  /** The App-selected reader used by the Administrator cleanup operation. */
+  readonly nanoHostCleanupOwner?: NonNullable<
+    import('./runtime/administrator-cleanup-view.js').ReadRuntimeCleanupViewInput['nanoHostCleanupOwner']
+  >;
   /** Original live Worker credential owner used by human credential management. */
   readonly workerControlGateway?: import('./runtime/worker-control-gateway.js').WorkerControlGateway;
   /** App-owned capacity admission, shared by Artifact, ZIP and Workspace file transfers. */
@@ -123,7 +129,7 @@ export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
   /** Shared deployment-local channel and notification owners. */
   readonly channelServices?: ChannelServices;
-  /** Selected only by the gated Communication serving binding. */
+  /** Independently admitted Communication and NanoHost credential owners. */
   readonly communicationCredentialBinding?: CommunicationCredentialBinding;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
@@ -222,6 +228,9 @@ export interface OperationInvocationDependencies {
   readonly mode?: CoreMode;
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'> &
     Partial<OpenKitNanoHostConfig>;
+  readonly readNanoHostTarget?: (
+    targetId: string
+  ) => StorageResult<'nanohost', NanoHostRuntimeTargetRecord | null>;
   /** Trusted deployment storage path and process-local transport fencing owner. */
   readonly dataRoot?: string | null;
   readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
@@ -238,9 +247,6 @@ export function createOperationImplementations(dependencies: OperationInvocation
       : {}),
     ...(dependencies.turnExecutor ? { turnExecutor: dependencies.turnExecutor } : {}),
     ...(dependencies.inflightCommands ? { inflightCommands: dependencies.inflightCommands } : {}),
-    ...(dependencies.nanoHostSessionAuthority
-      ? { nanoHostSessionAuthority: dependencies.nanoHostSessionAuthority }
-      : {}),
   };
   return composeOperationTables(
     {
@@ -256,18 +262,10 @@ export function createOperationImplementations(dependencies: OperationInvocation
       inflightCommands: dependencies.inflightCommands!,
       repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
     }),
-    dependencies.communicationCredentialBinding
-      ? createCommunicationCredentialOperationImplementations({
-          ...credentialOwners,
-          ...dependencies.communicationCredentialBinding,
-          listNanoHostTransportTokens:
-            dependencies.communicationCredentialBinding.listNanoHostTransportTokens ??
-            (() =>
-              dependencies.coreDb
-                ? { state: 'ready', value: listNanoHostTransportTokenRecords(dependencies.coreDb) }
-                : { state: 'unavailable', owner: 'nanohost', reason: 'missing' }),
-        })
-      : createCredentialOperationImplementations(credentialOwners),
+    createCommunicationCredentialOperationImplementations({
+      ...credentialOwners,
+      ...dependencies.communicationCredentialBinding,
+    }),
     createDiagnosticsOperationImplementations(dependencies.diagnosticsServices, dependencies),
     createRuntimeConfigOperationImplementations(dependencies.runtimeConfigOperations),
     createProviderSubscriptionOperationImplementations(dependencies.providerSubscriptionOperations),
@@ -288,7 +286,13 @@ export function createOperationImplementations(dependencies: OperationInvocation
     ),
     createAdministrationOperationImplementations({
       ...dependencies.administrationServices!,
-      createOperationInvocation,
+      createOperationInvocation: (input) =>
+        createOperationInvocation({
+          ...input,
+          ...(dependencies.readNanoHostTarget
+            ? { readNanoHostTarget: dependencies.readNanoHostTarget }
+            : {}),
+        }),
       store: dependencies.store!,
       repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
     }),
@@ -341,6 +345,9 @@ export function createOperationImplementations(dependencies: OperationInvocation
       coreDb: dependencies.coreDb,
       mode: dependencies.mode ?? 'local',
       ...(dependencies.nanoHostConfig ? { nanoHostConfig: dependencies.nanoHostConfig } : {}),
+      ...(dependencies.readNanoHostTarget
+        ? { readNanoHostTarget: dependencies.readNanoHostTarget }
+        : {}),
       ...(dependencies.nanoHostSessionAuthority
         ? { sessionAuthority: dependencies.nanoHostSessionAuthority }
         : {}),
@@ -353,7 +360,9 @@ export function createOperationImplementations(dependencies: OperationInvocation
 }
 
 /** Composes at the caller's existing store lifetime; request status, cancellation and delivery travel only in entry context. */
-export function createOperationInvocation(dependencies: OperationInvocationDependencies) {
+export function createOperationInvocation(
+  dependencies: OperationInvocationDependencies
+): OperationInvoker {
   return createOperationEngine(createOperationImplementations(dependencies), dependencies);
 }
 

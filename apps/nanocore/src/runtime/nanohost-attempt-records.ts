@@ -1,7 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { WorkerProcessKeySchema } from '@openkit/worker-protocol';
+import { OperationError } from '../operation-error.js';
 import type { SchedulerExecutionLineage } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { readNanoHostObservation } from '../storage/nanohost-observation-reader.js';
 import {
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
@@ -917,28 +919,16 @@ export function hasNanoHostAttemptOwnershipEvidence(coreDb: CoreDb, attemptId: s
     .get(attemptId) as Record<string, unknown> | undefined;
   if (!row) throw new Error('Native no-effect proof has no exact attempt.');
   if (Object.values(row).some((value) => value !== null)) return true;
-  return Boolean(
-    coreDb.sqlite
-      .prepare('SELECT 1 FROM worker_backend_sessions WHERE attempt_id = ?')
-      .get(attemptId)
+  const observed = readNanoHostObservation(coreDb.dataRoot, (sqlite) =>
+    Boolean(
+      sqlite.prepare('SELECT 1 FROM worker_backend_sessions WHERE attempt_id = ?').get(attemptId)
+    )
   );
-}
-
-/** Keeps destructive Workspace cleanup fenced until every uncertain Native attempt has exact positive cleanup evidence. */
-export function hasUnprovedNanoHostWorkspaceCleanup(coreDb: CoreDb, workspaceId: string): boolean {
-  return Boolean(
-    coreDb.sqlite
-      .prepare(
-        `SELECT 1 FROM scheduler_execution_attempts AS attempt WHERE workspace_id = ? AND (
-          phase <> 'closed' OR (recovery_state = 'needs-evidence' AND NOT EXISTS (
-            SELECT 1 FROM worker_backend_sessions AS backend
-            WHERE backend.attempt_id = attempt.attempt_id
-              AND backend.workspace_id = attempt.workspace_id AND backend.thread_id = attempt.thread_id
-              AND backend.turn_id = attempt.turn_id AND backend.agent_session_id = attempt.agent_session_id
-              AND backend.package_snapshot_id = attempt.input_ref AND backend.state = 'cleaned'
-              AND backend.physical_cleaned_at IS NOT NULL
-          ))) LIMIT 1`
-      )
-      .get(workspaceId)
-  );
+  if (observed.state !== 'ready')
+    throw new OperationError(
+      'operation_storage_unavailable',
+      'NanoHost execution evidence is unavailable.',
+      503
+    );
+  return observed.value;
 }

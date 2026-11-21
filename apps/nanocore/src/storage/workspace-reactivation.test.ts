@@ -13,6 +13,7 @@ import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { isScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recoveryJournalFact, recoveryJournalFacts } from '../test-support/recovery-journal.js';
@@ -214,6 +215,7 @@ async function fixture() {
   const dataRoot = join(root, 'source');
   await createDemoStore({ dataRoot });
   const core = databases.openCoreDb(dataRoot);
+  await openAdmittedTestNanoHost(core);
   const userId = ensureLocalUser(core);
   recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId: userId });
   core.sqlite.close();

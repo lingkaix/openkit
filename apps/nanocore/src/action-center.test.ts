@@ -7,6 +7,7 @@ import {
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
 import { formatReferenceUri } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -22,8 +23,15 @@ import {
 import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openWorkspaceDb,
+  serverStoragePath,
+  type WorkspaceDb,
+} from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
 import { type createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -1578,8 +1586,12 @@ describe('action center app API', () => {
       }
     );
 
+    await openAdmittedTestNanoHost(coreDb);
+    const nativeDb = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+      fileMustExist: true,
+    });
     try {
-      coreDb.sqlite
+      nativeDb
         .prepare(
           `
           INSERT INTO worker_control_rejected_evidence (
@@ -1689,7 +1701,17 @@ describe('action center app API', () => {
       });
       expect(JSON.stringify(orphan)).not.toContain('as_00000000-0000-7f85-a231-397f40994baa');
       expect(orphan?.source).not.toHaveProperty('agentSessionId');
+
+      await shutdownControlStoreWorkerClient();
+      const unavailable = await app.request(
+        ...operationRequest('attention.list', { workspaceId: DEMO_WORKSPACE_ID }, undefined)
+      );
+      expect(unavailable.status).toBe(200);
+      const remaining = ListHumanAttentionResponseSchema.parse(await unavailable.json()).items;
+      expect(remaining.find((row) => row.id === orphan!.id)).toEqual(orphan);
+      expect(remaining.some((row) => row.id === rejection!.id)).toBe(false);
     } finally {
+      nativeDb.close();
       coreDb.sqlite.close();
     }
   });

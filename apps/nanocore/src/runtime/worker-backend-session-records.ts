@@ -1,15 +1,22 @@
 /** Native backend-session records and Core attempt-bound operations. */
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import { canonicalJsonText, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import type Database from 'better-sqlite3';
+import { z } from 'zod';
 import { recordServerAuditEvent } from '../audit-events.js';
+import type { ExecutionGrant } from '../storage/control-kernel-port.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb } from '../storage/db.js';
 import type {
   WorkerBackendSessionState,
   WorkerBackendWorkspaceHandoffState,
 } from '../storage/schema/index.js';
 import { BackendSessionRefusal } from '../storage/worker-backend-session-codecs.js';
-import { requireStoredNanoHostPhysicalEpoch } from './nanohost-runtime-target-records.js';
+import {
+  getNanoHostRuntimeTarget,
+  requireStoredNanoHostPhysicalEpoch,
+} from './nanohost-runtime-target-records.js';
 
 export type { WorkerBackendSessionState } from '../storage/schema/index.js';
 
@@ -251,13 +258,14 @@ const ALLOWED_TRANSITIONS: Readonly<
  */
 export function recordWorkerBackendSessionMaterializing(
   coreDb: CoreDb,
-  input: RecordWorkerBackendSessionMaterializingInput
+  input: RecordWorkerBackendSessionMaterializingInput,
+  owner: WorkerBackendSessionDb = coreDb
 ): WorkerBackendSessionRecord {
   const timestamp = input.now?.() ?? new Date().toISOString();
   let attemptId = '';
 
   {
-    const runtimeTarget = coreDb.sqlite
+    const runtimeTarget = owner.sqlite
       .prepare(
         `SELECT deployment_id AS deploymentId, predecessor_fenced AS predecessorFenced,
                 ready, fresh_empty AS freshEmpty, physical_epoch AS physicalEpoch
@@ -318,7 +326,7 @@ export function recordWorkerBackendSessionMaterializing(
       );
     }
 
-    const existing = selectWorkerBackendSession(coreDb, attemptId);
+    const existing = selectWorkerBackendSession(owner, attemptId);
     if (existing) {
       const record = mapWorkerBackendSessionRow(existing);
       if (!workerBackendSessionMatchesInput(record, input, originPhysicalEpoch)) {
@@ -332,7 +340,7 @@ export function recordWorkerBackendSessionMaterializing(
       return record;
     }
 
-    coreDb.sqlite
+    owner.sqlite
       .prepare(
         `INSERT INTO worker_backend_sessions (
            attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
@@ -365,7 +373,7 @@ export function recordWorkerBackendSessionMaterializing(
       );
   }
 
-  return requireWorkerBackendSession(coreDb, attemptId);
+  return requireWorkerBackendSession(owner, attemptId);
 }
 
 /**
@@ -501,6 +509,287 @@ export function markWorkerBackendWorkspaceHandoffComplete(
   return requireWorkerBackendSession(owner, input.attemptId);
 }
 
+interface NanoHostSubmissionPlacement {
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly agentSessionId: string;
+  readonly runtimeTargetId: string;
+  readonly identityId: string;
+  readonly deploymentId: string;
+  readonly physicalEpoch: string;
+}
+
+type NanoHostSubmitGrant = Extract<ExecutionGrant, { readonly deadline: string }>;
+
+function isNanoHostSubmitGrant(
+  grant: ExecutionGrant
+): grant is NanoHostSubmitGrant & { readonly inputRef: string; readonly bindingRef: string } {
+  return (
+    grant.backendId === 'nanohost' &&
+    grant.execution.owner.kind === 'server' &&
+    grant.execution.executionId === grant.attemptId &&
+    grant.deadline !== null &&
+    grant.inputRef !== null &&
+    grant.bindingRef !== null &&
+    grant.operationId ===
+      commandInputHash({
+        attemptId: grant.attemptId,
+        inputRef: grant.inputRef,
+        operation: 'submit',
+      })
+  );
+}
+
+/**
+ * Verifies the Native side of the original submission grant on the admitted NanoHost reader.
+ * The Core deciding writer must verify the independent Workspace handoff before returning its first ACK.
+ */
+export function readNanoHostSubmissionPlacement(
+  owner: WorkerBackendSessionDb,
+  grant: ExecutionGrant,
+  expected: NanoHostSubmissionPlacement
+): WorkerBackendSessionRecord | null {
+  return readCurrentSubmitPlacement(owner, grant, expected, 'materialized');
+}
+
+function readCurrentSubmitPlacement(
+  owner: WorkerBackendSessionDb,
+  grant: ExecutionGrant,
+  expected: NanoHostSubmissionPlacement,
+  state: 'materialized' | 'launching'
+): WorkerBackendSessionRecord | null {
+  if (!isNanoHostSubmitGrant(grant)) return null;
+  const session = getWorkerBackendSession(owner, grant.attemptId);
+  if (
+    !session ||
+    session.state !== state ||
+    session.workspaceHandoffState !== 'complete' ||
+    session.physicalCleanedAt !== null ||
+    session.backendKind !== 'openshell' ||
+    session.transientProviderInstanceId !== null ||
+    session.packageSnapshotId !== grant.inputRef ||
+    session.sandboxBindingRef !== grant.bindingRef ||
+    session.turnId !== grant.turnId ||
+    session.agentSessionId !== expected.agentSessionId ||
+    session.threadId !== expected.threadId ||
+    session.workspaceId !== expected.workspaceId ||
+    session.runtimeTargetId !== expected.runtimeTargetId ||
+    session.deploymentId !== expected.deploymentId ||
+    session.originPhysicalEpoch !== expected.physicalEpoch
+  )
+    return null;
+
+  const target = getNanoHostRuntimeTarget(owner, session.runtimeTargetId);
+  return target?.ready &&
+    target.freshEmpty &&
+    target.predecessorFenced &&
+    target.identityId === expected.identityId &&
+    target.deploymentId === session.deploymentId &&
+    target.physicalEpoch === session.originPhysicalEpoch &&
+    String(target.connectionGeneration) === grant.generation
+    ? session
+    : null;
+}
+
+const routeHash = z.string().regex(/^[a-f0-9]{64}$/);
+const workerRouteBindingV1 = z
+  .strictObject({
+    version: z.literal(1),
+    operationId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    generation: z.string().regex(/^[1-9][0-9]*$/),
+    deadline: z.iso.datetime({ precision: 3 }),
+    control: routeHash,
+    inference: routeHash,
+    capability: routeHash,
+    harnessInstanceId: z.string().min(1),
+    harnessOperationId: routeHash,
+    harnessSequence: z.number().int().nonnegative().safe(),
+  })
+  .refine((value) => new Set([value.control, value.inference, value.capability]).size === 3);
+
+type WorkerRouteBinding = z.output<typeof workerRouteBindingV1>;
+
+function readRetainedRouteBinding(
+  owner: WorkerBackendSessionDb,
+  attemptId: string
+): WorkerRouteBinding | null {
+  const json = owner.sqlite
+    .prepare('SELECT worker_route_binding_json FROM worker_backend_sessions WHERE attempt_id = ?')
+    .pluck()
+    .get(attemptId);
+  if (json == null) return null;
+  if (typeof json !== 'string')
+    throw new BackendSessionRefusal('Native Worker route binding is invalid.');
+  const binding = workerRouteBindingV1.parse(JSON.parse(json));
+  if (canonicalJsonText(binding) !== json)
+    throw new BackendSessionRefusal('Native Worker route binding is not canonical.');
+  return binding;
+}
+
+/** Inspect the exact historical hashes. Live route use still requires the current Core lease. */
+export function readNanoHostWorkerRouteBinding(
+  owner: WorkerBackendSessionDb,
+  grant: ExecutionGrant
+): WorkerRouteBinding | null {
+  if (!isNanoHostSubmitGrant(grant)) return null;
+  const session = getWorkerBackendSession(owner, grant.attemptId);
+  if (
+    !session ||
+    session.turnId !== grant.turnId ||
+    session.packageSnapshotId !== grant.inputRef ||
+    session.sandboxBindingRef !== grant.bindingRef
+  )
+    return null;
+  const binding = readRetainedRouteBinding(owner, grant.attemptId);
+  return binding &&
+    binding.operationId === grant.operationId &&
+    binding.generation === grant.generation &&
+    binding.deadline === grant.deadline
+    ? binding
+    : null;
+}
+
+/** Joins the original Core submission to its exact admitted Native route tuple. */
+export function readNanoHostWorkerLease(
+  owner: WorkerBackendSessionDb,
+  grant: ExecutionGrant,
+  lineage: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly agentSessionId: string;
+  }
+) {
+  const session = getWorkerBackendSession(owner, grant.attemptId);
+  if (
+    !session ||
+    session.workspaceId !== lineage.workspaceId ||
+    session.threadId !== lineage.threadId ||
+    session.agentSessionId !== lineage.agentSessionId
+  )
+    return null;
+  const binding = readNanoHostWorkerRouteBinding(owner, grant);
+  return binding ? { session, binding } : null;
+}
+
+/** Read-back for the original boot reconnect census, in the Core owner's retained order. */
+export function readNanoHostReconnectCandidates(
+  owner: WorkerBackendSessionDb,
+  originals: readonly {
+    readonly grant: ExecutionGrant;
+    readonly lineage: Parameters<typeof readNanoHostWorkerLease>[2];
+  }[]
+): { readonly attemptId: string; readonly packageSnapshotId: string }[] {
+  return originals.map(({ grant, lineage }) => {
+    const lease = readNanoHostWorkerLease(owner, grant, lineage);
+    if (
+      !lease ||
+      lease.session.physicalCleanedAt !== null ||
+      lease.session.state !== 'launching' ||
+      lease.session.workspaceHandoffState !== 'complete'
+    )
+      throw new BackendSessionRefusal('Native Worker reconnect origin requires recovery.');
+    return {
+      attemptId: lease.session.attemptId,
+      packageSnapshotId: lease.session.packageSnapshotId,
+    };
+  });
+}
+
+/**
+ * Retains only the exact redacted turn.start from the current native Harness cell.
+ * The caller must have the first Core submission ACK and recheck live authority before contact.
+ */
+export function bindNanoHostWorkerRoutes(
+  owner: WorkerBackendSessionDb,
+  grant: ExecutionGrant,
+  placement: NanoHostSubmissionPlacement,
+  command: {
+    readonly harnessInstanceId: string;
+    readonly operationId: string;
+    readonly sequence: number;
+  }
+): 'bound-now' | 'already-bound' {
+  if (
+    !owner.sqlite.inTransaction ||
+    !readCurrentSubmitPlacement(owner, grant, placement, 'launching')
+  )
+    throw new BackendSessionRefusal('Native Worker route binding has no current submission.');
+  const row = owner.sqlite
+    .prepare(`
+    SELECT h.schema_version AS schemaVersion, h.command_body_json AS body,
+           h.command_fingerprint AS fingerprint, b.agent_session_runtime_binding_id AS bindingId
+    FROM harness_instance_records AS h
+    JOIN agent_session_runtime_bindings AS b ON b.harness_instance_id = h.harness_instance_id
+    JOIN sandbox_runtime_records AS s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+    WHERE h.harness_instance_id = ?
+      AND h.lifecycle_state = 'open' AND h.drain_state = 'accepting'
+      AND h.operation = 'turn.start' AND h.operation_state = 'queued'
+      AND h.operation_id = ? AND h.operation_sequence = ?
+      AND b.workspace_id = ? AND b.thread_id = ? AND b.agent_session_id = ?
+      AND b.schema_version = 1 AND b.lifecycle_state IN ('open', 'opening')
+      AND s.runtime_target_id = ? AND s.origin_physical_epoch = ?
+      AND s.lifecycle_state = 'open' AND s.health_state = 'ready'
+      AND s.drain_state = 'accepting' AND s.cleanup_state = 'clean'
+  `)
+    .get(
+      command.harnessInstanceId,
+      command.operationId,
+      command.sequence,
+      placement.workspaceId,
+      placement.threadId,
+      placement.agentSessionId,
+      placement.runtimeTargetId,
+      placement.physicalEpoch
+    ) as
+    | { schemaVersion: unknown; body: string | null; fingerprint: string | null; bindingId: string }
+    | undefined;
+  const bodyJson = row?.body;
+  if (!row || !bodyJson || row.fingerprint !== sha256Hex(bodyJson))
+    throw new BackendSessionRefusal('Native Worker route binding has no exact queued command.');
+  const body = readRetainedV1(row, () =>
+    z.record(z.string(), z.unknown()).parse(JSON.parse(bodyJson))
+  );
+  if (
+    body.leaseId !== grant.attemptId ||
+    body.packageSnapshotId !== grant.inputRef ||
+    body.turnId !== grant.turnId ||
+    body.deadline !== grant.deadline ||
+    body.workspaceId !== placement.workspaceId ||
+    body.threadId !== placement.threadId ||
+    body.agentSessionId !== placement.agentSessionId ||
+    body.agentSessionRuntimeBindingId !== row.bindingId
+  )
+    throw new BackendSessionRefusal(
+      'Native Worker route binding contradicts the original command.'
+    );
+  const binding = workerRouteBindingV1.parse({
+    version: 1,
+    operationId: grant.operationId,
+    generation: grant.generation,
+    deadline: grant.deadline,
+    control: body.workerControlTokenHash,
+    inference: body.inferenceTokenHash,
+    capability: body.capabilityTokenHash,
+    harnessInstanceId: command.harnessInstanceId,
+    harnessOperationId: command.operationId,
+    harnessSequence: command.sequence,
+  });
+  const json = canonicalJsonText(binding);
+  const prior = readRetainedRouteBinding(owner, grant.attemptId);
+  if (prior) {
+    if (canonicalJsonText(prior) !== json)
+      throw new BackendSessionRefusal('Native Worker route binding conflicts with the original.');
+    return 'already-bound';
+  }
+  const update = owner.sqlite
+    .prepare(`UPDATE worker_backend_sessions SET worker_route_binding_json = ?
+      WHERE attempt_id = ? AND state = 'launching' AND worker_route_binding_json IS NULL`)
+    .run(json, grant.attemptId);
+  if (update.changes !== 1)
+    throw new BackendSessionRefusal('Native Worker route binding changed concurrently.');
+  return 'bound-now';
+}
+
 /**
  * Reads one durable backend session by execution attempt.
  *
@@ -513,6 +802,17 @@ export function getWorkerBackendSession(
   attemptId: string
 ): WorkerBackendSessionRecord | null {
   const row = selectWorkerBackendSession(owner, attemptId);
+  return row ? mapWorkerBackendSessionRow(row) : null;
+}
+
+/** Reads the exact retained session for a package snapshot using its unique index. */
+export function getWorkerBackendSessionByPackage(
+  owner: WorkerBackendSessionDb,
+  packageSnapshotId: string
+): WorkerBackendSessionRecord | null {
+  const row = owner.sqlite
+    .prepare(`${workerBackendSessionSelectSql()} WHERE package_snapshot_id = ?`)
+    .get(packageSnapshotId) as WorkerBackendSessionRow | undefined;
   return row ? mapWorkerBackendSessionRow(row) : null;
 }
 

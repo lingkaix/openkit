@@ -49,10 +49,12 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import {
-  admitTestNativeEnvironment,
-  createTestNativeEnvironmentDb,
-} from '../test-support/native-environment.js';
+  resolveAgentEnvironmentPackage,
+  resolveAgentEnvironmentPackageMetadata,
+  resolveAgentSessionCompatibilityKey,
+} from '../test-support/prepared-agent-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
@@ -62,11 +64,7 @@ import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import {
-  resolveAgentSessionCompatibilityKey as resolveCompatibility,
-  resolveAgentEnvironmentPackageMetadata as resolveMetadata,
-  resolveAgentEnvironmentPackage as resolvePackage,
-} from './agent-environment.js';
+import { resolveAgentEnvironmentPackage as resolvePackageWithoutFixture } from './agent-environment.js';
 import {
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionOperation,
@@ -80,37 +78,6 @@ import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import type { PrepareAgentSessionForTurnInput } from './types.js';
 import { DeterministicAgentPreparationError } from './types.js';
-
-// Other-contract fixtures explicitly confirm synthetic image defaults before resolution.
-const environmentFixtureDb = createTestNativeEnvironmentDb();
-function preparedInput<T extends Parameters<typeof resolveMetadata>[0]>(
-  input: T
-): T & { coreDb: typeof environmentFixtureDb } {
-  const coreDb = input.coreDb ?? environmentFixtureDb;
-  admitTestNativeEnvironment(coreDb, input.agentSetup.manifest);
-  const readRuntimeConfig =
-    input.readRuntimeConfig ??
-    (input.workspaceDataSourceCatalog
-      ? () =>
-          createInMemoryRuntimeConfigSnapshot({
-            dataRoot: null,
-            workspaceDataSourceCatalogs: [
-              {
-                workspaceId: workspaceIdForOwner(input.turn.owner),
-                path: 'data-sources.jsonc',
-                catalog: input.workspaceDataSourceCatalog!,
-              },
-            ],
-          })
-      : undefined);
-  return { ...input, coreDb, ...(readRuntimeConfig ? { readRuntimeConfig } : {}) };
-}
-const resolveAgentEnvironmentPackage: typeof resolvePackage = (input) =>
-  resolvePackage(preparedInput(input));
-const resolveAgentEnvironmentPackageMetadata: typeof resolveMetadata = (input) =>
-  resolveMetadata(preparedInput(input));
-const resolveAgentSessionCompatibilityKey: typeof resolveCompatibility = (input) =>
-  resolveCompatibility(preparedInput(input));
 
 const USER_TRIGGER_ACTOR = {
   kind: 'user',
@@ -858,8 +825,8 @@ describe('agent environment package resolver', () => {
     };
     await expect(
       async () =>
-        await resolveAgentEnvironmentPackage(
-          input as Parameters<typeof resolveAgentEnvironmentPackage>[0]
+        await resolvePackageWithoutFixture(
+          input as Parameters<typeof resolvePackageWithoutFixture>[0]
         )
     ).rejects.toThrow('expected object');
   });
@@ -2914,8 +2881,10 @@ describe('public network AEP admission', () => {
       workspaceRoots: [],
     };
     try {
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
       createApp({
         coreDb,
+        nanoHostStorage,
         dataRoot,
         store,
         mode: 'local',
@@ -2948,6 +2917,7 @@ describe('public network AEP admission', () => {
         preview.previewAgentEnvironmentPackage(input.freshAgentSessionId, input)
       ).toThrow(/removed or changed/i);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }

@@ -43,7 +43,6 @@ import {
   listSchedulerExecutionAttemptsForTurn,
   type SchedulerExecutionAttemptRecord,
 } from './execution-attempt-records.js';
-import { hasNanoHostAttemptOwnershipEvidence } from './nanohost-attempt-records.js';
 import { getWorkerCheckpoint, type WorkerCheckpointRecord } from './worker-checkpoints.js';
 import { isTerminalWorkerTurnStage } from './worker-stage.js';
 
@@ -382,6 +381,7 @@ type CleanupHistoryRead =
       readonly status: 'readable';
       readonly turns: readonly CleanupTurnIdentity[];
       readonly receipts: ReadableReceipts;
+      readonly nativeEvidence: ReadonlySet<string>;
     }
   | { readonly status: 'unreadable' };
 
@@ -445,6 +445,50 @@ async function readCleanupHistory(
         return published;
       }
     );
+    const nativeEvidence = await withStoppedServerOwnerReadConnection(
+      dataRoot,
+      'nanohost',
+      lock,
+      (sqlite) =>
+        sqlite.transaction(() => {
+          const evidence = sqlite.prepare(`
+            SELECT 1 FROM worker_backend_sessions
+              WHERE turn_id = @turn OR (@lease IS NOT NULL AND attempt_id = @lease)
+            UNION ALL SELECT 1 FROM worker_control_records
+              WHERE turn_id = @turn OR (@session IS NOT NULL AND agent_session_id = @session)
+            UNION ALL SELECT 1 FROM worker_control_rejected_evidence
+              WHERE turn_id = @turn OR (@session IS NOT NULL AND agent_session_id = @session)
+            UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints
+              WHERE turn_id = @turn OR (@session IS NOT NULL AND agent_session_id = @session)
+            UNION ALL SELECT 1 FROM agent_session_runtime_bindings
+              WHERE current_turn_id = @turn
+                 OR (@session IS NOT NULL AND agent_session_id = @session)
+                 OR (@lease IS NOT NULL AND current_attempt_id = @lease)
+            UNION ALL SELECT 1 FROM sandbox_runtime_records
+              WHERE @binding IS NOT NULL AND sandbox_binding_ref = @binding
+            LIMIT 1`);
+          const hits = new Set<string>();
+          for (const turn of new Set(selectedTurnIds)) {
+            const leases = listLeasesForTurn(coreDb, turn);
+            if (leases === 'unreadable')
+              throw new Error('NanoHost checkpoint lineage is unreadable.');
+            for (const lease of leases.length === 0 ? [undefined] : leases) {
+              if (
+                evidence.get({
+                  turn,
+                  binding: lease?.bindingRef ?? null,
+                  lease: lease?.attemptId ?? null,
+                  session: lease?.agentSessionId ?? null,
+                })
+              ) {
+                hits.add(turn);
+                break;
+              }
+            }
+          }
+          return hits;
+        })()
+    );
     const workspaceIds = listDirectoryNames(join(dataRoot, 'workspaces')).filter(
       (id) => id !== '.staging'
     );
@@ -488,7 +532,7 @@ async function readCleanupHistory(
         turns.push({ owner: scope.owner, threadId, turnId });
       }
     }
-    return { status: 'readable', turns, receipts };
+    return { status: 'readable', turns, receipts, nativeEvidence };
   } catch {
     return { status: 'unreadable' };
   }
@@ -561,9 +605,10 @@ function classifyCheckpoint(input: {
   if (leases.some((lease) => !leaseMatches(lease, checkpoint))) {
     return { decision: 'refused', reason: 'missing-provenance' };
   }
+  if (input.history.nativeEvidence.has(checkpoint.turnId))
+    return { decision: 'refused', reason: 'runtime-evidence' };
   const evidence = classifyExecutionEvidence({
     checkpoint,
-    coreDb: input.coreDb,
     dataRoot: input.dataRoot,
     lease: leases[0],
     receipts: [...input.receipts, ...input.history.receipts],
@@ -635,36 +680,13 @@ function turnFileVerdict(
 
 function classifyExecutionEvidence(input: {
   readonly checkpoint: WorkerCheckpointRecord;
-  readonly coreDb: CoreDb;
   readonly dataRoot: string;
   readonly lease: SchedulerExecutionAttemptRecord | undefined;
   readonly receipts: ReadableReceipts;
   readonly workspaceDb: WorkspaceDb;
 }): Classification | null {
-  const { checkpoint, coreDb, dataRoot, lease, receipts, workspaceDb } = input;
+  const { checkpoint, dataRoot, lease, receipts, workspaceDb } = input;
   try {
-    const execution = coreDb.sqlite
-      .prepare(
-        `SELECT 1 AS found FROM worker_control_records
-           WHERE turn_id = @turn OR (@session IS NOT NULL AND agent_session_id = @session)
-         UNION ALL SELECT 1 FROM worker_control_rejected_evidence
-           WHERE turn_id = @turn OR (@session IS NOT NULL AND agent_session_id = @session)
-         UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints
-           WHERE turn_id = @turn OR (@session IS NOT NULL AND agent_session_id = @session)
-         UNION ALL SELECT 1 FROM agent_session_runtime_bindings
-           WHERE current_turn_id = @turn
-              OR (@session IS NOT NULL AND agent_session_id = @session)
-              OR (@lease IS NOT NULL AND current_attempt_id = @lease)
-         UNION ALL SELECT 1 FROM sandbox_runtime_records
-           WHERE @binding IS NOT NULL AND sandbox_binding_ref = @binding
-         LIMIT 1`
-      )
-      .get({
-        binding: lease?.bindingRef ?? null,
-        lease: lease?.attemptId ?? null,
-        session: lease?.agentSessionId ?? null,
-        turn: checkpoint.turnId,
-      }) as { found: number } | undefined;
     const runtime = workspaceDb.sqlite
       .prepare(
         `SELECT 1 AS found FROM runtime_evidence WHERE turn_id = ?
@@ -689,7 +711,7 @@ function classifyExecutionEvidence(input: {
       lease !== undefined &&
       lease.agentSessionId !== null &&
       sessions.sessionIds.includes(lease.agentSessionId);
-    if (execution || runtime || packageHit || sessionHit) {
+    if (runtime || packageHit || sessionHit) {
       return { decision: 'refused', reason: 'runtime-evidence' };
     }
   } catch {
@@ -735,7 +757,16 @@ function classifyProof(
     attempt.terminalCause !== 'turn-start-failed'
   )
     return { decision: 'refused', reason: 'missing-provenance' };
-  if (hasNanoHostAttemptOwnershipEvidence(coreDb, attempt.attemptId))
+  // K7 still retains these Core latches. A positive latch alone contradicts non-submission.
+  if (
+    coreDb.sqlite
+      .prepare(`SELECT 1 FROM scheduler_execution_attempts WHERE attempt_id = ? AND (
+        last_accepted_heartbeat_at IS NOT NULL OR last_worker_sequence IS NOT NULL
+        OR worker_process_key_hash IS NOT NULL OR worker_control_token_hash IS NOT NULL
+        OR worker_inference_token_hash IS NOT NULL OR worker_capability_token_hash IS NOT NULL
+      )`)
+      .get(attempt.attemptId)
+  )
     return { decision: 'refused', reason: 'runtime-evidence' };
   return { decision: 'removable', reason: 'turn-start-failed' };
 }

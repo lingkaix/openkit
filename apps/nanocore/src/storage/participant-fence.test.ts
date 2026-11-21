@@ -17,6 +17,7 @@ import {
   createDefaultWorkerMcpGateway,
   WorkerMcpGatewayCallError,
 } from '../runtime/worker-mcp-gateway.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -179,6 +180,7 @@ it('excludes the original gateway-owned MCP file publisher from the capture cut 
     const dataRoot = join(namespace, 'source');
     const store = await start(() => createDemoStore({ dataRoot }));
     core = start(() => openCoreDb(dataRoot));
+    await start(() => openAdmittedTestNanoHost(core!));
     const ownerId = start(() => ensureLocalUser(core!));
     start(() =>
       recordWorkspaceOwnerMembership({

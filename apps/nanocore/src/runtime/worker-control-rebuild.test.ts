@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import {
   redactAgentEnvironmentPackageSnapshot,
 } from '@openkit/config-schema';
 import { type ActorRef, writeRetainedV1 } from '@openkit/protocol';
+import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
@@ -24,19 +25,27 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
+import { materializeRuntimeImage } from '../worker-environments/worker-environment-preparation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import { commandInputHash } from './idempotent-command.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
 import { hashWorkerRouteToken, WorkerControlGateway } from './worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './worker-control-rebuild.js';
-import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
+import { writeWorkerControlAcceptedRecord } from './worker-control-records.js';
+import {
+  admitWorkerImageEnvironment,
+  insertWorkerImageSettlementInTransaction,
+} from './worker-image-settlements-records.js';
 
 interface RestorableWorkerControlFixture {
   /** Migrated Core database containing the live execution attempt. */
   readonly coreDb: CoreDb;
+  readonly nanoHost: ReturnType<typeof openNanoHostTestOwner>;
   /** Durable package expected to hydrate into the gateway. */
   readonly environmentPackage: AgentEnvironmentPackage;
   /** Non-secret sandbox binding restored independently from route credentials. */
@@ -114,6 +123,7 @@ async function createRestorableWorkerControlFixture(
   vi.setSystemTime(new Date('2026-07-13T00:00:06.000Z'));
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-'));
   const coreDb = openCoreDb(dataRoot);
+  const nanoHost = openNanoHostTestOwner();
   onTestFinished(() => disposeTestStore(dataRoot, coreDb));
 
   applyMigrations(coreDb);
@@ -136,10 +146,35 @@ async function createRestorableWorkerControlFixture(
       id: 'usr_00000000-0000-7000-8000-000000000001',
     }
   );
+  const agentSetup = createTestAgentSetup();
+  const imageDigest = `sha256:${'a'.repeat(64)}`;
+  const inputDigest = commandInputHash(materializeRuntimeImage(agentSetup.manifest.runtime.image));
+  const values = { REBUILD_FROM_NATIVE_DEFAULT: 'retained' };
+  const defaultsDigest = `sha256:${createHash('sha256').update(canonicalNativeEnvironment(values)).digest('hex')}`;
+  const imageIdentity = {
+    authoredArtifactId: testEntityId('ar', 'restore-image'),
+    authoredArtifactVersion: 1 as const,
+    authoredContentDigest: inputDigest,
+    inputDigest,
+  };
+  nanoHost.setup((sqlite) => {
+    insertWorkerImageSettlementInTransaction(
+      { sqlite },
+      {
+        ...imageIdentity,
+        requestId: 'a'.repeat(64),
+        operation: 'image.acquire',
+        outcome: { kind: 'success', imageDigest },
+      }
+    );
+    admitWorkerImageEnvironment({ sqlite }, imageIdentity, { imageDigest, defaultsDigest, values });
+  });
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     await resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
-      agentSetup: createTestAgentSetup(),
+      agentSetup,
+      coreDb,
+      readNanoHostEnvironment: nanoHost.storage.owner.read,
       agentSessionId: 'as_00000000-0000-71b5-9df2-90c10d27f16c',
       backend: {
         kind: 'openshell',
@@ -152,6 +187,11 @@ async function createRestorableWorkerControlFixture(
       workspaceRoots: [],
     })
   );
+  expect(environmentPackage.runtime.environment).toMatchObject({
+    imageDigest,
+    defaultsDigest,
+    values,
+  });
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const predecessorDb = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(predecessorDb);
@@ -212,6 +252,7 @@ async function createRestorableWorkerControlFixture(
 
   return {
     coreDb,
+    nanoHost,
     environmentPackage,
     sandboxBindingRef,
     workerCapabilityToken,
@@ -241,7 +282,13 @@ describe('worker control gateway restart hydration', () => {
     });
 
     try {
-      rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway);
+      expect(
+        rebuildWorkerControlGatewaySessions(
+          fixture.coreDb,
+          gateway,
+          fixture.nanoHost.storage.owner.read
+        )
+      ).toEqual({ state: 'ready', value: undefined });
 
       expect(gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)).toEqual(
         redactAgentEnvironmentPackageSnapshot(fixture.environmentPackage)
@@ -268,24 +315,31 @@ describe('worker control gateway restart hydration', () => {
       workspaceId: fixture.environmentPackage.scope.workspaceId,
     };
     // This historical descriptive row grants no sequence or attempt acceptance.
-    recordWorkerControlAcceptedRecord(fixture.coreDb, {
-      acceptedAt: '2026-07-13T00:00:05.000Z',
-      lineage,
-      operation: 'heartbeat',
-      record: {
-        lastHeartbeatAt: '2026-07-13T00:00:05.000Z',
-        message: null,
-        sequence: 0,
-        status: 'starting',
-      },
-      recordKey: '0',
-      sequence: 0,
+    fixture.nanoHost.setup((sqlite) => {
+      writeWorkerControlAcceptedRecord(
+        { sqlite },
+        {
+          acceptedAt: '2026-07-13T00:00:05.000Z',
+          lineage,
+          operation: 'heartbeat',
+          record: {
+            lastHeartbeatAt: '2026-07-13T00:00:05.000Z',
+            message: null,
+            sequence: 0,
+            status: 'starting',
+          },
+          recordKey: '0',
+          sequence: 0,
+        }
+      );
+      sqlite
+        .prepare(
+          "UPDATE worker_control_records SET record_json = '{' WHERE operation = 'heartbeat'"
+        )
+        .run();
     });
-    fixture.coreDb.sqlite
-      .prepare("UPDATE worker_control_records SET record_json = '{' WHERE operation = 'heartbeat'")
-      .run();
     const rows = () =>
-      fixture.coreDb.sqlite
+      fixture.nanoHost.sqlite
         .prepare("SELECT * FROM worker_control_records WHERE operation = 'heartbeat'")
         .all();
     const historicalRows = rows();
@@ -293,12 +347,62 @@ describe('worker control gateway restart hydration', () => {
     const gateway = new WorkerControlGateway({
       resolveTokenBinding: () => ({ status: 'accepted' }),
     });
-    rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway);
+    expect(
+      rebuildWorkerControlGatewaySessions(
+        fixture.coreDb,
+        gateway,
+        fixture.nanoHost.storage.owner.read
+      )
+    ).toEqual({ state: 'ready', value: undefined });
     expect(gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)).toEqual(
       redactAgentEnvironmentPackageSnapshot(fixture.environmentPackage)
     );
     expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toBeNull();
     expect(rows()).toEqual(historicalRows);
+  });
+
+  it('restores closed exact final replay only when NanoHost has the original accepted record', async () => {
+    const fixture = await createRestorableWorkerControlFixture();
+    const { snapshotId, scope } = fixture.environmentPackage;
+    const lineage = {
+      agentSessionId: scope.agentSessionId,
+      packageSnapshotId: snapshotId,
+      requestId: scope.requestId,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+      workspaceId: scope.workspaceId,
+    };
+    fixture.coreDb.sqlite
+      .prepare(`UPDATE scheduler_execution_attempts
+      SET phase = 'closed', terminal_cause = 'turn-completed', fence_ref = ?
+      WHERE attempt_id = ?`)
+      .run('fixture-original-fence', testEntityId('attempt', 'lease_restore_1'));
+    const gateway = new WorkerControlGateway();
+    const read = fixture.nanoHost.storage.owner.read;
+    expect(rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway, read).state).toBe('ready');
+    expect(gateway.getSessionSnapshot(snapshotId)).toBeNull();
+
+    fixture.nanoHost.setup((sqlite) => {
+      writeWorkerControlAcceptedRecord(
+        { sqlite },
+        {
+          acceptedAt: '2026-07-13T00:00:05.000Z',
+          lineage,
+          operation: 'final_status',
+          record: { status: 'completed', stopReason: 'completed' },
+          recordKey: '0',
+          sequence: 0,
+        }
+      );
+    });
+    await fixture.nanoHost.reopen();
+    const missing = { state: 'unavailable', owner: 'nanohost', reason: 'missing' } as const;
+    expect(rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway, () => missing)).toBe(
+      missing
+    );
+    expect(gateway.getSessionSnapshot(snapshotId)).toBeNull();
+    expect(rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway, read).state).toBe('ready');
+    expect(gateway.getSessionSnapshot(snapshotId)).toMatchObject({ packageSnapshotId: snapshotId });
   });
 
   it('fails closed when the durable AEP snapshot is missing or mismatched', async () => {
@@ -318,7 +422,13 @@ describe('worker control gateway restart hydration', () => {
       const gateway = new WorkerControlGateway();
 
       try {
-        expect(() => rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway)).toThrow();
+        expect(
+          rebuildWorkerControlGatewaySessions(
+            fixture.coreDb,
+            gateway,
+            fixture.nanoHost.storage.owner.read
+          )
+        ).toEqual({ state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' });
         expect(() =>
           gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)
         ).toThrow();

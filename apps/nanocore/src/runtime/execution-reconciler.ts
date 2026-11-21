@@ -1,6 +1,7 @@
 import { scheduler } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
+import type { NanoHostCoreReads } from '../storage/control-kernel-port.js';
 import type { CoreDb } from '../storage/db.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import {
@@ -14,12 +15,8 @@ import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
 } from './nanohost-effect-identity.js';
-import {
-  getNanoHostRuntimeTarget,
-  NanoHostCleanupFencePendingError,
-} from './nanohost-runtime-target.js';
+import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target-records.js';
 import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
-import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
 
 /** Transient selected action; its physical owner rechecks the addressed revision and provenance. */
@@ -41,6 +38,7 @@ export class ExecutionReconciler {
   constructor(
     private readonly input: {
       readonly coreDb: CoreDb;
+      readonly nanoHost?: NanoHostCoreReads;
       readonly advanceIdleCleanup: (selection: IdleCleanupSelection) => Promise<void>;
     }
   ) {}
@@ -54,7 +52,8 @@ export class ExecutionReconciler {
 
   /** Pages current residents; commits during the pass force rediscovery from its first key. */
   runOnce(): Promise<void> {
-    if (this.stopped) return Promise.resolve();
+    const nanoHost = this.input.nanoHost;
+    if (this.stopped || !nanoHost) return Promise.resolve();
     if (this.active) return this.active;
     const operation = Promise.resolve().then(async () => {
       const errors: unknown[] = [];
@@ -62,11 +61,11 @@ export class ExecutionReconciler {
         this.invalidated = false;
         let cursor: string | null = null;
         do {
-          const page = listExecutionCandidates(this.input.coreDb, cursor);
+          const page = listExecutionCandidates(this.input.coreDb, cursor, nanoHost);
           for (const candidate of page.candidates) {
             if (this.stopped) break;
             try {
-              const selected = await this.selectIdleCleanup(candidate);
+              const selected = await this.selectIdleCleanup(candidate, nanoHost);
               if (selected) await this.input.advanceIdleCleanup(selected);
             } catch (error) {
               errors.push(error);
@@ -93,7 +92,8 @@ export class ExecutionReconciler {
 
   /** Joins only selected work, then checks this exact resident's durable disposition. */
   async reconcileIdleCleanup(identity: WorkerGovernanceBackendSessionIdentity): Promise<void> {
-    if (this.stopped) throw new NanoHostCleanupFencePendingError();
+    const nanoHost = this.input.nanoHost;
+    if (this.stopped || !nanoHost) throw new NanoHostCleanupFencePendingError();
     this.invalidated = true;
     let failure: unknown;
     try {
@@ -102,10 +102,10 @@ export class ExecutionReconciler {
       failure = error;
     }
     const db = this.input.coreDb;
-    const anchor = db.sqlite
-      .prepare('SELECT attempt_id AS id FROM worker_backend_sessions WHERE package_snapshot_id = ?')
-      .get(identity.packageSnapshotId) as { id: string } | undefined;
-    const session = anchor && getWorkerBackendSession(db, anchor.id);
+    const originalSession = nanoHost.readBackendSession({
+      packageSnapshotId: identity.packageSnapshotId,
+    });
+    const session = originalSession.state === 'ready' ? originalSession.value : null;
     if (
       !session ||
       !isDeepStrictEqual(identity, {
@@ -153,7 +153,8 @@ export class ExecutionReconciler {
       if (operation === 'sandbox.delete')
         deleted = original.state === 'completed' && (await this.hasConsumption(original));
     }
-    const target = getNanoHostRuntimeTarget(db, session.runtimeTargetId);
+    const currentTarget = nanoHost.readTarget(session.runtimeTargetId);
+    const target = currentTarget.state === 'ready' ? currentTarget.value : null;
     const absent =
       target?.deploymentId === session.deploymentId &&
       target.predecessorFenced &&
@@ -162,14 +163,10 @@ export class ExecutionReconciler {
       target.physicalEpoch &&
       /^[0-9a-f]{64}$/.test(target.physicalEpoch) &&
       target.physicalEpoch !== session.originPhysicalEpoch;
-    if (
-      residentBinding !== undefined &&
-      (deleted || absent) &&
-      !db.sqlite
-        .prepare('SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?')
-        .get(residentBinding)
-    )
-      return;
+    if (residentBinding !== undefined && (deleted || absent)) {
+      const resident = nanoHost.readResident(residentBinding);
+      if (resident.state === 'ready' && resident.value === null) return;
+    }
     throw failure ?? new NanoHostCleanupFencePendingError();
   }
 
@@ -202,7 +199,8 @@ export class ExecutionReconciler {
 
   /** Reinterprets exact current rows; a candidate projection is never dispatch authority. */
   private async selectIdleCleanup(
-    candidate: ExecutionCandidate
+    candidate: ExecutionCandidate,
+    nanoHost: NanoHostCoreReads
   ): Promise<IdleCleanupSelection | undefined> {
     const db = this.input.coreDb;
     const reader = createExecutionStepJournalReader(db, { kind: 'server' });
@@ -210,8 +208,10 @@ export class ExecutionReconciler {
     const original = await reader.readInvocation(candidate.ref);
     const operation = original.carriage.operation;
     if (operation !== 'bridge.close' && operation !== 'sandbox.delete') return;
-    const session =
-      original.control.attemptId && getWorkerBackendSession(db, original.control.attemptId);
+    const originalSession = original.control.attemptId
+      ? nanoHost.readBackendSession({ attemptId: original.control.attemptId })
+      : null;
+    const session = originalSession?.state === 'ready' ? originalSession.value : null;
     if (!session) throw new Error('Idle cleanup has no original backend anchor.');
     const attempt = requireSchedulerExecutionAttempt(db, session.attemptId);
     const admission = requireSchedulerExecutionAttemptAdmissionContext(db, session.attemptId);
@@ -235,13 +235,10 @@ export class ExecutionReconciler {
       !isDeepStrictEqual(original.control.actor, admission.triggerActor)
     )
       throw new Error('Idle cleanup selection conflicts with original authority.');
-    const resident = db.sqlite
-      .prepare(`SELECT sandbox_binding_ref AS binding,
-      origin_physical_epoch AS origin, runtime_target_id AS target, drain_state AS drain
-      FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?`)
-      .get(original.carriage.bindingRef) as
-      | { binding: string; origin: string; target: string; drain: string }
-      | undefined;
+    if (!original.carriage.bindingRef) throw new NanoHostCleanupFencePendingError();
+    const observed = nanoHost.readResident(original.carriage.bindingRef);
+    if (observed.state !== 'ready') throw new NanoHostCleanupFencePendingError();
+    const resident = observed.value;
     if (!resident) return;
     if (
       resident.origin !== session.originPhysicalEpoch ||
@@ -264,10 +261,20 @@ export class ExecutionReconciler {
       originPhysicalEpoch: session.originPhysicalEpoch,
       sandboxBindingRef: resident.binding,
     };
+    const currentTarget = nanoHost.readTarget(session.runtimeTargetId);
+    if (currentTarget.state !== 'ready' || !currentTarget.value)
+      throw new NanoHostCleanupFencePendingError();
+    const target = currentTarget.value;
     if (
-      getNanoHostRuntimeTarget(db, session.runtimeTargetId)?.physicalEpoch !==
-      session.originPhysicalEpoch
+      !target.ready ||
+      !target.predecessorFenced ||
+      !target.freshEmpty ||
+      target.deploymentId !== session.deploymentId ||
+      !target.physicalEpoch ||
+      !/^[0-9a-f]{64}$/.test(target.physicalEpoch)
     )
+      throw new NanoHostCleanupFencePendingError();
+    if (target.physicalEpoch !== session.originPhysicalEpoch)
       return { ...selected, action: 'release' };
     const consumed = await this.hasConsumption(original);
     if (original.state === 'completed' && consumed) {

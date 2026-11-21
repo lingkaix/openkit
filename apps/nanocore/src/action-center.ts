@@ -30,6 +30,7 @@ import {
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import { readPendingCommandRequestRecords } from './storage/command-request-records.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readNavigationPendingReceiptSizes } from './storage/thread-dashboard-records.js';
 import { hasWorkspaceReviewArtifact } from './storage/workspace-review-records.js';
@@ -866,7 +867,12 @@ function workerControlRejectedEvidenceRows(
   workspaceId: string,
   userId: string | undefined
 ): HumanAttentionRow[] {
-  return listWorkerControlRejectedEvidenceForWorkspace(coreDb, workspaceId)
+  const observation = getControlStoreWorkerClient().readAdmittedNanoHost(
+    coreDb.dataRoot,
+    (sqlite) => listWorkerControlRejectedEvidenceForWorkspace({ sqlite }, workspaceId)
+  );
+  if (observation.state !== 'ready') return [];
+  return observation.value
     .filter((evidence) => isThreadIdVisible(store, evidence.workspaceId, evidence.threadId, userId))
     .map((evidence) => ({
       id: `worker-control-rejection:${evidence.rejectionId}`,

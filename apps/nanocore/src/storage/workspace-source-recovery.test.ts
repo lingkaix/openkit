@@ -26,6 +26,7 @@ import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
 import { createOperationInvocation } from '../operation-composition.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -105,7 +106,9 @@ async function fixture(sqlOnly = false, sealedBackup = false, missingMoveProof =
     await shutdownControlStoreWorkerClient();
     protectCapture(db, workspaceId, backupId);
     restoreWorkspaceRecoveryAdmission(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
   } else {
+    await openAdmittedTestNanoHost(coreDb);
     const captureInput = {
       ...verification,
       source,
@@ -119,6 +122,7 @@ async function fixture(sqlOnly = false, sealedBackup = false, missingMoveProof =
       await interruptCaptureBeforeCoreDecision(captureInput);
       await shutdownControlStoreWorkerClient();
       restoreWorkspaceRecoveryAdmission(coreDb);
+      await openAdmittedTestNanoHost(coreDb);
     } else {
       const captured = await createWorkspaceBackup(captureInput);
       expect(captured.disposition).toBe('prepared');
@@ -950,7 +954,7 @@ describe('exact live source capture finalization', () => {
         syncBuiltinESMExports();
         const { acquireDataRootLock } = await import(${JSON.stringify(new URL('../bootstrap/lock.ts', import.meta.url).href)});
         const { openCoreDb } = await import(${JSON.stringify(new URL('./db.ts', import.meta.url).href)});
-        const { getControlStoreWorkerClient } = await import(${JSON.stringify(new URL('./control-store-worker-client.ts', import.meta.url).href)});
+        const { getControlStoreWorkerClient, shutdownControlStoreWorkerClient } = await import(${JSON.stringify(new URL('./control-store-worker-client.ts', import.meta.url).href)});
         const { restoreWorkspaceRecoveryAdmission } = await import(${JSON.stringify(new URL('../bootstrap/workspace-recovery.ts', import.meta.url).href)});
         const { isScopeAdmitted, scopeAdmissionFailures } = await import(${JSON.stringify(new URL('../bootstrap/readiness.ts', import.meta.url).href)});
         const root = ${JSON.stringify(f.dataRoot)}, workspaceId = ${JSON.stringify(f.workspaceId)};
@@ -964,6 +968,8 @@ describe('exact live source capture finalization', () => {
             const { FsStore } = await import(${JSON.stringify(new URL('../lib/store.ts', import.meta.url).href)});
             const { readWorkspaceRecoveryBlockers } = await import(${JSON.stringify(new URL('./workspace-backup.ts', import.meta.url).href)});
             const { resumeWorkspaceCaptureOwner } = await import(${JSON.stringify(new URL('./workspace-recovery-journal.ts', import.meta.url).href)});
+            const { openAdmittedTestNanoHost } = await import(${JSON.stringify(new URL('../test-support/admitted-nanohost.ts', import.meta.url).href)});
+            await openAdmittedTestNanoHost(core);
             const store = new FsStore({ dataRoot: root });
             const selected = { captureId: ${JSON.stringify(f.backupId)} };
             const resumed = resumeWorkspaceCaptureOwner(core, workspaceId, selected.captureId, () => {
@@ -979,7 +985,10 @@ describe('exact live source capture finalization', () => {
             gateOpen: !!release, check: scopeAdmissionFailures(root).find(row => row.id === workspaceId)?.check ?? null,
             rejoin, censusRead, scopeRefusedAfterRejoin }));
           release?.();
-        } finally { core.sqlite.close(); lock.release(); }
+        } finally {
+          try { await shutdownControlStoreWorkerClient(); }
+          finally { core.sqlite.close(); lock.release(); }
+        }
         `,
         ],
         {
@@ -1050,6 +1059,7 @@ describe('exact live source capture finalization', () => {
       f.freeze.release();
       await shutdownControlStoreWorkerClient();
       restoreWorkspaceRecoveryAdmission(f.owned.coreDb);
+      await openAdmittedTestNanoHost(f.owned.coreDb);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
       expect(
         getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)

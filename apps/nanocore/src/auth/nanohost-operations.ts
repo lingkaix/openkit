@@ -16,12 +16,20 @@ import {
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { readConfiguredNanoHostRuntimeTargetStatus } from '../runtime/nanohost-runtime-target.js';
+import type { NanoHostCoreReads } from '../storage/control-kernel-port.js';
 import type { CoreDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 import {
   DeploymentAdminRequiredError,
   requireCurrentDeploymentAdmin,
 } from './access-token-store.js';
-import { NANOHOST_TRANSPORT_ADMIN_REFUSAL } from './nanohost-transport-codecs.js';
+import type { Actor } from './identity.js';
+import {
+  NANOHOST_TRANSPORT_ADMIN_REFUSAL,
+  nanoHostTransportAdminFacts,
+} from './nanohost-transport-codecs.js';
 import {
   abortNanoHostTransportRotation,
   fenceNanoHostTransportAuthority,
@@ -53,6 +61,96 @@ import {
   submitNanoHostTransportEnrollment,
   submitNanoHostTransportRevocation,
 } from './nanohost-transport-token-store.js';
+
+/** The worker orders staged Native revocation against the current Core administrator.
+ * Its acknowledgement is for the exact original Native outcome, with the original Audit stage
+ * still to be acknowledged. An unknown Native submission throws with its commit certainty.
+ */
+export type NanoHostAdministratorRevoke = (input: {
+  readonly actor: Actor;
+  readonly expected: NanoHostTransportTokenRecord;
+}) => Promise<
+  StorageResult<
+    'nanohost' | 'control-kernel',
+    { readonly record: NanoHostTransportTokenRecord; acknowledgeAudit(): Promise<void> }
+  >
+>;
+
+/** Production credential.revoke handoff for the acknowledged Native owner. */
+export async function revokeAdmittedNanoHostInboundCredential(
+  input: {
+    readonly storage: StorageResult<'nanohost', AdmittedNanoHostTransportStorage>;
+    readonly sessionAuthority?: NanoHostTransportSessionAuthority;
+    readonly commitRevoke?: NanoHostAdministratorRevoke;
+  },
+  tokenId: string,
+  context: AdmittedOperationContext
+): Promise<void> {
+  const { storage, commitRevoke, sessionAuthority } = input;
+  if (storage.state !== 'ready' || !commitRevoke || !sessionAuthority)
+    return failure(
+      'NanoHost transport administration is unavailable.',
+      'nanohost_transport_storage_unavailable',
+      503
+    );
+
+  const actor = nanoHostTransportAdminFacts(publicOperationActor(context));
+  const selected = storage.value;
+  const prior = selected.owner.read((sqlite) =>
+    getNanoHostTransportTokenRecord({ sqlite }, tokenId)
+  );
+  if (prior.state !== 'ready')
+    return failure(
+      'NanoHost transport administration is unavailable.',
+      'nanohost_transport_storage_unavailable',
+      503
+    );
+  if (!prior.value)
+    return failure(
+      'NanoHost transport token not found.',
+      'nanohost_transport_token_not_found',
+      404
+    );
+
+  const expected = prior.value;
+  await context.recheckAdmission?.();
+  const fence = () =>
+    fenceNanoHostTransportAuthority(
+      selected,
+      sessionAuthority,
+      expected.ownerNanoHostIdentityId,
+      new Date().toISOString()
+    );
+  let outcome: Awaited<ReturnType<NanoHostAdministratorRevoke>>;
+  try {
+    outcome = await commitRevoke({ actor, expected });
+  } catch (error) {
+    if (nanoHostTransportCommitState(error) === 'unknown') {
+      try {
+        await fence();
+      } catch {
+        // Process fencing ran first. Preserve the original Native acknowledgement uncertainty.
+      }
+    }
+    throw error;
+  }
+  if (
+    outcome.state !== 'ready' ||
+    outcome.value.record.tokenId !== expected.tokenId ||
+    outcome.value.record.ownerNanoHostIdentityId !== expected.ownerNanoHostIdentityId ||
+    outcome.value.record.deploymentId !== expected.deploymentId ||
+    outcome.value.record.predecessorTokenId !== expected.predecessorTokenId ||
+    outcome.value.record.status !== 'revoked'
+  )
+    return failure(
+      'NanoHost transport administration requires recovery.',
+      'nanohost_transport_storage_unavailable',
+      503
+    );
+
+  await fence();
+  await outcome.value.acknowledgeAudit();
+}
 
 /** Revokes through the original writer, physical fencing and awaited lifecycle Audit. */
 export async function revokeNanoHostInboundCredential(
@@ -161,12 +259,14 @@ export function createNanoHostOperationImplementations({
   mode,
   nanoHostConfig,
   sessionAuthority,
+  readNanoHostTarget,
 }: {
   readonly coreDb: CoreDb | undefined;
   readonly mode: CoreMode;
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'> &
     Partial<OpenKitNanoHostConfig>;
   readonly sessionAuthority?: NanoHostTransportSessionAuthority;
+  readonly readNanoHostTarget?: NanoHostCoreReads['readTarget'];
 }) {
   /** Preserves the domain's server-mode and storage availability boundary after primary admission. */
   function requireNanoHostEnvironment(): void {
@@ -176,7 +276,7 @@ export function createNanoHostOperationImplementations({
         'nanohost_transport_admin_server_mode_required',
         404
       );
-    if (!coreDb)
+    if (readNanoHostTarget || !coreDb)
       failure(
         'NanoHost transport token storage is unavailable.',
         'nanohost_transport_storage_unavailable',
@@ -260,13 +360,17 @@ export function createNanoHostOperationImplementations({
     ownerNanoHostIdentityId: string,
     deploymentId: string
   ): number {
-    const row = coreDb.sqlite
-      .prepare(
-        `SELECT COUNT(*) AS count
+    const row = requireNanoHostObservation(
+      coreDb,
+      (sqlite) =>
+        sqlite
+          .prepare(
+            `SELECT COUNT(*) AS count
          FROM nanohost_transport_tokens
          WHERE owner_nanohost_identity_id = ? AND deployment_id = ?`
-      )
-      .get(ownerNanoHostIdentityId, deploymentId) as { count: number };
+          )
+          .get(ownerNanoHostIdentityId, deploymentId) as { count: number }
+    );
     return Math.max(1, Number(row.count));
   }
 
@@ -399,11 +503,10 @@ export function createNanoHostOperationImplementations({
     },
 
     'nanohost.runtime-target': () => {
-      requireNanoHostEnvironment();
-
       const observation = readConfiguredNanoHostRuntimeTargetStatus({
         coreDb,
         mode,
+        ...(readNanoHostTarget ? { readNanoHostTarget } : {}),
         ...(nanoHostConfig ? { nanoHostConfig } : {}),
       });
       if (!observation.ok) {

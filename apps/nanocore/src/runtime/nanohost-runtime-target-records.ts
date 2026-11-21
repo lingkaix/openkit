@@ -5,6 +5,7 @@ import {
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type Database from 'better-sqlite3';
 import type { CoreMode } from '../config/mode.js';
+import type { NanoHostCoreReads } from '../storage/control-kernel-port.js';
 import {
   type ControlRuntimeTargetInput,
   RuntimeTargetRefusal,
@@ -381,11 +382,12 @@ export function getNanoHostRuntimeTarget(
 /**
  * Reads the startup-configured NanoHost RuntimeTarget as the redacted readiness observation shared by the canonical JSON operation and internal administration Tool.
  *
- * @param input Server-mode Core, startup NanoHost configuration, and storage handle for the shared observation.
+ * @param input Startup mode, configured identity, and selected NanoHost reader.
  * @returns Ready or unready status fields, or the configured observation's missing, configuration, storage or server-mode failure.
  */
 export function readConfiguredNanoHostRuntimeTargetStatus(input: {
   readonly coreDb: NanoHostRuntimeTargetDb | undefined;
+  readonly readNanoHostTarget?: NanoHostCoreReads['readTarget'];
   readonly mode: CoreMode;
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
 }): NanoHostRuntimeTargetStatusObservation {
@@ -397,14 +399,13 @@ export function readConfiguredNanoHostRuntimeTargetStatus(input: {
       message: 'NanoHost transport administration is only available in server mode.',
     };
   }
-  if (!input.coreDb) {
-    return {
-      ok: false,
-      code: 'nanohost_transport_storage_unavailable',
-      httpStatus: 503,
-      message: 'NanoHost transport token storage is unavailable.',
-    };
-  }
+  const unavailable = {
+    ok: false,
+    code: 'nanohost_transport_storage_unavailable',
+    httpStatus: 503,
+    message: 'NanoHost transport token storage is unavailable.',
+  } as const;
+  if (!input.readNanoHostTarget && !input.coreDb) return unavailable;
   if (!input.nanoHostConfig) {
     return {
       ok: false,
@@ -414,7 +415,11 @@ export function readConfiguredNanoHostRuntimeTargetStatus(input: {
     };
   }
 
-  const target = getNanoHostRuntimeTarget(input.coreDb, input.nanoHostConfig.identityId);
+  const observation = input.readNanoHostTarget?.(input.nanoHostConfig.identityId);
+  if (observation?.state === 'unavailable') return unavailable;
+  const target = observation
+    ? observation.value
+    : getNanoHostRuntimeTarget(input.coreDb!, input.nanoHostConfig.identityId);
   if (
     !target ||
     target.identityId !== input.nanoHostConfig.identityId ||

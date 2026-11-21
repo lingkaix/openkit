@@ -11,6 +11,7 @@ import type { HarnessLoginReplacement } from '../operation-contract.js';
 import { TurnStartValidationError } from '../operation-error.js';
 import { listProducts, readProduct } from '../storage/control-store-product-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
+import { readNanoHostObservation } from '../storage/nanohost-observation-reader.js';
 import { type NativeThreadLogin, NativeThreadLoginSchema } from '../storage/native-thread-login.js';
 import {
   getVaultGrant,
@@ -608,7 +609,11 @@ export function readHarnessLoginPredecessor(
       attempt.phase !== 'closed'
     )
       throw unavailable();
-    const backend = getWorkerBackendSession(coreDb, attempt.attemptId);
+    const observed = readNanoHostObservation(coreDb.dataRoot, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, attempt.attemptId)
+    );
+    if (observed.state !== 'ready') throw unavailable();
+    const backend = observed.value;
     if (!backend) {
       if (attempt.disposition !== 'not_accepted') throw unavailable();
       continue;

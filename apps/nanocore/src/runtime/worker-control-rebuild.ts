@@ -9,6 +9,7 @@ import type {
 import type Database from 'better-sqlite3';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import { readNanoHostObservation } from '../storage/nanohost-observation-reader.js';
 import type { StorageResult } from '../storage/storage-owner.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
@@ -47,12 +48,10 @@ export function rebuildWorkerControlGatewaySessions(
   ) => StorageResult<'nanohost', Value>
 ): StorageResult<'nanohost', void> {
   const plan = (sqlite: Database.Database) => planWorkerControlRestore(coreDb, { sqlite });
-  if (!readNanoHost) {
-    gateway.restoreSessions(plan(coreDb.sqlite));
-    return { state: 'ready', value: undefined };
-  }
   try {
-    const observed = readNanoHost(plan);
+    const observed = readNanoHost
+      ? readNanoHost(plan)
+      : readNanoHostObservation(coreDb.dataRoot, plan);
     if (observed.state !== 'ready') return observed;
     gateway.restoreSessions(observed.value);
     return { state: 'ready', value: undefined };

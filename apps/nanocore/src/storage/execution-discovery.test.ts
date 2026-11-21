@@ -1,18 +1,30 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { once } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  createInMemoryRuntimeConfigSnapshot,
-  loadRuntimeConfig,
-} from '../config/runtime-config.js';
+  createNanoHostTransportSessionAuthority,
+  readNanoHostPhysicalConnectionContext,
+} from '../auth/nanohost-transport-session.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
-import { ProviderRegistry } from '../providers/registry.js';
-import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import { settleCoreIdleJournal } from '../runtime/core-journal-records.js';
+import {
+  closeSchedulerExecutionAttemptWithFence,
+  markSchedulerExecutionAttemptClosing,
+  requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
+} from '../runtime/execution-attempt-records.js';
 import * as journalOwner from '../runtime/execution-journal.js';
 import {
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   createExecutionStepJournalReader,
+  executionJournalProcessWitness,
   hasIdleCleanupExecution,
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
@@ -23,29 +35,36 @@ import type {
   ExecutionJournalSpan,
 } from '../runtime/execution-step-journal.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import { drainNanoHostSandboxAdmission } from '../runtime/nanohost-harness.js';
-import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
-import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
-import { getWorkerStorageBinding } from '../runtime/worker-storage-bindings.js';
+import { createNanoHostEffectRequest } from '../runtime/nanohost-effect-identity.js';
 import {
-  createTestAgentSetup,
-  createTestGatewayConfig,
-} from '../test-support/agent-environment.js';
+  createNanoHostHarnessRuntime,
+  drainNanoHostSandboxAdmission,
+} from '../runtime/nanohost-harness-records.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  mutateNanoHostRuntimeTarget,
+} from '../runtime/nanohost-runtime-target-records.js';
+import { createNanoHostSessionDispatch } from '../runtime/nanohost-session-dispatch.js';
+import {
+  admitWorkerImageEnvironment,
+  insertWorkerImageSettlementInTransaction,
+  readWorkerImageSettlement,
+} from '../runtime/worker-image-settlements-records.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
-import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import type { NanoHostCoreReads } from './control-kernel-port.js';
 import { controlStoreFor } from './control-store.js';
-import {
-  ControlStoreWorkerError,
-  shutdownControlStoreWorkerClient,
-} from './control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { ensureLayout } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
+import { createNanoHostCoreReads } from './nanohost-core-reads.js';
+import type { AdmittedNanoHostTransportStorage } from './nanohost-transport-owner.js';
 
 /** Supplies journal primitive inputs only; no resident, receiver result or physical authority. */
 function discoveryIntent(index: number): ExecutionJournalIntent {
@@ -119,12 +138,23 @@ function discoveryIntent(index: number): ExecutionJournalIntent {
   };
 }
 
+const emptyDrainingOwner: NanoHostCoreReads = {
+  readTarget: () => ({ state: 'ready', value: null }),
+  readBackendSession: () => ({ state: 'ready', value: null }),
+  readResident: () => ({ state: 'ready', value: null }),
+  listDrainingResidents: () => ({ state: 'ready', value: { bindings: [], next: null } }),
+};
+
 describe('Core execution candidate discovery', () => {
   it('rediscovers a commit queued as the last empty page completes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-execution-finishing-wake-'));
     const db = openCoreDb(dataRoot);
     const advanceIdleCleanup = vi.fn(async () => {});
-    const reconciler = new ExecutionReconciler({ coreDb: db, advanceIdleCleanup });
+    const reconciler = new ExecutionReconciler({
+      coreDb: db,
+      nanoHost: emptyDrainingOwner,
+      advanceIdleCleanup,
+    });
     const prepared = discoveryIntent(1);
     const committed: ExecutionJournalIntent = {
       ...prepared,
@@ -175,7 +205,11 @@ describe('Core execution candidate discovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-execution-wake-'));
     const db = openCoreDb(dataRoot);
     const advanceIdleCleanup = vi.fn(async () => {});
-    const reconciler = new ExecutionReconciler({ coreDb: db, advanceIdleCleanup });
+    const reconciler = new ExecutionReconciler({
+      coreDb: db,
+      nanoHost: emptyDrainingOwner,
+      advanceIdleCleanup,
+    });
     const read = journalOwner.listExecutionCandidates;
     const discovered: string[] = [];
     const projections: journalOwner.ExecutionCandidate[] = [];
@@ -238,36 +272,39 @@ describe('Core execution candidate discovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-execution-pending-selection-'));
     ensureLayout(dataRoot);
     const db = openCoreDb(dataRoot);
-    applyMigrations(db);
-    const ownerUserId = ensureLocalUser(db);
-    const store = await createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb: db, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
-    const { manifest } = createTestAgentSetup({
-      imageRef: `sha256:${'a'.repeat(64)}`,
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-    });
-    admitTestNativeEnvironment(db, manifest);
-    const native = await createNativeTaskAdmissionFixture(db, store, {
-      readRuntimeConfig: () =>
-        createInMemoryRuntimeConfigSnapshot({
-          ...loadRuntimeConfig(dataRoot),
-          agentManifests: [manifest],
-          gatewayConfig: createTestGatewayConfig(),
-          providerRegistry: new ProviderRegistry([
-            {
-              id: 'agent-openrouter',
-              displayName: 'Pending selection fixture',
-              kind: 'local',
-              models: ['openai/gpt-5.2'],
-            },
-          ]),
-        }),
-    });
-    let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
-    let cut: { mockRestore(): void } | undefined;
+    const nanoHostPath = join(dataRoot, 'server/extensions/nanohost/state.sqlite');
+    mkdirSync(dirname(nanoHostPath), { recursive: true });
+    const writer = new Database(nanoHostPath);
+    const readerDb = new Database(nanoHostPath, { readonly: true, fileMustExist: true });
+    const owner = { sqlite: writer };
+    function read<Value>(query: (sqlite: Database.Database) => Value) {
+      return { state: 'ready', value: query(readerDb) } as const;
+    }
+    const nanoHost = createNanoHostCoreReads({ read });
     const advanceIdleCleanup = vi.fn(async () => {});
-    const reconciler = new ExecutionReconciler({ coreDb: db, advanceIdleCleanup });
+    const reconciler = new ExecutionReconciler({ coreDb: db, nanoHost, advanceIdleCleanup });
+    const sessionAuthority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb: db, sessionAuthority });
+    const connected = Promise.withResolvers<object>();
+    const server = createHttp2Server((request, response) => {
+      connected.resolve(readNanoHostPhysicalConnectionContext(request)!);
+      response.writeHead(204).end();
+    });
+    let physicalConnection: object | undefined;
+    let client: ReturnType<typeof connectHttp2> | undefined;
     try {
+      applyMigrations(db);
+      writer.pragma('foreign_keys = ON');
+      migrate(drizzle(writer), {
+        migrationsFolder: fileURLToPath(
+          new URL('../../drizzle/extensions/nanohost/', import.meta.url)
+        ),
+      });
+      const ownerUserId = ensureLocalUser(db);
+      const store = await createDemoStore({ dataRoot });
+      recordWorkspaceOwnerMembership({ coreDb: db, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
+      const { manifest } = createTestAgentSetup();
+      const createdAt = new Date().toISOString();
       const requestId = testEntityId('tu', 'pending_selection_request').slice(3);
       const text = 'Keep only current resident cleanup eligible for selection.';
       const entry = await createTestQueueEntry(db, {
@@ -286,7 +323,6 @@ describe('Core execution candidate discovery', () => {
         threadId: entry.threadId,
         actorId: ownerUserId,
       };
-      const createdAt = new Date().toISOString();
       await store.createTurn(
         entry.workspaceId,
         entry.threadId,
@@ -313,77 +349,255 @@ describe('Core execution candidate discovery', () => {
           },
         }
       );
+      const attemptId = testEntityId('attempt', 'pending_selection');
       const agentSessionId = testEntityId('as', 'pending_selection');
-      admitted = await native.admitTurn(entry, {
-        attemptId: testEntityId('attempt', 'pending_selection'),
+      const packageSnapshotId = 'aepsnap_pending_selection';
+      const sandboxBindingRef = 'sandbox-binding:pending-selection';
+      const prepared = recordTestExecutionAttempt(db, {
+        entry,
+        attemptId,
         agentSessionId,
-        candidateAgentSessionId: agentSessionId,
+        inputRef: packageSnapshotId,
+        bindingRef: sandboxBindingRef,
+        sessionCompatibilityKey: 'pending-selection',
+        now: () => createdAt,
+        operationId: 'pending-selection-submit',
       });
-      const backend = native.executor.executionBackend as WorkerGovernanceBackend;
-      const identity = backend.planSession(admitted.pkg);
-      await admitted.complete();
-      const attempt = requireSchedulerExecutionAttempt(db, admitted.attempt.attemptId);
-      expect(attempt.phase).toBe('closed');
-      expect(attempt.fenceRef).toEqual(expect.any(String));
-      const originalTurn = store.getTurnById(entry.turnId);
-      const anchor = getWorkerBackendSession(db, attempt.attemptId)!;
-      const storage = getWorkerStorageBinding(
-        db,
-        store.getAgentSession(agentSessionId).retainedStorage!
-      );
-      if (!storage?.currentSandboxBindingRef) throw new Error('Missing actual retained resident.');
-      await drainNanoHostSandboxAdmission(db, {
-        sandboxBindingRef: storage.currentSandboxBindingRef,
-        originPhysicalEpoch: anchor.originPhysicalEpoch,
+      const originalTurn = await store.completeTurn(entry.turnId, {
+        status: 'completed',
+        completedAt: createdAt,
       });
-      // Fail the actual native INSERT; the old Main journal spy cannot observe the moved owner.
-      db.sqlite.exec(`CREATE TRIGGER reject_discovery_delete_intent
-        BEFORE INSERT ON control_execution_steps
-        WHEN json_extract(NEW.invocation_json, '$.carriage.operation') = 'sandbox.delete'
-          AND json_extract(NEW.control_json, '$.attemptId') = '${attempt.attemptId}'
-        BEGIN SELECT RAISE(ABORT, 'injected discovery pre-delete cut'); END`);
-      cut = {
-        mockRestore: () => {
-          db.sqlite.exec('DROP TRIGGER reject_discovery_delete_intent');
+      const attempt = controlStoreFor(db.sqlite).write(() => {
+        markSchedulerExecutionAttemptClosing(db, { attemptId, cause: 'terminal-publication' });
+        return closeSchedulerExecutionAttemptWithFence(db, {
+          correlation: schedulerExecutionCorrelation(prepared),
+          fenceRef: 'fence:pending-selection',
+          proof: {
+            terminalHandoff: true,
+            output: true,
+            evidence: true,
+            outsideWorkspaceCollection: true,
+            integrationDrain: true,
+            routesRevoked: true,
+          },
+        });
+      });
+      const originPhysicalEpoch = 'e'.repeat(64);
+      const imageDigest = `sha256:${'a'.repeat(64)}`;
+      const target = {
+        targetId: 'pending-selection-target',
+        identityId: 'pending-selection-owner',
+        deploymentId: 'pending-selection-deployment',
+      };
+      const { connectionGeneration } = writer
+        .transaction(() =>
+          allocateNanoHostRuntimeTargetConnectionGeneration(owner, {
+            ...target,
+            observedAt: createdAt,
+          })
+        )
+        .immediate();
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Missing discovery fixture address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      client.request({ ':method': 'POST', ':path': '/' }).end();
+      physicalConnection = await connected.promise;
+      sessionAuthority.admit({
+        connectionGeneration,
+        identityId: target.identityId,
+        physicalConnection,
+      });
+      const unused = async (): Promise<never> => {
+        throw new Error('Unexpected transport route in the discovery fixture.');
+      };
+      const nativeStorage: AdmittedNanoHostTransportStorage = {
+        owner: {
+          read,
+          transport: unused,
+          harnessLifecycle: unused,
+          async transitionRuntimeTarget(_kernel, original) {
+            expect(original.retirement).toBeNull();
+            expect(original.input.kind).toBe('ready');
+            return {
+              state: 'ready',
+              value: writer
+                .transaction(() => mutateNanoHostRuntimeTarget(owner, original.input))
+                .immediate(),
+            };
+          },
+        },
+        kernel: {
+          reserveHolderIntent: unused,
+          fenceNanoHostEpoch: unused,
+          inspectNanoHostEpochFence: unused,
         },
       };
-      let deleteRefused = false;
-      try {
-        await backend.cleanupSession(identity, { failedCloseout: false, wholeSandbox: true });
-      } catch (failure) {
-        const causes = (error: unknown, depth = 0): unknown[] =>
-          error instanceof AggregateError && depth < 3 && error.errors.length <= 8
-            ? error.errors.flatMap((cause) => causes(cause, depth + 1))
-            : [error];
-        const original = causes(failure);
-        deleteRefused =
-          original.length > 0 &&
-          original.every(
-            (error) =>
-              error instanceof ControlStoreWorkerError &&
-              error.code === 'constraint' &&
-              error.commit === 'not-committed'
-          );
-        if (!deleteRefused) throw failure;
-      }
-      expect(deleteRefused, 'Real cleanup must reach the pre-delete cut.').toBe(true);
-      await native.runtime.executionReconciler.stop();
-      cut.mockRestore();
-      cut = undefined;
-      const physicalBridge = native.effects.find(({ kind }) => kind === 'bridge.close');
-      if (!physicalBridge?.requestId)
-        throw new Error('Real cleanup has no admitted bridge original.');
-      const originalBridge = db.sqlite
-        .prepare(`SELECT execution_id AS executionId, step_id AS stepId FROM control_execution_steps
-        WHERE json_extract(invocation_json, '$.carriage.requestId') = ?
-          AND json_extract(control_json, '$.kind') <> 'consume-receipt'`)
-        .get(physicalBridge.requestId) as { executionId: string; stepId: string } | undefined;
-      if (!originalBridge) throw new Error('Real cleanup has no retained bridge original.');
+      await dispatch.readiness!(
+        physicalConnection,
+        Buffer.from(JSON.stringify({ physicalEpoch: originPhysicalEpoch })),
+        { ...target, coreDb: db, nativeStorage }
+      );
+      const sandboxCompatibilityKey = 'b'.repeat(64);
+      const sandboxId = `nh-${sandboxCompatibilityKey.slice(0, 16)}`;
+      const identity = {
+        agentSessionId,
+        backendKind: 'openshell' as const,
+        backendSessionId: `${sandboxId}-${'c'.repeat(16)}`,
+        deploymentId: target.deploymentId,
+        packageSnapshotId,
+        runtimeTargetId: target.targetId,
+        stagingDirectoryRef: `server/runtime/worker-backend-sessions/${packageSnapshotId}`,
+        transientProviderInstanceId: null,
+      };
+      const authored = {
+        authoredArtifactId: testEntityId('ar', 'discovery-image'),
+        authoredArtifactVersion: 1 as const,
+        authoredContentDigest: commandInputHash({ imageDigest }),
+        inputDigest: commandInputHash({ imageDigest }),
+      };
+      writer
+        .transaction(() => {
+          insertWorkerImageSettlementInTransaction(owner, {
+            ...authored,
+            requestId: 'd'.repeat(64),
+            operation: 'image.acquire',
+            outcome: { kind: 'success', imageDigest },
+          });
+          admitWorkerImageEnvironment(owner, authored, {
+            imageDigest,
+            defaultsDigest: commandInputHash({}),
+            values: {},
+          });
+          createNanoHostHarnessRuntime(owner, {
+            adapterId: 'codex',
+            adapterVersion: 'fixture',
+            harnessBindingRef: 'harness-binding:pending-selection',
+            harnessCompatibilityKey: 'f'.repeat(64),
+            harnessInstanceId: 'harness:pending-selection',
+            imageDigest,
+            originPhysicalEpoch,
+            runtimeTargetId: identity.runtimeTargetId,
+            sandboxBindingRef,
+            sandboxCompatibilityKey,
+            sandboxIntegrationBindingRef: 'integration-binding:pending-selection',
+            sandboxRuntimeId: 'sandbox:pending-selection',
+            timestamp: createdAt,
+          });
+          // The fixture begins with an original backend session emitted by materialization.
+          // Its subsequent selection reads the actual admitted record through the owner codec.
+          writer
+            .prepare(`INSERT INTO worker_backend_sessions (
+          attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+          backend_kind, deployment_id, backend_version, backend_session_id, runtime_target_id,
+          origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, staging_directory_ref,
+          workspace_handoff_state, state, created_at, updated_at
+        ) VALUES (
+          @attemptId, @workspaceId, @threadId, @turnId, @agentSessionId, @packageSnapshotId,
+          @backendKind, @deploymentId, 'fixture', @backendSessionId, @runtimeTargetId,
+          @originPhysicalEpoch, @backendLineage, @sandboxBindingRef, @stagingDirectoryRef,
+          'complete', 'cleanup-pending', @createdAt, @createdAt
+        )`)
+            .run({
+              ...identity,
+              attemptId,
+              workspaceId: entry.workspaceId,
+              threadId: entry.threadId,
+              turnId: entry.turnId,
+              originPhysicalEpoch,
+              backendLineage: JSON.stringify({ imageRef: imageDigest }),
+              sandboxBindingRef,
+              createdAt,
+            });
+        })
+        .immediate();
+      writer
+        .transaction(() => {
+          drainNanoHostSandboxAdmission(owner, { sandboxBindingRef, originPhysicalEpoch });
+        })
+        .immediate();
+      expect(
+        read((sqlite) => readWorkerImageSettlement({ sqlite }, 'd'.repeat(64))).value
+      ).toMatchObject({ outcome: { kind: 'success', imageDigest } });
+
       const reader = createExecutionStepJournalReader(db, { kind: 'server' });
-      const bridge = await reader.readInvocation({
-        execution: { owner: { kind: 'server' }, executionId: originalBridge.executionId },
-        stepId: originalBridge.stepId,
+      const post = (operation: 'bridge.close' | 'sandbox.delete', index: number) => {
+        const request = createNanoHostEffectRequest(identity, attemptId, operation, { sandboxId });
+        const requestId = request.requestId!;
+        const draft = discoveryIntent(index);
+        const execution = {
+          owner: { kind: 'server' as const },
+          executionId: `idle-cleanup:${requestId}`,
+        };
+        const intent: ExecutionJournalIntent = {
+          ...draft,
+          execution: { ...draft.execution, ref: execution, workId: requestId },
+          stepId: `effect:${requestId}`,
+          carriage: { operation, requestId, sequence: null, bindingRef: sandboxBindingRef },
+          control: {
+            ...draft.control,
+            workId: requestId,
+            operationId: requestId,
+            attemptId,
+            invocationId: `effect:${requestId}`,
+            actor: entry.triggerActor,
+            target: {
+              backendKind: identity.backendKind,
+              targetId: identity.runtimeTargetId,
+              allocationRef: sandboxBindingRef,
+            },
+            authorityRefs: [sandboxBindingRef],
+            physicalFenceRefs: [originPhysicalEpoch],
+            deadlineUnixNano: draft.span.startTimeUnixNano + 300_000_000_000n,
+          },
+        };
+        const pending = dispatch.effect({
+          ...request,
+          async beforeDelivery() {
+            controlStoreFor(db.sqlite).write(() => {
+              expect(requireSchedulerExecutionAttempt(db, attemptId)).toEqual(attempt);
+              expect(nanoHost.readBackendSession({ attemptId })).toMatchObject({
+                state: 'ready',
+                value: { ...identity, attemptId, originPhysicalEpoch },
+              });
+              expect(nanoHost.readResident(sandboxBindingRef)).toEqual({
+                state: 'ready',
+                value: {
+                  binding: sandboxBindingRef,
+                  origin: originPhysicalEpoch,
+                  target: identity.runtimeTargetId,
+                  drain: 'draining',
+                },
+              });
+              writeExecutionJournalIntent(db, intent, executionJournalProcessWitness());
+            });
+          },
+          async consumeResult(result) {
+            expect(result).toEqual({ sandboxId, state: 'closed' });
+            controlStoreFor(db.sqlite).write(() =>
+              settleCoreIdleJournal(
+                db,
+                intent,
+                'completed',
+                commandInputHash(result),
+                executionJournalProcessWitness()
+              )
+            );
+          },
+        });
+        return { pending, requestId, ref: { execution, stepId: intent.stepId } };
+      };
+      const bridge = post('bridge.close', 1000);
+      const bridgeCommand = await dispatch.poll(physicalConnection, 'bridge.close');
+      expect(bridgeCommand).toMatchObject({ requestId: bridge.requestId, sandboxId });
+      await dispatch.result(physicalConnection, 'bridge.close', {
+        requestId: bridge.requestId,
+        sandboxId,
+        state: 'closed',
       });
+      await expect(bridge.pending).resolves.toEqual({ sandboxId, state: 'closed' });
       const root = await reader.readExecution(bridge.ref.execution);
       const completed = await reader.readInvocation(bridge.ref);
       expect(root.phase).toBe('closed');
@@ -394,7 +608,26 @@ describe('Core execution candidate discovery', () => {
             inspection.state === 'completed' && inspection.control.kind === 'consume-receipt'
         )
       ).toBe(true);
-      expect(hasIdleCleanupExecution(db, anchor)).toBe(true);
+      const anchor = nanoHost.readBackendSession({ attemptId });
+      if (anchor.state !== 'ready' || !anchor.value)
+        throw new Error('Missing admitted backend session.');
+      expect(hasIdleCleanupExecution(db, anchor.value)).toBe(true);
+
+      // Disallow only the original delete intent before the dispatcher can deliver a second effect.
+      db.sqlite.exec(`CREATE TRIGGER reject_discovery_delete_intent
+        BEFORE INSERT ON control_execution_steps
+        WHEN json_extract(NEW.invocation_json, '$.carriage.operation') = 'sandbox.delete'
+        BEGIN SELECT RAISE(ABORT, 'injected discovery pre-delete cut'); END`);
+      const deletion = post('sandbox.delete', 1001);
+      const rejected = expect(deletion.pending).rejects.toThrow(
+        'injected discovery pre-delete cut'
+      );
+      await expect(dispatch.poll(physicalConnection, 'sandbox.delete')).rejects.toThrow(
+        'injected discovery pre-delete cut'
+      );
+      await rejected;
+      expect(await dispatch.poll(physicalConnection, 'sandbox.delete')).toBeNull();
+      db.sqlite.exec('DROP TRIGGER reject_discovery_delete_intent');
 
       // Journal primitives model retired storage history only, never accepted Native authority.
       const historical = [];
@@ -437,21 +670,27 @@ describe('Core execution candidate discovery', () => {
         candidate: { ref: bridge.ref, revision: root.revision },
         identity,
         action: 'delete',
-        originPhysicalEpoch: anchor.originPhysicalEpoch,
-        sandboxBindingRef: storage.currentSandboxBindingRef,
+        originPhysicalEpoch,
+        sandboxBindingRef,
       });
       expect(await reader.readInvocation(bridge.ref)).toEqual(completed);
-      expect(hasIdleCleanupExecution(db, anchor)).toBe(true);
+      expect(hasIdleCleanupExecution(db, anchor.value)).toBe(true);
       expect(store.getTurnById(entry.turnId)).toEqual(originalTurn);
-      expect(requireSchedulerExecutionAttempt(db, attempt.attemptId)).toEqual(attempt);
-      expect(native.effects.filter(({ kind }) => kind === 'bridge.close')).toHaveLength(1);
-      expect(native.effects.filter(({ kind }) => kind === 'sandbox.delete')).toHaveLength(0);
+      expect(requireSchedulerExecutionAttempt(db, attemptId)).toEqual(attempt);
+      expect(await dispatch.poll(physicalConnection, 'bridge.close')).toBeNull();
+      expect(await dispatch.poll(physicalConnection, 'sandbox.delete')).toBeNull();
     } finally {
-      cut?.mockRestore();
-      await Promise.allSettled([reconciler.stop(), native.runtime.executionReconciler.stop()]);
-      await admitted?.cleanup();
-      await native.restore();
+      await reconciler.stop();
+      if (physicalConnection) await sessionAuthority.closePhysicalConnection(physicalConnection);
+      client?.destroy();
+      if (server.listening) {
+        const closed = once(server, 'close');
+        server.close();
+        await closed;
+      }
       await shutdownControlStoreWorkerClient();
+      readerDb.close();
+      writer.close();
       db.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }

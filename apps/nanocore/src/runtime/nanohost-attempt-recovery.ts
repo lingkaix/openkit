@@ -14,6 +14,7 @@ import {
 } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import {
   findNamedAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
@@ -737,17 +738,23 @@ function hasRecoveredTerminalHandoff(
  *
  * @param coreDb Existing attempt, runtime binding and backend owners.
  * @param attemptId Exact attempt whose absence of execution must be established.
+ * @param nativeDb Admitted Native evidence connection for the sessionless Task reader.
  * @returns Whether no native execution evidence or competing binding remains.
  * @throws Error when the exact generic attempt is absent or invalid.
  */
-export function hasNanoHostAttemptPreEffectProof(coreDb: CoreDb, attemptId: string): boolean {
+export function hasNanoHostAttemptPreEffectProof(
+  coreDb: CoreDb,
+  attemptId: string,
+  nativeDb?: Parameters<typeof getWorkerBackendSession>[0]
+): boolean {
   const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
-  return (
-    attempt.disposition === 'not_accepted' &&
-    attempt.operationId === null &&
-    !getWorkerBackendSession(coreDb, attemptId) &&
-    hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt)
-  );
+  if (attempt.disposition !== 'not_accepted' || attempt.operationId !== null) return false;
+  const check = (owner: Parameters<typeof getWorkerBackendSession>[0]) =>
+    !getWorkerBackendSession(owner, attemptId) &&
+    hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt, owner);
+  return nativeDb
+    ? check(nativeDb)
+    : requireNanoHostObservation(coreDb, (sqlite) => check({ sqlite }));
 }
 
 /** The same absent native facts are required by individual and retained-sibling pre-effect proofs. */
@@ -759,13 +766,14 @@ const absentNativeExecutionEvidenceSql = `last_accepted_heartbeat_at IS NULL
 /** Reads native evidence without treating a closed attempt or physical cleanup as proof of non-execution. */
 function hasNanoHostAttemptNoExecutionEvidence(
   coreDb: CoreDb,
-  attempt: SchedulerExecutionAttemptRecord
+  attempt: SchedulerExecutionAttemptRecord,
+  nativeDb: Parameters<typeof getWorkerBackendSession>[0]
 ): boolean {
   const proof = coreDb.sqlite
     .prepare(`SELECT 1 FROM scheduler_execution_attempts
       WHERE attempt_id = ? AND ${absentNativeExecutionEvidenceSql}`)
     .get(attempt.attemptId);
-  const binding = coreDb.sqlite
+  const binding = nativeDb.sqlite
     .prepare(`SELECT 1 FROM agent_session_runtime_bindings
       WHERE agent_session_id = ? OR current_turn_id = ? OR current_attempt_id = ? LIMIT 1`)
     .get(attempt.agentSessionId, attempt.turnId, attempt.attemptId);
@@ -775,7 +783,8 @@ function hasNanoHostAttemptNoExecutionEvidence(
 /** Rechecks retained busy siblings in batches so each pass preserves exclusion without per-sibling reads. */
 function hasNanoHostBusySiblingProofs(
   coreDb: CoreDb,
-  attempt: SchedulerExecutionAttemptRecord
+  attempt: SchedulerExecutionAttemptRecord,
+  nativeDb: Parameters<typeof getWorkerBackendSession>[0]
 ): boolean {
   const siblings = listSchedulerExecutionAttemptsByTurnId(coreDb, attempt.turnId).filter(
     (sibling) => sibling.attemptId !== attempt.attemptId
@@ -784,22 +793,20 @@ function hasNanoHostBusySiblingProofs(
   if (siblings.length === 0) return true;
   const execution = coreDb.sqlite
     .prepare(`SELECT 1 FROM scheduler_execution_attempts AS sibling
-      WHERE turn_id = ? AND attempt_id <> ?
-      AND (NOT (${absentNativeExecutionEvidenceSql}) OR EXISTS (
-        SELECT 1 FROM worker_backend_sessions AS backend WHERE backend.attempt_id = sibling.attempt_id
-      )) LIMIT 1`)
+      WHERE turn_id = ? AND attempt_id <> ? AND NOT (${absentNativeExecutionEvidenceSql}) LIMIT 1`)
     .get(attempt.turnId, attempt.attemptId);
   if (execution) return false;
-  // Each identity set is selected once because per-sibling binding scans grow with history; closed or unreadable binding rows still block.
-  const binding = coreDb.sqlite
-    .prepare(`SELECT 1 FROM agent_session_runtime_bindings
-      WHERE current_turn_id = ? OR agent_session_id IN (
-        SELECT agent_session_id FROM scheduler_execution_attempts WHERE turn_id = ? AND attempt_id <> ?
-      ) OR current_attempt_id IN (
-        SELECT attempt_id FROM scheduler_execution_attempts WHERE turn_id = ? AND attempt_id <> ?
-      ) LIMIT 1`)
-    .get(attempt.turnId, attempt.turnId, attempt.attemptId, attempt.turnId, attempt.attemptId);
-  return !binding;
+  const attemptIds = JSON.stringify(siblings.map((sibling) => sibling.attemptId));
+  const sessionIds = JSON.stringify(
+    siblings.flatMap((sibling) => (sibling.agentSessionId === null ? [] : [sibling.agentSessionId]))
+  );
+  return !nativeDb.sqlite
+    .prepare(`SELECT 1 FROM worker_backend_sessions
+      WHERE attempt_id IN (SELECT value FROM json_each(@attempts))
+      UNION ALL SELECT 1 FROM agent_session_runtime_bindings
+      WHERE current_turn_id = @turn OR agent_session_id IN (SELECT value FROM json_each(@sessions))
+        OR current_attempt_id IN (SELECT value FROM json_each(@attempts)) LIMIT 1`)
+    .get({ attempts: attemptIds, sessions: sessionIds, turn: attempt.turnId });
 }
 
 /**
@@ -817,10 +824,11 @@ export function hasNanoHostUnusedFailedStartAnchorProof(
   coreDb: CoreDb,
   workspaceDb: WorkspaceDb,
   environmentPackage: AgentEnvironmentPackage,
-  attemptId: string
+  attemptId: string,
+  nativeDb: Parameters<typeof getWorkerBackendSession>[0]
 ): boolean {
   const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
-  const backend = getWorkerBackendSession(coreDb, attemptId);
+  const backend = getWorkerBackendSession(nativeDb, attemptId);
   if (
     !backend ||
     backend.state !== 'cleaned' ||
@@ -832,7 +840,7 @@ export function hasNanoHostUnusedFailedStartAnchorProof(
     attempt.deadline !== null ||
     attempt.outcomeRef !== null ||
     attempt.fenceRef !== null ||
-    !hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt)
+    !hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt, nativeDb)
   )
     return false;
   const native = requireNanoHostExecutionAttempt(coreDb, attemptId);
@@ -932,14 +940,13 @@ async function settleTerminalFailedStart(
             attempt.agentSessionId,
             attempt.inputRef
           ) !== null) ||
-        coreDb.sqlite
-          .prepare(
-            'SELECT 1 FROM worker_backend_sessions WHERE agent_session_id = ? OR turn_id = ? LIMIT 1'
-          )
-          .get(attempt.agentSessionId, attempt.turnId) ||
-        coreDb.sqlite
-          .prepare('SELECT 1 FROM worker_control_records WHERE turn_id = ? LIMIT 1')
-          .get(attempt.turnId)
+        requireNanoHostObservation(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT 1 FROM worker_backend_sessions WHERE agent_session_id = @session
+            OR turn_id = @turn UNION ALL
+            SELECT 1 FROM worker_control_records WHERE turn_id = @turn LIMIT 1`)
+            .get({ session: attempt.agentSessionId, turn: attempt.turnId })
+        )
       )
         throw new Error(
           'Unassigned failed-start preparation has unproved input or execution ownership.'
@@ -987,16 +994,20 @@ async function settleTerminalFailedStart(
     const admissions = coreDb.sqlite
       .prepare('SELECT queue_entry_id FROM scheduler_admission_entries WHERE turn_id = ?')
       .all(attempt.turnId);
-    const otherBackend = coreDb.sqlite
-      .prepare(
-        `SELECT attempt_id FROM worker_backend_sessions WHERE (turn_id = ? OR agent_session_id = ?)
-       AND attempt_id <> ? AND state NOT IN ('physical-cleaned', 'cleaned')`
-      )
-      .get(attempt.turnId, attempt.agentSessionId, attemptId);
+    const otherBackend = requireNanoHostObservation(coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          `SELECT attempt_id FROM worker_backend_sessions WHERE (turn_id = ? OR agent_session_id = ?)
+         AND attempt_id <> ? AND state NOT IN ('physical-cleaned', 'cleaned')`
+        )
+        .get(attempt.turnId, attempt.agentSessionId, attemptId)
+    );
     const turns = store.listThreadTurns(attempt.workspaceId, attempt.threadId);
     if (
       // Proved no-effect capacity deferrals share this Turn but hold no execution ownership.
-      !hasNanoHostBusySiblingProofs(coreDb, attempt) ||
+      !requireNanoHostObservation(coreDb, (sqlite) =>
+        hasNanoHostBusySiblingProofs(coreDb, attempt, { sqlite })
+      ) ||
       admissions.length !== 1 ||
       competing ||
       otherBackend ||
@@ -1009,11 +1020,13 @@ async function settleTerminalFailedStart(
     )
       throw new Error('Failed-start attempt has a competing execution owner.');
     if (
-      coreDb.sqlite
-        .prepare(
-          "SELECT turn_id FROM worker_control_records WHERE turn_id = ? AND operation = 'final_status'"
-        )
-        .get(attempt.turnId)
+      requireNanoHostObservation(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            "SELECT turn_id FROM worker_control_records WHERE turn_id = ? AND operation = 'final_status'"
+          )
+          .get(attempt.turnId)
+      )
     )
       return false;
     if (
@@ -1030,24 +1043,28 @@ async function settleTerminalFailedStart(
       .prepare(`SELECT session_compatibility_key AS sessionCompatibilityKey
       FROM scheduler_execution_attempts WHERE attempt_id = ?`)
       .get(attemptId) as { sessionCompatibilityKey: string | null };
-    const bindings = coreDb.sqlite
-      .prepare(
-        `SELECT workspace_id AS workspaceId, thread_id AS threadId, agent_session_id AS agentSessionId,
+    const bindings = requireNanoHostObservation(
+      coreDb,
+      (sqlite) =>
+        sqlite
+          .prepare(
+            `SELECT workspace_id AS workspaceId, thread_id AS threadId, agent_session_id AS agentSessionId,
        agent_session_compatibility_key AS compatibilityKey,
        lifecycle_state AS lifecycleState, cleanup_state AS cleanupState,
        current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId
        FROM agent_session_runtime_bindings WHERE agent_session_id = ? OR current_turn_id = ? OR current_attempt_id = ?`
-      )
-      .all(attempt.agentSessionId, attempt.turnId, attemptId) as Array<{
-      workspaceId: string;
-      threadId: string;
-      agentSessionId: string;
-      compatibilityKey: string;
-      lifecycleState: string;
-      cleanupState: string;
-      currentTurnId: string | null;
-      currentAttemptId: string | null;
-    }>;
+          )
+          .all(attempt.agentSessionId, attempt.turnId, attemptId) as Array<{
+          workspaceId: string;
+          threadId: string;
+          agentSessionId: string;
+          compatibilityKey: string;
+          lifecycleState: string;
+          cleanupState: string;
+          currentTurnId: string | null;
+          currentAttemptId: string | null;
+        }>
+    );
     if (
       bindings.some(
         (binding) =>
@@ -1063,7 +1080,9 @@ async function settleTerminalFailedStart(
     ) {
       throw new Error('Failed-start runtime binding has unproved execution ownership.');
     }
-    const backend = getWorkerBackendSession(coreDb, attemptId);
+    const backend = requireNanoHostObservation(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, attemptId)
+    );
     const native = backend ? requireNanoHostExecutionAttempt(coreDb, attemptId) : null;
     // An unused preparation anchor cannot hold the product outcome hostage to cleanup.
     // Require the closed whole-attempt refusal and absence of every native authority signal.
@@ -1073,7 +1092,9 @@ async function settleTerminalFailedStart(
       attempt.disposition === 'not_accepted' &&
       attempt.operationId === null &&
       attempt.deadline === null &&
-      hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt);
+      requireNanoHostObservation(coreDb, (sqlite) =>
+        hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt, { sqlite })
+      );
     if (backend) {
       if (
         !pkg ||

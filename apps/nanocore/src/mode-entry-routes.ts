@@ -1820,8 +1820,7 @@ async function recoverSessionlessTaskAdmission(input: {
         attempt.bindingRef !== null ||
         attempt.deadline !== null ||
         attempt.outcomeRef !== null ||
-        attempt.fenceRef !== null ||
-        !hasNanoHostAttemptPreEffectProof(input.coreDb, attempt.attemptId)))
+        attempt.fenceRef !== null))
   )
     throw directTaskModeRecoveryError(
       'The sessionless Task admission owner tuple requires recovery.'
@@ -1880,23 +1879,37 @@ async function recoverSessionlessTaskAdmission(input: {
       'The sessionless Task has no exact initiating command receipt.'
     );
 
-  // Null session alone is not absence proof: retained package, control or backend owners contradict it.
-  const executionOwner = input.coreDb.sqlite
-    .prepare(`
-    SELECT 1 FROM scheduler_execution_attempts WHERE turn_id = @turn AND (workspace_id <> @workspace OR thread_id <> @thread)
-    UNION ALL SELECT 1 FROM worker_backend_sessions WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_records WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM agent_session_runtime_bindings WHERE current_turn_id = @turn
-    LIMIT 1`)
-    .get({
-      turn: input.turnId,
-      workspace: input.workspaceId,
-      thread: input.threadId,
-    });
+  // A sessionless Turn still needs independent Core, Native, and Workspace absence evidence.
+  const foreignExecution = input.coreDb.sqlite
+    .prepare(`SELECT 1 FROM scheduler_execution_attempts
+      WHERE turn_id = ? AND (workspace_id <> ? OR thread_id <> ?) LIMIT 1`)
+    .get(input.turnId, input.workspaceId, input.threadId);
+  const nativeExecution = getControlStoreWorkerClient().readAdmittedNanoHost(
+    input.coreDb.dataRoot,
+    (sqlite) =>
+      sqlite
+        .transaction(
+          () =>
+            (attempt !== undefined &&
+              !hasNanoHostAttemptPreEffectProof(input.coreDb, attempt.attemptId, { sqlite })) ||
+            Boolean(
+              sqlite
+                .prepare(`SELECT 1 FROM worker_backend_sessions WHERE turn_id = @turn
+                UNION ALL SELECT 1 FROM worker_control_records WHERE turn_id = @turn
+                UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = @turn
+                UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = @turn
+                UNION ALL SELECT 1 FROM agent_session_runtime_bindings WHERE current_turn_id = @turn
+                LIMIT 1`)
+                .get({ turn: input.turnId })
+            )
+        )
+        .deferred()
+  );
+  if (nativeExecution.state !== 'ready')
+    throw directTaskModeRecoveryError('The sessionless Task NanoHost evidence is unavailable.');
   if (
-    executionOwner ||
+    foreignExecution ||
+    nativeExecution.value ||
     listExportableAgentEnvironmentPackageSnapshots(input.workspaceDb, input.workspaceId).some(
       (record) => record.turnId === input.turnId
     )

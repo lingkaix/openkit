@@ -9,10 +9,8 @@ import type { ActorRef } from '@openkit/protocol';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { testEntityId } from './entity-ids.js';
-import { admitTestNativeEnvironment, createTestNativeEnvironmentDb } from './native-environment.js';
 
 /**
  * Creates one complete setup fixture for tests whose subject is not manifest resolution.
@@ -171,9 +169,8 @@ export async function recordTestAgentEnvironmentPackage(
   workspaceDb: WorkspaceDb,
   input: RecordTestAgentEnvironmentPackageInput
 ): Promise<AgentEnvironmentPackage> {
+  const { resolveAgentEnvironmentPackage } = await import('./prepared-agent-environment.js');
   const sourceCommit = 'a'.repeat(40);
-  const coreDb = input.coreDb ?? createTestNativeEnvironmentDb();
-  admitTestNativeEnvironment(coreDb, createTestAgentSetup().manifest);
   const catalog = {
     schemaVersion: 1 as const,
     requiredFeatures: [],
@@ -194,7 +191,7 @@ export async function recordTestAgentEnvironmentPackage(
   };
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     await resolveAgentEnvironmentPackage({
-      coreDb,
+      ...(input.coreDb ? { coreDb: input.coreDb } : {}),
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup(),
       agentSessionId: testEntityId('as', `as_${input.suffix}`),

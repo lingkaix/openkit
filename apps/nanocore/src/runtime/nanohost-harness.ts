@@ -1,6 +1,11 @@
+import type { z } from 'zod';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
-import type { ControlHarnessLifecycleInput } from '../storage/harness-lifecycle-codecs.js';
+import type {
+  ControlHarnessLifecycleInput,
+  ControlHarnessLifecycleInputSchema,
+} from '../storage/harness-lifecycle-codecs.js';
+import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import type * as Records from './nanohost-harness-records.js';
 
@@ -58,68 +63,85 @@ async function publishHarness(coreDb: CoreDb, input: ControlHarnessLifecycleInpu
   return client.harnessLifecycle(database, snapshot);
 }
 
-/** Commits the existing runtime.create tuple through the Core owner before returning. */
+type LocalHarnessWriter = Pick<AdmittedNanoHostTransportStorage['owner'], 'harnessLifecycle'>;
+
+function publishLocalHarness(
+  owner: CoreDb | LocalHarnessWriter,
+  input: z.output<typeof ControlHarnessLifecycleInputSchema.nanoHostLocal>
+): Promise<unknown> {
+  return 'harnessLifecycle' in owner
+    ? owner.harnessLifecycle(structuredClone(input))
+    : publishHarness(owner, input);
+}
+
+/** Commits the runtime and its Sandbox through the selected writer before returning. */
 export async function createNanoHostHarnessRuntime(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Parameters<typeof Records.createNanoHostHarnessRuntime>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'runtime.create' });
+  await publishLocalHarness(writer, { ...input, kind: 'runtime.create' });
 }
 
-/** Commits the existing sandbox.remove-for-harness tuple through the Core owner before returning. */
+/** Commits the sandbox.remove-for-harness tuple through the selected writer before returning. */
 export async function removeNanoHostSandboxRuntimeForHarness(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   harnessInstanceId: Parameters<typeof Records.removeNanoHostSandboxRuntimeForHarness>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...{ harnessInstanceId }, kind: 'sandbox.remove-for-harness' });
+  await publishLocalHarness(writer, {
+    ...{ harnessInstanceId },
+    kind: 'sandbox.remove-for-harness',
+  });
 }
 
-/** Commits the existing sandbox.remove-by-binding tuple through the Core owner before returning. */
+/** Commits the sandbox.remove-by-binding tuple through the selected writer before returning. */
 export async function removeNanoHostSandboxRuntimeByBinding(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   sandboxBindingRef: Parameters<typeof Records.removeNanoHostSandboxRuntimeByBinding>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...{ sandboxBindingRef }, kind: 'sandbox.remove-by-binding' });
+  await publishLocalHarness(writer, {
+    ...{ sandboxBindingRef },
+    kind: 'sandbox.remove-by-binding',
+  });
 }
 
-/** Commits the existing harness.drain tuple through the Core owner before returning. */
+/** Commits the harness.drain tuple through the selected writer before returning. */
 export async function drainNanoHostHarnessAdmission(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Parameters<typeof Records.drainNanoHostHarnessAdmission>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'harness.drain' });
+  await publishLocalHarness(writer, { ...input, kind: 'harness.drain' });
 }
 
-/** Commits the existing sandbox.drain tuple through the Core owner before returning. */
+/** Commits the sandbox.drain tuple through the selected writer before returning. */
 export async function drainNanoHostSandboxAdmission(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Parameters<typeof Records.drainNanoHostSandboxAdmission>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'sandbox.drain' });
+  await publishLocalHarness(writer, { ...input, kind: 'sandbox.drain' });
 }
 
-/** Commits the existing sandbox.fence tuple through the Core owner before returning. */
+/** Commits the sandbox.fence tuple through the selected writer before returning. */
 export async function fenceNanoHostSandboxRuntime(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Parameters<typeof Records.fenceNanoHostSandboxRuntime>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'sandbox.fence' });
+  await publishLocalHarness(writer, { ...input, kind: 'sandbox.fence' });
 }
 
-/** Commits the existing session-binding.open tuple through the Core owner before returning. */
+/** Commits the session-binding.open tuple through the selected writer before returning. */
 export async function openNanoHostAgentSessionBinding(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Parameters<typeof Records.openNanoHostAgentSessionBinding>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'session-binding.open' });
+  await publishLocalHarness(writer, { ...input, kind: 'session-binding.open' });
 }
 
-/** Commits the existing measured-identity.copy tuple through the Core owner before returning. */
+/** Commits the measured-identity.copy tuple through the selected writer before returning. */
 export async function copyNanoHostMeasuredHarnessIdentity(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Parameters<typeof Records.copyNanoHostMeasuredHarnessIdentity>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'measured-identity.copy' });
+  await publishLocalHarness(writer, { ...input, kind: 'measured-identity.copy' });
 }
 
 /** Queues only the exact prepared tuple; existing enqueue diagnostics include the owning FULL acknowledgement. */
@@ -169,12 +191,12 @@ export async function dispatchNanoHostHarnessOperation(
   })) as Records.NanoHostHarnessCommand | null;
 }
 
-/** Commits the existing operation.expire tuple through the Core owner before returning. */
+/** Commits the operation.expire tuple through the selected writer before returning. */
 export async function expireNanoHostHarnessQueuedOperation(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Parameters<typeof Records.expireNanoHostHarnessQueuedOperation>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'operation.expire' });
+  await publishLocalHarness(writer, { ...input, kind: 'operation.expire' });
 }
 
 /** Commits the existing operation.settle tuple through the Core owner before returning. */
@@ -187,12 +209,12 @@ export async function settleNanoHostHarnessOperation(
     | 'replayed';
 }
 
-/** Commits the existing operation.unknown tuple through the Core owner before returning. */
+/** Commits the operation.unknown tuple through the selected writer before returning. */
 export async function markNanoHostHarnessOperationUnknown(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Parameters<typeof Records.markNanoHostHarnessOperationUnknown>[1]
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'operation.unknown' });
+  await publishLocalHarness(writer, { ...input, kind: 'operation.unknown' });
 }
 
 /** Commits the existing result.acknowledge tuple through the Core owner before returning. */
@@ -232,21 +254,24 @@ export async function claimNanoHostIdleCaptureDrain(
 
 /** Publishes the new binding's exact original environment comparison lineage after the covering FULL commit. */
 export async function initializeNanoHostRuntimeCheckVersions(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Omit<
     Extract<ControlHarnessLifecycleInput, { kind: 'session-binding.initialize-check-versions' }>,
     'kind'
   >
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'session-binding.initialize-check-versions' });
+  await publishLocalHarness(writer, {
+    ...input,
+    kind: 'session-binding.initialize-check-versions',
+  });
 }
 /** Appends only one original credential replacement lineage after exact current-value comparison and FULL commit. */
 export async function appendNanoHostRuntimeCheckVersion(
-  coreDb: CoreDb,
+  writer: CoreDb | LocalHarnessWriter,
   input: Omit<
     Extract<ControlHarnessLifecycleInput, { kind: 'session-binding.append-check-version' }>,
     'kind'
   >
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'session-binding.append-check-version' });
+  await publishLocalHarness(writer, { ...input, kind: 'session-binding.append-check-version' });
 }

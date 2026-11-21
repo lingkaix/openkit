@@ -1,6 +1,11 @@
 /** Composes original native credential tuples with separately owned file/process/readiness effects. */
 import { recordNanoHostRuntimeTargetConnectionClose } from '../runtime/nanohost-runtime-target.js';
 import type { CoreDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import {
+  type AdmittedNanoHostTransportStorage,
+  transitionAdmittedNanoHostRuntimeTarget,
+} from '../storage/nanohost-transport-owner.js';
 import type { Actor } from './identity.js';
 import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import {
@@ -58,75 +63,83 @@ export interface FenceNanoHostTransportOnTokenUnusableResult {
   readonly fenced: boolean;
 }
 
-/** Fences process authority before attempting the existing durable readiness close. */
+type NanoHostFencingStorage = CoreDb | AdmittedNanoHostTransportStorage;
+
+function readFencingStorage<Value>(
+  storage: NanoHostFencingStorage,
+  read: (owner: { readonly sqlite: CoreDb['sqlite'] }) => Value
+): Value {
+  if (!('owner' in storage))
+    return requireNanoHostObservation(storage, (sqlite) => read({ sqlite }));
+  const result = storage.owner.read((sqlite) => read({ sqlite }));
+  if (result.state !== 'ready') throw new Error('NanoHost transport storage is unavailable.');
+  return result.value;
+}
+
+/** Fences process authority before attempting the exact durable readiness close. */
 export async function fenceNanoHostTransportAuthority(
-  coreDb: CoreDb,
+  storage: NanoHostFencingStorage,
   authority: NanoHostTransportSessionAuthority,
   identityId: string,
   observedAt: string
 ): Promise<void> {
   // Process authority must stop even when reading or updating its durable readiness witness fails.
   authority.fenceAuthoritative(identityId);
-  const target = coreDb.sqlite
-    .prepare(
-      `SELECT target_id AS targetId, connection_generation AS connectionGeneration
-       FROM nanohost_runtime_targets WHERE identity_id = ?`
-    )
-    .get(identityId) as
-    | { readonly connectionGeneration: number; readonly targetId: string }
-    | undefined;
+  const target = readFencingStorage(
+    storage,
+    ({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT target_id AS targetId, connection_generation AS connectionGeneration
+         FROM nanohost_runtime_targets WHERE identity_id = ?`
+        )
+        .get(identityId) as
+        | { readonly connectionGeneration: number; readonly targetId: string }
+        | undefined
+  );
   if (!target) return;
-  await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+  const close = {
     authoritativeGeneration: null,
     closedGeneration: target.connectionGeneration,
     observedAt,
     targetId: target.targetId,
-  });
+  };
+  if ('owner' in storage) {
+    const outcome = await transitionAdmittedNanoHostRuntimeTarget(storage, {
+      kind: 'close',
+      ...close,
+    });
+    if (outcome.state !== 'ready') throw new Error('NanoHost transport storage is unavailable.');
+  } else {
+    await recordNanoHostRuntimeTargetConnectionClose(storage, close);
+  }
 }
 
-/** Evaluates the existing retained Token without introducing another writer or lifecycle. */
+/** Evaluates the existing retained Token at the same owner as its readiness record. */
 export async function fenceNanoHostTransportOnTokenUnusable(
-  coreDb: CoreDb,
+  storage: NanoHostFencingStorage,
   authority: NanoHostTransportSessionAuthority,
   input: FenceNanoHostTransportOnTokenUnusableInput
 ): Promise<FenceNanoHostTransportOnTokenUnusableResult> {
-  const record = getNanoHostTransportTokenRecord(coreDb, input.tokenId);
-  if (!record) {
-    await fenceNanoHostTransportAuthority(
-      coreDb,
-      authority,
-      input.identityId,
-      (input.now ?? new Date()).toISOString()
-    );
-    return { usable: false, fenced: true };
-  }
-
-  const usability = evaluateNanoHostTransportTokenUsability(
-    {
-      expiresAt: record.expiresAt,
-      rotationOverlapExpiresAt: record.rotationOverlapExpiresAt,
-      status: record.status,
-    },
-    input.now
+  const record = readFencingStorage(storage, (owner) =>
+    getNanoHostTransportTokenRecord(owner, input.tokenId)
   );
-
-  if (usability.usable) {
+  if (record && evaluateNanoHostTransportTokenUsability(record, input.now).usable) {
     return { usable: true, fenced: false };
   }
-
   const hadAuthority = authority.authoritativeGeneration(input.identityId) !== null;
   await fenceNanoHostTransportAuthority(
-    coreDb,
+    storage,
     authority,
     input.identityId,
     (input.now ?? new Date()).toISOString()
   );
-  return { usable: false, fenced: hadAuthority };
+  return { usable: false, fenced: !record || hadAuthority };
 }
 
 /** Awaits the abort tuple before slot clear/discard; unknown submission never authorizes file deletion. */
 export async function abortNanoHostTransportRotation(
-  coreDb: CoreDb,
+  storage: NanoHostFencingStorage,
   authority: NanoHostTransportSessionAuthority,
   input: AbortNanoHostTransportRotationInput,
   actor?: Actor,
@@ -138,8 +151,10 @@ export async function abortNanoHostTransportRotation(
     ...(input.now ? { now: new Date(input.now.getTime()) } : {}),
   };
   const admin = actor ? { ...actor } : undefined;
-  const predecessor = getNanoHostTransportTokenRecord(coreDb, snapshot.predecessorTokenId);
-  const writer = await prepareNanoHostTransportWriter(coreDb);
+  const predecessor = readFencingStorage(storage, (owner) =>
+    getNanoHostTransportTokenRecord(owner, snapshot.predecessorTokenId)
+  );
+  const writer = await prepareNanoHostTransportWriter(storage);
   await beforeSubmit?.();
   let aborted: AbortNanoHostTransportRotationResult | null;
   try {
@@ -172,7 +187,8 @@ export async function abortNanoHostTransportRotation(
   // Terminal revocation is not undone by abort; report the proved pair after attempting mandatory cleanup.
   if (aborted.predecessor.status !== 'active') {
     try {
-      await recordNanoHostTransportAudit(coreDb, {
+      if ('owner' in storage) throw new Error('NanoHost administrator Audit is unavailable.');
+      await recordNanoHostTransportAudit(storage, {
         kind: 'lifecycle-audit',
         action: 'nanohost.transport.rotate',
         record: aborted.successor,

@@ -1,13 +1,22 @@
 import type { Http2Session } from 'node:http2';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
+import type Database from 'better-sqlite3';
 import type { Context, Hono } from 'hono';
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import {
+  type AllocateNanoHostRuntimeTargetConnectionGenerationInput,
   allocateNanoHostRuntimeTargetConnectionGeneration,
+  type NanoHostRuntimeTargetRecord,
+  type RecordNanoHostRuntimeTargetConnectionCloseInput,
   recordNanoHostRuntimeTargetConnectionClose,
 } from '../runtime/nanohost-runtime-target.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import {
+  type AdmittedNanoHostTransportStorage,
+  transitionAdmittedNanoHostRuntimeTarget,
+} from '../storage/nanohost-transport-owner.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 import type { AuthVariables } from './middleware.js';
 import transportRevision from './nanohost-transport-revision.json' with { type: 'json' };
 import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
@@ -20,6 +29,8 @@ import { evaluateNanoHostTransportTokenUsability } from './nanohost-transport-to
 import {
   getNanoHostTransportTokenRecord,
   isNanoHostTransportIdentityActive,
+  type NanoHostTransportTokenRecord,
+  prepareNanoHostTransportVerification,
   verifyNanoHostTransportTokenRecord,
 } from './nanohost-transport-token-store.js';
 
@@ -68,6 +79,7 @@ export interface AdmitNanoHostTransportConnectionFailure {
     | 'missing_connection_context'
     | 'unauthorized'
     | 'rejected'
+    | 'storage_unavailable'
     | 'nanohost_protocol_mismatch';
 }
 
@@ -75,6 +87,85 @@ export interface AdmitNanoHostTransportConnectionFailure {
 export type AdmitNanoHostTransportConnectionResult =
   | AdmitNanoHostTransportConnectionSuccess
   | AdmitNanoHostTransportConnectionFailure;
+
+type TransportAdmissionStorage = {
+  verify(
+    secret: string,
+    options: NonNullable<Parameters<typeof verifyNanoHostTransportTokenRecord>[2]>
+  ): Promise<NanoHostTransportTokenRecord | null>;
+  readCurrent(tokenId: string, now?: Date): NanoHostTransportTokenRecord | null;
+  allocate(
+    input: AllocateNanoHostRuntimeTargetConnectionGenerationInput
+  ): Promise<NanoHostRuntimeTargetRecord>;
+  close(input: RecordNanoHostRuntimeTargetConnectionCloseInput): Promise<unknown>;
+  stillOpen?(): boolean;
+};
+
+class NanoHostTransportStorageUnavailable extends Error {}
+
+function requireNativeResult<Value>(
+  result: StorageResult<'nanohost' | 'control-kernel', Value>
+): Value {
+  if (result.state !== 'ready') throw new NanoHostTransportStorageUnavailable();
+  return result.value;
+}
+
+function readCurrentTransportToken(
+  owner: { readonly sqlite: Database.Database },
+  tokenId: string,
+  now?: Date
+): NanoHostTransportTokenRecord | null {
+  const token = getNanoHostTransportTokenRecord(owner, tokenId);
+  return token &&
+    isNanoHostTransportIdentityActive(owner, token.ownerNanoHostIdentityId, token.deploymentId) &&
+    evaluateNanoHostTransportTokenUsability(token, now).usable
+    ? token
+    : null;
+}
+
+/** Admits transport only through the admitted native owner and the exact original epoch decision. */
+export async function admitNativeNanoHostTransportConnection(
+  storage: AdmittedNanoHostTransportStorage,
+  authority: NanoHostTransportSessionAuthority,
+  input: AdmitNanoHostTransportConnectionInput
+): Promise<AdmitNanoHostTransportConnectionResult> {
+  const { owner } = storage;
+  const transition = async (
+    target: Parameters<typeof transitionAdmittedNanoHostRuntimeTarget>[1]
+  ) => requireNativeResult(await transitionAdmittedNanoHostRuntimeTarget(storage, target));
+  try {
+    return await admitTransportConnection(
+      {
+        async verify(secret, options) {
+          const request = requireNativeResult(
+            owner.read((sqlite) =>
+              prepareNanoHostTransportVerification({ sqlite }, secret, options)
+            )
+          );
+          if (!request) return null;
+          const result = await owner.transport(request);
+          if (result.kind !== 'record') throw new NanoHostTransportStorageUnavailable();
+          return result.record;
+        },
+        readCurrent: (tokenId, now) =>
+          requireNativeResult(
+            owner.read((sqlite) => readCurrentTransportToken({ sqlite }, tokenId, now))
+          ),
+        async allocate(target) {
+          const record = await transition({ ...target, kind: 'allocate' });
+          if (!record) throw new NanoHostTransportStorageUnavailable();
+          return record;
+        },
+        close: (target) => transition({ ...target, kind: 'close' }),
+      },
+      authority,
+      input
+    );
+  } catch {
+    // A missing read, refused epoch or unknown owner commit cannot admit the physical connection.
+    return { ok: false, reason: 'storage_unavailable' };
+  }
+}
 
 /**
  * Admits one NanoHost transport connection after hash-only Token verification.
@@ -95,25 +186,37 @@ export async function admitNanoHostTransportConnection(
   authority: NanoHostTransportSessionAuthority,
   input: AdmitNanoHostTransportConnectionInput
 ): Promise<AdmitNanoHostTransportConnectionResult> {
+  return await admitTransportConnection(
+    {
+      verify: (secret, options) => verifyNanoHostTransportTokenRecord(coreDb, secret, options),
+      readCurrent: (tokenId, now) => readCurrentTransportToken(coreDb, tokenId, now),
+      allocate: (target) => allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, target),
+      close: (target) => recordNanoHostRuntimeTargetConnectionClose(coreDb, target),
+      stillOpen: () => coreDb.sqlite.open,
+    },
+    authority,
+    input
+  );
+}
+
+async function admitTransportConnection(
+  storage: TransportAdmissionStorage,
+  authority: NanoHostTransportSessionAuthority,
+  input: AdmitNanoHostTransportConnectionInput
+): Promise<AdmitNanoHostTransportConnectionResult> {
   const request = { ...input, ...(input.now ? { now: new Date(input.now.getTime()) } : {}) };
-  const verified = await verifyNanoHostTransportTokenRecord(coreDb, request.secret, {
+  const verified = await storage.verify(request.secret, {
     channel: request.channel ?? 'nanohost-transport',
     source: request.source ?? 'session-admit',
     ...(request.now ? { now: request.now } : {}),
   });
 
-  const current = verified ? getNanoHostTransportTokenRecord(coreDb, verified.tokenId) : null;
+  const current = verified ? storage.readCurrent(verified.tokenId, request.now) : null;
   if (
     !verified ||
     !current ||
     current.ownerNanoHostIdentityId !== verified.ownerNanoHostIdentityId ||
-    current.deploymentId !== verified.deploymentId ||
-    !isNanoHostTransportIdentityActive(
-      coreDb,
-      current.ownerNanoHostIdentityId,
-      current.deploymentId
-    ) ||
-    !evaluateNanoHostTransportTokenUsability(current, request.now).usable
+    current.deploymentId !== verified.deploymentId
   ) {
     return { ok: false, reason: 'unauthorized' };
   }
@@ -143,25 +246,21 @@ export async function admitNanoHostTransportConnection(
   return getControlStoreWorkerClient().runOperation(async () => {
     const targetId = request.targetId?.trim() || verified.ownerNanoHostIdentityId;
     const observedAt = (request.now ?? new Date()).toISOString();
-    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await storage.allocate({
       deploymentId: verified.deploymentId,
       identityId: verified.ownerNanoHostIdentityId,
       observedAt,
       targetId,
     });
-    const admittedToken = getNanoHostTransportTokenRecord(coreDb, verified.tokenId);
+    const admittedToken = storage.readCurrent(verified.tokenId, request.now);
     if (
       connection.destroyed ||
       connection.closed ||
       !admittedToken ||
-      !evaluateNanoHostTransportTokenUsability(admittedToken, request.now).usable ||
-      !isNanoHostTransportIdentityActive(
-        coreDb,
-        verified.ownerNanoHostIdentityId,
-        verified.deploymentId
-      )
+      admittedToken.ownerNanoHostIdentityId !== verified.ownerNanoHostIdentityId ||
+      admittedToken.deploymentId !== verified.deploymentId
     ) {
-      await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+      await storage.close({
         authoritativeGeneration: authority.authoritativeGeneration(
           verified.ownerNanoHostIdentityId
         ),
@@ -176,13 +275,10 @@ export async function admitNanoHostTransportConnection(
       identityId: verified.ownerNanoHostIdentityId,
       physicalConnection: physicalConnection,
       onClose: async (closed) => {
-        if (!coreDb.sqlite.open) {
+        if (storage.stillOpen?.() === false || closed.closedGeneration === null) {
           return;
         }
-        if (closed.closedGeneration === null) {
-          return;
-        }
-        await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+        await storage.close({
           authoritativeGeneration: closed.authoritativeGeneration,
           closedGeneration: closed.closedGeneration,
           observedAt: new Date().toISOString(),
@@ -192,7 +288,7 @@ export async function admitNanoHostTransportConnection(
     });
 
     if (session.role !== 'authoritative' && session.role !== 'candidate') {
-      await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+      await storage.close({
         authoritativeGeneration: authority.authoritativeGeneration(
           verified.ownerNanoHostIdentityId
         ),
@@ -227,19 +323,18 @@ export async function admitNanoHostTransportConnection(
 export function registerNanoHostTransportAdmissionRoutes({
   app,
   coreDb,
+  nativeStorage,
   nanoHostConfig,
   sessionAuthority,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
+  readonly nativeStorage?: StorageResult<'nanohost', AdmittedNanoHostTransportStorage>;
   readonly nanoHostConfig?: OpenKitNanoHostConfig;
   readonly sessionAuthority: NanoHostTransportSessionAuthority;
 }): void {
   app.post('/api/nanohost/transport/session/admit', async (c) => {
-    const storageError = requireAdmissionStorage(c, coreDb);
-    if (storageError) {
-      return storageError;
-    }
+    if (nativeStorage ? nativeStorage.state !== 'ready' : !coreDb) return unavailableAdmission();
 
     const secret = readBearerSecret(c);
     if (!secret) {
@@ -271,16 +366,21 @@ export function registerNanoHostTransportAdmissionRoutes({
     const physicalConnection = readNanoHostPhysicalConnectionContext(
       (c.env as { readonly incoming?: unknown } | undefined)?.incoming
     );
-    const admitted = await admitNanoHostTransportConnection(coreDb!, sessionAuthority, {
+    const input = {
       channel: 'nanohost-transport',
       physicalConnection,
       transportRevision: c.req.header('x-openkit-nanohost-transport-revision'),
       secret,
       source: 'session-admit-http',
       ...(nanoHostConfig?.identityId ? { targetId: nanoHostConfig.identityId } : {}),
-    });
+    };
+    const admitted =
+      nativeStorage?.state === 'ready'
+        ? await admitNativeNanoHostTransportConnection(nativeStorage.value, sessionAuthority, input)
+        : await admitNanoHostTransportConnection(coreDb!, sessionAuthority, input);
 
     if (!admitted.ok) {
+      if (admitted.reason === 'storage_unavailable') return unavailableAdmission();
       if (admitted.reason === 'nanohost_protocol_mismatch') {
         return asApiError(
           'NanoHost transport revision does not match NanoCore.',
@@ -326,25 +426,12 @@ export function isNanoHostTransportAdmissionPath(path: string): boolean {
   return path === '/api/nanohost/transport/session/admit';
 }
 
-/**
- * Requires Core storage for NanoHost transport admission.
- *
- * @param _c Unused Hono context.
- * @param coreDb Optional Core database.
- * @returns Error response when storage is unavailable.
- */
-function requireAdmissionStorage(
-  _c: Context<{ Variables: AuthVariables }>,
-  coreDb: CoreDb | undefined
-): Response | null {
-  if (!coreDb) {
-    return asApiError(
-      'NanoHost transport token storage is unavailable.',
-      'nanohost_transport_storage_unavailable',
-      503
-    );
-  }
-  return null;
+function unavailableAdmission(): Response {
+  return asApiError(
+    'NanoHost transport token storage is unavailable.',
+    'nanohost_transport_storage_unavailable',
+    503
+  );
 }
 
 /**

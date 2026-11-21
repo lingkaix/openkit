@@ -65,11 +65,15 @@ import {
   openAdmittedWorkspaceReadDb,
   type WorkspaceDb,
 } from '../storage/db.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
 import {
   NATIVE_THREAD_LOGIN_FEATURE,
   type NativeThreadLogin,
   NativeThreadLoginSchema,
 } from '../storage/native-thread-login.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import {
   AgentSessionRecordSchema,
@@ -184,6 +188,7 @@ import {
   type NanoHostEffectOperation,
   type NanoHostSessionDispatch,
 } from './nanohost-session-dispatch.js';
+import type { NanoHostEnvironmentRead } from './native-environment.js';
 import {
   readConfiguredWorkerProviderAccessShape,
   requireWorkerProviderBindings,
@@ -331,6 +336,11 @@ export interface TurnExecutorFactoryEnv {
 }
 
 /** Options for creating the configured NanoCore turn executor. */
+type NanoHostLifecycleOwner = Pick<
+  AdmittedNanoHostTransportStorage['owner'],
+  'harnessLifecycle' | 'read'
+>;
+
 export interface CreateConfiguredTurnExecutorOptions {
   /** Immutable Core identity admitted by the boot owner; absence refuses real Worker admission. */
   releaseIdentity?: ReleaseBuildIdentity | undefined;
@@ -356,6 +366,13 @@ export interface CreateConfiguredTurnExecutorOptions {
   store?: FsStore | undefined;
   /** Authoritative fixed-effect dispatcher shared with the native NanoHost session. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch | undefined;
+  /** Admitted resident reads and the optional deciding adapter for split cleanup. */
+  nanoHostRecovery?:
+    | {
+        readonly owner: StorageResult<'nanohost', NanoHostLifecycleOwner>;
+        readonly advanceIdleCleanup?: (selection: IdleCleanupSelection) => Promise<void>;
+      }
+    | undefined;
 }
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
@@ -502,7 +519,8 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.policyInterception,
     options.goalTaskPolicy,
     options.releaseIdentity,
-    options.readProviderAccessShape
+    options.readProviderAccessShape,
+    options.nanoHostRecovery
   );
 }
 
@@ -530,12 +548,17 @@ function createNanoHostWorkerLifecycleRuntime(
   policyInterception?: (() => import('../policy/interception.js').PolicyInterception) | undefined,
   goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'],
   releaseIdentity?: ReleaseBuildIdentity,
-  readProviderAccessShape?: WorkerProviderAccessShapeReader
+  readProviderAccessShape?: WorkerProviderAccessShapeReader,
+  nanoHostRecovery?: CreateConfiguredTurnExecutorOptions['nanoHostRecovery']
 ): ConfiguredWorkerLifecycleRuntime {
   const configuredProviderReader: WorkerProviderAccessShapeReader =
     readProviderAccessShape ??
     ((profileId) =>
       readConfiguredWorkerProviderAccessShape(readRuntimeConfig?.().gatewayConfig, profileId));
+  const nanoHostOwner = nanoHostRecovery?.owner;
+  const readNanoHostEnvironment: NanoHostEnvironmentRead | undefined = nanoHostOwner
+    ? (read) => (nanoHostOwner.state === 'ready' ? nanoHostOwner.value.read(read) : nanoHostOwner)
+    : undefined;
   let executionReconciler: ExecutionReconciler;
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
@@ -561,11 +584,20 @@ function createNanoHostWorkerLifecycleRuntime(
     sharedStore,
     fileAdmission,
     releaseIdentity,
-    configuredProviderReader
+    configuredProviderReader,
+    nanoHostOwner
   );
+  const advanceIdleCleanup = async (selection: IdleCleanupSelection): Promise<void> => {
+    if (!nanoHostRecovery) return await backend.advanceIdleCleanup(selection);
+    if (!nanoHostRecovery.advanceIdleCleanup) throw new NanoHostCleanupFencePendingError();
+    return await nanoHostRecovery.advanceIdleCleanup(selection);
+  };
   executionReconciler = new ExecutionReconciler({
     coreDb,
-    advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
+    ...(readNanoHostEnvironment
+      ? { nanoHost: createNanoHostCoreReads({ read: readNanoHostEnvironment }) }
+      : {}),
+    advanceIdleCleanup,
   });
   const turnExecutor =
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
@@ -586,6 +618,7 @@ function createNanoHostWorkerLifecycleRuntime(
             }),
           backend,
           coreDb,
+          readNanoHostEnvironment,
           ...(readRuntimeConfig ? { readRuntimeConfig } : {}),
           ...(policyInterception ? { policyInterception } : {}),
           ...(goalTaskPolicy ? { goalTaskPolicy } : {}),
@@ -638,7 +671,7 @@ function createNanoHostWorkerLifecycleRuntime(
     readHarnessLoginNativeResume: (context) => backend.readHarnessLoginNativeResume(context),
     readCompletedHarnessLoginSupply: (context) => backend.readCompletedHarnessLoginSupply(context),
     completeHarnessLogin: (...args) => backend.completeHarnessLogin(...args),
-    advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
+    advanceIdleCleanup,
     captureArtifact: (input) => backend.captureArtifact(input),
     registerCredentialHelperComparisonValues: (lineage, receiptId, values) =>
       backend.registerCredentialHelperComparisonValues(lineage, receiptId, values),
@@ -1114,8 +1147,34 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly sharedStore?: FsStore,
     private readonly fileAdmission?: FileStorageAdmission,
     private readonly releaseIdentity?: ReleaseBuildIdentity,
-    private readonly readProviderAccessShape?: WorkerProviderAccessShapeReader
+    private readonly readProviderAccessShape?: WorkerProviderAccessShapeReader,
+    private readonly nanoHostOwner?: StorageResult<'nanohost', NanoHostLifecycleOwner>
   ) {}
+
+  private unavailableNanoHostRuntime(): never {
+    throw new OperationError(
+      'operation_storage_unavailable',
+      'NanoHost runtime storage is unavailable.',
+      503
+    );
+  }
+
+  private harnessWriter(): CoreDb | NanoHostLifecycleOwner {
+    const owner = this.nanoHostOwner;
+    if (!owner) return this.coreDb;
+    return owner.state === 'ready' ? owner.value : this.unavailableNanoHostRuntime();
+  }
+
+  /** Runs native observations against the acknowledged owner generation during split serving. */
+  private readNanoHost<Value>(read: (owner: Pick<CoreDb, 'sqlite'>) => Value): Value {
+    const owner = this.nanoHostOwner;
+    if (owner?.state === 'unavailable') this.unavailableNanoHostRuntime();
+    return requireNanoHostObservation(this.coreDb, (sqlite) => read({ sqlite }), owner?.value.read);
+  }
+
+  private readAcceptedFinal(lineage: Parameters<typeof getWorkerControlAcceptedFinalStatus>[1]) {
+    return this.readNanoHost((owner) => getWorkerControlAcceptedFinalStatus(owner, lineage));
+  }
 
   /** Reads the authored aggregate bound; invalid current configuration fails closed. */
   private configuredActiveTurnCapacity(): number {
@@ -1185,16 +1244,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
       });
-      const dispatched = this.coreDb.sqlite
-        .prepare(`SELECT schema_version AS schemaVersion FROM harness_instance_records
+      const dispatched = this.readNanoHost(({ sqlite }) =>
+        sqlite
+          .prepare(`SELECT schema_version AS schemaVersion FROM harness_instance_records
           WHERE harness_instance_id = ? AND harness_binding_ref = ? AND operation = 'session.close'
             AND operation_state = 'dispatched' AND operation_id = ? AND operation_sequence = ?`)
-        .get(
-          command.harnessInstanceId,
-          session.harnessBindingRef,
-          command.operationId,
-          command.sequence
-        );
+          .get(
+            command.harnessInstanceId,
+            session.harnessBindingRef,
+            command.operationId,
+            command.sequence
+          )
+      );
       if (
         !dispatched ||
         !isDeepStrictEqual(currentReceipt, pending.coreIdleClose.authority) ||
@@ -1307,8 +1368,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
         throw new Error('NanoHost dispatched Turn credential binding changed during native proof.');
     }
-    const currentBinding = this.coreDb.sqlite
-      .prepare(`SELECT h.schema_version AS schemaVersion, b.schema_version AS bindingSchemaVersion,
+    const { child, prepared } = journal;
+    const currentBinding = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(`SELECT h.schema_version AS schemaVersion, b.schema_version AS bindingSchemaVersion,
         h.lifecycle_state AS harnessState,
         h.drain_state AS harnessDrain, s.lifecycle_state AS sandboxState,
         s.health_state AS sandboxHealth, s.drain_state AS sandboxDrain, s.cleanup_state AS sandboxCleanup
@@ -1318,14 +1381,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         WHERE h.harness_instance_id = ? AND h.harness_binding_ref = ? AND h.operation_id = ? AND h.operation_sequence = ?
           AND h.operation_state = 'dispatched' AND b.agent_session_runtime_binding_id = ?
           AND b.agent_session_id = ?`)
-      .get(
-        command.harnessInstanceId,
-        journal.child.carriage.bindingRef,
-        command.operationId,
-        command.sequence,
-        journal.prepared.command.body.agentSessionRuntimeBindingId,
-        journal.prepared.command.body.agentSessionId
-      ) as
+        .get(
+          command.harnessInstanceId,
+          child.carriage.bindingRef,
+          command.operationId,
+          command.sequence,
+          prepared.command.body.agentSessionRuntimeBindingId,
+          prepared.command.body.agentSessionId
+        )
+    ) as
       | {
           schemaVersion: unknown;
           bindingSchemaVersion: unknown;
@@ -1405,7 +1469,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           cause: error,
         });
         try {
-          await markNanoHostHarnessOperationUnknown(this.coreDb, {
+          await markNanoHostHarnessOperationUnknown(this.harnessWriter(), {
             harnessBindingRef: session.harnessBindingRef,
             operationId: command.operationId,
             timestamp: new Date().toISOString(),
@@ -1741,7 +1805,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           );
     if (session && result.disposition === 'refused' && reason === 'cleanup_required') {
       session.cleanupOwnershipRequired = true;
-      await drainNanoHostHarnessAdmission(this.coreDb, {
+      await drainNanoHostHarnessAdmission(this.harnessWriter(), {
         harnessBindingRef: session.harnessBindingRef,
         timestamp: new Date().toISOString(),
       });
@@ -1814,7 +1878,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Promise<void> {
     // Failure is latched before this fence. Its fresh clock may invalidate a late removal,
     // but cannot authorize a retry or turn an already submitted effect into non-execution.
-    departure.fence ??= drainNanoHostHarnessAdmission(this.coreDb, {
+    departure.fence ??= drainNanoHostHarnessAdmission(this.harnessWriter(), {
       harnessBindingRef: departure.harnessBindingRef,
       timestamp: new Date().toISOString(),
     });
@@ -2042,9 +2106,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       return existing;
     }
-    const row = this.coreDb.sqlite
-      .prepare(
-        `SELECT sandbox_runtime_id AS sandboxRuntimeId,
+    const row = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT sandbox_runtime_id AS sandboxRuntimeId,
                 runtime_target_id AS runtimeTargetId,
                 sandbox_binding_ref AS sandboxBindingRef,
                 sandbox_integration_binding_ref AS sandboxIntegrationBindingRef,
@@ -2056,8 +2121,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 drain_state AS drainState,
                 cleanup_state AS cleanupState
          FROM sandbox_runtime_records WHERE sandbox_compatibility_key = ?`
-      )
-      .get(sandboxCompatibilityKey) as
+        )
+        .get(sandboxCompatibilityKey)
+    ) as
       | {
           readonly cleanupState: string;
           readonly drainState: string;
@@ -2129,9 +2195,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       return existing;
     }
-    const row = this.coreDb.sqlite
-      .prepare(
-        `SELECT s.sandbox_runtime_id AS sandboxRuntimeId,
+    const row = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT s.sandbox_runtime_id AS sandboxRuntimeId,
                 s.runtime_target_id AS runtimeTargetId,
                 s.sandbox_binding_ref AS sandboxBindingRef,
                 s.image_digest AS imageDigest,
@@ -2154,8 +2221,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
          FROM sandbox_runtime_records s
          JOIN harness_instance_records h ON h.sandbox_runtime_id = s.sandbox_runtime_id
          WHERE s.sandbox_compatibility_key = ? AND h.harness_compatibility_key = ?`
-      )
-      .get(sandboxCompatibilityKey, harnessCompatibilityKey) as
+        )
+        .get(sandboxCompatibilityKey, harnessCompatibilityKey)
+    ) as
       | {
           readonly adapterId: string;
           readonly adapterVersion: string;
@@ -2229,16 +2297,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       harnessInstanceId: row.harnessInstanceId,
       sandbox,
     };
-    const bindings = this.coreDb.sqlite
-      .prepare(
-        `SELECT agent_session_id AS agentSessionId,
+    const bindings = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT agent_session_id AS agentSessionId,
                 agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
                 agent_session_compatibility_key AS agentSessionCompatibilityKey,
                 native_handle_digest AS nativeHandleDigest,
                 next_turn_sequence AS nextTurnSequence
          FROM agent_session_runtime_bindings WHERE harness_instance_id = ?`
-      )
-      .all(row.harnessInstanceId) as Array<{
+        )
+        .all(row.harnessInstanceId)
+    ) as Array<{
       readonly agentSessionCompatibilityKey: string;
       readonly agentSessionId: string;
       readonly agentSessionRuntimeBindingId: string;
@@ -2407,13 +2477,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): WorkerGovernanceBackendSessionIdentity {
     const restored = this.sessions.get(environmentPackage.snapshotId);
     if (restored) return restored.identity;
-    const target = this.coreDb.sqlite
-      .prepare(
-        `SELECT target_id AS targetId, deployment_id AS deploymentId
+    const target = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT target_id AS targetId, deployment_id AS deploymentId
          FROM nanohost_runtime_targets
          LIMIT 1`
-      )
-      .get() as { readonly deploymentId: string; readonly targetId: string } | undefined;
+        )
+        .get()
+    ) as { readonly deploymentId: string; readonly targetId: string } | undefined;
     if (!target) {
       throw new Error('Configured NanoHost RuntimeTarget is unavailable.');
     }
@@ -2472,15 +2544,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly reuseWorkSlotRef?: string;
     }
   ): WorkerStorageBinding {
-    const selected = getWorkerStorageBinding(this.coreDb, { storageRef: selection.storageRef });
+    const selected = this.readNanoHost((owner) =>
+      getWorkerStorageBinding(owner, { storageRef: selection.storageRef })
+    );
     if (!selected) throw new Error('Worker storage association was not found.');
     const binding =
       selected.currentSandboxBindingRef === sandboxBindingRef
-        ? authorizeAttachedWorkerStorageReplacement(this.coreDb, {
-            ...selection,
-            sandboxBindingRef,
-          })
-        : selectWorkerStorageBinding(this.coreDb, { ...selection, layout: selected.layout });
+        ? this.readNanoHost((owner) =>
+            authorizeAttachedWorkerStorageReplacement(owner, {
+              ...selection,
+              sandboxBindingRef,
+            })
+          )
+        : this.readNanoHost((owner) =>
+            selectWorkerStorageBinding(owner, { ...selection, layout: selected.layout })
+          );
     if (
       resolveWorkerStorageWorkSlotRef(binding, selection) !==
       packageWorkerStorageWorkSlotRef(environmentPackage)
@@ -2495,7 +2573,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     readonly threadId: string;
     readonly workspaceId: string;
   }): { readonly agentSessionId: string } | null {
-    return readNanoHostThreadAgentSessionBinding(this.coreDb, input);
+    return this.readNanoHost((native) => readNanoHostThreadAgentSessionBinding(native, input));
   }
 
   /** Proves retained continuity or closes the local binding, widening a settled refusal to Sandbox retirement. */
@@ -2519,12 +2597,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new WorkerGovernanceCapacityUnavailableError(
         'The original Login close still owns Thread admission.'
       );
-    const runtimeTargets = this.coreDb.sqlite
-      .prepare(
-        `SELECT predecessor_fenced AS predecessorFenced, ready, fresh_empty AS freshEmpty
+    const runtimeTargets = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT predecessor_fenced AS predecessorFenced, ready, fresh_empty AS freshEmpty
          FROM nanohost_runtime_targets`
-      )
-      .all() as Array<{
+        )
+        .all()
+    ) as Array<{
       readonly freshEmpty: 0 | 1;
       readonly predecessorFenced: 0 | 1;
       readonly ready: 0 | 1;
@@ -2539,6 +2619,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         'The configured NanoHost RuntimeTarget is not ready for admission.'
       );
     }
+    // Closing the selected binding needs the mixed writer. Hold before checking Core leases.
+    if (
+      !input.reuseAllowed &&
+      this.nanoHostOwner &&
+      this.readThreadAgentSessionBinding(input)?.agentSessionId === input.agentSessionId
+    )
+      this.unavailableNanoHostRuntime();
     const retirement = input.environmentPackage
       ? this.inspectIncompatibleIdleSandbox(input.environmentPackage)
       : null;
@@ -2587,7 +2674,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     const inspection = replacesRequestedBinding
       ? null
-      : inspectNanoHostAgentSessionContinuity(this.coreDb, input);
+      : this.readNanoHost((owner) =>
+          inspectNanoHostAgentSessionContinuity(this.coreDb, input, owner)
+        );
     const readOnlyReplacement =
       input.reuseAllowed &&
       input.environmentPackage !== undefined &&
@@ -2645,6 +2734,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       this.recognizeDurableAgentSessionProof(inspection);
       return 'sandbox-replacement-required';
     }
+    // Continuity can find a binding that appeared after the first Native observation.
+    if (!input.reuseAllowed && this.nanoHostOwner) this.unavailableNanoHostRuntime();
     // Compatibility decides placement, never whether an already-accepted proof survives.
     if (input.recordNativeHandleDigest) {
       await this.handoffDurableAgentSessionProof(inspection, input.recordNativeHandleDigest);
@@ -2792,15 +2883,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    */
   private restoreSameEpochIdleHarness(environmentPackage: AgentEnvironmentPackagePreview): void {
     const sandboxCompatibilityKey = nanoHostSandboxCompatibilityKey(environmentPackage);
-    const row = this.coreDb.sqlite
-      .prepare(
-        `SELECT origin_physical_epoch AS originPhysicalEpoch,
+    const row = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT origin_physical_epoch AS originPhysicalEpoch,
                 runtime_target_id AS runtimeTargetId
          FROM sandbox_runtime_records WHERE sandbox_compatibility_key = ?`
-      )
-      .get(sandboxCompatibilityKey) as
-      | { readonly originPhysicalEpoch: string; readonly runtimeTargetId: string }
-      | undefined;
+        )
+        .get(sandboxCompatibilityKey)
+    ) as { readonly originPhysicalEpoch: string; readonly runtimeTargetId: string } | undefined;
     if (!row) {
       return;
     }
@@ -2856,9 +2947,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Reports exact Core idle ownership or prepares original results; performs no effect. */
   public prepareCleanupRecovery(identity: WorkerGovernanceBackendSessionIdentity): boolean {
-    const anchor = getWorkerBackendSession(
-      this.coreDb,
-      this.requireAttemptId(identity.packageSnapshotId)
+    const anchor = this.readNanoHost((owner) =>
+      getWorkerBackendSession(owner, this.requireAttemptId(identity.packageSnapshotId))
     );
     if (
       anchor &&
@@ -2926,8 +3016,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       'originPhysicalEpoch' | 'physicalAbsent' | 'sandboxBindingRef'
     >
   ): Promise<void> {
-    const bindings = this.coreDb.sqlite
-      .prepare(`
+    const bindings = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(`
       SELECT b.agent_session_id AS agentSessionId,
         b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
         h.harness_instance_id AS harnessInstanceId, h.harness_binding_ref AS harnessBindingRef,
@@ -2936,7 +3027,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
       WHERE s.sandbox_binding_ref = ? AND b.native_handle_state = 'ready'
     `)
-      .all(bindingRef) as Array<Omit<NanoHostAgentSessionContinuityInspection, 'reusable'>>;
+        .all(bindingRef)
+    ) as Array<Omit<NanoHostAgentSessionContinuityInspection, 'reusable'>>;
     for (const binding of bindings) {
       const candidates = [...this.sessions.values()].filter(
         (session) =>
@@ -2965,19 +3057,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     try {
       await this.handoffSandboxAgentSessionProofs(scope.sandboxBindingRef);
       if (
-        getWorkerStorageBindingForSandbox(this.coreDb, {
-          sandboxBindingRef: scope.sandboxBindingRef,
-        })
+        this.readNanoHost((owner) =>
+          getWorkerStorageBindingForSandbox(owner, {
+            sandboxBindingRef: scope.sandboxBindingRef,
+          })
+        )
       )
         await this.releaseWorkerStorageForSandbox(scope.sandboxBindingRef);
-      await removeNanoHostSandboxRuntimeByBinding(this.coreDb, scope.sandboxBindingRef);
+      await removeNanoHostSandboxRuntimeByBinding(this.harnessWriter(), scope.sandboxBindingRef);
       if (
         this.sharedSandboxes.get(scope.sandboxCompatibilityKey)?.sandboxBindingRef ===
         scope.sandboxBindingRef
       )
         this.forgetSharedSandbox(scope.sandboxCompatibilityKey);
     } catch (error) {
-      await fenceNanoHostSandboxRuntime(this.coreDb, {
+      await fenceNanoHostSandboxRuntime(this.harnessWriter(), {
         sandboxBindingRef: scope.sandboxBindingRef,
         timestamp: new Date().toISOString(),
       });
@@ -3004,7 +3098,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         session.initialHarnessLogin?.pending?.reject(new Error('Native Login session is closing.'));
       await this.joinHarnessLoginDeliveries(session);
     }
-    const anchor = getWorkerBackendSession(this.coreDb, attemptId);
+    const anchor = this.readNanoHost((native) => getWorkerBackendSession(native, attemptId));
     if (
       anchor &&
       requireSchedulerExecutionAttempt(this.coreDb, attemptId).phase === 'closed' &&
@@ -3037,11 +3131,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         session?.sharedHarness.sandbox.originPhysicalEpoch ??
         durableSandbox?.originPhysicalEpoch ??
         (
-          this.coreDb.sqlite
-            .prepare(
-              'SELECT origin_physical_epoch AS epoch FROM worker_backend_sessions WHERE attempt_id = ?'
-            )
-            .get(attemptId) as { epoch: string } | undefined
+          this.readNanoHost(({ sqlite }) =>
+            sqlite
+              .prepare(
+                'SELECT origin_physical_epoch AS epoch FROM worker_backend_sessions WHERE attempt_id = ?'
+              )
+              .get(attemptId)
+          ) as { epoch: string } | undefined
         )?.epoch;
       const provedScope = [
         session?.sharedHarness.sandbox,
@@ -3065,7 +3161,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (session?.acceptedProofUnrecorded) {
         // The binding row is the only retained copy. Do not close, delete, or drop this session.
         retainUnrecordedProof = true;
-        await drainNanoHostHarnessAdmission(this.coreDb, {
+        await drainNanoHostHarnessAdmission(this.harnessWriter(), {
           harnessBindingRef: session.harnessBindingRef,
           timestamp: new Date().toISOString(),
         });
@@ -3076,6 +3172,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       // A no-effect closing attempt has no authority to clean a shared resident or its idle AS.
       const untouchedResident =
         (session || durableSandbox) &&
+        !this.readNanoHost(({ sqlite }) =>
+          sqlite
+            .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE current_attempt_id = ?')
+            .get(attemptId)
+        ) &&
         this.coreDb.sqlite
           .prepare(`
         SELECT 1 FROM scheduler_execution_attempts a WHERE a.attempt_id = ?
@@ -3085,8 +3186,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           AND a.last_accepted_heartbeat_at IS NULL AND a.last_worker_sequence IS NULL
           AND a.worker_process_key_hash IS NULL AND a.worker_control_token_hash IS NULL
           AND a.worker_inference_token_hash IS NULL AND a.worker_capability_token_hash IS NULL
-          AND NOT EXISTS (SELECT 1 FROM agent_session_runtime_bindings b
-            WHERE b.current_attempt_id = a.attempt_id)
+
         `)
           .get(attemptId, this.id, identity.agentSessionId, identity.packageSnapshotId);
       if (this.failedPreSandboxPreparations.has(identity.packageSnapshotId) || untouchedResident)
@@ -3135,7 +3235,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           await this.handoffSandboxAgentSessionProofs(durableSandbox.sandboxBindingRef);
           await this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
           await removeNanoHostSandboxRuntimeByBinding(
-            this.coreDb,
+            this.harnessWriter(),
             durableSandbox.sandboxBindingRef
           );
           this.forgetSharedSandbox(durableSandbox.sandboxCompatibilityKey);
@@ -3236,7 +3336,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               );
             if (retained.kind === 'bridge.close') {
               if (durableSandbox)
-                await drainNanoHostSandboxAdmission(this.coreDb, {
+                await drainNanoHostSandboxAdmission(this.harnessWriter(), {
                   sandboxBindingRef: durableSandbox.sandboxBindingRef,
                   originPhysicalEpoch: durableSandbox.originPhysicalEpoch,
                 });
@@ -3259,7 +3359,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         } catch (error) {
           // A result-only wait accounts for a previously uncertain dispatch, never a new cleanup effect.
           if (awaitingCleanupResult && durableSandbox) {
-            await fenceNanoHostSandboxRuntime(this.coreDb, {
+            await fenceNanoHostSandboxRuntime(this.harnessWriter(), {
               sandboxBindingRef: durableSandbox.sandboxBindingRef,
               timestamp: new Date().toISOString(),
             });
@@ -3282,7 +3382,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           await this.handoffSandboxAgentSessionProofs(durableSandbox.sandboxBindingRef);
           await this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
           await removeNanoHostSandboxRuntimeByBinding(
-            this.coreDb,
+            this.harnessWriter(),
             durableSandbox.sandboxBindingRef
           );
         } else {
@@ -3313,7 +3413,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Promise<Set<string>> {
     const disposed = new Set<string>();
     if (!sandboxBindingRef) return disposed;
-    for (const anchor of readNanoHostWorkspaceCaptureAnchors(this.coreDb, sandboxBindingRef)) {
+    for (const anchor of this.readNanoHost((native) =>
+      readNanoHostWorkspaceCaptureAnchors(native, sandboxBindingRef)
+    )) {
       const admitted = isScopeAdmitted(this.coreDb.dataRoot, 'workspace', anchor.workspaceId);
       const db = admitted
         ? openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, anchor.workspaceId)
@@ -3396,7 +3498,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // This includes the original first delivery and registered result-only waiters.
     if (this.cleanupRecoveryResults.has(identity.packageSnapshotId)) return;
     const attemptId = this.requireAttemptId(identity.packageSnapshotId);
-    const anchor = getWorkerBackendSession(this.coreDb, attemptId);
+    const anchor = this.readNanoHost((native) => getWorkerBackendSession(native, attemptId));
     const resident = this.findDurableSandboxBinding(identity);
     if (
       !anchor ||
@@ -3522,7 +3624,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             if (this.cleanupRecoveryResults.get(identity.packageSnapshotId) !== result) return;
             this.cleanupRecoveryResults.delete(identity.packageSnapshotId);
             if (!this.coreDb.sqlite.open) return;
-            await fenceNanoHostSandboxRuntime(this.coreDb, {
+            await fenceNanoHostSandboxRuntime(this.harnessWriter(), {
               sandboxBindingRef,
               timestamp: new Date().toISOString(),
             });
@@ -3546,10 +3648,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         physicalAbsent: !sameEpoch,
       });
       await this.releaseWorkerStorageForSandbox(sandboxBindingRef);
-      await removeNanoHostSandboxRuntimeByBinding(this.coreDb, sandboxBindingRef);
+      await removeNanoHostSandboxRuntimeByBinding(this.harnessWriter(), sandboxBindingRef);
       this.forgetSharedSandbox(resident.sandboxCompatibilityKey);
     } catch (error) {
-      await fenceNanoHostSandboxRuntime(this.coreDb, {
+      await fenceNanoHostSandboxRuntime(this.harnessWriter(), {
         sandboxBindingRef,
         timestamp: new Date().toISOString(),
       });
@@ -3565,7 +3667,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     bridgeOpen: boolean,
     retiringSandboxOrigin?: string
   ): Promise<void> {
-    const anchor = getWorkerBackendSession(this.coreDb, cleanupInput.attemptId);
+    const anchor = this.readNanoHost((native) =>
+      getWorkerBackendSession(native, cleanupInput.attemptId)
+    );
     const resident = this.findDurableSandboxBinding(identity);
     await this.assertWorkspaceCaptureSettled(
       resident?.sandboxBindingRef ?? anchor?.sandboxBindingRef ?? null
@@ -3656,7 +3760,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private async releaseWorkerStorageForSandbox(
     sandboxBindingRef: string
   ): Promise<WorkerStorageBinding | null> {
-    const binding = getWorkerStorageBindingForSandbox(this.coreDb, { sandboxBindingRef });
+    const binding = this.readNanoHost((owner) =>
+      getWorkerStorageBindingForSandbox(owner, { sandboxBindingRef })
+    );
     if (!binding) {
       console.warn(
         'NanoHost Sandbox storage binding is missing after proved writer cleanup; retiring only the runtime projection.'
@@ -3721,7 +3827,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Fences only one retained association after Sandbox cleanup becomes uncertain. */
   private async fenceWorkerStorageForSandbox(sandboxBindingRef: string): Promise<void> {
-    const binding = getWorkerStorageBindingForSandbox(this.coreDb, { sandboxBindingRef });
+    const binding = this.readNanoHost((owner) =>
+      getWorkerStorageBindingForSandbox(owner, { sandboxBindingRef })
+    );
     if (!binding || binding.state === 'unknown') return;
     await markWorkerStorageAttachmentUnknown(this.coreDb, {
       attachmentGeneration: binding.attachmentGeneration,
@@ -3743,13 +3851,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     originPhysicalEpoch: string,
     sandboxId: string
   ): Array<{ attemptId: string; deadline: string | null }> {
-    return nonClosedSandboxAttempts(
-      this.coreDb,
-      this.id,
-      environmentPackage,
-      runtimeTargetId,
-      originPhysicalEpoch,
-      sandboxId
+    return this.readNanoHost((owner) =>
+      nonClosedSandboxAttempts(
+        this.coreDb,
+        this.id,
+        environmentPackage,
+        runtimeTargetId,
+        originPhysicalEpoch,
+        sandboxId,
+        owner
+      )
     );
   }
 
@@ -3774,9 +3885,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): NanoHostIdleSandboxEviction | 'capacity-saturated' | null {
     const desiredKey = nanoHostSandboxCompatibilityKey(environmentPackage);
     const runtimeTargetId = requireNanoHostRuntimeTargetId(this.planSession(environmentPackage));
-    const sandboxes = this.coreDb.sqlite
-      .prepare(
-        `SELECT sandbox_runtime_id AS sandboxRuntimeId,
+    const sandboxes = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT sandbox_runtime_id AS sandboxRuntimeId,
                 sandbox_binding_ref AS sandboxBindingRef,
                 sandbox_compatibility_key AS sandboxCompatibilityKey,
                 origin_physical_epoch AS originPhysicalEpoch,
@@ -3786,8 +3898,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
          FROM sandbox_runtime_records
          WHERE runtime_target_id = ?
          ORDER BY sandbox_runtime_id`
-      )
-      .all(runtimeTargetId) as Array<{
+        )
+        .all(runtimeTargetId)
+    ) as Array<{
       readonly cleanupState: string;
       readonly drainState: string;
       readonly healthState: string;
@@ -3832,9 +3945,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       return 'capacity-saturated';
     }
-    const harnesses = this.coreDb.sqlite
-      .prepare(
-        `SELECT harness_instance_id AS harnessInstanceId,
+    const harnesses = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT harness_instance_id AS harnessInstanceId,
                 harness_binding_ref AS harnessBindingRef,
                 lifecycle_state AS lifecycleState, drain_state AS drainState,
                 active_turn_count AS activeTurnCount, operation_state AS operationState,
@@ -3854,8 +3968,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
          FROM harness_instance_records
          WHERE sandbox_runtime_id = ?
          ORDER BY harness_instance_id`
-      )
-      .all(sandbox.sandboxRuntimeId) as Array<{
+        )
+        .all(sandbox.sandboxRuntimeId)
+    ) as Array<{
       readonly activeTurnCount: number;
       readonly harnessCompatibilityKey: string;
       readonly maxActiveTurns: number;
@@ -3902,14 +4017,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sandbox.sandboxCompatibilityKey === desiredKey &&
       processLocalSandbox
     ) {
-      const activeBindings = this.coreDb.sqlite
-        .prepare(`
+      const activeBindings = this.readNanoHost(({ sqlite }) =>
+        sqlite
+          .prepare(`
         SELECT b.current_attempt_id AS attemptId, b.agent_session_runtime_binding_id AS bindingId
         FROM agent_session_runtime_bindings b JOIN harness_instance_records h
           ON h.harness_instance_id = b.harness_instance_id
         WHERE h.sandbox_runtime_id = ? AND b.lifecycle_state = 'active'
       `)
-        .all(sandbox.sandboxRuntimeId) as Array<{ attemptId: string; bindingId: string }>;
+          .all(sandbox.sandboxRuntimeId)
+      ) as Array<{ attemptId: string; bindingId: string }>;
       const nativeActive = harnesses.reduce((count, harness) => count + harness.activeTurnCount, 0);
       // An unowned/unknown active attempt is a fence, not evidence of a free operating slot.
       if (
@@ -3943,16 +4060,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (selectedHarness) {
         if (selectedHarness.activeTurnCount >= selectedHarness.maxActiveTurns)
           return 'capacity-saturated';
-        const retainedThread = this.coreDb.sqlite
-          .prepare(`
+        const retainedThread = this.readNanoHost(({ sqlite }) =>
+          sqlite
+            .prepare(`
           SELECT 1 FROM agent_session_runtime_bindings
           WHERE harness_instance_id = ? AND workspace_id = ? AND thread_id = ? AND lifecycle_state <> 'closed'
         `)
-          .get(
-            selectedHarness.harnessInstanceId,
-            environmentPackage.scope.workspaceId,
-            environmentPackage.scope.threadId
-          );
+            .get(
+              selectedHarness.harnessInstanceId,
+              environmentPackage.scope.workspaceId,
+              environmentPackage.scope.threadId
+            )
+        );
         if (!retainedThread && selectedHarness.openSessionCount >= selectedHarness.maxOpenSessions)
           return 'capacity-saturated';
       }
@@ -3979,9 +4098,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         .get(sandbox.sandboxBindingRef)
     )
       return 'capacity-saturated';
-    const bindings = this.coreDb.sqlite
-      .prepare(
-        `SELECT b.agent_session_id AS agentSessionId,
+    const bindings = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT b.agent_session_id AS agentSessionId,
                 b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
                 b.harness_instance_id AS harnessInstanceId,
                 h.harness_binding_ref AS harnessBindingRef,
@@ -3996,8 +4116,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
          JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
          WHERE h.sandbox_runtime_id = ?
          ORDER BY b.agent_session_runtime_binding_id`
-      )
-      .all(sandbox.sandboxRuntimeId) as Array<{
+        )
+        .all(sandbox.sandboxRuntimeId)
+    ) as Array<{
       readonly agentSessionId: string;
       readonly agentSessionRuntimeBindingId: string;
       readonly cleanupState: string;
@@ -4054,17 +4175,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       return null;
     }
-    const retainedOwner = this.coreDb.sqlite
-      .prepare(
-        `SELECT attempt_id AS attemptId FROM worker_backend_sessions
+    const retainedOwner = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT attempt_id AS attemptId FROM worker_backend_sessions
        WHERE sandbox_binding_ref = ? AND runtime_target_id = ? AND origin_physical_epoch = ?
        ORDER BY created_at DESC, attempt_id DESC LIMIT 1`
-      )
-      .get(sandbox.sandboxBindingRef, runtimeTargetId, sandboxOriginPhysicalEpoch) as
-      | { attemptId: string }
-      | undefined;
+        )
+        .get(sandbox.sandboxBindingRef, runtimeTargetId, sandboxOriginPhysicalEpoch)
+    ) as { attemptId: string } | undefined;
     const retirementOwner = retainedOwner
-      ? getWorkerBackendSession(this.coreDb, retainedOwner.attemptId)
+      ? this.readNanoHost((native) => getWorkerBackendSession(native, retainedOwner.attemptId))
       : null;
     if (
       (!retirementOwner && !physicalAbsent) ||
@@ -4117,6 +4238,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const eviction = inspected;
     let authorizedReplacementBinding: WorkerStorageBinding | null = null;
     if (eviction) {
+      if (
+        this.nanoHostOwner &&
+        eviction.closeAgentSessions &&
+        eviction.retirementOwner &&
+        isScopeAdmitted(this.coreDb.dataRoot, 'workspace', eviction.retirementOwner.workspaceId) &&
+        eviction.bindings.some((binding) => binding.lifecycleState !== 'closed')
+      )
+        this.unavailableNanoHostRuntime();
       if (replacementSelection) {
         const selectedBinding = this.validateWorkerStorageSelection(
           environmentPackage,
@@ -4207,21 +4336,23 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           try {
             await this.closeDurableAgentSession(binding);
           } catch (error) {
-            const unknownClose = this.coreDb.sqlite
-              .prepare(
-                `SELECT operation_id AS operationId FROM harness_instance_records
+            const unknownClose = this.readNanoHost(({ sqlite }) =>
+              sqlite
+                .prepare(
+                  `SELECT operation_id AS operationId FROM harness_instance_records
                WHERE harness_instance_id = ? AND harness_binding_ref = ?
                  AND operation = 'session.close' AND operation_state = 'unknown'
                  AND operation_id IS NOT NULL
                  AND json_extract(command_body_json, '$.agentSessionId') = ?
                  AND json_extract(command_body_json, '$.agentSessionRuntimeBindingId') = ?`
-              )
-              .get(
-                binding.harnessInstanceId,
-                binding.harnessBindingRef,
-                binding.agentSessionId,
-                binding.agentSessionRuntimeBindingId
-              );
+                )
+                .get(
+                  binding.harnessInstanceId,
+                  binding.harnessBindingRef,
+                  binding.agentSessionId,
+                  binding.agentSessionRuntimeBindingId
+                )
+            );
             if (!isCleanupRequiredRefusal(error) && !unknownClose) throw error;
             // Preserve the unknown operation. The resident's wider delete is a distinct owned effect,
             // not a repeat of session.close or an outcome on the incoming Turn.
@@ -4244,16 +4375,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           eviction.originPhysicalEpoch
         );
       }
-      const releasedBinding = getWorkerStorageBindingForSandbox(this.coreDb, {
-        sandboxBindingRef: eviction.sandboxBindingRef,
-      })
+      const releasedBinding = this.readNanoHost((owner) =>
+        getWorkerStorageBindingForSandbox(owner, {
+          sandboxBindingRef: eviction.sandboxBindingRef,
+        })
+      )
         ? await this.releaseWorkerStorageForSandbox(eviction.sandboxBindingRef)
         : authorizedReplacementBinding
-          ? getWorkerStorageBinding(this.coreDb, {
-              storageRef: authorizedReplacementBinding.storageRef,
-            })
+          ? this.readNanoHost((owner) =>
+              getWorkerStorageBinding(owner, {
+                storageRef: authorizedReplacementBinding.storageRef,
+              })
+            )
           : null;
-      await removeNanoHostSandboxRuntimeByBinding(this.coreDb, eviction.sandboxBindingRef);
+      await removeNanoHostSandboxRuntimeByBinding(this.harnessWriter(), eviction.sandboxBindingRef);
       this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
       return authorizedReplacementBinding &&
         releasedBinding &&
@@ -4283,13 +4418,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     eviction: NanoHostIdleSandboxEviction
   ): Promise<void> {
     // Absence proves cleanup, not the outcome of an old command; preserve truthful uncertainty.
-    const operations = this.coreDb.sqlite
-      .prepare(
-        `SELECT harness_binding_ref AS harnessBindingRef, operation_state AS operationState,
+    const operations = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT harness_binding_ref AS harnessBindingRef, operation_state AS operationState,
                 operation_id AS operationId
          FROM harness_instance_records WHERE sandbox_runtime_id = ?`
-      )
-      .all(eviction.sandboxRuntimeId) as Array<{
+        )
+        .all(eviction.sandboxRuntimeId)
+    ) as Array<{
       readonly harnessBindingRef: string;
       readonly operationId: string | null;
       readonly operationState: string;
@@ -4297,12 +4434,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const timestamp = new Date().toISOString();
     for (const operation of operations) {
       if (operation.operationState === 'queued') {
-        await expireNanoHostHarnessQueuedOperation(this.coreDb, {
+        await expireNanoHostHarnessQueuedOperation(this.harnessWriter(), {
           harnessBindingRef: operation.harnessBindingRef,
           timestamp,
         });
       } else if (operation.operationState === 'dispatched') {
-        await markNanoHostHarnessOperationUnknown(this.coreDb, {
+        await markNanoHostHarnessOperationUnknown(this.harnessWriter(), {
           harnessBindingRef: operation.harnessBindingRef,
           operationId: operation.operationId!,
           timestamp,
@@ -4411,7 +4548,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     // An existing anchor still owns its exact origin; a not-yet-published incoming anchor must use this same Epoch.
     const capacityPhysicalEpoch =
-      context.beforeMaterialization && !getWorkerBackendSession(this.coreDb, attemptId)
+      context.beforeMaterialization &&
+      !this.readNanoHost((native) => getWorkerBackendSession(native, attemptId))
         ? this.requireCurrentPhysicalEpoch(identity.runtimeTargetId)
         : this.requireCurrentBackendPhysicalEpoch(identity);
     if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
@@ -4449,7 +4587,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       choice?.kind === 'fresh'
         ? undefined
         : choice?.kind === 'selected'
-          ? getWorkerStorageBinding(this.coreDb, { storageRef: choice.storageRef })
+          ? this.readNanoHost((owner) =>
+              getWorkerStorageBinding(owner, { storageRef: choice.storageRef })
+            )
           : sharedSandbox?.workerStorageBinding;
     const initializesNewSlot = !priorSlotBinding?.contributors.some(
       (contributor) =>
@@ -4844,7 +4984,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       harnessCompatibilityKey
     );
     if (!this.sharedHarnesses.has(harnessMapKey)) {
-      await createNanoHostHarnessRuntime(this.coreDb, {
+      await createNanoHostHarnessRuntime(this.harnessWriter(), {
         maxActiveTurns: sharedHarness.maxActiveTurns,
         adapterId,
         adapterVersion,
@@ -4864,7 +5004,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       this.sharedHarnesses.set(harnessMapKey, sharedHarness);
     }
     if (existingBinding) {
-      await copyNanoHostMeasuredHarnessIdentity(this.coreDb, {
+      await copyNanoHostMeasuredHarnessIdentity(this.harnessWriter(), {
         agentSessionRuntimeBindingId: existingBinding.agentSessionRuntimeBindingId,
         imageDigest: sharedSandbox.imageDigest,
         timestamp: environmentPackage.createdAt,
@@ -4964,9 +5104,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Promise<void> {
     const session = this.requireSession(materialization.packageSnapshotId);
     this.assertProviderProtection(session);
-    const storage = getWorkerStorageBindingForSandbox(this.coreDb, {
-      sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
-    });
+    const storage = this.readNanoHost((owner) =>
+      getWorkerStorageBindingForSandbox(owner, {
+        sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
+      })
+    );
     const authorizeContributor = currentWorkerStorageAudienceAuthorizer(
       this.coreDb,
       session.environmentPackage,
@@ -5026,13 +5168,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       // canonical selection/cooldown checks. A cleared private Thread remains private.
       if (
         login?.referenceId != null &&
-        readNanoHostThreadAgentSessionBinding(this.coreDb, receiver)?.agentSessionId !==
-          session.environmentPackage.scope.agentSessionId
+        this.readNanoHost((native) => readNanoHostThreadAgentSessionBinding(native, receiver))
+          ?.agentSessionId !== session.environmentPackage.scope.agentSessionId
       )
         throw new WorkerGovernanceCapacityUnavailableError(
           'The active Thread Login has no current native binding; inspection is required.'
         );
-      await openNanoHostAgentSessionBinding(this.coreDb, {
+      await openNanoHostAgentSessionBinding(this.harnessWriter(), {
         nativeEnvironment: session.environmentPackage.runtime.environment
           ? {
               agentId: session.environmentPackage.agent.agentId,
@@ -5048,16 +5190,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         timestamp: new Date().toISOString(),
         workspaceId: session.environmentPackage.scope.workspaceId,
       });
-      const retainedBinding = this.coreDb.sqlite
-        .prepare(`SELECT runtime_env_check_versions_json AS versions
+      const retainedBinding = this.readNanoHost(({ sqlite }) =>
+        sqlite
+          .prepare(`SELECT runtime_env_check_versions_json AS versions
         FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id=? AND harness_instance_id=? AND agent_session_id=?`)
-        .get(
-          session.agentSessionRuntimeBindingId,
-          session.harnessInstanceId,
-          session.environmentPackage.scope.agentSessionId
-        ) as { versions: string | null } | undefined;
+          .get(
+            session.agentSessionRuntimeBindingId,
+            session.harnessInstanceId,
+            session.environmentPackage.scope.agentSessionId
+          )
+      ) as { versions: string | null } | undefined;
       if (!retainedBinding) throw new Error('Original credential binding lineage is unavailable.');
-      await initializeNanoHostRuntimeCheckVersions(this.coreDb, {
+      await initializeNanoHostRuntimeCheckVersions(this.harnessWriter(), {
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         harnessInstanceId: session.harnessInstanceId,
         agentSessionId: session.environmentPackage.scope.agentSessionId,
@@ -5119,7 +5263,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         await this.recordAcceptedNativeHandleDigest(session, binding.nativeHandleDigest);
       }
     } else {
-      await copyNanoHostMeasuredHarnessIdentity(this.coreDb, {
+      await copyNanoHostMeasuredHarnessIdentity(this.harnessWriter(), {
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         imageDigest: session.sharedHarness.sandbox.imageDigest,
         timestamp: new Date().toISOString(),
@@ -5981,15 +6125,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
     try {
       const values = await this.restoreCollectionRuntimeCredentials(session, db);
-      const row = this.coreDb.sqlite
-        .prepare(`SELECT schema_version AS schemaVersion,
+      const row = this.readNanoHost(({ sqlite }) =>
+        sqlite
+          .prepare(`SELECT schema_version AS schemaVersion,
         runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings
         WHERE agent_session_runtime_binding_id=? AND harness_instance_id=? AND agent_session_id=?`)
-        .get(
-          session.agentSessionRuntimeBindingId,
-          session.harnessInstanceId,
-          session.environmentPackage.scope.agentSessionId
-        ) as { schemaVersion: unknown; versions: string } | undefined;
+          .get(
+            session.agentSessionRuntimeBindingId,
+            session.harnessInstanceId,
+            session.environmentPackage.scope.agentSessionId
+          )
+      ) as { schemaVersion: unknown; versions: string } | undefined;
       if (!row) throw new Error('Original credential binding lineage is unavailable.');
       readRetainedV1(row, () => row);
       const versions = JSON.parse(row.versions) as NonNullable<
@@ -6030,7 +6176,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         planId: input.binding.planId,
         receiptId: input.binding.receiptId,
       };
-      await appendNanoHostRuntimeCheckVersion(this.coreDb, {
+      await appendNanoHostRuntimeCheckVersion(this.harnessWriter(), {
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         harnessInstanceId: session.harnessInstanceId,
         agentSessionId: session.environmentPackage.scope.agentSessionId,
@@ -6075,8 +6221,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public async revokeCredentialBinding(
     input: Parameters<NonNullable<WorkerGovernanceBackend['revokeCredentialBinding']>>[0]
   ): Promise<{ state: 'removed' | 'unknown'; fenceRef: string | null }> {
+    if (this.nanoHostOwner) return this.unavailableNanoHostRuntime();
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
-    const anchor = getWorkerBackendSession(this.coreDb, input.attemptId);
+    const anchor = this.readNanoHost((native) => getWorkerBackendSession(native, input.attemptId));
     if (
       attempt.backendId !== this.id ||
       commandInputHash(schedulerExecutionCorrelation(attempt)) !==
@@ -6118,7 +6265,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       receipt.agentSessionId !== attempt.agentSessionId
     )
       throw new Error('Credential revocation contradicts its exact binding.');
-    await drainNanoHostSandboxAdmission(this.coreDb, {
+    await drainNanoHostSandboxAdmission(this.harnessWriter(), {
       sandboxBindingRef: anchor.sandboxBindingRef,
       originPhysicalEpoch: anchor.originPhysicalEpoch,
     });
@@ -6269,7 +6416,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       commandInputHash(schedulerExecutionCorrelation(attempt)) !== commandInputHash(input)
     )
       return null;
-    const anchor = getWorkerBackendSession(this.coreDb, attempt.attemptId);
+    const anchor = this.readNanoHost((native) =>
+      getWorkerBackendSession(native, attempt.attemptId)
+    );
     const submissionId = commandInputHash({
       attemptId: attempt.attemptId,
       inputRef: attempt.inputRef,
@@ -6278,8 +6427,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // Active binding ownership outlives the shared command cell, which siblings may already use.
     const native =
       attempt.operationId === submissionId && anchor
-        ? (this.coreDb.sqlite
-            .prepare(`
+        ? (this.readNanoHost(({ sqlite }) =>
+            sqlite
+              .prepare(`
         SELECT s.sandbox_compatibility_key AS sandboxCompatibilityKey
         FROM agent_session_runtime_bindings b
         JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
@@ -6294,16 +6444,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           AND r.physical_epoch = s.origin_physical_epoch AND r.ready = 1
           AND h.lifecycle_state = 'open' AND h.active_turn_count > 0 AND s.lifecycle_state = 'open'
       `)
-            .get(
-              attempt.agentSessionId,
-              attempt.attemptId,
-              attempt.turnId,
-              attempt.workspaceId,
-              attempt.threadId,
-              attempt.inputRef,
-              anchor.runtimeTargetId,
-              anchor.originPhysicalEpoch
-            ) as { sandboxCompatibilityKey: string } | undefined)
+              .get(
+                attempt.agentSessionId,
+                attempt.attemptId,
+                attempt.turnId,
+                attempt.workspaceId,
+                attempt.threadId,
+                attempt.inputRef,
+                anchor.runtimeTargetId,
+                anchor.originPhysicalEpoch
+              )
+          ) as { sandboxCompatibilityKey: string } | undefined)
         : undefined;
     const nativeAccepted =
       !!native &&
@@ -6312,7 +6463,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         nanoHostSandboxId(native.sandboxCompatibilityKey);
     const final =
       attempt.agentSessionId && attempt.inputRef
-        ? getWorkerControlAcceptedFinalStatus(this.coreDb, {
+        ? this.readAcceptedFinal({
             agentSessionId: attempt.agentSessionId,
             packageSnapshotId: attempt.inputRef,
             requestId: requireSchedulerExecutionAttemptAdmissionContext(
@@ -6391,7 +6542,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       !input.proof.routesRevoked
     )
       return { ...correlation, state: 'pending' as const, fenceRef: null };
-    const anchor = getWorkerBackendSession(this.coreDb, attempt.attemptId);
+    const anchor = this.readNanoHost((native) =>
+      getWorkerBackendSession(native, attempt.attemptId)
+    );
     if (!anchor || anchor.state !== 'cleaned' || !anchor.physicalCleanedAt)
       return { ...correlation, state: 'pending' as const, fenceRef: null };
     const identity = this.durableBackendSessionIdentity(anchor);
@@ -6401,13 +6554,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       // owners keep their collection and release; shared deletion stays behind their join.
       await this.cleanupSession(identity, { failedCloseout: true });
     }
-    const resident = this.coreDb.sqlite
-      .prepare(`SELECT b.lifecycle_state AS lifecycleState, b.cleanup_state AS cleanupState,
+    const resident = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(`SELECT b.lifecycle_state AS lifecycleState, b.cleanup_state AS cleanupState,
       b.current_turn_id AS turnId, b.current_attempt_id AS attemptId, h.lifecycle_state AS harnessState,
       h.drain_state AS drainState, s.cleanup_state AS sandboxCleanup
       FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
       JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id WHERE b.agent_session_id = ?`)
-      .get(attempt.agentSessionId) as
+        .get(attempt.agentSessionId)
+    ) as
       | {
           lifecycleState: string;
           cleanupState: string;
@@ -6449,8 +6604,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private readSteerBinding(packageSnapshotId: string, target: TaskSteerRunTarget) {
     const session = this.sessions.get(packageSnapshotId);
     if (!session) return undefined;
-    return this.coreDb.sqlite
-      .prepare(`SELECT b.schema_version AS bindingVersion,h.schema_version AS harnessVersion,
+    return this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(`SELECT b.schema_version AS bindingVersion,h.schema_version AS harnessVersion,
       h.lifecycle_state AS lifecycle,h.drain_state AS drain,
       h.operation_state AS state,h.result_fingerprint AS fingerprint,
       CASE WHEN length(CAST(h.result_json AS BLOB))<=65536 THEN h.result_json ELSE NULL END AS result,
@@ -6458,15 +6614,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
       WHERE b.agent_session_runtime_binding_id=? AND b.harness_instance_id=? AND b.agent_session_id=?
         AND b.workspace_id=? AND b.thread_id=? AND b.current_turn_id=? AND b.current_attempt_id=? AND b.lifecycle_state='active'`)
-      .get(
-        session.agentSessionRuntimeBindingId,
-        session.harnessInstanceId,
-        session.environmentPackage.scope.agentSessionId,
-        target.workspaceId,
-        target.threadId,
-        target.turnId,
-        session.attemptId
-      ) as
+        .get(
+          session.agentSessionRuntimeBindingId,
+          session.harnessInstanceId,
+          session.environmentPackage.scope.agentSessionId,
+          target.workspaceId,
+          target.threadId,
+          target.turnId,
+          session.attemptId
+        )
+    ) as
       | {
           bindingVersion: number;
           harnessVersion: number;
@@ -6616,12 +6773,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       };
       // This native-owner read rejects an occupied or unconsumed cell before Item admission.
       try {
-        prepareNanoHostHarnessOperation(this.coreDb, {
-          harnessInstanceId: session.harnessInstanceId,
-          operation: 'turn.steer',
-          body,
-          timestamp: new Date().toISOString(),
-        });
+        this.readNanoHost((owner) =>
+          prepareNanoHostHarnessOperation(
+            this.coreDb,
+            {
+              harnessInstanceId: session.harnessInstanceId,
+              operation: 'turn.steer',
+              body,
+              timestamp: new Date().toISOString(),
+            },
+            owner
+          )
+        );
       } catch (cause) {
         throw new OperationError('steer_busy', 'The exact Harness slot is unavailable.', 409, {
           cause,
@@ -6748,7 +6911,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       scope.threadId !== lineage.threadId ||
       scope.workspaceId !== lineage.workspaceId ||
       scope.turnId !== lineage.turnId ||
-      getWorkerControlAcceptedFinalStatus(this.coreDb, lineage) ||
+      this.readAcceptedFinal(lineage) ||
       !receipt ||
       receipt.agentSessionId !== scope.agentSessionId ||
       !receipt.backendSummary.startsWith('credential-helper:') ||
@@ -6793,7 +6956,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (
         resolution.status !== 'accepted' ||
         resolution.attempt.attemptId !== session.attemptId ||
-        getWorkerControlAcceptedFinalStatus(this.coreDb, lineage)
+        this.readAcceptedFinal(lineage)
       )
         throw new OperationError(
           'turn_not_active',
@@ -6920,7 +7083,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } finally {
       observationDb.sqlite.close();
     }
-    for (const metadata of listWorkerControlAcceptedEvents(this.coreDb, lineage)) {
+    for (const metadata of this.readNanoHost((owner) =>
+      listWorkerControlAcceptedEvents(owner, lineage)
+    )) {
       // Ordinary transcript reconciliation separately verifies these original accepted envelopes.
       if (
         metadata.event.type !== 'observation.recorded' ||
@@ -7091,17 +7256,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     session: NanoHostBackendTurnSession,
     workspaceDb: WorkspaceDb
   ): Promise<Record<string, string>> {
-    const row = this.coreDb.sqlite
-      .prepare(
-        'SELECT schema_version AS schemaVersion, runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ? AND agent_session_id = ? AND workspace_id = ? AND thread_id = ?'
-      )
-      .get(
-        session.agentSessionRuntimeBindingId,
-        session.harnessInstanceId,
-        session.environmentPackage.scope.agentSessionId,
-        session.environmentPackage.scope.workspaceId,
-        session.environmentPackage.scope.threadId
-      ) as { schemaVersion: unknown; versions: string | null } | undefined;
+    const row = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          'SELECT schema_version AS schemaVersion, runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ? AND agent_session_id = ? AND workspace_id = ? AND thread_id = ?'
+        )
+        .get(
+          session.agentSessionRuntimeBindingId,
+          session.harnessInstanceId,
+          session.environmentPackage.scope.agentSessionId,
+          session.environmentPackage.scope.workspaceId,
+          session.environmentPackage.scope.threadId
+        )
+    ) as { schemaVersion: unknown; versions: string | null } | undefined;
     if (row) readRetainedV1(row, () => row);
     try {
       const consumer = session.environmentPackage;
@@ -7349,7 +7516,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     collectionId: string
   ): WorkspaceCollectionIdentity {
     const storage = session.sharedHarness.sandbox.workerStorageBinding;
-    const current = getWorkerStorageBinding(this.coreDb, { storageRef: storage.storageRef });
+    const current = this.readNanoHost((owner) =>
+      getWorkerStorageBinding(owner, { storageRef: storage.storageRef })
+    );
     if (
       !current ||
       current.state !== 'attached' ||
@@ -7385,19 +7554,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     session: NanoHostBackendTurnSession,
     workspaceDb: WorkspaceDb
   ) {
-    const digests = this.coreDb.sqlite
-      .prepare(
-        `SELECT inference_loopback_credential_digest AS inference, capability_loopback_credential_digest AS capability
+    const digests = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT inference_loopback_credential_digest AS inference, capability_loopback_credential_digest AS capability
          FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?
            AND harness_instance_id = ? AND agent_session_id = ? AND workspace_id = ? AND thread_id = ?`
-      )
-      .get(
-        session.agentSessionRuntimeBindingId,
-        session.harnessInstanceId,
-        session.environmentPackage.scope.agentSessionId,
-        session.environmentPackage.scope.workspaceId,
-        session.environmentPackage.scope.threadId
-      ) as { inference: string | null; capability: string | null } | undefined;
+        )
+        .get(
+          session.agentSessionRuntimeBindingId,
+          session.harnessInstanceId,
+          session.environmentPackage.scope.agentSessionId,
+          session.environmentPackage.scope.workspaceId,
+          session.environmentPackage.scope.threadId
+        )
+    ) as { inference: string | null; capability: string | null } | undefined;
     // Already-exposed values remain a confidentiality deny-list during revocation cleanup.
     // Reuse admission and uncached resolution still validate current original authority.
     const values =
@@ -7477,13 +7648,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         // Only this actual fresh session.open may check its private values before receipt settlement.
         if (opensNewBinding) await this.collectWorkspaceSnapshot(session, 'successor');
         else {
-          const previous = this.coreDb.sqlite
-            .prepare(
-              'SELECT attempt_id AS attemptId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? AND package_snapshot_id <> ? ORDER BY created_at DESC, attempt_id DESC LIMIT 1'
-            )
-            .get(identity.agentSessionId, identity.packageSnapshotId) as
-            | { attemptId: string; packageSnapshotId: string }
-            | undefined;
+          const previous = this.readNanoHost(({ sqlite }) =>
+            sqlite
+              .prepare(
+                'SELECT attempt_id AS attemptId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? AND package_snapshot_id <> ? ORDER BY created_at DESC, attempt_id DESC LIMIT 1'
+              )
+              .get(identity.agentSessionId, identity.packageSnapshotId)
+          ) as { attemptId: string; packageSnapshotId: string } | undefined;
           if (previous) {
             const prior = requireAgentEnvironmentPackageSnapshot(
               db,
@@ -7592,7 +7763,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         );
         const idleAnchor =
           requireSchedulerExecutionAttempt(this.coreDb, session.attemptId).phase === 'closed'
-            ? getWorkerBackendSession(this.coreDb, session.attemptId)
+            ? this.readNanoHost((native) => getWorkerBackendSession(native, session.attemptId))
             : null;
         if (idleAnchor) {
           const original = (
@@ -7667,12 +7838,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           );
         } catch (error) {
           // Even an idle scan has an existing positive drain; raw absence grants no later scan.
-          await drainNanoHostSandboxAdmission(this.coreDb, {
+          await drainNanoHostSandboxAdmission(this.harnessWriter(), {
             sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
             originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
           });
           try {
-            const anchor = getWorkerBackendSession(this.coreDb, session.attemptId);
+            const anchor = this.readNanoHost((native) =>
+              getWorkerBackendSession(native, session.attemptId)
+            );
             if (!anchor) throw new Error('Workspace capture lost its original backend anchor.');
             await publishWorkspaceCaptureRecovery(db, anchor, identity, preserved ?? null);
           } catch {
@@ -7707,7 +7880,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!['bridge.close', 'sandbox.delete', 'workspace.collect', 'file.export'].includes(operation))
       throw new Error('Core idle cleanup has no admitted physical producer.');
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
-    const anchor = getWorkerBackendSession(this.coreDb, attemptId);
+    const anchor = this.readNanoHost((native) => getWorkerBackendSession(native, attemptId));
     if (
       attempt.phase !== 'closed' ||
       !attempt.fenceRef ||
@@ -7949,13 +8122,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       : null;
     const cleanupTarget =
       operation === 'bridge.close' || operation === 'sandbox.delete'
-        ? (this.coreDb.sqlite
-            .prepare(`SELECT sandbox_binding_ref AS sandboxBindingRef
+        ? (this.readNanoHost(({ sqlite }) =>
+            sqlite
+              .prepare(`SELECT sandbox_binding_ref AS sandboxBindingRef
         FROM sandbox_runtime_records WHERE ('nh-' || substr(sandbox_compatibility_key, 1, 16)) = ?
           AND origin_physical_epoch = ? AND runtime_target_id = ?`)
-            .get(input.sandboxId, originPhysicalEpoch, identity.runtimeTargetId) as
-            | { sandboxBindingRef: string }
-            | undefined)
+              .get(input.sandboxId, originPhysicalEpoch, identity.runtimeTargetId)
+          ) as { sandboxBindingRef: string } | undefined)
         : undefined;
     const store = this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot });
     const admittedDb =
@@ -8037,7 +8210,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           ).filter((other) => other.attemptId !== attemptId);
         const collected = new Map<string, WorkerBackendSessionRecord>();
         for (const other of others()) {
-          const anchor = getWorkerBackendSession(this.coreDb, other.attemptId);
+          const anchor = this.readNanoHost((native) =>
+            getWorkerBackendSession(native, other.attemptId)
+          );
           if (!anchor) throw new Error('NanoHost sibling cleanup lineage is unavailable.');
           const db = openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, anchor.workspaceId);
           try {
@@ -8051,13 +8226,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         await this.assertWorkspaceCaptureSettled(cleanupTarget.sandboxBindingRef);
         // Core, native-operation and binding facts can change during the journal reads.
         for (const other of others()) {
-          const anchor = getWorkerBackendSession(this.coreDb, other.attemptId);
+          const anchor = this.readNanoHost((native) =>
+            getWorkerBackendSession(native, other.attemptId)
+          );
           const sibling = requireSchedulerExecutionAttempt(this.coreDb, other.attemptId);
           const live = anchor && this.sessions.get(anchor.packageSnapshotId);
           const binding =
             anchor &&
-            this.coreDb.sqlite
-              .prepare(`SELECT 1
+            this.readNanoHost(({ sqlite }) =>
+              sqlite
+                .prepare(`SELECT 1
             FROM agent_session_runtime_bindings b JOIN harness_instance_records h
               ON h.harness_instance_id=b.harness_instance_id
             JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
@@ -8066,14 +8244,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               AND s.sandbox_binding_ref=? AND b.lifecycle_state IN ('open','closed')
               AND b.cleanup_state='clean' AND b.current_turn_id IS NULL
               AND b.current_attempt_id IS NULL AND h.operation_state IN ('idle','settled')`)
-              .get(
-                anchor.agentSessionId,
-                anchor.workspaceId,
-                anchor.threadId,
-                identity.runtimeTargetId,
-                originPhysicalEpoch,
-                cleanupTarget.sandboxBindingRef
-              );
+                .get(
+                  anchor.agentSessionId,
+                  anchor.workspaceId,
+                  anchor.threadId,
+                  identity.runtimeTargetId,
+                  originPhysicalEpoch,
+                  cleanupTarget.sandboxBindingRef
+                )
+            );
           // This exact live owner's map removal follows acknowledged session.close. A missing
           // SQL row alone supplies no close proof; keep this handle through its release fence.
           const detached =
@@ -8208,7 +8387,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         error.operation === operation &&
         error.requestId === request.requestId;
       if (!notEnqueued && cleanupTarget) {
-        await fenceNanoHostSandboxRuntime(this.coreDb, {
+        await fenceNanoHostSandboxRuntime(this.harnessWriter(), {
           sandboxBindingRef: cleanupTarget.sandboxBindingRef,
           timestamp: new Date().toISOString(),
         });
@@ -8242,7 +8421,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (cleanupTarget && operation === 'sandbox.delete')
       this.markProvedSandboxDeletion(cleanupTarget.sandboxBindingRef, originPhysicalEpoch);
     if (cleanupTarget)
-      await drainNanoHostSandboxAdmission(this.coreDb, {
+      await drainNanoHostSandboxAdmission(this.harnessWriter(), {
         sandboxBindingRef: cleanupTarget.sandboxBindingRef,
         originPhysicalEpoch,
       });
@@ -8292,9 +8471,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     readonly sandboxCompatibilityKey: string;
     readonly updatedAt: string;
   } | null {
-    const rows = this.coreDb.sqlite
-      .prepare(
-        `SELECT DISTINCT s.sandbox_binding_ref AS sandboxBindingRef,
+    const rows = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT DISTINCT s.sandbox_binding_ref AS sandboxBindingRef,
                 s.sandbox_compatibility_key AS sandboxCompatibilityKey,
                 s.runtime_target_id AS runtimeTargetId,
                 t.deployment_id AS deploymentId,
@@ -8313,12 +8493,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
          WHERE (('nh-' || substr(s.sandbox_compatibility_key, 1, 16)) = ?
            OR s.sandbox_binding_ref = w.sandbox_binding_ref
            OR b.agent_session_id = ?)`
-      )
-      .all(
-        identity.packageSnapshotId,
-        nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
-        identity.agentSessionId
-      ) as Array<{
+        )
+        .all(
+          identity.packageSnapshotId,
+          nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
+          identity.agentSessionId
+        )
+    ) as Array<{
       readonly cleanupState: string;
       readonly deploymentId: string | null;
       readonly drainState: string;
@@ -8359,9 +8540,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private findDurableBackendSession(
     identity: WorkerGovernanceBackendSessionIdentity
   ): WorkerBackendSessionRecord | null {
-    const session = getWorkerBackendSession(
-      this.coreDb,
-      this.requireAttemptId(identity.packageSnapshotId)
+    const session = this.readNanoHost((owner) =>
+      getWorkerBackendSession(owner, this.requireAttemptId(identity.packageSnapshotId))
     );
     if (!session) {
       return null;
@@ -8403,14 +8583,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     deploymentId: string
   ): void {
     requireStoredNanoHostPhysicalEpoch(originPhysicalEpoch);
-    const runtimeTarget = this.coreDb.sqlite
-      .prepare(
-        `SELECT deployment_id AS deploymentId, predecessor_fenced AS predecessorFenced,
+    const runtimeTarget = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT deployment_id AS deploymentId, predecessor_fenced AS predecessorFenced,
                 ready, fresh_empty AS freshEmpty, physical_epoch AS physicalEpoch
          FROM nanohost_runtime_targets
          WHERE target_id = ?`
-      )
-      .get(runtimeTargetId) as
+        )
+        .get(runtimeTargetId)
+    ) as
       | {
           readonly deploymentId: string;
           readonly freshEmpty: number;
@@ -8473,13 +8655,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Reads current authenticated Epoch authority without changing admission state. */
   private readCurrentPhysicalEpoch(runtimeTargetId: string): string | null {
-    const target = this.coreDb.sqlite
-      .prepare(
-        `SELECT predecessor_fenced AS predecessorFenced, ready,
+    const target = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT predecessor_fenced AS predecessorFenced, ready,
                 fresh_empty AS freshEmpty, physical_epoch AS physicalEpoch
          FROM nanohost_runtime_targets WHERE target_id = ?`
-      )
-      .get(runtimeTargetId) as
+        )
+        .get(runtimeTargetId)
+    ) as
       | {
           readonly freshEmpty: number;
           readonly physicalEpoch: string | null;
@@ -8505,9 +8689,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     identity: WorkerGovernanceBackendSessionIdentity,
     expectedOrigin?: string
   ): string {
-    const session = getWorkerBackendSession(
-      this.coreDb,
-      this.requireAttemptId(identity.packageSnapshotId)
+    const session = this.readNanoHost((owner) =>
+      getWorkerBackendSession(owner, this.requireAttemptId(identity.packageSnapshotId))
     );
     if (!session || session.packageSnapshotId !== identity.packageSnapshotId) {
       throw new Error('NanoHost backend physical Epoch anchor is unavailable.');
@@ -8570,7 +8753,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     attemptId: string,
     historical?: AgentEnvironmentPackageSnapshotReadRecord
   ) {
-    const anchor = getWorkerBackendSession(this.coreDb, attemptId);
+    const anchor = this.readNanoHost((native) => getWorkerBackendSession(native, attemptId));
     const workspaceDb = historical
       ? null
       : openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
@@ -8589,9 +8772,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } finally {
       workspaceDb?.sqlite.close();
     }
-    const attachment = this.coreDb.sqlite
-      .prepare(
-        `SELECT b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
+    const attachment = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
               b.agent_session_compatibility_key AS agentSessionCompatibilityKey,
               b.workspace_id AS workspaceId, b.thread_id AS threadId,
               b.native_handle_state AS nativeHandleState, b.native_handle_digest AS nativeHandleDigest,
@@ -8606,8 +8790,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
        JOIN nanohost_runtime_targets t ON t.target_id = s.runtime_target_id
        WHERE b.agent_session_id = ?`
-      )
-      .get(environmentPackage.scope.agentSessionId) as
+        )
+        .get(environmentPackage.scope.agentSessionId)
+    ) as
       | {
           agentSessionRuntimeBindingId: string;
           agentSessionCompatibilityKey: string;
@@ -8738,6 +8923,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return bindWorkspaceSqlite(reader.sqlite, this.coreDb.dataRoot, workspaceId);
   }
 
+  /** Registry state is a separate Core observation from the NanoHost retirement anchor. */
+  private readRetiringWorkspaceStatus(workspaceId: string): string | undefined {
+    return this.coreDb.sqlite
+      .prepare('SELECT status FROM workspace_registry WHERE workspace_id = ?')
+      .pluck()
+      .get(workspaceId) as string | undefined;
+  }
+
   /** Reads the immutable prior package and lease; retirement selects only a read-only historical owner. */
   private readDurableAgentSession(
     inspection: NanoHostAgentSessionContinuityInspection,
@@ -8751,25 +8944,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     historical: AgentEnvironmentPackageSnapshotReadRecord;
     ownerAdmitted: boolean;
   } {
-    const latest = this.coreDb.sqlite
-      .prepare(
-        `SELECT attempt_id AS attemptId, workspace_id AS workspaceId,
-                package_snapshot_id AS packageSnapshotId,
-                (SELECT status FROM workspace_registry r
-                 WHERE r.workspace_id = worker_backend_sessions.workspace_id) AS workspaceStatus
+    const latest = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          `SELECT attempt_id AS attemptId, workspace_id AS workspaceId,
+                package_snapshot_id AS packageSnapshotId
          FROM worker_backend_sessions WHERE agent_session_id = ?
          ORDER BY created_at DESC, attempt_id DESC LIMIT 1`
-      )
-      .get(inspection.agentSessionId) as
-      | {
-          attemptId: string;
-          workspaceId: string;
-          packageSnapshotId: string;
-          workspaceStatus: string | null;
-        }
-      | undefined;
+        )
+        .get(inspection.agentSessionId)
+    ) as { attemptId: string; workspaceId: string; packageSnapshotId: string } | undefined;
     if (!latest) throw new Error('Workspace release collection lineage is unavailable.');
-    if (latest.workspaceStatus === 'deleted') {
+    const workspaceStatus = this.readRetiringWorkspaceStatus(latest.workspaceId);
+    if (workspaceStatus === 'deleted') {
       throw new WorkerNativeProofValidationError('package-binding-lineage/workspace-deleted');
     }
     // Inspection must preserve a missing Workspace rather than recreate canonical storage.
@@ -8787,7 +8974,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       workspaceDb.sqlite.close();
     }
     const ownerAdmitted =
-      latest.workspaceStatus === 'active' &&
+      workspaceStatus === 'active' &&
       isScopeAdmitted(this.coreDb.dataRoot, 'workspace', latest.workspaceId);
     return {
       environmentPackage: historical.snapshot,
@@ -8813,17 +9000,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     workSlotRef?: string
   ): boolean {
     if (!inspection.nativeHandleDigest) return false;
-    const latest = this.coreDb.sqlite
-      .prepare(`
+    const latest = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(`
       SELECT workspace_id AS workspaceId, thread_id AS threadId,
         package_snapshot_id AS packageSnapshotId, sandbox_binding_ref AS sandboxBindingRef,
-        runtime_target_id AS runtimeTargetId, origin_physical_epoch AS originPhysicalEpoch,
-        (SELECT status FROM workspace_registry r
-         WHERE r.workspace_id = worker_backend_sessions.workspace_id) AS workspaceStatus
+        runtime_target_id AS runtimeTargetId, origin_physical_epoch AS originPhysicalEpoch
       FROM worker_backend_sessions WHERE agent_session_id = ?
       ORDER BY created_at DESC, attempt_id DESC LIMIT 1
     `)
-      .get(inspection.agentSessionId) as
+        .get(inspection.agentSessionId)
+    ) as
       | {
           workspaceId: string;
           threadId: string;
@@ -8831,7 +9018,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           sandboxBindingRef: string;
           runtimeTargetId: string;
           originPhysicalEpoch: string;
-          workspaceStatus: string | null;
         }
       | undefined;
     if (!latest) return false;
@@ -8842,7 +9028,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     });
     const row = readNativeProduct(scope, 'agent-session', inspection.agentSessionId);
     const ownerAdmitted =
-      latest.workspaceStatus === 'active' &&
+      this.readRetiringWorkspaceStatus(latest.workspaceId) === 'active' &&
       isScopeAdmitted(this.coreDb.dataRoot, 'workspace', latest.workspaceId);
     if (!row && ownerAdmitted) return false;
     let session: ReturnType<typeof AgentSessionRecordSchema.parse>;
@@ -8892,9 +9078,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       latest.originPhysicalEpoch !== retirement.originPhysicalEpoch
     )
       return false;
-    const storage = getWorkerStorageBindingForSandbox(this.coreDb, {
-      sandboxBindingRef: retirement.sandboxBindingRef,
-    });
+    const storage = this.readNanoHost((owner) =>
+      getWorkerStorageBindingForSandbox(owner, {
+        sandboxBindingRef: retirement.sandboxBindingRef,
+      })
+    );
     return (
       storage !== null &&
       storage.runtimeTargetId === latest.runtimeTargetId &&
@@ -8949,9 +9137,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new WorkerNativeProofValidationError('accepted-ready-binding', diagnostic);
     }
     // A fenced attachment still proves where accepted native bytes belong; only reuse needs attached state.
-    const storage = getWorkerStorageBindingForSandbox(this.coreDb, {
-      sandboxBindingRef: attachment.sandboxBindingRef,
-    });
+    const storage = this.readNanoHost((owner) =>
+      getWorkerStorageBindingForSandbox(owner, {
+        sandboxBindingRef: attachment.sandboxBindingRef,
+      })
+    );
     if (!storage || storage.runtimeTargetId !== attachment.runtimeTargetId) {
       throw new WorkerNativeProofValidationError('retained-storage-association', diagnostic);
     }
@@ -9042,18 +9232,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private async closeDurableAgentSession(
     inspection: NanoHostAgentSessionContinuityInspection
   ): Promise<void> {
+    if (this.nanoHostOwner) this.unavailableNanoHostRuntime();
     if (this.agentSessionCloseOwners.has(inspection.agentSessionRuntimeBindingId)) {
       throw new Error('NanoHost AgentSession close already has a live producer.');
     }
     const session = this.restoreDurableAgentSession(inspection);
     const closeOwner: NanoHostAgentSessionCloseOwner = { inspection, pending: null };
     const packageSnapshotId = session.environmentPackage.snapshotId;
-    const sandbox = this.coreDb.sqlite
-      .prepare(`SELECT sandbox_runtime_id AS id,
+    const sandbox = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(`SELECT sandbox_runtime_id AS id,
       drain_state AS drainState FROM sandbox_runtime_records WHERE sandbox_binding_ref=?`)
-      .get(session.sharedHarness.sandbox.sandboxBindingRef) as
-      | { id: string; drainState: string }
-      | undefined;
+        .get(session.sharedHarness.sandbox.sandboxBindingRef)
+    ) as { id: string; drainState: string } | undefined;
     this.agentSessionCloseOwners.set(inspection.agentSessionRuntimeBindingId, closeOwner);
     try {
       await this.collectWorkspaceSnapshot(session, 'successor');
@@ -9126,6 +9317,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           })
         : null;
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, session.attemptId);
+    if (operation === 'session.close' && attempt.phase === 'closed' && this.nanoHostOwner)
+      this.unavailableNanoHostRuntime();
     const deadlineUnixMs = Math.min(
       admittedUnixMs + NANO_HOST_HARNESS_RESULT_BUDGET_MS,
       (operation === 'session.open' || operation === 'turn.start') && attempt.deadline !== null
@@ -9213,12 +9406,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             throw new Error(
               'NanoHost idle Core binding or cleanup allowance changed before queue.'
             );
-          const prepared = prepareNanoHostHarnessOperation(this.coreDb, {
-            body,
-            harnessInstanceId: session.harnessInstanceId,
-            operation,
-            timestamp: new Date().toISOString(),
-          });
+          const prepared = this.readNanoHost((owner) =>
+            prepareNanoHostHarnessOperation(
+              this.coreDb,
+              {
+                body,
+                harnessInstanceId: session.harnessInstanceId,
+                operation,
+                timestamp: new Date().toISOString(),
+              },
+              owner
+            )
+          );
           pending.coreIdleClose!.prepared = prepared;
           pending.sequence = await queueNanoHostHarnessOperation(this.coreDb, {
             prepared,
@@ -9305,12 +9504,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           performance.now() >= pending.deadlineMonotonicMs
         )
           throw new Error('NanoHost original Harness allowance ended before queue admission.');
-        const prepared = prepareNanoHostHarnessOperation(this.coreDb, {
-          body,
-          harnessInstanceId: session.harnessInstanceId,
-          operation,
-          timestamp: new Date().toISOString(),
-        });
+        const prepared = this.readNanoHost((owner) =>
+          prepareNanoHostHarnessOperation(
+            this.coreDb,
+            {
+              body,
+              harnessInstanceId: session.harnessInstanceId,
+              operation,
+              timestamp: new Date().toISOString(),
+            },
+            owner
+          )
+        );
         pending.journal!.prepared = prepared;
         const command = prepared.command;
         const child = await beginWorkerTurnJournalStep(
@@ -9470,13 +9675,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             // The exact Core result stays available for result-only recovery. Expiry
             // ends this caller's wait; it cannot turn observed execution into non-execution.
           } else if (pending.operationId) {
-            await markNanoHostHarnessOperationUnknown(this.coreDb, {
+            await markNanoHostHarnessOperationUnknown(this.harnessWriter(), {
               harnessBindingRef,
               operationId: pending.operationId,
               timestamp: new Date().toISOString(),
             });
           } else if (pending.sequence !== null) {
-            await expireNanoHostHarnessQueuedOperation(this.coreDb, {
+            await expireNanoHostHarnessQueuedOperation(this.harnessWriter(), {
               harnessBindingRef,
               timestamp: new Date().toISOString(),
             });
@@ -9550,7 +9755,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!barrierReached) {
       throw new Error('NanoHost Harness terminal session inspection is incompatible.');
     }
-    const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
+    const accepted = this.readAcceptedFinal({
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       packageSnapshotId: session.environmentPackage.snapshotId,
       requestId: session.environmentPackage.scope.requestId ?? null,

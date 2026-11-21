@@ -63,6 +63,7 @@ import {
   createNanoHostTransportSessionAuthority,
   type NanoHostTransportSessionAuthority,
 } from './auth/nanohost-transport-session.js';
+import { listNanoHostTransportTokenRecords } from './auth/nanohost-transport-token-store.js';
 import {
   authorizeWorkspace,
   currentWorkspaceAuthority,
@@ -199,7 +200,6 @@ import type {
   IdempotentCommandReceipt,
   InflightIdempotentCommand,
 } from './runtime/idempotent-command.js';
-import { resolveNanoHostAttemptTokenBinding } from './runtime/nanohost-attempt-records.js';
 import {
   createNanoHostSessionDispatch,
   type NanoHostSessionDispatch,
@@ -226,33 +226,19 @@ import {
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
 import type { TurnExecutor } from './runtime/types.js';
-import {
-  publishWorkerControlFinalStatus,
-  publishWorkerControlHeartbeat,
-  publishWorkerControlOperation,
-} from './runtime/worker-control-final-status.js';
+import { getWorkerBackendSession } from './runtime/worker-backend-session-records.js';
 import {
   type WorkerControlFinalStatusAcceptedHook,
   WorkerControlGateway,
   WorkerControlGatewayError,
 } from './runtime/worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './runtime/worker-control-rebuild.js';
-import {
-  createWorkerControlAcceptedRecordRecorder,
-  resolveWorkerControlFinalStatusTokenBinding,
-} from './runtime/worker-control-records.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
-import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
 import { createWorkerEnvironmentRuntimeEffects } from './runtime/worker-environment-runtime-effects.js';
 import {
   createDefaultWorkerMcpGateway,
   type WorkerMcpGateway,
 } from './runtime/worker-mcp-gateway.js';
-import {
-  assertWorkerRawOutputFinalStatus,
-  WorkerRawOutputAuthorityError,
-  WorkerRawOutputPendingError,
-} from './runtime/worker-raw-output.js';
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import {
   listSchedulerAdmissionEntriesForWorkspace,
@@ -278,6 +264,14 @@ import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './st
 import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
+import { createNanoHostCoreReads } from './storage/nanohost-core-reads.js';
+import {
+  inspectNanoHostRuntimeTargetTransition,
+  prepareNanoHostRuntimeTargetTransition,
+  readNanoHostEpochInvalidation,
+  readPendingNanoHostEpochRetirement,
+} from './storage/nanohost-epoch-invalidation-native.js';
+import type { AdmittedNanoHostTransportStorage } from './storage/nanohost-transport-owner.js';
 import { readServerCallUsageIds } from './storage/server-work-call.js';
 import {
   type ServerWorkCommandBinding,
@@ -306,7 +300,10 @@ import {
   createWorkerEnvironmentActivation,
   createWorkerEnvironmentAffectedStorageDeriver,
 } from './worker-environments/worker-environment-activation.js';
-import { createWorkerEnvironmentOperations } from './worker-environments/worker-environment-operations.js';
+import {
+  createWorkerEnvironmentOperations,
+  WorkerEnvironmentOperationError,
+} from './worker-environments/worker-environment-operations.js';
 import { createWorkerEnvironmentPreparation } from './worker-environments/worker-environment-preparation.js';
 import {
   checkMcpDefinitionReviewIntent,
@@ -501,6 +498,11 @@ function workerCoordinatorCandidates(
     });
 }
 
+type NanoHostAppStorage = StorageResult<
+  'nanohost',
+  AdmittedNanoHostTransportStorage & { readonly dataRoot: string }
+>;
+
 /**
  * Construction options for the Hono app.
  */
@@ -578,6 +580,9 @@ export interface CreateAppOptions {
    * creates the SSH transport; absence of that config disables the capability.
    */
   appUpdateHostTransport?: AppUpdateHostTransport | null;
+  /** The single acknowledged Native selection shared by boot, App and private transport. */
+  nanoHostStorage?: NanoHostAppStorage;
+
   /** Optional dispatcher bound to the same process-local NanoHost session authority. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch;
   /** Shared Data Root capacity owner, also used by the boot-created file dispatcher. */
@@ -602,60 +607,73 @@ export interface CreateAppOptions {
  */
 export function createDefaultWorkerControlGateway(
   coreDb?: CoreDb,
-  onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook
+  _onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook,
+  nanoHostStorage?: NanoHostAppStorage
 ): WorkerControlGateway {
-  if (!coreDb) {
-    return new WorkerControlGateway();
+  if (!coreDb) return new WorkerControlGateway();
+  const gateway = new HeldWorkerControlGateway();
+  if (nanoHostStorage?.state !== 'ready') return gateway;
+  const hydration = rebuildWorkerControlGatewaySessions(
+    coreDb,
+    gateway,
+    nanoHostStorage.value.owner.read
+  );
+  return hydration.state === 'ready' ? gateway : new HeldWorkerControlGateway();
+}
+
+/** Native observations may hydrate before the live deciding owner is wired. */
+class HeldWorkerControlGateway extends WorkerControlGateway {
+  constructor() {
+    super({
+      resolveTokenBinding: requireWorkerControlStorage,
+      resolveFinalStatusTokenBinding: requireWorkerControlStorage,
+      publishHeartbeat: requireWorkerControlStorage,
+      publishControlOperation: requireWorkerControlStorage,
+      publishFinalStatus: requireWorkerControlStorage,
+    });
   }
 
-  const gateway = new WorkerControlGateway({
-    acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
-    publishHeartbeat: (input) => publishWorkerControlHeartbeat(coreDb, input),
-    publishControlOperation: (input) => publishWorkerControlOperation(coreDb, input),
-    publishFinalStatus: async (input) => {
-      const rawDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, input.lineage.workspaceId);
-      try {
-        assertWorkerRawOutputFinalStatus(
-          rawDb,
-          input.lineage,
-          input.payload.terminalData.status === 'completed'
-        );
-      } catch (error) {
-        if (
-          error instanceof WorkerRawOutputPendingError ||
-          error instanceof WorkerRawOutputAuthorityError
-        )
-          throw new WorkerControlGatewayError(
-            'worker_raw_output_pending',
-            'Worker raw output proof is not ready.',
-            503
-          );
-        throw error;
-      } finally {
-        rawDb.sqlite.close();
-      }
-      return publishWorkerControlFinalStatus(coreDb, input);
-    },
-    ...(onFinalStatusCommitted ? { onFinalStatusCommitted } : {}),
-    resolveFinalStatusTokenBinding: (input) =>
-      resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
-    resolveTokenBinding: (input) => {
-      const resolution = resolveNanoHostAttemptTokenBinding(coreDb, input);
-      if (
-        resolution.status === 'accepted' &&
-        (!resolution.attempt.workerControlTokenHash ||
-          !resolution.attempt.workerInferenceTokenHash ||
-          !resolution.attempt.workerCapabilityTokenHash)
-      ) {
-        return { status: 'rejected', reason: 'binding-not-found' };
-      }
-      return resolution;
-    },
-    sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
-  });
+  override registerSession(): never {
+    return requireWorkerControlStorage();
+  }
+}
 
-  rebuildWorkerControlGatewaySessions(coreDb, gateway);
-  return gateway;
+function requireWorkerControlStorage(): never {
+  throw new WorkerControlGatewayError(
+    'worker_observation_storage_unavailable',
+    'NanoHost Worker control storage is unavailable.',
+    503
+  );
+}
+
+/** Joins the acknowledged Native owner to the existing Core decision worker. */
+export async function prepareNanoHostOwner(
+  coreDb: CoreDb,
+  gate: Parameters<ReturnType<typeof getControlStoreWorkerClient>['bindNanoHostOwner']>[2]
+): Promise<NanoHostAppStorage> {
+  const writer = getControlStoreWorkerClient();
+  const owner = await writer.bindNanoHostOwner(
+    coreDb.dataRoot,
+    {
+      getWorkerBackendSession,
+      inspectNanoHostRuntimeTargetTransition,
+      listNanoHostTransportTokenRecords,
+      prepareNanoHostRuntimeTargetTransition,
+      readNanoHostEpochInvalidation,
+      readPendingNanoHostEpochRetirement,
+    },
+    gate
+  );
+  return owner.state === 'ready'
+    ? {
+        state: 'ready',
+        value: {
+          dataRoot: resolve(coreDb.dataRoot),
+          owner: owner.value,
+          kernel: writer.nanoHostEpochKernel(coreDb),
+        },
+      }
+    : owner;
 }
 
 /** Input used to create the default process vault backend for an app instance. */
@@ -803,6 +821,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     )
   )
     throw new Error('Application Workspace mutations must use their native scope owner.');
+  if (
+    options.nanoHostStorage?.state === 'ready' &&
+    (!mutationDataRoot || resolve(mutationDataRoot) !== options.nanoHostStorage.value.dataRoot)
+  )
+    throw new Error('NanoHost App reads must use the application Data Root.');
+  const missingNanoHostStorage = {
+    state: 'unavailable',
+    owner: 'nanohost',
+    reason: 'missing',
+  } as const;
+  const nanoHostStorage = options.nanoHostStorage ?? missingNanoHostStorage;
+  const readNanoHostEnvironment: AdmittedNanoHostTransportStorage['owner']['read'] =
+    nanoHostStorage.state === 'ready' ? nanoHostStorage.value.owner.read : () => nanoHostStorage;
   if (options.automationStore && options.automationStore.coreDb !== options.coreDb)
     throw new Error(
       'Recurring schedules require the application Core database and Workspace mutation fence.'
@@ -1036,7 +1067,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const automationStore =
     options.automationStore ?? (options.coreDb ? new AutomationStore(options.coreDb) : undefined);
   const workerControlGateway =
-    options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
+    options.workerControlGateway ??
+    createDefaultWorkerControlGateway(options.coreDb, undefined, nanoHostStorage);
   const workerMcpGateway =
     options.workerMcpGateway ?? createDefaultWorkerMcpGateway(options.coreDb);
   /** Joins the unique Gateway owner without treating missing cleanup as success. */
@@ -1061,16 +1093,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const nanoHostRestartRequired = runtimeConfigManager.bindNanoHostTransportFence(async () => {
     const identityId = startupOpenKitConfig.nanohost?.identityId;
     if (!identityId) return;
-    if (options.coreDb) {
+    if (nanoHostStorage.state === 'ready')
       await fenceNanoHostTransportAuthority(
-        options.coreDb,
+        nanoHostStorage.value,
         nanohostTransportSessionAuthority,
         identityId,
         new Date().toISOString()
       );
-    } else {
-      nanohostTransportSessionAuthority.fenceAuthoritative(identityId);
-    }
+    else nanohostTransportSessionAuthority.fenceAuthoritative(identityId);
   });
   const admitNanoHostSession = nanohostTransportSessionAuthority.admit.bind(
     nanohostTransportSessionAuthority
@@ -1147,6 +1177,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.nanoHostSessionDispatch ??
     createNanoHostSessionDispatch({
       fileAdmission,
+      nativeStorage: nanoHostStorage,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       sessionAuthority: nanohostTransportSessionAuthority,
     });
@@ -1161,6 +1192,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const workerEnvironmentOperations = options.coreDb
     ? createWorkerEnvironmentOperations({
         coreDb: options.coreDb,
+        readNanoHost: readNanoHostEnvironment,
         inflightCommands,
         runtimeEffects: workerEnvironmentRuntimeEffects,
         store: sharedStore,
@@ -1198,6 +1230,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         },
         deriveAffectedStorage: createWorkerEnvironmentAffectedStorageDeriver({
           coreDb: options.coreDb,
+          readNanoHost: readNanoHostEnvironment,
           store: sharedStore,
         }),
       })
@@ -1206,6 +1239,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.coreDb && workerEnvironmentPreparation
       ? createWorkerEnvironmentActivation({
           coreDb: options.coreDb,
+          readNanoHost: readNanoHostEnvironment,
           store: sharedStore,
           preparation: workerEnvironmentPreparation,
           runtimeEffects: workerEnvironmentRuntimeEffects,
@@ -1219,10 +1253,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             const { actor, replaceNow, affectedStorage, residentMembers, requestId, target } =
               input;
             const coreDb = options.coreDb!;
+            const readResidentBinding = (storageRef: string) => {
+              const read =
+                nanoHostStorage.state === 'ready'
+                  ? nanoHostStorage.value.owner.read((sqlite) =>
+                      getWorkerStorageBinding({ sqlite }, { storageRef })
+                    )
+                  : nanoHostStorage;
+              if (read.state !== 'ready')
+                throw new WorkerEnvironmentOperationError(
+                  'recovery_required',
+                  'NanoHost resident storage requires recovery.'
+                );
+              return read.value;
+            };
             const requireAuthority = () => {
               workerEnvironmentPreparation.readResolved({ actor }, input.resolvedCandidate);
               for (const ref of affectedStorage) {
-                const binding = getWorkerStorageBinding(coreDb, { storageRef: ref.storageRef });
+                const binding = readResidentBinding(ref.storageRef);
                 if (
                   !binding ||
                   !binding.contributors.every(
@@ -1250,7 +1298,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             if (affectedStorage.length !== 1)
               throw new Error('Resident storage group is unavailable.');
             const expected = affectedStorage[0]!;
-            const before = getWorkerStorageBinding(coreDb, { storageRef: expected.storageRef });
+            const before = readResidentBinding(expected.storageRef);
             if (!before || before.revision !== expected.expectedRevision)
               throw new Error('Worker storage changed.');
             for (const member of residentMembers) {
@@ -1281,7 +1329,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               await markSchedulerAttemptForTerminalTurn(coreDb, terminal);
             }
             requireAuthority();
-            const released = getWorkerStorageBinding(coreDb, { storageRef: before.storageRef });
+            const released = readResidentBinding(before.storageRef);
             if (
               !released ||
               released.scopeDigest !== before.scopeDigest ||
@@ -1331,26 +1379,37 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               }).catch(reject);
             });
             requireAuthority();
-            const after = getWorkerStorageBinding(coreDb, { storageRef: before.storageRef });
+            const after = readResidentBinding(before.storageRef);
             const image = workerEnvironmentPreparation.readResolved(
               { actor },
               input.resolvedCandidate
             ).resolved.image;
-            const sandbox = after?.currentSandboxBindingRef
-              ? (coreDb.sqlite
-                  .prepare(
-                    'SELECT image_digest AS imageDigest, health_state AS health, cleanup_state AS cleanup FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?'
+            const sandboxBindingRef = after?.currentSandboxBindingRef;
+            const sandbox =
+              sandboxBindingRef && nanoHostStorage.state === 'ready'
+                ? nanoHostStorage.value.owner.read(
+                    (sqlite) =>
+                      sqlite
+                        .prepare(
+                          'SELECT image_digest AS imageDigest, health_state AS health, cleanup_state AS cleanup FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?'
+                        )
+                        .get(sandboxBindingRef) as
+                        | { imageDigest: string; health: string; cleanup: string }
+                        | undefined
                   )
-                  .get(after.currentSandboxBindingRef) as
-                  | { imageDigest: string; health: string; cleanup: string }
-                  | undefined)
-              : undefined;
+                : undefined;
+            if (sandbox?.state === 'unavailable')
+              throw new WorkerEnvironmentOperationError(
+                'recovery_required',
+                'NanoHost replacement evidence requires recovery.'
+              );
+            const placement = sandbox?.value;
             const disposition =
               after?.state === 'attached' &&
               after.attachmentGeneration > before.attachmentGeneration &&
-              sandbox?.imageDigest === image.digest &&
-              sandbox.health === 'ready' &&
-              sandbox.cleanup === 'clean'
+              placement?.imageDigest === image.digest &&
+              placement.health === 'ready' &&
+              placement.cleanup === 'clean'
                 ? ('reattached' as const)
                 : after?.state === 'idle' && after.currentSandboxBindingRef === null
                   ? ('fenced' as const)
@@ -1378,6 +1437,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           coreDb: options.coreDb,
           ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
           nanoHostSessionDispatch,
+          nanoHostRecovery: {
+            owner:
+              nanoHostStorage.state === 'ready'
+                ? { state: 'ready', value: nanoHostStorage.value.owner }
+                : nanoHostStorage,
+          },
           workerControlGateway,
         }));
   const turnExecutor =
@@ -2204,6 +2269,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerNanoHostSessionSemanticRoutes({
     app,
     releaseIdentity,
+    nativeStorage: nanoHostStorage,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     dispatch: nanoHostSessionDispatch,
     ...(configuredWorkerRuntime
@@ -2224,12 +2290,27 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   let channelServices: ChannelServices | undefined;
   const communicationStorage = options.communicationStorage;
-  let communicationCredentialBinding: CommunicationCredentialBinding | undefined =
-    communicationStorage
-      ? communicationStorage.listNanoHostTransportTokens
-        ? { listNanoHostTransportTokens: communicationStorage.listNanoHostTransportTokens }
-        : {}
-      : undefined;
+  const readNanoHostTarget =
+    nanoHostStorage.state === 'ready'
+      ? createNanoHostCoreReads(nanoHostStorage.value.owner).readTarget
+      : () => nanoHostStorage;
+  const nanoHostCleanupOwner =
+    nanoHostStorage.state === 'ready'
+      ? { state: 'ready' as const, value: nanoHostStorage.value.owner }
+      : nanoHostStorage;
+  let communicationCredentialBinding: CommunicationCredentialBinding = {
+    listNanoHostTransportTokens: () => {
+      if (nanoHostStorage.state === 'ready')
+        return nanoHostStorage.value.owner.read((sqlite) =>
+          listNanoHostTransportTokenRecords({ sqlite })
+        );
+      return (
+        (options.nanoHostStorage
+          ? undefined
+          : communicationStorage?.listNanoHostTransportTokens?.()) ?? nanoHostStorage
+      );
+    },
+  };
   registerDiscordInteractionRoutes({
     app,
     config: startupOpenKitConfig.channels?.discord,
@@ -2288,6 +2369,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerNanoHostTransportAdmissionRoutes({
     app,
     coreDb: options.coreDb,
+    nativeStorage: nanoHostStorage,
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     sessionAuthority: nanohostTransportSessionAuthority,
   });
@@ -2390,6 +2472,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     nativeEnvironment: options.coreDb
       ? createAgentNativeEnvironmentService({
           coreDb: options.coreDb,
+          readNanoHost: readNanoHostEnvironment,
           store: sharedStore,
           manager: runtimeConfigManager,
           onReloadApplied: onRuntimeConfigReloadApplied,
@@ -3042,6 +3125,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
+    readNanoHostTarget,
+    nanoHostCleanupOwner,
   });
 
   registerRemoteMcpRoutes({
@@ -3110,6 +3195,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
+    readNanoHostTarget,
+    nanoHostCleanupOwner,
   });
 
   registerTurnEventRoutes({

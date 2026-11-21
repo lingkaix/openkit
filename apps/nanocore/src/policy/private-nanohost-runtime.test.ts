@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,7 +20,11 @@ import type { Actor } from '../auth/identity.js';
 import { type AuthVariables, createAuthMiddleware } from '../auth/middleware.js';
 import transportRevision from '../auth/nanohost-transport-revision.json' with { type: 'json' };
 import { createNanoHostTransportSessionAuthority } from '../auth/nanohost-transport-session.js';
-import { createNanoHostTransportTokenRecord } from '../auth/nanohost-transport-token-store.js';
+import { createOpenKitAccessTokenSecret } from '../auth/nanohost-transport-token.js';
+import {
+  enrollNanoHostTransportIdentity,
+  listNanoHostTransportTokenRecords,
+} from '../auth/nanohost-transport-token-store.js';
 import { evaluateProductAuthorization } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
@@ -33,6 +37,9 @@ import {
 } from '../runtime/nanohost-session-dispatch.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
@@ -87,15 +94,16 @@ function document(...statements: unknown[]): PolicyDocumentV1 {
 
 /** Real SDK/Token/auth/configuration/native owners. No Provider or invented Actor/Kernel. */
 async function fixture(
-  serverConfig: Record<string, unknown> = {},
+  fixtureCoreDb: ReturnType<typeof createTestCoreDb>,
+  serverConfig: Record<string, unknown>,
   createOptions: (
     coreDb: ReturnType<typeof createTestCoreDb>
-  ) => Partial<Parameters<typeof createApp>[0]> = () => ({})
+  ) => Promise<Partial<Parameters<typeof createApp>[0]>>
 ) {
   const pending: Promise<unknown>[] = [];
   const releases: Array<() => void> = [];
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-e13-runtime-'));
-  let coreDb = createTestCoreDb(dataRoot);
+  const { dataRoot } = fixtureCoreDb;
+  let coreDb = fixtureCoreDb;
   let workspaceReaders: ReturnType<typeof createTestWorkspaceDb>[] = [];
   onTestFinished(async () => {
     for (const release of releases) release();
@@ -289,7 +297,7 @@ async function fixture(
       store,
       auth,
       runtimeConfigManager: manager,
-      ...createOptions(coreDb),
+      ...(await createOptions(coreDb)),
     });
     return {
       coreDb,
@@ -359,9 +367,10 @@ function sourceGroup(entry: string) {
   return group;
 }
 
-it('closes native NanoHost effect delivery only after real enrollment, Token verification and physical H2 session admission', async () => {
+async function nanoHostFixture() {
   const slots = mkdtempSync(join(tmpdir(), 'openkit-e13-host-slots-'));
   onTestFinished(() => rmSync(slots, { recursive: true, force: true }));
+  const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-e13-runtime-')));
   const config = {
     bind: { host: '127.0.0.1', port: 4318 },
     credentialRef: 'nanohost-transport:primary',
@@ -375,63 +384,129 @@ it('closes native NanoHost effect delivery only after real enrollment, Token ver
         secretPath: join(slots, 'B.token'),
       },
     },
-    deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
+    deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
     identityId: 'integration_e13_native',
     rendezvousUrl: 'https://e13.example.test',
   };
   const authority = createNanoHostTransportSessionAuthority();
+  let storage!: Awaited<ReturnType<typeof openAdmittedTestNanoHost>>;
   let dispatch!: ReturnType<typeof createNanoHostSessionDispatch>;
-  const f = await fixture({ nanohost: config }, (coreDb) => {
+  const f = await fixture(coreDb, { nanohost: config }, async (currentCoreDb) => {
+    storage = await openAdmittedTestNanoHost(currentCoreDb);
     dispatch = createNanoHostSessionDispatch({
-      coreDb,
+      coreDb: currentCoreDb,
+      nativeStorage: storage,
       sessionAuthority: authority,
     });
     return {
+      nanoHostStorage: storage,
       nanohostTransportSessionAuthority: authority,
       nanoHostSessionDispatch: dispatch,
     };
   });
-  const g = f.graph();
   const enrollmentInput = OPERATION_REGISTRY['nanohost.enroll'].inputSchema.parse({
     targetSlot: 'A',
     expiresAt: EXPIRY,
   });
-  const denied = await g.app.request(
-    ...operationRequest(
-      'nanohost.enroll',
-      {},
-      {
-        headers: { cookie: f.ordinary.cookie },
-        body: JSON.stringify(enrollmentInput),
-      }
-    )
-  );
-  expect(denied.status).toBe(403);
-  const enrolled = await g.app.request(
-    ...operationRequest(
-      'nanohost.enroll',
-      {},
-      {
-        headers: { cookie: f.first.cookie },
-        body: JSON.stringify(enrollmentInput),
-      }
-    )
-  );
-  expect(enrolled.status).toBe(
-    Reflect.get(OPERATION_REGISTRY['nanohost.enroll'], 'successStatus') ?? 200
-  );
-  // Same actual native Token owner, with the original SDK-authenticated administrator Actor.
-  // Do not read even this temporary slot's secret file, manually create identity rows, or call authority.admit.
-  const token = await createNanoHostTransportTokenRecord(
-    g.coreDb,
-    {
+  const enroll = (cookie: string) =>
+    f.graph().app.request(
+      ...operationRequest(
+        'nanohost.enroll',
+        {},
+        {
+          headers: { cookie },
+          body: JSON.stringify(enrollmentInput),
+        }
+      )
+    );
+  const seedToken = () =>
+    enrollNanoHostTransportIdentity(storage.value, {
       deploymentId: config.deploymentId,
       ownerNanoHostIdentityId: config.identityId,
       responsibleServerAdminActorId: f.first.userId,
       expiresAt: EXPIRY,
-    },
-    g.accounts[0]!.actor
+      tokenId: allocateEntityId('nhtok'),
+      secret: createOpenKitAccessTokenSecret(),
+    });
+  const tokens = () =>
+    storage.value.owner.read((sqlite) => listNanoHostTransportTokenRecords({ sqlite }));
+  return { f, config, authority, dispatch, storage, slots, enroll, seedToken, tokens };
+}
+
+it('holds public NanoHost enrollment and revoke without preventing current administrator reads', async () => {
+  const { f, slots, enroll, seedToken, tokens } = await nanoHostFixture();
+  const denied = await enroll(f.ordinary.cookie);
+  expect(denied.status).toBe(403);
+  const held = await enroll(f.first.cookie);
+  expect(held.status).toBe(503);
+  await expect(held.json()).resolves.toMatchObject({
+    code: 'nanohost_transport_storage_unavailable',
+  });
+  expect(readdirSync(slots)).toEqual([]);
+  expect(tokens()).toEqual({ state: 'ready', value: [] });
+  const token = await seedToken();
+  const before = tokens();
+  const list = () =>
+    f
+      .graph()
+      .app.request(
+        ...operationRequest('credential.list', {}, { headers: { cookie: f.first.cookie } })
+      );
+  const inventory = await list();
+  expect(inventory.status).toBe(200);
+  const items = await inventory.text();
+  expect(JSON.parse(items)).toMatchObject({
+    canManageServerCredentials: true,
+    items: expect.arrayContaining([
+      expect.objectContaining({ kind: 'nanohost-transport', id: token.tokenId }),
+      expect.objectContaining({ kind: 'access-token', id: f.first.bootstrap!.tokenId }),
+    ]),
+  });
+  expect(items).not.toContain(token.secret);
+  const revoke = await f
+    .graph()
+    .app.request(
+      ...operationRequest(
+        'credential.revoke',
+        { kind: 'nanohost-transport', id: token.tokenId },
+        { headers: { cookie: f.first.cookie } }
+      )
+    );
+  expect(revoke.status).toBe(503);
+  await expect(revoke.json()).resolves.toMatchObject({
+    code: 'nanohost_transport_storage_unavailable',
+  });
+  expect(tokens()).toEqual(before);
+  expect(readdirSync(slots)).toEqual([]);
+});
+
+it('holds SDK administrator issuance before writing a second NanoHost Token or slot', async () => {
+  const { f, tokens, seedToken, slots } = await nanoHostFixture();
+  const original = await seedToken();
+  const before = tokens();
+  const issued = await f.graph().app.request(
+    ...operationRequest(
+      'nanohost.token-issue',
+      {},
+      {
+        headers: { cookie: f.first.cookie },
+        body: JSON.stringify({ targetSlot: 'B', expiresAt: EXPIRY }),
+      }
+    )
   );
+  expect(issued.status).toBe(503);
+  await expect(issued.json()).resolves.toMatchObject({
+    code: 'nanohost_transport_storage_unavailable',
+  });
+  expect(tokens()).toEqual(before);
+  expect(JSON.stringify(tokens())).not.toContain(original.secret);
+  expect(readdirSync(slots)).toEqual([]);
+});
+
+it('closes native NanoHost effect delivery after real Token verification and physical H2 session admission', async () => {
+  const { f, config, authority, dispatch, storage, seedToken } = await nanoHostFixture();
+  const g = f.graph();
+  const token = await seedToken();
   const nativeHeaders = {
     authorization: `Bearer ${token.secret}`,
     'x-openkit-nanohost-transport-revision': String(transportRevision),
@@ -499,12 +574,18 @@ it('closes native NanoHost effect delivery only after real enrollment, Token ver
   expect(JSON.parse(admitted.body)).toMatchObject({
     identityId: config.identityId,
     deploymentId: config.deploymentId,
+    connectionGeneration: 1,
     mayCarryWork: true,
   });
+  expect(authority.authoritativeGeneration(config.identityId)).toBe(1);
   const physicalEpoch = randomBytes(32).toString('hex');
   expect((await post('/api/nanohost/transport/session/readiness', { physicalEpoch })).status).toBe(
     204
   );
+  expect(createNanoHostCoreReads(storage.value.owner).readTarget(config.identityId)).toMatchObject({
+    state: 'ready',
+    value: { connectionGeneration: 1, physicalEpoch, ready: true },
+  });
   const requestId = randomBytes(32).toString('hex');
   // An inspection target identifier only: no image existence or Native inspection result is claimed.
   const imageDigest = `sha256:${randomBytes(32).toString('hex')}`;
@@ -535,4 +616,9 @@ it('closes native NanoHost effect delivery only after real enrollment, Token ver
   ).toBe(200);
   await f.change(document(), 1);
   expect(f.loaded().statements).toEqual([]);
+  await authority.closeAllPhysicalConnections();
+  expect(createNanoHostCoreReads(storage.value.owner).readTarget(config.identityId)).toMatchObject({
+    state: 'ready',
+    value: { connectionGeneration: 1, physicalEpoch: null, ready: false },
+  });
 });
