@@ -676,7 +676,9 @@ export interface NanoHostOwnerBinding
   backendSession(input: NanoHostLocalBackendSessionInput): Promise<ControlBackendSessionResult>;
   closeRecovery: AdmittedNanoHostAttemptRecovery['close'];
   classifyRecovery(
-    input: Extract<NanoHostRecoveryMutation, { kind: 'arm-reconnect' | 'needs-evidence' }>
+    input: NanoHostRecoveryMutation & {
+      readonly kind: Exclude<NanoHostRecoveryMutation['kind'], 'retire-orphan'>;
+    }
   ): ReturnType<AdmittedNanoHostAttemptRecovery['commit']>;
 
   workerStorageBinding(input: NanoHostLocalWorkerStorageInput): Promise<WorkerStorageBinding>;
@@ -3252,7 +3254,7 @@ class ControlStoreWorkerClient {
           if (!gate.enabled()) return disabled;
           if (opening.nanoHostTargetTransition)
             throw new ControlStoreWorkerError('busy', 'not-committed');
-          // Backend preparation and Sandbox attachment leave this target unchanged.
+          // These serving mutations leave the selected RuntimeTarget unchanged.
           return {
             state: 'ready',
             value: readCurrent(
@@ -3292,6 +3294,10 @@ class ControlStoreWorkerClient {
         assertCurrent();
         opening.nanoHostWritePending =
           mutation.kind === 'backend-session-materialize' ||
+          mutation.kind === 'backend-session' ||
+          mutation.kind === 'harness-lifecycle' ||
+          mutation.kind === 'harness-turn-lifecycle' ||
+          mutation.kind === 'recovery-classification' ||
           (mutation.kind === 'worker-storage-binding' && verifyStorageAttachment)
             ? 'target-stable-write'
             : true;
@@ -3634,7 +3640,7 @@ class ControlStoreWorkerClient {
           assertCurrent();
           if (opening.nanoHostTargetTransition)
             throw new ControlStoreWorkerError('busy', 'not-committed');
-          opening.nanoHostWritePending = true;
+          opening.nanoHostWritePending = 'target-stable-write';
           try {
             return await publish(coreIdentity);
           } catch (error) {
@@ -3887,51 +3893,50 @@ class ControlStoreWorkerClient {
               if (nativeHeld) delete opening.nanoHostWritePending;
             }
           },
-          classifyRecovery: async ({
-            lease,
-            expectedSession,
-            expectedRecovery,
-            observedAt,
-            ...classification
-          }) => {
+          classifyRecovery: async (input) => {
+            const { lease, expectedSession, expectedRecovery, observedAt, ...classification } =
+              structuredClone(input);
+            const closeout =
+              classification.kind !== 'arm-reconnect' && classification.kind !== 'needs-evidence';
             const coreKey = `core:${coreDbPath(root)}`;
             const core = this.openings.get(coreKey);
             const coreIdentity = core?.identity;
             if (!core?.acknowledged || !coreIdentity)
               return { state: 'unavailable', owner: 'control-kernel', reason: 'missing' };
             const expectedPhase = lease.attempt.phase;
-            if (expectedPhase === 'closed')
+            if (expectedPhase === 'closed' || (closeout && expectedPhase !== 'closing'))
               return { state: 'unavailable', owner: 'control-kernel', reason: 'recovery-required' };
             const scope = this.workspaceMutations(root);
             const workspaceId = lease.attempt.workspaceId;
             const release = this.enterScope(scope, workspaceId, 'capture');
             if (!release) return { state: 'unavailable', owner, reason: 'recovery-required' };
             try {
+              const commit = (identity: string) =>
+                result(
+                  async () =>
+                    (
+                      await write({
+                        kind: 'recovery-classification',
+                        input: {
+                          dataRoot: root,
+                          coreIdentity: identity,
+                          attemptId: lease.grant.attemptId,
+                          expectedPhase,
+                          observationHash: hashNanoHostRecoveryObservation({
+                            lease,
+                            session: expectedSession,
+                            proof: expectedRecovery,
+                          }),
+                          expectedSession,
+                          expectedRecovery,
+                          observedAt,
+                          classification,
+                        },
+                      })
+                    ).value
+                );
               return await this.runOperation(
-                () =>
-                  result(
-                    async () =>
-                      (
-                        await write({
-                          kind: 'recovery-classification',
-                          input: {
-                            dataRoot: root,
-                            coreIdentity,
-                            attemptId: lease.grant.attemptId,
-                            expectedPhase,
-                            observationHash: hashNanoHostRecoveryObservation({
-                              lease,
-                              session: expectedSession,
-                              proof: expectedRecovery,
-                            }),
-                            expectedSession,
-                            expectedRecovery,
-                            observedAt,
-                            classification,
-                          },
-                        })
-                      ).value
-                  ),
+                () => (closeout ? withCoreHold(commit) : commit(coreIdentity)),
                 undefined,
                 coreKey,
                 undefined,

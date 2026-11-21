@@ -2795,6 +2795,46 @@ describe('admitted NanoHost owner worker', () => {
     expectNanoHostTablesAbsent(f.corePath, 'nanohost_runtime_targets');
   });
 
+  it('allows exact RuntimeTarget polling while the local Harness write awaits FULL', async () => {
+    const f = await nanoHostWorkerFixture();
+    for (const target of [nanoHostTarget, nanoHostReady]) {
+      const original = await prepareNanoHostTarget(f.owner, target);
+      await expect(
+        f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, original)
+      ).resolves.toMatchObject({
+        state: 'ready',
+      });
+    }
+    Atomics.store(f.gate, 0, 0);
+    const writing = f.owner.harnessLifecycle({
+      kind: 'runtime.create',
+      adapterId: 'codex',
+      adapterVersion: 'fixture',
+      harnessBindingRef: 'harness-binding',
+      harnessCompatibilityKey: 'b'.repeat(64),
+      harnessInstanceId: 'harness-original',
+      imageDigest: `sha256:${'c'.repeat(64)}`,
+      originPhysicalEpoch: nanoHostReady.physicalEpoch,
+      runtimeTargetId: nanoHostTarget.targetId,
+      sandboxBindingRef: 'sandbox-binding',
+      sandboxCompatibilityKey: 'd'.repeat(64),
+      sandboxIntegrationBindingRef: 'sandbox-integration',
+      sandboxRuntimeId: 'sandbox-original',
+      timestamp: nanoHostTarget.observedAt,
+    });
+    try {
+      await waitForHold(f.gate);
+      expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+        state: 'ready',
+        value: { connectionGeneration: 1, ready: true },
+      });
+      expect(f.owner.read(() => true)).toMatchObject({ state: 'unavailable' });
+    } finally {
+      release(f.gate);
+    }
+    await expect(writing).resolves.toBeUndefined();
+  });
+
   it('holds a successor when the original local settlement commits but loses its ACK', async () => {
     const f = await nanoHostWorkerFixture();
     const allocation = await prepareNanoHostTarget(f.owner, nanoHostTarget);
