@@ -14,6 +14,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
 import type { JsonOperationId, LightAppSchemaInput } from '@openkit/app-api-schemas';
@@ -42,6 +43,9 @@ import {
   createSchedulerExecutionAttempt,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
+import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
+import { prepareWorkerStorageContributor } from '../runtime/worker-storage-binding-records.js';
+import { recordWorkspaceBackendHandoff } from '../runtime/workspace-backend-handoff.js';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
@@ -84,13 +88,19 @@ import {
 } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations, hasPendingUserMigrations } from './migrate.js';
 import {
+  type NanoHostRuntimeTargetEpochKernel,
+  vaultEpochFenceOccurrence,
+} from './nanohost-epoch-invalidation.js';
+import {
   readNanoHostEpochInvalidation,
+  readNanoHostRuntimeTargetRetirement,
   readPendingNanoHostEpochRetirement,
 } from './nanohost-epoch-invalidation-native.js';
 import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 import { storageReceipt, storageRequestId } from './storage-owner.js';
 import { advanceThreadReadReceipt, readThreadReadReceipt } from './thread-read-receipts.js';
 import { nativeProductScope } from './workspace-file-records.js';
+import { listWorkspaceMaterializationRecords } from './workspace-handoff-read.js';
 
 const interception = vi.hoisted(() => ({
   workers: [] as NativeWorker[],
@@ -363,13 +373,20 @@ afterEach(async () => {
 });
 
 const nanoHostReaders = {
+  getWorkerBackendSession,
   listNanoHostTransportTokenRecords,
   readNanoHostEpochInvalidation,
+  readNanoHostRuntimeTargetRetirement,
   readPendingNanoHostEpochRetirement,
 };
 
 /** Uses the shipped journals and intercepts only the NanoHost file's real FULL commit. */
-async function nanoHostWorkerFixture() {
+async function nanoHostWorkerFixture(
+  serving: Parameters<ReturnType<typeof getControlStoreWorkerClient>['bindNanoHostOwner']>[2] = {
+    enabled: () => true,
+  },
+  seed?: (path: string) => void
+) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'control-nanohost-')));
   roots.push(root);
   ensureLayout(root);
@@ -398,7 +415,14 @@ async function nanoHostWorkerFixture() {
     productOwner: { kind: 'server' },
     dataRoot: root,
   });
-  await expect(writer.bindNanoHostOwner(root, nanoHostReaders)).resolves.toEqual({
+  await expect(
+    writer.bindNanoHostOwner(root, nanoHostReaders, { enabled: () => false })
+  ).resolves.toEqual({
+    state: 'unavailable',
+    owner: 'nanohost',
+    reason: 'disabled',
+  });
+  await expect(writer.bindNanoHostOwner(root, nanoHostReaders, serving)).resolves.toEqual({
     state: 'unavailable',
     owner: 'nanohost',
     reason: 'missing',
@@ -410,9 +434,10 @@ async function nanoHostWorkerFixture() {
   });
   await writer.closeServerOwner(root, 'nanohost');
 
-  const bound = await writer.bindNanoHostOwner(root, nanoHostReaders);
+  seed?.(path);
+  const bound = await writer.bindNanoHostOwner(root, nanoHostReaders, serving);
   if (bound.state !== 'ready') throw new Error('Expected the existing NanoHost owner to bind.');
-  return { writer, root, path, database, gate, owner: bound.value, coreKey, corePath };
+  return { writer, root, path, database, gate, owner: bound.value, coreKey, corePath, serving };
 }
 
 const nanoHostTarget = {
@@ -437,12 +462,7 @@ const nanoHostPlacement = {
   physicalEpoch: nanoHostReady.physicalEpoch,
   generation: '1',
 };
-const nanoHostOccurrence = {
-  deploymentId: nanoHostPlacement.deploymentId,
-  sourceOwner: 'nanohost',
-  verb: 'fence-vault-epoch',
-  occurrenceKey: 'fixture-original-retirement',
-} as const;
+const nanoHostOccurrence = vaultEpochFenceOccurrence(nanoHostPlacement);
 const nanoHostFenceTarget = {
   runtimeTargetId: nanoHostPlacement.runtimeTargetId,
   physicalEpoch: nanoHostPlacement.physicalEpoch,
@@ -461,6 +481,23 @@ const nanoHostReceipt = storageReceipt(nanoHostIntent, {
 });
 const nanoHostHeld = { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
 const nanoHostAck = { state: 'ready', value: undefined };
+
+const nanoHostKernelHeld = {
+  state: 'unavailable',
+  owner: 'control-kernel',
+  reason: 'recovery-required',
+};
+const nanoHostUnknownKernel: NanoHostRuntimeTargetEpochKernel = {
+  async reserveHolderIntent() {
+    return { state: 'ready', value: null };
+  },
+  async inspectNanoHostEpochFence() {
+    return { state: 'ready', value: { state: 'unknown' } };
+  },
+  async fenceNanoHostEpoch() {
+    throw new Error('Unknown receipt cannot authorize a new fence.');
+  },
+};
 
 describe('admitted NanoHost owner worker', () => {
   it('ACKs local transport at FULL and leaves deciding administrator authority and both Audit tuples on Core', async () => {
@@ -556,6 +593,284 @@ describe('admitted NanoHost owner worker', () => {
     }
   });
 
+  it('admits only local serving tuples and rechecks original proof before dispatch', async () => {
+    const workspaceId = allocateEntityId('ws');
+    const materialization = {
+      id: 'materialization-original',
+      inputSnapshotId: 'snapshot-original',
+      workspaceId,
+      backendKind: 'managed-sandbox',
+      packageSnapshotId: 'package-original',
+      workerSessionId: 'backend-session-original',
+      strategy: 'filesystem',
+      materializedRootRef: 'root-ref',
+      base: { commit: null, contentDigest: 'contents' },
+      policyDigest: 'policy-digest',
+      readinessEvidence: [{ kind: 'materialized', ref: 'proof-ref' }],
+      createdAt: nanoHostTarget.observedAt,
+    } as const;
+    const image = {
+      kind: 'settlement',
+      value: {
+        requestId: 'e'.repeat(64),
+        operation: 'image.build',
+        authoredArtifactId: allocateEntityId('ar'),
+        authoredArtifactVersion: 1,
+        authoredContentDigest: `sha256:${'c'.repeat(64)}`,
+        inputDigest: `sha256:${'d'.repeat(64)}`,
+        outcome: { kind: 'success', imageDigest: `sha256:${'f'.repeat(64)}` },
+      },
+    } as const;
+    let enabled = true;
+    let imageAuthorized = false;
+    let workspace: ReturnType<typeof openWorkspaceDb> | undefined;
+    const f = await nanoHostWorkerFixture(
+      {
+        enabled: () => enabled,
+        verifyImagePublication: (input) => imageAuthorized && isDeepStrictEqual(input, image),
+        verifyStorageBinding: (input) =>
+          input.kind === 'create-and-reserve' &&
+          input.workspaceId === workspaceId &&
+          input.storageRef === 'storage-original',
+        verifyWorkspaceHandoff: (session) =>
+          workspace !== undefined &&
+          session.workspaceId === workspaceId &&
+          listWorkspaceMaterializationRecords(workspace, workspaceId).some(
+            (record) =>
+              isDeepStrictEqual(record, materialization) &&
+              record.packageSnapshotId === session.packageSnapshotId &&
+              record.workerSessionId === session.backendSessionId
+          ),
+      },
+      (path) => {
+        const sqlite = new Database(path, { fileMustExist: true });
+        try {
+          sqlite
+            .prepare(`INSERT INTO worker_backend_sessions
+          (attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+            backend_kind, deployment_id, backend_session_id, staging_directory_ref,
+            workspace_handoff_state, state, created_at, updated_at, runtime_target_id,
+            origin_physical_epoch, backend_lineage_json, sandbox_binding_ref)
+          VALUES (?, ?, 'thread-original', 'turn-original', 'session-original', 'package-original',
+            'nanohost', ?, 'backend-session-original', 'staging-original', 'pending',
+            'materializing', ?, ?, ?, ?, ?, 'sandbox-binding-original')`)
+            .run(
+              'attempt-original',
+              workspaceId,
+              nanoHostTarget.deploymentId,
+              nanoHostTarget.observedAt,
+              nanoHostTarget.observedAt,
+              nanoHostTarget.targetId,
+              nanoHostReady.physicalEpoch,
+              JSON.stringify({ imageRef: 'fixture-image' })
+            );
+        } finally {
+          sqlite.close();
+        }
+      }
+    );
+
+    const invalid = { code: 'invalid-request', commit: 'not-committed' };
+    await expect(
+      Reflect.apply(f.owner.harnessLifecycle, undefined, [
+        { kind: 'sandbox.restore-admission', sandboxRuntimeId: 'sandbox-original' },
+      ])
+    ).rejects.toMatchObject(invalid);
+    await expect(
+      Reflect.apply(f.owner.backendSession, undefined, [
+        { kind: 'launching', attemptId: 'attempt-original' },
+      ])
+    ).rejects.toMatchObject(invalid);
+    await expect(
+      Reflect.apply(f.owner.workerStorageBinding, undefined, [
+        {
+          kind: 'purge-pending',
+          storageRef: 'storage-original',
+          expectedRevision: 1,
+          schedulerRows: [],
+        },
+      ])
+    ).rejects.toMatchObject(invalid);
+    await expect(
+      Reflect.apply(f.owner.workerImage, undefined, [
+        {
+          ...image,
+          value: { ...image.value, operation: 'image.acquire' },
+        },
+      ])
+    ).rejects.toMatchObject(invalid);
+    const precondition = { code: 'precondition', commit: 'not-committed' };
+    await expect(f.owner.workerImage(image)).rejects.toMatchObject(precondition);
+
+    const resume = await f.writer.pauseForDataRootBackup(f.database);
+    try {
+      imageAuthorized = true;
+      const deferred = f.owner.workerImage(image);
+      const refused = expect(deferred).rejects.toMatchObject(precondition);
+      imageAuthorized = false;
+      resume();
+      await refused;
+    } finally {
+      resume();
+    }
+    imageAuthorized = true;
+    Atomics.store(f.gate, 0, 0);
+    const imageWrite = f.owner.workerImage(image);
+    try {
+      await waitForHold(f.gate);
+      expect(Atomics.load(f.gate, f.gate.length - 1)).toBe(2);
+      expect(f.owner.read(() => 'unacknowledged')).toEqual(nanoHostHeld);
+    } finally {
+      release(f.gate);
+    }
+    await expect(imageWrite).resolves.toBeUndefined();
+    expect(
+      f.owner.read((sqlite) =>
+        sqlite
+          .prepare('SELECT image_digest FROM worker_image_settlements WHERE request_id = ?')
+          .pluck()
+          .get(image.value.requestId)
+      )
+    ).toEqual({ state: 'ready', value: image.value.outcome.imageDigest });
+
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, nanoHostTarget)
+    ).resolves.toMatchObject({ state: 'ready' });
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, nanoHostReady)
+    ).resolves.toMatchObject({ state: 'ready' });
+    await expect(
+      f.owner.harnessLifecycle({
+        kind: 'runtime.create',
+        adapterId: 'codex',
+        adapterVersion: 'fixture',
+        harnessBindingRef: 'harness-binding',
+        harnessCompatibilityKey: 'b'.repeat(64),
+        harnessInstanceId: 'harness-original',
+        imageDigest: image.value.outcome.imageDigest,
+        originPhysicalEpoch: nanoHostReady.physicalEpoch,
+        runtimeTargetId: nanoHostTarget.targetId,
+        sandboxBindingRef: 'sandbox-binding-original',
+        sandboxCompatibilityKey: 'c'.repeat(64),
+        sandboxIntegrationBindingRef: 'sandbox-integration',
+        sandboxRuntimeId: 'sandbox-original',
+        timestamp: nanoHostTarget.observedAt,
+      })
+    ).resolves.toBeUndefined();
+    expect(
+      f.owner.read((sqlite) =>
+        sqlite.prepare('SELECT harness_instance_id FROM harness_instance_records').pluck().get()
+      )
+    ).toEqual({ state: 'ready', value: 'harness-original' });
+
+    const handoff = { kind: 'handoff', attemptId: 'attempt-original' } as const;
+    await expect(
+      f.owner.backendSession({
+        kind: 'transition',
+        attemptId: handoff.attemptId,
+        fromState: 'materializing',
+        toState: 'materialized',
+      })
+    ).resolves.toMatchObject({ state: 'materialized', workspaceHandoffState: 'pending' });
+    await expect(
+      Reflect.apply(f.owner.backendSession, undefined, [
+        {
+          kind: 'transition',
+          attemptId: handoff.attemptId,
+          fromState: 'materialized',
+          toState: 'launching',
+        },
+      ])
+    ).rejects.toMatchObject(invalid);
+    await expect(f.owner.backendSession(handoff)).rejects.toMatchObject(precondition);
+    ensureWorkspaceLayout(f.root, workspaceId);
+    workspace = openWorkspaceDb(f.root, workspaceId);
+    nativeHandles.push(workspace);
+    applyScopedMigrations(workspace);
+    await recordWorkspaceBackendHandoff(
+      workspace,
+      [
+        {
+          id: materialization.inputSnapshotId,
+          workspaceId,
+          resourceId: 'resource-original',
+          resourceKind: 'filesystem',
+          strategy: 'filesystem',
+          pathScope: ['source'],
+          writableRoots: [],
+          ignoredPaths: [],
+          generatedFiles: [],
+          base: materialization.base,
+          backend: { kind: 'managed-sandbox', label: 'Fixture', capabilitySummary: [] },
+          createdAt: materialization.createdAt,
+        },
+      ],
+      [{ ...materialization, readinessEvidence: [...materialization.readinessEvidence] }]
+    );
+    await expect(f.owner.backendSession(handoff)).resolves.toMatchObject({
+      attemptId: handoff.attemptId,
+      workspaceHandoffState: 'complete',
+    });
+
+    const storage = {
+      kind: 'create-and-reserve' as const,
+      now: nanoHostTarget.observedAt,
+      expectedRevision: 1,
+      layout: {
+        family: 'openkit-worker',
+        version: '1',
+        uid: 1000,
+        gid: 1000,
+        workingDirectory: '/tmp/openkit-bootstrap',
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/workspace' }, { target: '/sandbox' }],
+      },
+      purpose: 'work' as const,
+      responsibleUserId: FIXTURE_LOCAL_USER_ID,
+      storageRef: 'storage-original',
+      threadId: 'thread-original',
+      workspaceId,
+      agentSessionId: 'session-original',
+      runtimeTargetId: nanoHostTarget.targetId,
+      deploymentId: nanoHostTarget.deploymentId,
+    };
+    await expect(
+      f.owner.workerStorageBinding({ ...storage, authorizedContributorRefs: [] })
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    const contributor = prepareWorkerStorageContributor(
+      { storageRef: storage.storageRef, workspaceId, contributors: [] },
+      storage,
+      storage.now,
+      1
+    );
+    await expect(
+      f.owner.workerStorageBinding({
+        ...storage,
+        authorizedContributorRefs: [contributor.contributorRef],
+      })
+    ).resolves.toMatchObject({ storageRef: 'storage-original', state: 'reserved' });
+
+    enabled = false;
+    const query = vi.fn();
+    expect(f.owner.read(query)).toEqual({
+      state: 'unavailable',
+      owner: 'nanohost',
+      reason: 'disabled',
+    });
+    expect(query).not.toHaveBeenCalled();
+    await expect(f.owner.workerImage(image)).rejects.toMatchObject({
+      code: 'unavailable',
+      commit: 'not-committed',
+    });
+    const core = new Database(f.corePath, { readonly: true, fileMustExist: true });
+    try {
+      expect(core.prepare('SELECT count(*) FROM worker_image_settlements').pluck().get()).toBe(0);
+      expect(core.prepare('SELECT count(*) FROM worker_backend_sessions').pluck().get()).toBe(0);
+    } finally {
+      core.close();
+    }
+  });
+
   it('holds a live epoch until exact applied coverage and rejects retired storage and target generations', async () => {
     const f = await nanoHostWorkerFixture();
     const postMessage = Worker.prototype.postMessage;
@@ -566,36 +881,42 @@ describe('admitted NanoHost owner worker', () => {
         throw new Error('Expected a real NanoHost owner request.');
       return postMessage.call(this, { ...message, openingRequestId: message.openingRequestId + 1 });
     });
-    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
-      code: 'owner-recovery-required',
-      commit: 'not-committed',
-    });
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, nanoHostTarget)
+    ).resolves.toEqual(nanoHostHeld);
     posted.mockRestore();
-    await expect(f.owner.runtimeTarget(nanoHostTarget)).resolves.toMatchObject({
-      connectionGeneration: 1,
-      ready: false,
-    });
-    await expect(f.owner.runtimeTarget(nanoHostReady)).resolves.toMatchObject({
-      ready: true,
-      physicalEpoch: nanoHostPlacement.physicalEpoch,
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, nanoHostTarget)
+    ).resolves.toMatchObject({ state: 'ready', value: { connectionGeneration: 1, ready: false } });
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, nanoHostReady)
+    ).resolves.toMatchObject({
+      state: 'ready',
+      value: { ready: true, physicalEpoch: nanoHostPlacement.physicalEpoch },
     });
 
-    const targetHeld = {
-      code: 'precondition',
-      commit: 'not-committed',
-      domain: { code: 'runtime_target_refused' },
+    let applied = false;
+    const kernel: NanoHostRuntimeTargetEpochKernel = {
+      ...nanoHostUnknownKernel,
+      async reserveHolderIntent(input) {
+        expect(input).toEqual(nanoHostPlacement);
+        await expect(f.owner.readPendingEpochRetirement()).resolves.toEqual({
+          state: 'ready',
+          value: nanoHostPlacement,
+        });
+        return { state: 'ready', value: nanoHostIntent };
+      },
+      async inspectNanoHostEpochFence(input) {
+        expect(input).toEqual(nanoHostIntent);
+        return {
+          state: 'ready',
+          value: applied ? { state: 'settled', receipt: nanoHostReceipt } : { state: 'unknown' },
+        };
+      },
     };
-    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject(targetHeld);
-    await expect(f.owner.beginEpochRetirement(nanoHostPlacement)).resolves.toEqual(nanoHostAck);
-    await expect(f.owner.readPendingEpochRetirement()).resolves.toEqual({
-      state: 'ready',
-      value: nanoHostPlacement,
-    });
-    await expect(f.owner.readEpochInvalidation(nanoHostIntent.requestId)).resolves.toEqual({
-      state: 'ready',
-      value: null,
-    });
-    await expect(f.owner.stageEpochInvalidation(nanoHostIntent)).resolves.toEqual(nanoHostAck);
+    await expect(f.owner.transitionRuntimeTarget(kernel, nanoHostTarget)).resolves.toEqual(
+      nanoHostKernelHeld
+    );
     await expect(f.owner.readEpochInvalidation(nanoHostIntent.requestId)).resolves.toEqual({
       state: 'ready',
       value: nanoHostIntent,
@@ -605,8 +926,14 @@ describe('admitted NanoHost owner worker', () => {
       result: { fencedHolderReceiptIds: ['holder-a'] },
     });
     await expect(f.owner.settleEpochInvalidation(partialReceipt)).resolves.toEqual(nanoHostHeld);
-    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject(targetHeld);
-    await expect(f.owner.settleEpochInvalidation(nanoHostReceipt)).resolves.toEqual(nanoHostAck);
+    await expect(f.owner.transitionRuntimeTarget(kernel, nanoHostTarget)).resolves.toEqual(
+      nanoHostKernelHeld
+    );
+    applied = true;
+    await expect(f.owner.transitionRuntimeTarget(kernel, nanoHostTarget)).resolves.toMatchObject({
+      state: 'ready',
+      value: { connectionGeneration: 2, ready: false },
+    });
     await expect(
       f.owner.settleEpochInvalidation({
         ...nanoHostReceipt,
@@ -617,36 +944,31 @@ describe('admitted NanoHost owner worker', () => {
       state: 'ready',
       value: null,
     });
-    await expect(f.owner.runtimeTarget(nanoHostReady)).rejects.toMatchObject(targetHeld);
-    await expect(f.owner.runtimeTarget(nanoHostTarget)).resolves.toMatchObject({
-      connectionGeneration: 2,
-      ready: false,
-    });
+    await expect(f.owner.transitionRuntimeTarget(kernel, nanoHostReady)).resolves.toEqual(
+      nanoHostHeld
+    );
     await expect(f.owner.beginEpochRetirement(nanoHostPlacement)).resolves.toEqual(nanoHostHeld);
 
     const closing = f.writer.closeServerOwner(f.root, 'nanohost');
-    await Promise.all([
-      expect(f.owner.readPendingEpochRetirement()).resolves.toEqual(nanoHostHeld),
-      expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
-        code: 'busy',
-        commit: 'not-committed',
-      }),
-      closing,
-    ]);
-    const reopened = await f.writer.bindNanoHostOwner(f.root, nanoHostReaders);
+    expect(f.owner.read((reader) => reader.open)).toEqual(nanoHostHeld);
+    await expect(f.owner.transitionRuntimeTarget(kernel, nanoHostTarget)).resolves.toEqual(
+      nanoHostHeld
+    );
+    await closing;
+    const reopened = await f.writer.bindNanoHostOwner(f.root, nanoHostReaders, f.serving);
     if (reopened.state !== 'ready')
       throw new Error('Expected the retained NanoHost owner to reopen.');
-    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
-      code: 'owner-recovery-required',
-      commit: 'not-committed',
-    });
+    expect(f.owner.read((reader) => reader.open)).toEqual(nanoHostHeld);
+    await expect(f.owner.transitionRuntimeTarget(kernel, nanoHostTarget)).resolves.toEqual(
+      nanoHostHeld
+    );
     await expect(
-      reopened.value.runtimeTarget({
+      reopened.value.transitionRuntimeTarget(kernel, {
         ...nanoHostReady,
         connectionGeneration: 2,
         physicalEpoch: 'c'.repeat(64),
       })
-    ).resolves.toMatchObject({ connectionGeneration: 2, ready: true });
+    ).resolves.toMatchObject({ state: 'ready', value: { connectionGeneration: 2, ready: true } });
     const core = new Database(f.corePath, { readonly: true, fileMustExist: true });
     try {
       expect(core.prepare('SELECT count(*) FROM nanohost_runtime_targets').pluck().get()).toBe(0);
@@ -657,8 +979,8 @@ describe('admitted NanoHost owner worker', () => {
 
   it('holds a successor when the original local settlement commits but loses its ACK', async () => {
     const f = await nanoHostWorkerFixture();
-    await f.owner.runtimeTarget(nanoHostTarget);
-    await f.owner.runtimeTarget(nanoHostReady);
+    await f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, nanoHostTarget);
+    await f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, nanoHostReady);
     await expect(f.owner.beginEpochRetirement(nanoHostPlacement)).resolves.toEqual(nanoHostAck);
     await expect(f.owner.stageEpochInvalidation(nanoHostIntent)).resolves.toEqual(nanoHostAck);
 
@@ -666,10 +988,9 @@ describe('admitted NanoHost owner worker', () => {
     const settlement = f.owner.settleEpochInvalidation(nanoHostReceipt);
     try {
       await waitForHold(f.gate);
-      await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
-        code: 'busy',
-        commit: 'not-committed',
-      });
+      await expect(
+        f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, nanoHostTarget)
+      ).resolves.toEqual(nanoHostHeld);
       const read = new Database(f.path, { readonly: true, fileMustExist: true });
       try {
         const row = read
@@ -690,11 +1011,10 @@ describe('admitted NanoHost owner worker', () => {
     await expect(f.owner.readEpochInvalidation(nanoHostIntent.requestId)).resolves.toEqual(
       nanoHostHeld
     );
-    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
-      code: 'owner-recovery-required',
-      commit: 'not-committed',
-    });
-    await expect(f.writer.bindNanoHostOwner(f.root, nanoHostReaders)).resolves.toEqual(
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, nanoHostTarget)
+    ).resolves.toEqual(nanoHostHeld);
+    await expect(f.writer.bindNanoHostOwner(f.root, nanoHostReaders, f.serving)).resolves.toEqual(
       nanoHostHeld
     );
     await expect(f.writer.runtimeTarget(f.coreKey, nanoHostTarget)).resolves.toMatchObject({

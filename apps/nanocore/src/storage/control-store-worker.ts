@@ -135,6 +135,7 @@ import {
 } from '../runtime/pending-requests.js';
 import { ProjectWorkerBackendCleanupInputSchema } from '../runtime/worker-backend-cleanup-codecs.js';
 import { projectWorkerBackendCleanupInDb } from '../runtime/worker-backend-cleanup-projection.js';
+import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { WorkerImageSettlementConflict } from '../runtime/worker-image-settlements-records.js';
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {
@@ -266,6 +267,7 @@ import {
   isControlWorkerRequest,
   type NanoHostOwnerMutation,
   type NanoHostOwnerMutationResult,
+  NanoHostOwnerRefusalSchema,
   readControlSchemaApplicationInput,
   type ServerOwnerDescriptor,
 } from './control-store-worker-protocol.js';
@@ -890,6 +892,24 @@ function domainRefusal(
     return { operation, code: error.code, message: error.message, status: error.status };
   if (operation === 'worker-control-final-status' && error instanceof WorkerFinalStatusRefusal)
     return { operation, code: error.code, message: error.message, status: error.status };
+  if (request?.operation === 'nanohost-owner') {
+    const kind = request.mutation.kind;
+    if (
+      kind === 'harness-lifecycle' ||
+      kind === 'worker-image' ||
+      kind === 'backend-session' ||
+      kind === 'worker-storage-binding'
+    ) {
+      const domain = domainRefusal(kind, error);
+      if (domain?.operation === kind) {
+        const projected = NanoHostOwnerRefusalSchema.safeParse({
+          ...domain,
+          operation: 'nanohost-owner',
+        });
+        if (projected.success) return projected.data;
+      }
+    }
+  }
   if (
     operation === 'backend-session' &&
     (error instanceof BackendSessionRefusal ||
@@ -1446,6 +1466,26 @@ function applyNanoHostOwnerMutation(
     case 'settle-invalidation':
       settleNanoHostEpochInvalidation(sqlite, mutation.input);
       return { kind: mutation.kind, value: null };
+    case 'harness-lifecycle': {
+      const value = applyControlHarnessLifecycle({ sqlite }, mutation.input);
+      if (value !== null) throw new ControlProductPreconditionError();
+      return { kind: mutation.kind, value };
+    }
+    case 'worker-image':
+      return {
+        kind: mutation.kind,
+        value: applyControlWorkerImage({ sqlite }, mutation.input),
+      };
+    case 'backend-session':
+      return {
+        kind: mutation.kind,
+        value: applyControlBackendSession({ sqlite }, mutation.input),
+      };
+    case 'worker-storage-binding':
+      return {
+        kind: mutation.kind,
+        value: applyControlWorkerStorageBinding({ sqlite }, mutation.input),
+      };
   }
 }
 
@@ -1585,6 +1625,17 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       } else if (caller?.kind === 'coordinator') lanes.add(caller.turnId);
       break;
     }
+    case 'nanohost-owner':
+      if (request.mutation.kind === 'backend-session') {
+        const { attemptId } = request.mutation.input;
+        lanes.add(`attempt:${attemptId}`);
+        const session = getWorkerBackendSession({ sqlite: owner.sqlite }, attemptId);
+        if (session) {
+          lanes.add(session.turnId);
+          lanes.add(`session:${session.agentSessionId}`);
+        }
+      }
+      break;
     case 'backend-session':
       if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
       for (const lane of controlBackendSessionLanes(owner.scopeDb, request.input)) lanes.add(lane);
