@@ -1103,6 +1103,7 @@ describe('database setup', () => {
       // The canonical User reader fixture uses a private physical-database marker.
       .filter((path) => path !== join(sourceRoot, 'storage', 'db.test.ts'))
       // These exact tests inject SQL faults into private databases; they own no production schema.
+      .filter((path) => path !== join(sourceRoot, 'storage', 'security-trigger-disabled.test.ts'))
       // The cold User reader fixture injects only an unsupported predecessor ledger after private setup.
       .filter((path) => path !== join(sourceRoot, 'storage', 'cold-user-opening-native.test.ts'))
       // Layout-report fixture faults remove only a closed test User ledger; the public diagnostic must not repair it.
