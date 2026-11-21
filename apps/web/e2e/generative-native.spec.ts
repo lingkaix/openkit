@@ -11,7 +11,11 @@ import type {
 import { ActorRefSchema, allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { expect, test } from '@playwright/test';
 import { shutdownControlStoreWorkerClient } from '../../nanocore/dist/storage/control-store-worker-client.js';
-import { seedDemoWorkspaceDataRoot, seedSyntheticLocalSchedulerTarget } from './_lib/demo-data.js';
+import {
+  readFixtureNanoHost,
+  seedDemoWorkspaceDataRoot,
+  seedSyntheticLocalSchedulerTarget,
+} from './_lib/demo-data.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 let stack: IsolatedWebStack | null = null;
@@ -51,12 +55,16 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     id: string;
   }>;
   expect(users).toHaveLength(1);
-  const imageEvidence = coreDb.sqlite.prepare('SELECT * FROM worker_image_settlements').all();
+  const readImageEvidence = (dataRoot: string) =>
+    readFixtureNanoHost(dataRoot, (read) => {
+      const rows = read((sqlite) => sqlite.prepare('SELECT * FROM worker_image_settlements').all());
+      if (rows.state !== 'ready') throw new Error(`Web e2e NanoHost image read: ${rows.reason}.`);
+      return rows.value;
+    });
+  const imageEvidence = await readImageEvidence(fixtureRoot);
   expect(imageEvidence).toHaveLength(1);
   await seedDemoWorkspaceDataRoot(fixtureRoot);
-  expect(coreDb.sqlite.prepare('SELECT * FROM worker_image_settlements').all()).toEqual(
-    imageEvidence
-  );
+  expect(await readImageEvidence(fixtureRoot)).toEqual(imageEvidence);
   const workspaceDb = openWorkspaceDb(fixtureRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
   const actor = { kind: 'user' as const, id: users[0]!.id };
@@ -179,8 +187,16 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       workspaceCwd: '/workspace',
       workspaceRoots: [],
     };
-    const preparedPackage = resolveAgentEnvironmentPackageMetadata(preparation);
-    const sessionCompatibilityKey = resolveAgentSessionCompatibilityKey(preparation);
+    const { preparedPackage, sessionCompatibilityKey } = await readFixtureNanoHost(
+      fixtureRoot,
+      (readNanoHostEnvironment) => {
+        const input = { ...preparation, readNanoHostEnvironment };
+        return {
+          preparedPackage: resolveAgentEnvironmentPackageMetadata(input),
+          sessionCompatibilityKey: resolveAgentSessionCompatibilityKey(input),
+        };
+      }
+    );
     const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `generative-browser-${randomUUID()}`,
