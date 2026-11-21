@@ -14,6 +14,7 @@ import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { NanoHostWorkerRecoveryState } from '../storage/nanohost-recovery-native.js';
 import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { resolveAdmittedNanoHostFinalBinding } from '../storage/nanohost-worker-binding.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import {
   mutateAdmittedTestNanoHost,
@@ -45,12 +46,11 @@ import { runSchedulerRestartRecovery } from './scheduler-restart-recovery.js';
 import {
   getWorkerBackendSession,
   transitionWorkerBackendSessionState,
-} from './worker-backend-sessions.js';
+} from './worker-backend-session-records.js';
 import { hashWorkerRouteToken, type WorkerControlLineage } from './worker-control-gateway.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
   getWorkerControlAcceptedFinalStatus,
-  resolveWorkerControlFinalStatusTokenBinding,
 } from './worker-control-records.js';
 import { registerWorkerControlRoutes } from './worker-control-routes.js';
 
@@ -440,12 +440,14 @@ describe('Core cancellation-only final admission', () => {
         });
         expectOrdinaryEffectsRefused(fixture);
         expect(
-          resolveWorkerControlFinalStatusTokenBinding(fixture.coreDb, {
-            lineage: fixture.lineage,
-            sandboxBindingRef: BINDING,
-            token: CONTROL_TOKEN,
-            tokenFamily: 'worker-control',
-          })
+          readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+            resolveAdmittedNanoHostFinalBinding(fixture.coreDb, sqlite, {
+              lineage: fixture.lineage,
+              sandboxBindingRef: BINDING,
+              token: CONTROL_TOKEN,
+              tokenFamily: 'worker-control',
+            })
+          )
         ).toMatchObject({ status: 'accepted' });
         expect(await fixture.gateway.recordFinalStatus(finalInput(fixture, status))).toMatchObject({
           accepted: true,
@@ -956,12 +958,17 @@ describe('Core cancellation-only final admission', () => {
         launchedBackend(fixture);
         fixture.close(contradiction === 'non-cancellation' ? 'execution-failed' : 'turn-cancelled');
         if (contradiction === 'cleanup-pending')
-          await transitionWorkerBackendSessionState(fixture.coreDb, {
-            attemptId: ATTEMPT_ID,
-            fromState: 'launching',
-            toState: 'cleanup-pending',
-            now: () => fixture.now,
-          });
+          mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+            transitionWorkerBackendSessionState(
+              { sqlite },
+              {
+                attemptId: ATTEMPT_ID,
+                fromState: 'launching',
+                toState: 'cleanup-pending',
+                now: () => fixture.now,
+              }
+            )
+          );
         if (contradiction === 'handoff-pending')
           mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
             sqlite
