@@ -25,13 +25,17 @@ import {
   encodeExecutionJournalValue,
   executionJournalProcessWitness,
   readExecutionJournalInvocation,
+  readExecutionJournalLinkedInspections,
   readExecutionJournalRoot,
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from '../runtime/execution-journal.js';
+import type { ExecutionStepRef } from '../runtime/execution-step-journal.js';
 import type { NanoHostCoreReads } from './control-kernel-port.js';
+import { commandInputHash } from './control-store-input.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
+  type ControlCoreImageResult,
   type ControlCoreJournalInput,
   CoreJournalRefusal,
   readCoreJournalLineage,
@@ -46,6 +50,203 @@ function requireNanoHostEvidence<T>(result: StorageResult<'nanohost', T> | undef
   if (result?.state !== 'ready')
     throw new CoreJournalRefusal('Admitted NanoHost evidence is unavailable.');
   return result.value;
+}
+
+function requireCoreImageTarget(
+  target: ControlCoreImageResult['target'],
+  nanoHost?: NanoHostCoreReads
+) {
+  const admitted = requireNanoHostEvidence(nanoHost?.readTarget(target.targetId));
+  if (
+    !admitted?.predecessorFenced ||
+    !admitted.ready ||
+    !admitted.freshEmpty ||
+    admitted.targetId !== target.targetId ||
+    admitted.identityId !== target.identityId ||
+    admitted.deploymentId !== target.deploymentId ||
+    admitted.connectionGeneration !== target.connectionGeneration ||
+    admitted.physicalEpoch !== target.physicalEpoch
+  )
+    throw new CoreJournalRefusal('Image execution provenance is unavailable.');
+}
+
+function imageTargetBinding(target: ControlCoreImageResult['target']): string {
+  return `nanohost-target/v1:${target.deploymentId}:${target.targetId}:${target.connectionGeneration}:${target.physicalEpoch}`;
+}
+
+const imageTargetAuthorityPrefix = 'image-acquire-target/v1:';
+
+function imageTargetAuthority({
+  targetId,
+  identityId,
+  deploymentId,
+  physicalEpoch,
+}: ControlCoreImageResult['target']): string {
+  // A re-admitted connection can return the original result from the same live Runtime Epoch.
+  return (
+    imageTargetAuthorityPrefix +
+    commandInputHash({ targetId, identityId, deploymentId, physicalEpoch })
+  );
+}
+
+/** Resolves the original acquisition by request ID, without granting permission to send it. */
+export function readCoreImageAcquisitionRef(
+  db: CoreDb,
+  requestId: string
+): ControlCoreImageResult['ref'] | null {
+  const rows = db.sqlite
+    .prepare(`SELECT s.execution_id, s.step_id FROM control_execution_steps s
+      JOIN control_executions r ON r.id = s.execution_id
+      WHERE r.definition_version = ?
+        AND json_extract(s.invocation_json, '$.carriage.operation') = 'image.acquire'
+        AND json_extract(s.invocation_json, '$.carriage.requestId') = ?
+        AND json_extract(s.control_json, '$.kind') = 'resolve-setup'
+      LIMIT 2`)
+    .all(CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION, requestId) as {
+    execution_id: string;
+    step_id: string;
+  }[];
+  if (rows.length > 1) throw new CoreJournalRefusal('Original image invocation is ambiguous.');
+  const row = rows[0];
+  return row
+    ? {
+        execution: { owner: { kind: 'server' }, executionId: row.execution_id },
+        stepId: row.step_id,
+      }
+    : null;
+}
+
+/** Settles an admitted result or inspects its original decision within the Core writer frame. */
+export function applyControlCoreImageResult(
+  db: CoreDb,
+  { ref, settlement, target }: ControlCoreImageResult,
+  nanoHost: NanoHostCoreReads | undefined
+): string {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new CoreJournalRefusal('Image result requires the Core writer transaction.');
+  requireCoreImageTarget(target, nanoHost);
+  const occurrence = readCoreImageAcquisitionRef(db, settlement.requestId);
+  if (!occurrence) throw new CoreJournalRefusal('Original image invocation is unavailable.');
+  if (!isDeepStrictEqual(occurrence, ref))
+    throw new CoreJournalRefusal('Original image invocation conflicts.', 'image_result_conflict');
+  const original = readExecutionJournalInvocation(db, ref);
+  const candidate = [
+    `artifact/v1:${settlement.authoredArtifactId}:${settlement.authoredArtifactVersion}:${settlement.authoredContentDigest}`,
+    `image-input/v1:${settlement.inputDigest}`,
+  ];
+  if (
+    !isDeepStrictEqual(
+      original.control.authorityRefs.filter((value) =>
+        value.startsWith(imageTargetAuthorityPrefix)
+      ),
+      [imageTargetAuthority(target)]
+    ) ||
+    !isDeepStrictEqual(original.control.inputRefs, candidate) ||
+    !isDeepStrictEqual(original.control.target, {
+      backendKind: 'nanohost',
+      targetId: target.targetId,
+      allocationRef: null,
+    })
+  )
+    throw new CoreJournalRefusal(
+      'Image result conflicts with its admitted candidate or target.',
+      'image_result_conflict'
+    );
+
+  const digest = commandInputHash(settlement);
+  const success = settlement.outcome.kind === 'success';
+  const state = success ? 'completed' : 'failed';
+  const late = original.state === 'unknown' && original.control.outputRefs.length === 0;
+  const consumeId = `${ref.stepId}:consume`;
+  if (late) {
+    const receipts = readExecutionJournalLinkedInspections(db, ref)
+      .map(({ inspection }) => inspection)
+      .filter((inspection) => inspection.control.kind === 'consume-receipt');
+    if (receipts.length > 0) {
+      const receipt = receipts[0]!;
+      if (
+        receipts.length !== 1 ||
+        receipt.ref.execution.executionId !== ref.execution.executionId ||
+        receipt.ref.stepId !== consumeId ||
+        receipt.state !== state ||
+        receipt.control.fingerprint !== digest ||
+        !isDeepStrictEqual(receipt.control.outputRefs, [digest])
+      )
+        throw new CoreJournalRefusal('Image result replay conflicts.', 'image_result_conflict');
+      return digest;
+    }
+  } else if (original.state !== 'intent') {
+    if (original.state !== state || !isDeepStrictEqual(original.control.outputRefs, [digest]))
+      throw new CoreJournalRefusal('Image result replay conflicts.', 'image_result_conflict');
+    return digest;
+  }
+
+  let root = readExecutionJournalRoot(db, ref.execution);
+  const row = db.sqlite
+    .prepare('SELECT span_json FROM control_execution_steps WHERE execution_id = ? AND step_id = ?')
+    .get(ref.execution.executionId, ref.stepId) as { span_json: string };
+  let span = decodeExecutionJournalSpan(JSON.parse(row.span_json));
+  const now = BigInt(Date.now()) * 1_000_000n;
+  const earliestEnd = span.endTimeUnixNano ?? span.startTimeUnixNano;
+  // biome-ignore lint/complexity/useMathMinMax: nanosecond clocks use bigint.
+  const endedAt = now < earliestEnd ? earliestEnd : now;
+  let decidingRef: ExecutionStepRef = ref;
+  if (late) {
+    // A result after abandonment acknowledges the receiver receipt and leaves the original hold.
+    const consumeSpan = {
+      ...span,
+      spanId: randomBytes(8).toString('hex'),
+      parentSpanId: root.span.spanId,
+      name: 'image.acquire result reconciliation',
+      startTimeUnixNano: endedAt,
+      endTimeUnixNano: null,
+      status: { code: 'UNSET' },
+      attributes: [],
+      events: [],
+      links: [
+        {
+          traceId: span.traceId,
+          spanId: span.spanId,
+          flags: span.flags,
+          attributes: [],
+          droppedAttributesCount: 0,
+        },
+      ],
+    } as const;
+    decidingRef = writeExecutionJournalIntent(db, {
+      execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
+      stepId: consumeId,
+      parentStepId: null,
+      parent: null,
+      inspectedStep: ref,
+      carriage: original.carriage,
+      control: {
+        ...original.control,
+        kind: 'consume-receipt',
+        target: null,
+        invocationId: `${original.control.invocationId}:consume`,
+        outputRefs: [],
+        fingerprint: digest,
+        retryPermitted: false,
+        deadlineUnixNano: null,
+      },
+      span: consumeSpan,
+    }).ref;
+    span = consumeSpan;
+    root = readExecutionJournalRoot(db, ref.execution);
+  }
+  const closes = success && !late;
+  settleExecutionJournalStep(db, {
+    ref: decidingRef,
+    expectedExecutionRevision: root.revision,
+    state,
+    outputRefs: [digest],
+    span: { ...span, endTimeUnixNano: endedAt, status: { code: success ? 'OK' : 'ERROR' } },
+    nextPhase: closes ? 'closed' : 'closing',
+    terminalCause: root.terminalCause ?? (success ? null : 'Image acquisition failed.'),
+    exclusionRefs: closes ? [] : root.exclusionRefs,
+  });
+  return digest;
 }
 
 const containmentEvidenceAction = 'security.containment-evidence';
@@ -142,11 +343,12 @@ function appendContainmentEvidenceHandoff(
 /** Decides one original Core journal tuple against current rows inside its savepoint and FULL commit. */
 export function applyControlCoreJournal(
   db: CoreDb,
-  input: ControlCoreJournalInput,
+  input: ControlCoreJournalInput | ControlCoreImageResult,
   publication?: NativeRuntimePolicyPublication,
   nanoHost?: NanoHostCoreReads
 ): string | null {
   assertControlProductWriter(db.sqlite);
+  if (input.kind === 'image-result') return applyControlCoreImageResult(db, input, nanoHost);
   if (
     input.kind === 'containment-inspect' ||
     input.kind === 'containment-intent' ||
@@ -188,35 +390,32 @@ export function applyControlCoreJournal(
     return null;
   }
   if (input.kind === 'image-intent') {
-    const target = requireNanoHostEvidence(nanoHost?.readTarget(input.target.targetId));
-    const binding = `nanohost-target/v1:${input.target.deploymentId}:${input.target.targetId}:${input.target.connectionGeneration}:${input.target.physicalEpoch}`;
+    requireCoreImageTarget(input.target, nanoHost);
     if (
-      !target ||
-      !target.predecessorFenced ||
-      !target.ready ||
-      !target.freshEmpty ||
-      target.identityId !== input.target.identityId ||
-      target.deploymentId !== input.target.deploymentId ||
-      target.connectionGeneration !== input.target.connectionGeneration ||
-      target.physicalEpoch !== input.target.physicalEpoch ||
       intent.execution.definitionVersion !== CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION ||
       intent.control.kind !== 'resolve-setup' ||
       intent.carriage.operation !== 'image.acquire' ||
-      intent.carriage.bindingRef !== binding ||
-      intent.control.target?.targetId !== target.targetId
+      intent.carriage.bindingRef !== imageTargetBinding(input.target) ||
+      intent.control.target?.targetId !== input.target.targetId ||
+      intent.control.authorityRefs.some((value) => value.startsWith(imageTargetAuthorityPrefix))
     )
       throw new CoreJournalRefusal('Image execution provenance is unavailable.');
-    if (
-      db.sqlite
-        .prepare(`SELECT 1 FROM control_execution_steps WHERE json_extract(invocation_json, '$.carriage.operation') = 'image.acquire'
-      AND json_extract(invocation_json, '$.carriage.requestId') = ? AND json_extract(control_json, '$.kind') = 'resolve-setup' LIMIT 1`)
-        .get(intent.carriage.requestId)
-    )
+    if (readCoreImageAcquisitionRef(db, intent.carriage.requestId))
       throw new CoreJournalRefusal(
         'Image intent already exists; only result reconciliation is permitted.'
       );
     return encodeExecutionJournalValue(
-      writeExecutionJournalIntent(db, intent, input.processWitness)
+      writeExecutionJournalIntent(
+        db,
+        {
+          ...intent,
+          control: {
+            ...intent.control,
+            authorityRefs: [...intent.control.authorityRefs, imageTargetAuthority(input.target)],
+          },
+        },
+        input.processWitness
+      )
     );
   }
   // New idle effects require a covering Core reservation of the physical scope.

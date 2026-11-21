@@ -24,16 +24,28 @@ import type {
 } from '../storage/control-kernel-port.js';
 import type { KernelExecutionEvidence } from '../storage/control-kernel-proof-codecs.js';
 import { controlStoreFor } from '../storage/control-store.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { ControlCoreImageResultSchema } from '../storage/core-journal-codecs.js';
+import {
+  applyControlCoreImageResult,
+  readCoreImageAcquisitionRef,
+} from '../storage/core-journal-native.js';
 import { openCoreDb, serverStoragePath } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
 import { storageRequestId } from '../storage/storage-owner.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { createVaultReference, revokeVaultReference } from '../vault/vault-references.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { publishCoreJournal } from './core-journal-owner.js';
 import {
   readCoreHarnessConsumption,
   recordCoreHarnessConsumption,
@@ -59,6 +71,8 @@ import {
   commitRepairReservationStep,
   commitRepairTerminalAuditInDb,
   createExecutionStepJournalReader,
+  encodeExecutionJournalValue,
+  executionJournalProcessWitness,
   inspectKernelInputDisposition,
   inspectKernelInputProofInDb,
   inspectKernelProofReceipt,
@@ -260,6 +274,170 @@ async function ending(
 }
 
 describe('persisted execution journal contracts', () => {
+  it.each(['intent', 'unknown'] as const)(
+    'acknowledges an exact image outcome on the original %s acquisition and inspects it after reopen',
+    async (initialState) => {
+      const f = journalFixture();
+      onTestFinished(shutdownControlStoreWorkerClient);
+      let { value: native } = await openAdmittedTestNanoHost(f.db);
+      const identity = {
+        targetId: 'fixture-selected-target',
+        identityId: 'fixture-selected-target',
+        deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+      };
+      const target = { ...identity, connectionGeneration: 1, physicalEpoch: 'c'.repeat(64) };
+      const admit = async (selectedTarget: typeof target) => {
+        const observedAt = new Date().toISOString();
+        await expect(
+          transitionAdmittedNanoHostRuntimeTarget(native, {
+            ...identity,
+            kind: 'allocate',
+            observedAt,
+          })
+        ).resolves.toMatchObject({
+          state: 'ready',
+          value: { connectionGeneration: selectedTarget.connectionGeneration },
+        });
+        await expect(
+          transitionAdmittedNanoHostRuntimeTarget(native, {
+            ...selectedTarget,
+            kind: 'ready',
+            observedAt,
+            ready: true,
+            freshEmpty: true,
+            predecessorFenced: true,
+          })
+        ).resolves.toMatchObject({ state: 'ready', value: { ready: true } });
+      };
+      await admit(target);
+      const candidate = {
+        authoredArtifactId: testEntityId('ar', 'original-image'),
+        authoredArtifactVersion: 1,
+        authoredContentDigest: `sha256:${'d'.repeat(64)}`,
+        inputDigest: `sha256:${'e'.repeat(64)}`,
+      } as const;
+      const draft = f.intent();
+      const bindingRef = `nanohost-target/v1:${target.deploymentId}:${target.targetId}:1:${target.physicalEpoch}`;
+      const intent: ExecutionJournalIntent = {
+        ...draft,
+        execution: {
+          ...draft.execution,
+          exclusionRefs: [
+            `native-image-invocation/v1:${draft.execution.ref.executionId}:${draft.stepId}`,
+          ],
+        },
+        carriage: { ...draft.carriage, bindingRef },
+        control: {
+          ...draft.control,
+          authorityRefs: [`turn/v1:${draft.execution.workId}`, bindingRef],
+          inputRefs: [
+            `artifact/v1:${candidate.authoredArtifactId}:1:${candidate.authoredContentDigest}`,
+            `image-input/v1:${candidate.inputDigest}`,
+          ],
+        },
+      };
+      const ref = { execution: intent.execution.ref, stepId: intent.stepId };
+      const admission = {
+        kind: 'image-intent' as const,
+        intentJson: encodeExecutionJournalValue(intent),
+        processWitness: executionJournalProcessWitness(),
+        target,
+      };
+      await expect(publishCoreJournal(f.db, admission)).resolves.toContain(
+        intent.control.invocationId
+      );
+      if (initialState === 'unknown')
+        await publishCoreJournal(f.db, { kind: 'image-abandon', ref, accepted: true });
+
+      const settlement = {
+        ...candidate,
+        requestId: intent.carriage.requestId,
+        operation: 'image.acquire',
+        outcome:
+          initialState === 'intent'
+            ? { kind: 'success', imageDigest: `sha256:${'f'.repeat(64)}` }
+            : { kind: 'failure', failureCode: 'effect_failed' },
+      } as const;
+      const submit = (value = settlement, selectedTarget = target, original = ref) =>
+        f.db.sqlite
+          .transaction(() =>
+            applyControlCoreImageResult(
+              f.db,
+              ControlCoreImageResultSchema.parse({
+                kind: 'image-result',
+                ref: original,
+                settlement: value,
+                target: selectedTarget,
+              }),
+              createNanoHostCoreReads(native.owner)
+            )
+          )
+          .immediate();
+
+      const digest = commandInputHash(settlement);
+      expect(submit()).toBe(digest);
+      const root = await f.reader.readExecution(ref.execution);
+      const steps = await f.reader.readEndedSteps(ref.execution);
+      expect(root).toMatchObject(
+        initialState === 'intent'
+          ? { phase: 'closed', exclusionRefs: [] }
+          : {
+              phase: 'closing',
+              exclusionRefs: [
+                `native-image-invocation/v1:${ref.execution.executionId}:${ref.stepId}`,
+              ],
+            }
+      );
+      expect(steps).toHaveLength(initialState === 'intent' ? 1 : 2);
+      expect(steps[0]).toMatchObject({
+        state: initialState === 'intent' ? 'completed' : 'unknown',
+        control: { outputRefs: initialState === 'intent' ? [digest] : [] },
+      });
+      if (initialState === 'unknown')
+        expect(await f.reader.readLinkedInspections(ref)).toMatchObject([
+          {
+            inspectedStep: ref,
+            inspection: {
+              state: 'failed',
+              control: { outputRefs: [digest], kind: 'consume-receipt' },
+            },
+          },
+        ]);
+
+      await shutdownControlStoreWorkerClient();
+      f.reopen();
+      ({ value: native } = await openAdmittedTestNanoHost(f.db));
+      const inspected = readCoreImageAcquisitionRef(f.db, settlement.requestId);
+      expect(inspected).toEqual(ref);
+      expect(readCoreImageAcquisitionRef(f.db, '0'.repeat(64))).toBeNull();
+      expect(submit(settlement, target, inspected!)).toBe(digest);
+      expect(() =>
+        submit({
+          ...settlement,
+          outcome: { kind: 'success', imageDigest: `sha256:${'9'.repeat(64)}` },
+        })
+      ).toThrow(expect.objectContaining({ reasonCode: 'image_result_conflict' }));
+      expect(() => submit({ ...settlement, inputDigest: `sha256:${'8'.repeat(64)}` })).toThrow(
+        expect.objectContaining({ reasonCode: 'image_result_conflict' })
+      );
+      expect(() => submit(settlement, { ...target, identityId: 'different-identity' })).toThrow(
+        'Image execution provenance is unavailable.'
+      );
+      expect(() => submit(settlement, target, { ...ref, stepId: 'wrong-step' })).toThrow(
+        expect.objectContaining({ reasonCode: 'image_result_conflict' })
+      );
+      await expect(publishCoreJournal(f.db, admission)).rejects.toThrow(
+        'only result reconciliation'
+      );
+      const reconnected = { ...target, connectionGeneration: 2 };
+      await admit(reconnected);
+      expect(submit(settlement, reconnected, inspected!)).toBe(digest);
+      expect(() => submit()).toThrow('Image execution provenance is unavailable.');
+      expect(await f.reader.readExecution(ref.execution)).toEqual(root);
+      expect(await f.reader.readEndedSteps(ref.execution)).toEqual(steps);
+    }
+  );
+
   it('round-trips exact typed root, invocation and ended span without a Workspace', async () => {
     expect(CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION).toBe('core-image-acquire/v1');
     const f = journalFixture();
@@ -504,16 +682,28 @@ describe('persisted execution journal contracts', () => {
   });
 
   it('does not renew the original submission clock and still inspects its expired grant', () => {
-    const { f, attempt, proposal, reserve, next } = schedulerGrantFixture();
+    const { f, attempt, proposal: draft, reserve, next } = schedulerGrantFixture();
+    const inputRef = 'immutable-package';
+    const bindingRef = 'original-binding';
+    const operationId = commandInputHash({
+      attemptId: attempt.attemptId,
+      inputRef,
+      operation: 'submit',
+    });
     bindSchedulerExecutionAttemptSession(f.db, {
       attemptId: attempt.attemptId,
       agentSessionId: testEntityId('as', 'original-submission'),
     });
     finalizeSchedulerExecutionAttemptInput(f.db, {
       attemptId: attempt.attemptId,
-      inputRef: 'immutable-package',
-      bindingRef: 'original-binding',
+      inputRef,
+      bindingRef,
     });
+    const proposal: ExecutionJournalIntent = {
+      ...draft,
+      carriage: { operation: 'submit', requestId: operationId, sequence: null, bindingRef },
+      control: { ...draft.control, operationId, invocationId: operationId, inputRefs: [inputRef] },
+    };
     const first = reserve(true, 'original-generation', proposal, { submission: true });
     expect(first.state).toBe('admitted-now');
     expect(
@@ -541,6 +731,12 @@ describe('persisted execution journal contracts', () => {
     expect(
       reserve(false, 'original-generation', proposal, { submission: true, now: later })
     ).toEqual({ state: 'inspect-original', grant: first.grant });
+    expect(readRetainedNanoHostSubmission(f.db, attempt.attemptId)?.lease.grant).toEqual(
+      first.grant
+    );
+    expect(() =>
+      reserve(true, 'successor-generation', proposal, { submission: true, now: later })
+    ).toThrow('Execution grant conflicts with its original operation.');
     expect(() =>
       reserve(true, 'original-generation', next('late-operation'), { now: later })
     ).toThrow('Original execution clock is unavailable or expired.');
