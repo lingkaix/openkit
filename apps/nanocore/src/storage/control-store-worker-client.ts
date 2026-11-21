@@ -307,7 +307,11 @@ import {
   type ServerWorkOwnerMutation,
   type ServerWorkOwnerMutationResult,
 } from './control-store-worker-protocol.js';
-import { type ControlCoreJournalInput, readCoreJournalLineage } from './core-journal-codecs.js';
+import {
+  type ControlCoreImageResult,
+  type ControlCoreJournalInput,
+  readCoreJournalLineage,
+} from './core-journal-codecs.js';
 import {
   type CoreDb,
   inspectServerOwnerFile,
@@ -630,6 +634,9 @@ export interface NanoHostOwnerBinding
     input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
   ): Promise<void>;
   workerImage(input: NanoHostLocalWorkerImageInput): Promise<void>;
+  settlePreparedImage(
+    input: Extract<NanoHostOwnerMutation, { kind: 'prepared-image-result' }>['input']
+  ): Promise<void>;
   backendSession(input: NanoHostLocalBackendSessionInput): Promise<ControlBackendSessionResult>;
   closeRecovery: AdmittedNanoHostAttemptRecovery['close'];
   classifyRecovery(
@@ -3266,6 +3273,7 @@ class ControlStoreWorkerClient {
                 }
                 break;
               case 'worker-image':
+              case 'prepared-image-result':
                 if (domain.code === 'unsupported_retained_format')
                   throw new TypeError(domain.message, { cause: error });
                 if (domain.code === 'worker_image_conflict')
@@ -3467,6 +3475,9 @@ class ControlStoreWorkerClient {
           },
           workerImage: async (input) => {
             await write({ kind: 'worker-image', input });
+          },
+          settlePreparedImage: async (input) => {
+            await write({ kind: 'prepared-image-result', input });
           },
           backendSession: async (input) => (await write({ kind: 'backend-session', input })).value,
           closeRecovery: async ({ lease, session, proof, cause, observedAt, outcomeRef }) => {
@@ -6943,7 +6954,10 @@ class ControlStoreWorkerClient {
   }
 
   /** Returns only after the exact Core journal tuple is covered by FULL. */
-  async coreJournal(database: string, input: ControlCoreJournalInput): Promise<string | null> {
+  async coreJournal(
+    database: string,
+    input: ControlCoreJournalInput | ControlCoreImageResult
+  ): Promise<string | null> {
     this.assertAccepting();
     let release: (() => void) | undefined;
     let nativeRead: Opening | undefined;
@@ -6958,6 +6972,7 @@ class ControlStoreWorkerClient {
       else if (
         input.kind !== 'containment-inspect' &&
         input.kind !== 'image-intent' &&
+        input.kind !== 'image-result' &&
         input.kind !== 'image-abandon' &&
         opening?.command.dataRoot
       ) {
@@ -7007,7 +7022,11 @@ class ControlStoreWorkerClient {
         if (!release) throw new ControlStoreWorkerError('busy', 'not-committed');
       }
       const nativeDatabase = `server-owner:${serverStoragePath(opening.command.dataRoot, 'nanohost')}`;
-      if (input.kind === 'image-intent' || input.kind === 'containment-stop-outcome') {
+      if (
+        input.kind === 'image-intent' ||
+        input.kind === 'image-result' ||
+        input.kind === 'containment-stop-outcome'
+      ) {
         const candidate = this.openings.get(nativeDatabase);
         if (
           candidate?.acknowledged &&
@@ -7023,6 +7042,8 @@ class ControlStoreWorkerClient {
           nativeRead = candidate;
         }
       }
+      if (input.kind === 'image-result' && !nativeRead)
+        throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
       return await this.runOperation(
         async () => {
           const reply = await this.request({
@@ -7041,6 +7062,8 @@ class ControlStoreWorkerClient {
       );
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'core-journal') {
+        if (input.kind === 'image-result' && error.domain.reasonCode === 'image_result_conflict')
+          throw new WorkerImageSettlementConflict();
         const failure = new Error(error.domain.message);
         if (error.domain.reasonCode && input.kind === 'idle-intent')
           Object.assign(failure, {
