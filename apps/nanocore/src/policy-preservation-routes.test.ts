@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
+import { openCommunicationFixture } from './storage/communication-worker.test-support.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -30,10 +31,13 @@ it('preserves Discord signature admission through the complete server App withou
     .export({ type: 'spki', format: 'der' })
     .subarray(-32)
     .toString('hex');
+  const store = createTestStore({ dataRoot });
+  const communication = await openCommunicationFixture(coreDb, 'server');
   const app = createApp({
     mode: 'server',
     coreDb,
-    store: createTestStore({ dataRoot }),
+    store,
+    communicationStorage: { binding: { state: 'ready', value: communication } },
     openKitConfig: {
       server: { publicBaseUrl: 'https://openkit.invalid' },
       channels: { discord: { applicationId, publicKey } },

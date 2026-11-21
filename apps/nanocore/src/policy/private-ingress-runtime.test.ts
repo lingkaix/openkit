@@ -21,6 +21,7 @@ import { createAdministrationConfiguration } from '../config/administration-conf
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
+import { openCommunicationFixture } from '../storage/communication-worker.test-support.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -264,6 +265,9 @@ async function fixture(serverConfig: Record<string, unknown> = {}) {
       ).effect
     ).toBe('allow');
     expect(accounts[2]!.actor.adminTokenId).toBeUndefined();
+    const communication = manager.current().openKitConfig.channels?.discord
+      ? await openCommunicationFixture(coreDb, 'server')
+      : undefined;
     const app = createApp({
       mode: 'server',
       coreDb,
@@ -271,6 +275,9 @@ async function fixture(serverConfig: Record<string, unknown> = {}) {
       store,
       auth,
       runtimeConfigManager: manager,
+      ...(communication && {
+        communicationStorage: { binding: { state: 'ready', value: communication } },
+      }),
     });
     return { coreDb, dataRoot, store, manager, accounts, app };
   }

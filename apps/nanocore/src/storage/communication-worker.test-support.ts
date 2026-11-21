@@ -15,7 +15,7 @@ import {
 } from './control-store-admission.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, serverStoragePath } from './db.js';
-import { coreDbPath } from './fs-layout.js';
+import { nativeProductScope } from './workspace-file-records.js';
 
 type Kernel = Pick<
   ControlKernelStore,
@@ -54,28 +54,34 @@ export function communicationKernelFixture(
   };
 }
 
-/** Opens the genuine Communication worker on a fresh or previously provisioned fixture root. */
+/** Opens the genuine Communication worker, using the native Core receipt adapter by default. */
 export async function openCommunicationFixture(
   coreDb: CoreDb,
   mode: 'local' | 'server',
-  kernel: Kernel
+  kernel?: Kernel
 ) {
   const root = coreDb.dataRoot;
-  const path = coreDbPath(root);
+  const { path, owner, contentMount } = nativeProductScope(root, { kind: 'server' });
   const writer = getControlStoreWorkerClient();
   await writer.open({
     database: `core:${path}`,
     path,
     create: false,
     initialize: 'core',
-    productOwner: { kind: 'server' },
+    productOwner: owner,
     dataRoot: root,
+    // App authentication and receipt calls share this exact admitted Core opening.
+    ...(kernel === undefined ? { contentMount } : {}),
   });
   if (!existsSync(serverStoragePath(root, 'communication'))) {
     const provisioned = await writer.provisionServerOwner(root, communicationOwner);
     if (provisioned.state !== 'ready') throw new Error(JSON.stringify(provisioned));
   }
-  const binding = await prepareCommunicationOwner({ coreDb, mode, kernel });
+  const binding = await prepareCommunicationOwner({
+    coreDb,
+    mode,
+    kernel: kernel ?? writer.communicationKernel(coreDb),
+  });
   if (binding.state !== 'ready') throw new Error(JSON.stringify(binding));
   return binding.value;
 }
