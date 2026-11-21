@@ -1,0 +1,715 @@
+// openkit-test-platform: posix
+import { once } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
+import { canonicalJsonText } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
+import { expect, it, onTestFinished } from 'vitest';
+import {
+  bindSchedulerExecutionAttemptSession,
+  createSchedulerExecutionAttempt,
+  finalizeSchedulerExecutionAttemptInput,
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionGrantInDb,
+} from '../runtime/execution-attempt-records.js';
+import { CORE_SCHEDULER_EXECUTION_DEFINITION } from '../runtime/execution-journal.js';
+import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
+import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
+import {
+  getWorkerBackendSession,
+  readNanoHostWorkerRouteBinding,
+} from '../runtime/worker-backend-session-records.js';
+import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { commandInputHash } from './control-store-input.js';
+import { openCoreDb } from './db.js';
+import { applyMigrations } from './migrate.js';
+import {
+  type NanoHostRecoveryLease,
+  type NanoHostRecoveryMutation,
+  type NanoHostWorkerRecoveryState,
+  readNanoHostPhysicalCleanupReceipt,
+  readNanoHostRecoveryLease,
+} from './nanohost-recovery-native.js';
+import {
+  nanoHostWorkerFinalDecisionFingerprint,
+  readRetainedNanoHostSubmission,
+} from './nanohost-submitted-lease.js';
+import {
+  inspectNanoHostWorkerBinding,
+  nanoHostWorkerBindingLiveness,
+  resolveAdmittedNanoHostFinalBinding,
+  resolveAdmittedNanoHostWorkerBinding,
+} from './nanohost-worker-binding.js';
+import type { ControlWorkerFinalStatusCommand } from './worker-control-final-status-codecs.js';
+import type { ControlWorkerHeartbeatCommand } from './worker-control-heartbeat-codecs.js';
+
+const created = '2026-11-21T00:00:00.000Z';
+const startupDeadline = '2026-11-21T00:01:00.000Z';
+const deadline = '2026-11-21T02:00:01.000Z';
+const acceptedAt = '2026-11-21T00:00:01.000Z';
+const classifiedAt = '2026-11-21T00:00:04.000Z';
+const expectedRecoveryDeadline = '2026-11-21T00:05:04.000Z';
+const attemptId = testEntityId('attempt', 'admitted-native-recovery');
+const workspaceId = testEntityId('ws', 'admitted-native-recovery');
+const threadId = testEntityId('th', 'admitted-native-recovery');
+const turnId = testEntityId('tu', 'admitted-native-recovery');
+const agentSessionId = testEntityId('as', 'admitted-native-recovery');
+const deploymentId = testEntityId('dep', 'admitted-native-recovery');
+const targetId = 'recovery-target';
+const physicalEpoch = 'a'.repeat(64);
+const processKeyHash = 'b'.repeat(43);
+const inputRef = 'admitted-recovery-package';
+const bindingRef = 'admitted-recovery-binding';
+const operationId = commandInputHash({ attemptId, inputRef, operation: 'submit' });
+const lease: NanoHostRecoveryLease = {
+  grant: {
+    execution: { owner: { kind: 'server' }, executionId: attemptId },
+    attemptId,
+    turnId,
+    backendId: 'nanohost',
+    bindingRef,
+    inputRef,
+    operationId,
+    generation: '1',
+    deadline,
+  },
+  attempt: {
+    attemptId,
+    workspaceId,
+    threadId,
+    turnId,
+    agentSessionId,
+    bindingRef,
+    inputRef,
+    operationId,
+    queueEntryId: 'original-queue',
+    backendId: 'nanohost',
+    phase: 'open',
+    disposition: 'accepted',
+    preparationInputJson: '{}',
+    deadline,
+    terminalCause: null,
+    outcomeRef: null,
+    fenceRef: null,
+    createdAt: created,
+    updatedAt: created,
+  },
+};
+
+async function fixture(mode: 'live' | 'queued' = 'live') {
+  const owner = openNanoHostTestOwner();
+  const target = { targetId, identityId: targetId, deploymentId, observedAt: created };
+  await owner.transition({ kind: 'allocate', ...target });
+  await owner.transition({
+    kind: 'ready',
+    ...target,
+    connectionGeneration: 1,
+    physicalEpoch,
+    freshEmpty: true,
+    ready: true,
+    predecessorFenced: true,
+  });
+  owner.setup((sqlite) =>
+    sqlite
+      .prepare(`INSERT INTO worker_backend_sessions (
+      attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+      backend_kind, deployment_id, backend_session_id, staging_directory_ref,
+      workspace_handoff_state, state, created_at, updated_at, runtime_target_id,
+      origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, worker_route_binding_json
+    ) VALUES (?, ?, ?, ?, ?, ?, 'openshell', ?, 'original-backend', 'original-staging',
+              'complete', ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        attemptId,
+        workspaceId,
+        threadId,
+        turnId,
+        agentSessionId,
+        inputRef,
+        deploymentId,
+        mode === 'queued' ? 'materialized' : 'launching',
+        created,
+        created,
+        targetId,
+        physicalEpoch,
+        '{"imageRef":"registry.example/worker"}',
+        bindingRef,
+        mode === 'queued'
+          ? null
+          : canonicalJsonText({
+              version: 1,
+              operationId,
+              generation: '1',
+              deadline,
+              control: 'a'.repeat(64),
+              inference: 'b'.repeat(64),
+              capability: 'c'.repeat(64),
+              harnessInstanceId: 'original-harness',
+              harnessOperationId: 'd'.repeat(64),
+              harnessSequence: 1,
+            })
+      )
+  );
+  const worker = new Worker(
+    `
+    const { parentPort, workerData } = require('node:worker_threads');
+    const Database = require(workerData.database);
+    const modules = Promise.all(workerData.modules.map((url) => import(url)));
+    parentPort.on('message', async (command) => {
+      const sqlite = new Database(workerData.path, { fileMustExist: true });
+      sqlite.pragma('synchronous = FULL');
+      try {
+        const [native, heartbeat, final] = await modules;
+        const result = sqlite.transaction(() => {
+          if (command.kind === 'submit')
+            return native.applyNanoHostWorkerSubmission(sqlite, command.input);
+          if (command.kind === 'worker-heartbeat')
+            return heartbeat.applyControlWorkerHeartbeat({ sqlite, original: command.original, input: command.input });
+          if (command.kind === 'worker-final')
+            return final.applyControlWorkerFinalStatus({ sqlite, original: command.original, input: command.input, decision: command.decision });
+          if (command.kind === 'initialize')
+            return native.initializeNanoHostRecoveryLease(sqlite, command.lease, command.proof);
+          if (command.kind === 'heartbeat')
+            return native.recordNanoHostRecoveryHeartbeat(sqlite, command.lease, command.input);
+          return native.applyNanoHostRecoveryMutation(sqlite, command.input);
+        }).immediate();
+        parentPort.postMessage({ ok: true, result });
+      } catch (error) {
+        parentPort.postMessage({ ok: false, message: error.message });
+      } finally {
+        sqlite.close();
+      }
+    });
+  `,
+    {
+      eval: true,
+      workerData: {
+        path: owner.sqlite.name,
+        database: createRequire(import.meta.url).resolve('better-sqlite3'),
+        modules: [
+          new URL('../../dist/storage/nanohost-recovery-native.js', import.meta.url).href,
+          new URL('../../dist/storage/worker-control-heartbeat-native.js', import.meta.url).href,
+          new URL('../../dist/storage/worker-control-final-status-native.js', import.meta.url).href,
+        ],
+      },
+    }
+  );
+  onTestFinished(async () => {
+    await worker.terminate();
+  });
+  async function send(command: object) {
+    const replied = once(worker, 'message');
+    worker.postMessage(command);
+    const [reply] = await replied;
+    if (!reply.ok) throw new Error(reply.message);
+    return reply.result;
+  }
+  const startup: NanoHostWorkerRecoveryState = {
+    version: 1,
+    sessionCompatibilityKey: 'original-compatibility',
+    startupDeadline,
+    heartbeatTimeoutMs: 10_000,
+    heartbeatDeadline: startupDeadline,
+    lastAcceptedHeartbeatAt: null,
+    lastWorkerSequence: null,
+    workerProcessKeyHash: null,
+    recoveryState: null,
+    recoveryDeadline: null,
+  };
+  if (mode === 'live') {
+    await send({ kind: 'initialize', lease, proof: startup });
+    await send({ kind: 'heartbeat', lease, input: { sequence: 0, acceptedAt, processKeyHash } });
+    await send({ kind: 'heartbeat', lease, input: { sequence: 1, acceptedAt } });
+  }
+  const read = () => readNanoHostRecoveryLease(owner.sqlite, lease);
+  const mutate = (input: NanoHostRecoveryMutation) => send({ kind: 'mutation', input });
+  return { owner, target, read, mutate, send };
+}
+
+it('reopens the original recovery window, refuses changed process authority and adopts the exact next heartbeat', async () => {
+  const f = await fixture();
+  const original = f.read();
+  const arm = {
+    lease,
+    expectedSession: original.session,
+    expectedRecovery: original.proof,
+    kind: 'arm-reconnect',
+    observedAt: classifiedAt,
+    classifiedAt,
+  } as const;
+  await f.mutate(arm);
+  await f.owner.reopen();
+  const after = f.read();
+  expect(after.proof).toMatchObject({
+    recoveryState: 'awaiting-reconnect',
+    recoveryDeadline: expectedRecoveryDeadline,
+    lastWorkerSequence: 1,
+  });
+  await expect(f.mutate(arm)).rejects.toThrow('ownership changed');
+  await f.mutate({
+    ...arm,
+    expectedRecovery: after.proof,
+    classifiedAt: '2026-11-21T00:00:30.000Z',
+    observedAt: '2026-11-21T00:00:30.000Z',
+  });
+  expect(f.read().proof).toEqual(after.proof);
+  const reconnect = {
+    kind: 'heartbeat',
+    lease,
+    input: {
+      sequence: 2,
+      acceptedAt: '2026-11-21T00:00:31.000Z',
+      reconnectProcessKeyHash: 'c'.repeat(43),
+    },
+  };
+  await expect(f.send(reconnect)).rejects.toThrow('exact reconnect authority');
+  expect(f.read().proof).toEqual(after.proof);
+  await f.send({
+    ...reconnect,
+    input: { ...reconnect.input, reconnectProcessKeyHash: processKeyHash },
+  });
+  expect(f.read().proof).toMatchObject({
+    recoveryState: null,
+    recoveryDeadline: null,
+    lastWorkerSequence: 2,
+  });
+});
+
+it('refuses a stale target before Native cleanup CAS and retains the exact physical result across reopen', async () => {
+  const f = await fixture();
+  const original = f.read();
+  const first = getNanoHostRuntimeTarget(f.owner, targetId)!;
+  const closing = { ...lease, attempt: { ...lease.attempt, phase: 'closing' as const } };
+  const pending = {
+    lease: closing,
+    expectedSession: original.session,
+    expectedRecovery: original.proof,
+    kind: 'transition',
+    toState: 'cleanup-pending',
+    target: first,
+    observedAt: classifiedAt,
+  } as const;
+  await f.owner.transition({ ...f.target, kind: 'allocate', observedAt: classifiedAt });
+  await f.owner.transition({
+    ...f.target,
+    kind: 'ready',
+    observedAt: classifiedAt,
+    connectionGeneration: 2,
+    physicalEpoch,
+    ready: true,
+    freshEmpty: true,
+    predecessorFenced: true,
+  });
+  await expect(f.mutate(pending)).rejects.toThrow('placement changed');
+  expect(f.read()).toEqual(original);
+  const second = getNanoHostRuntimeTarget(f.owner, targetId)!;
+  await f.mutate({ ...pending, target: second });
+  const waiting = f.read();
+  expect(waiting.session.state).toBe('cleanup-pending');
+  await f.mutate({
+    ...pending,
+    expectedSession: waiting.session,
+    toState: 'physical-cleaned',
+    target: second,
+  });
+  await f.owner.reopen();
+  expect(f.read().session).toMatchObject({
+    state: 'physical-cleaned',
+    physicalCleanedAt: classifiedAt,
+  });
+  expect(readNanoHostPhysicalCleanupReceipt(f.owner.sqlite, closing, second)).toMatchObject({
+    grant: lease.grant,
+    target: second,
+    observedAt: classifiedAt,
+  });
+  expect(readNanoHostPhysicalCleanupReceipt(f.owner.sqlite, closing, first)).toBeNull();
+  await f.owner.transition({ ...f.target, kind: 'allocate', observedAt: classifiedAt });
+  await f.owner.transition({
+    ...f.target,
+    kind: 'ready',
+    observedAt: classifiedAt,
+    connectionGeneration: 3,
+    physicalEpoch,
+    ready: true,
+    freshEmpty: true,
+    predecessorFenced: true,
+  });
+  expect(
+    readNanoHostPhysicalCleanupReceipt(
+      f.owner.sqlite,
+      closing,
+      getNanoHostRuntimeTarget(f.owner, targetId)!
+    )
+  ).toBeNull();
+});
+
+const lineage = { workspaceId, threadId, turnId, agentSessionId, packageSnapshotId: inputRef };
+const original = { lease, requestId: null };
+const binding = { sandboxBindingRef: bindingRef, lineage, tokenHash: 'a'.repeat(64) };
+
+async function queuedSubmission() {
+  const f = await fixture('queued');
+  const operationId = 'd'.repeat(64);
+  const body = canonicalJsonText({
+    leaseId: attemptId,
+    packageSnapshotId: inputRef,
+    turnId,
+    deadline,
+    workspaceId,
+    threadId,
+    agentSessionId,
+    agentSessionRuntimeBindingId: 'session-binding',
+    workerControlTokenHash: binding.tokenHash,
+    inferenceTokenHash: 'b'.repeat(64),
+    capabilityTokenHash: 'c'.repeat(64),
+  });
+  f.owner.setup((sqlite) => {
+    sqlite
+      .prepare(`INSERT INTO sandbox_runtime_records (
+      sandbox_runtime_id,runtime_target_id,origin_physical_epoch,sandbox_binding_ref,
+      sandbox_integration_binding_ref,sandbox_compatibility_key,image_digest,environment_class,
+      max_open_sessions,max_harnesses,max_active_turns,lifecycle_state,health_state,drain_state,
+      cleanup_state,created_at,updated_at
+    ) VALUES ('sandbox',?,?,'sandbox-binding','sandbox-integration','compat','image','local',
+      2,2,1,'open','ready','accepting','clean',?,?)`)
+      .run(targetId, physicalEpoch, created, created);
+    sqlite
+      .prepare(`INSERT INTO harness_instance_records (
+      harness_instance_id,sandbox_runtime_id,harness_binding_ref,harness_compatibility_key,
+      runtime_family,adapter_id,adapter_version,protocol_version,capabilities_json,
+      max_open_sessions,max_active_turns,open_session_count,active_turn_count,lifecycle_state,
+      drain_state,next_sequence,operation_state,operation_id,operation_sequence,operation,
+      command_body_json,command_fingerprint,created_at,updated_at
+    ) VALUES ('harness','sandbox','harness-binding','compat','local','adapter','version',1,'[]',
+      2,1,1,0,'open','accepting',1,'queued',?,1,'turn.start',?,?,?,?)`)
+      .run(operationId, body, sha256Hex(body), created, created);
+    sqlite
+      .prepare(`INSERT INTO agent_session_runtime_bindings (
+      agent_session_runtime_binding_id,harness_instance_id,agent_session_id,workspace_id,thread_id,
+      agent_session_compatibility_key,effective_setup_generation,native_handle_state,
+      lifecycle_state,next_turn_sequence,cleanup_state,created_at,updated_at,image_digest
+    ) VALUES ('session-binding','harness',?,?,?,'compat',1,'ready','open',0,'clean',?,?,'image')`)
+      .run(agentSessionId, workspaceId, threadId, created, created);
+  });
+  const input = {
+    lease,
+    placement: {
+      workspaceId,
+      threadId,
+      agentSessionId,
+      runtimeTargetId: targetId,
+      identityId: targetId,
+      deploymentId,
+      physicalEpoch,
+    },
+    command: { harnessInstanceId: 'harness', operationId, sequence: 1 },
+    observedAt: acceptedAt,
+  };
+  const submit = (arg = input) => f.send({ kind: 'submit', input: arg });
+  return { ...f, input, submit };
+}
+
+it('binds only the exact queued submission and preserves the first startup clock across retry', async () => {
+  const f = await queuedSubmission();
+  await expect(
+    f.submit({
+      ...f.input,
+      command: { ...f.input.command, sequence: 2 },
+    })
+  ).rejects.toThrow('exact queued command');
+  expect(getWorkerBackendSession(f.owner, attemptId)?.state).toBe('materialized');
+  expect(readNanoHostWorkerRouteBinding(f.owner, lease.grant)).toBeNull();
+  await expect(f.submit()).resolves.toMatchObject({ state: 'launching' });
+  await f.owner.reopen();
+  const before = f.read();
+  expect(before.proof).toMatchObject({
+    startupDeadline: '2026-11-21T00:25:00.000Z',
+    heartbeatDeadline: '2026-11-21T00:25:00.000Z',
+    heartbeatTimeoutMs: 30_000,
+    lastWorkerSequence: null,
+  });
+  expect(before.attempt).toMatchObject({
+    workerControlTokenHash: binding.tokenHash,
+    workerInferenceTokenHash: 'b'.repeat(64),
+    workerCapabilityTokenHash: 'c'.repeat(64),
+  });
+  await f.submit({ ...f.input, observedAt: classifiedAt });
+  expect(f.read()).toEqual(before);
+});
+
+function heartbeatPayload(): ControlWorkerHeartbeatCommand {
+  return {
+    ...binding,
+    payload: {
+      acceptedAt,
+      request: {
+        schemaVersion: 2,
+        lineage,
+        operation: 'heartbeat',
+        sequence: 0,
+        body: { status: 'starting', processKeyHash },
+      },
+    },
+  };
+}
+
+it('accepts liveness only for a new Native heartbeat sequence and rejects conflicting replay', async () => {
+  const f = await queuedSubmission();
+  await f.submit();
+  const input = heartbeatPayload();
+  const heartbeat = (command: ControlWorkerHeartbeatCommand) =>
+    f.send({ kind: 'worker-heartbeat', original, input: command });
+  await expect(heartbeat(input)).resolves.toMatchObject({
+    duplicate: false,
+    nextExpectedSequence: 1,
+  });
+  await f.owner.reopen();
+  const first = f.read().proof;
+  await expect(
+    heartbeat({
+      ...input,
+      payload: { ...input.payload, acceptedAt: classifiedAt },
+    })
+  ).resolves.toMatchObject({ duplicate: true, nextExpectedSequence: 1 });
+  expect(f.read().proof).toEqual(first);
+  await expect(
+    heartbeat({
+      ...input,
+      payload: {
+        ...input.payload,
+        request: {
+          ...input.payload.request,
+          body: { ...input.payload.request.body, message: 'different' },
+        },
+      },
+    })
+  ).rejects.toThrow('already accepted with different content');
+  expect(f.read().proof).toEqual(first);
+
+  const observed = inspectNanoHostWorkerBinding(f.owner.sqlite, original, binding);
+  expect(observed.status).toBe('accepted');
+  if (observed.status === 'accepted')
+    expect(nanoHostWorkerBindingLiveness(observed, classifiedAt).status).toBe('accepted');
+  expect(
+    inspectNanoHostWorkerBinding(f.owner.sqlite, original, {
+      ...binding,
+      tokenHash: 'b'.repeat(64),
+    })
+  ).toMatchObject({ status: 'rejected', reason: 'binding-not-found' });
+  expect(
+    inspectNanoHostWorkerBinding(f.owner.sqlite, original, {
+      ...binding,
+      lineage: { ...lineage, requestId: 'another-request' },
+    })
+  ).toMatchObject({ status: 'rejected', reason: 'lineage-mismatch' });
+  const closing = inspectNanoHostWorkerBinding(
+    f.owner.sqlite,
+    {
+      ...original,
+      lease: { ...lease, attempt: { ...lease.attempt, phase: 'closing' } },
+    },
+    binding
+  );
+  expect(closing.status).toBe('accepted');
+  if (closing.status === 'accepted')
+    expect(nanoHostWorkerBindingLiveness(closing, classifiedAt)).toMatchObject({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
+});
+
+it('requires the exact Core final decision and replays only the same retained Native final', async () => {
+  const f = await queuedSubmission();
+  await f.submit();
+  const input: ControlWorkerFinalStatusCommand = {
+    ...binding,
+    payload: {
+      terminalData: { status: 'completed', stopReason: 'end_turn', evidenceManifestDigests: {} },
+      sequence: 0,
+      acceptedAt,
+      eventAcceptedAt: acceptedAt,
+    },
+  };
+  const decision = {
+    kind: 'decided',
+    grant: lease.grant,
+    fingerprint: nanoHostWorkerFinalDecisionFingerprint(input),
+    acceptedAt,
+    eventAcceptedAt: acceptedAt,
+  };
+  const decided = {
+    ...original,
+    lease: {
+      ...lease,
+      attempt: { ...lease.attempt, phase: 'closing', terminalCause: 'worker-final-status' },
+    },
+  };
+  const final = (args: object) =>
+    f.send({ kind: 'worker-final', original: decided, input, decision, ...args });
+  await expect(
+    final({ decision: { ...decision, fingerprint: 'other-occurrence' } })
+  ).rejects.toThrow('precondition failed');
+  await expect(final({ decision: null })).rejects.toThrow('precondition failed');
+  expect(getWorkerControlAcceptedFinalStatus(f.owner, lineage)).toBeNull();
+  await expect(final({})).resolves.toMatchObject({
+    finalStatusDuplicate: false,
+    eventDuplicate: false,
+  });
+  await f.owner.reopen();
+  const settled = getWorkerControlAcceptedFinalStatus(f.owner, lineage);
+  expect(settled).toMatchObject({ status: 'completed', acceptedAt });
+  const closed = {
+    ...decided,
+    lease: { ...decided.lease, attempt: { ...decided.lease.attempt, phase: 'closed' } },
+  };
+  await expect(
+    final({ original: closed, decision: { ...decision, kind: 'replay' } })
+  ).resolves.toMatchObject({ finalStatusDuplicate: true, eventDuplicate: true });
+  const changed = { ...input, payload: { ...input.payload, sequence: 1 } };
+  await expect(
+    final({
+      original: closed,
+      input: changed,
+      decision: {
+        ...decision,
+        kind: 'replay',
+        fingerprint: nanoHostWorkerFinalDecisionFingerprint(changed),
+      },
+    })
+  ).rejects.toThrow('exact final-status replay');
+  expect(getWorkerControlAcceptedFinalStatus(f.owner, lineage)).toEqual(settled);
+  f.owner.setup((sqlite) =>
+    sqlite.prepare("DELETE FROM worker_control_records WHERE operation='event_append'").run()
+  );
+  await expect(
+    final({ original: closed, decision: { ...decision, kind: 'replay' } })
+  ).rejects.toThrow('exact final-status replay');
+  expect(
+    f.owner.sqlite
+      .prepare("SELECT 1 FROM worker_control_records WHERE operation='event_append'")
+      .get()
+  ).toBeUndefined();
+});
+
+it('resolves App and Gateway bindings from the retained Core grant and the admitted Native proof', async () => {
+  const f = await queuedSubmission();
+  const root = mkdtempSync(join(tmpdir(), 'nanohost-original-binding-'));
+  const core = openCoreDb(root);
+  onTestFinished(() => {
+    core.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  applyMigrations(core);
+  const userId = ensureLocalUser(core);
+  recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId: userId });
+  const actor = { kind: 'user' as const, id: userId };
+  const entry = createSchedulerAdmissionEntry(core, {
+    queueEntryId: 'native-join-queue',
+    backendId: 'nanohost',
+    triggerActor: actor,
+    workspaceId,
+    threadId,
+    turnId,
+    inputRef: schedulerFixtureInput(workspaceId, turnId, 'Inspect the original Native binding.'),
+    requestedAgentId: 'agent_worker',
+  });
+  const now = () => created;
+  createSchedulerExecutionAttempt(core, { entry, attemptId, preparationInput: {}, now });
+  bindSchedulerExecutionAttemptSession(core, { attemptId, agentSessionId, now });
+  finalizeSchedulerExecutionAttemptInput(core, { attemptId, inputRef, bindingRef, now });
+  expect(readRetainedNanoHostSubmission(core, attemptId)).toBeNull();
+
+  const span = {
+    traceId: '1'.repeat(32),
+    spanId: '1'.repeat(16),
+    flags: 1,
+    name: 'original submit',
+    kind: 'INTERNAL' as const,
+    startTimeUnixNano: BigInt(Date.parse(created)) * 1_000_000n,
+    endTimeUnixNano: null,
+    status: { code: 'UNSET' as const },
+  };
+  const intent: ExecutionJournalIntent = {
+    execution: {
+      ref: lease.grant.execution,
+      definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+      workId: turnId,
+      fingerprint: entry.inputHash,
+      exclusionRefs: [`workspace:${workspaceId}`, `thread:${threadId}`, `turn:${turnId}`],
+      span,
+    },
+    stepId: 'original-native-submission',
+    parentStepId: null,
+    parent: null,
+    inspectedStep: null,
+    carriage: { operation: 'submit', requestId: 'submit-once', sequence: null, bindingRef },
+    control: {
+      definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+      kind: 'admit',
+      target: { backendKind: 'nanohost', targetId, allocationRef: null },
+      workId: turnId,
+      operationId,
+      attemptId,
+      invocationId: operationId,
+      actor,
+      inputRefs: [inputRef],
+      outputRefs: [],
+      fingerprint: 'b'.repeat(64),
+      permittingDecisionRef: null,
+      authorityRefs: [],
+      retryDeclarationRef: null,
+      retryPermitted: false,
+      deadlineUnixNano: null,
+      physicalFenceRefs: [],
+    },
+    span: { ...span, spanId: '2'.repeat(16), parentSpanId: span.spanId },
+  };
+  const grant = core.sqlite.transaction(() =>
+    recordSchedulerExecutionGrantInDb(
+      core,
+      {
+        proposal: intent,
+        attemptId,
+        operationId,
+        generation: '1',
+        submission: true,
+        now: () => acceptedAt,
+      },
+      () => true
+    )
+  )().grant;
+  const retained = readRetainedNanoHostSubmission(core, attemptId);
+  expect(retained?.lease.grant).toEqual(grant);
+  expect(retained).toBeTruthy();
+  const input = { sandboxBindingRef: bindingRef, lineage };
+  expect(resolveAdmittedNanoHostWorkerBinding(core, f.owner.sqlite, input, acceptedAt)).toEqual({
+    status: 'rejected',
+    reason: 'binding-not-found',
+  });
+  await f.submit({ ...f.input, lease: retained!.lease });
+  expect(
+    resolveAdmittedNanoHostWorkerBinding(core, f.owner.sqlite, input, acceptedAt)
+  ).toMatchObject({ status: 'accepted', attempt: { attemptId } });
+  expect(resolveAdmittedNanoHostFinalBinding(core, f.owner.sqlite, input, acceptedAt)).toEqual({
+    status: 'accepted',
+    replayOnly: false,
+  });
+  markSchedulerExecutionAttemptClosing(core, { attemptId, cause: 'turn-cancelled', now });
+  expect(resolveAdmittedNanoHostWorkerBinding(core, f.owner.sqlite, input, acceptedAt)).toEqual({
+    status: 'rejected',
+    reason: 'attempt-not-live',
+  });
+  expect(resolveAdmittedNanoHostFinalBinding(core, f.owner.sqlite, input, acceptedAt)).toEqual({
+    status: 'accepted',
+    replayOnly: false,
+    cancellationOnly: true,
+  });
+});

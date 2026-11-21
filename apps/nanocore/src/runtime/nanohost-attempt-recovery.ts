@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
+import type Database from 'better-sqlite3';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import {
   DISPLAY_PROJECTION_REFRESH_FIELDS,
@@ -14,19 +15,24 @@ import {
 } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
-import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import {
+  type NanoHostRecoveryLease,
+  type NanoHostRecoveryMutation,
+  readNanoHostPhysicalCleanupReceipt,
+  readNanoHostRecoveryLease,
+} from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
+import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 import {
   findNamedAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
 import {
-  armNanoHostAttemptReconnect,
   closeSchedulerExecutionAttemptWithFence,
   isSchedulerExecutionBusyRefusal,
   listOpenSchedulerExecutionAttempts,
   listSchedulerExecutionAttemptsByTurnId,
-  markNanoHostAttemptNeedsEvidence,
-  markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
@@ -34,10 +40,12 @@ import {
 import {
   isNanoHostAttemptReconnectEligible,
   type NanoHostExecutionAttemptRecord,
-  requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
 import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
-import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
+import {
+  getNanoHostRuntimeTarget,
+  type NanoHostRuntimeTargetRecord,
+} from './nanohost-runtime-target-records.js';
 import { readPendingRequest } from './pending-requests.js';
 import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
 import type { RunSchedulerRestartRecoveryInput } from './scheduler-restart-recovery.js';
@@ -49,11 +57,7 @@ import {
   workerBackendImageIdentity,
 } from './worker-backend-session-records.js';
 import {
-  markWorkerBackendWorkspaceHandoffComplete,
-  retireOrphanWorkerBackendSession,
-  transitionWorkerBackendSessionState,
-} from './worker-backend-sessions.js';
-import {
+  type AcceptedWorkerFinalStatus,
   getWorkerControlAcceptedFinalStatus,
   hasPendingWorkerCancellationFinal,
 } from './worker-control-records.js';
@@ -68,8 +72,43 @@ import {
 } from './workspace-sync-records.js';
 import { publishWorkspaceTakeoverEvaluation } from './workspace-takeover-publication.js';
 
+/** A2 binds the selected read handle and the original Core decision plus Native FULL writer. */
+export interface AdmittedNanoHostAttemptRecovery {
+  readonly owner: Pick<AdmittedNanoHostTransportStorage['owner'], 'read'>;
+  /** The Core writer compares the current original lease and the exact Native liveness observation. */
+  close(input: {
+    readonly lease: NanoHostRecoveryLease;
+    readonly session: WorkerBackendSessionRecord;
+    readonly proof: ReturnType<typeof readNanoHostRecoveryLease>['proof'];
+    readonly cause: string;
+    readonly observedAt: string;
+    readonly outcomeRef?: string;
+  }): Promise<StorageResult<'nanohost' | 'control-kernel', SchedulerExecutionAttemptRecord>>;
+  /** Verifies the original accepted Native final against its Core observation receipt. */
+  reconcileFinal(
+    lease: NanoHostRecoveryLease,
+    session: WorkerBackendSessionRecord,
+    final: AcceptedWorkerFinalStatus
+  ): Promise<void>;
+  commit(
+    input: NanoHostRecoveryMutation
+  ): Promise<StorageResult<'nanohost' | 'control-kernel', WorkerBackendSessionRecord>>;
+  /** Rechecks this exact target and the same decided cleanup scope at the physical carriage boundary. */
+  cleanup(
+    identity: WorkerGovernanceBackendSessionIdentity,
+    target: NanoHostRuntimeTargetRecord,
+    lease: NanoHostRecoveryLease
+  ): Promise<
+    StorageResult<
+      'nanohost' | 'control-kernel',
+      NonNullable<ReturnType<typeof readNanoHostPhysicalCleanupReceipt>>
+    >
+  >;
+}
+
 /** NanoHost-only recovery uses the existing physical cleanup and full accepted-final closeout owners. */
 export interface RunNanoHostAttemptRecoveryInput extends RunSchedulerRestartRecoveryInput {
+  readonly admittedNanoHostRecovery?: StorageResult<'nanohost', AdmittedNanoHostAttemptRecovery>;
   /** Same selected next-step pass used by normal cleanup; never a legacy classifier fallback. */
   readonly reconcileExecutions: () => Promise<void>;
   readonly cleanupBackendSession: (
@@ -85,22 +124,109 @@ interface RecoveryWorkspace {
   readonly environmentPackage: AgentEnvironmentPackage;
 }
 
+function readRecovery<Value>(
+  recovery: AdmittedNanoHostAttemptRecovery,
+  query: (sqlite: Database.Database) => Value
+): Value {
+  const result = recovery.owner.read<Value>(query);
+  if (result.state !== 'ready') throw new Error('NanoHost recovery owner is unavailable.');
+  return result.value;
+}
+
+function retainedLease(coreDb: CoreDb, attemptId: string): NanoHostRecoveryLease {
+  const retained = readRetainedNanoHostSubmission(coreDb, attemptId);
+  if (!retained) throw new Error('NanoHost recovery is missing its original submitted Core grant.');
+  return retained.lease;
+}
+
+function observeAdmittedAttempt(
+  coreDb: CoreDb,
+  recovery: AdmittedNanoHostAttemptRecovery,
+  attemptId: string
+) {
+  const lease = retainedLease(coreDb, attemptId);
+  return readRecovery(recovery, (sqlite) => readNanoHostRecoveryLease(sqlite, lease));
+}
+
+type RecoveryStage = NanoHostRecoveryMutation extends infer Mutation
+  ? Mutation extends NanoHostRecoveryMutation
+    ? Omit<Mutation, 'lease' | 'expectedSession' | 'expectedRecovery' | 'observedAt'>
+    : never
+  : never;
+
+async function commitRecoveryStage(
+  coreDb: CoreDb,
+  recovery: AdmittedNanoHostAttemptRecovery,
+  expectedSession: WorkerBackendSessionRecord,
+  stage: RecoveryStage,
+  observedAt: string,
+  originalProof?: ReturnType<typeof readNanoHostRecoveryLease>['proof']
+): Promise<WorkerBackendSessionRecord> {
+  const lease = retainedLease(coreDb, expectedSession.attemptId);
+  const current = readRecovery(recovery, (sqlite) => readNanoHostRecoveryLease(sqlite, lease));
+  if (
+    !isDeepStrictEqual(current.session, expectedSession) ||
+    (originalProof && !isDeepStrictEqual(current.proof, originalProof))
+  )
+    throw new Error('NanoHost recovery state changed before submission.');
+  const result = await recovery.commit({
+    ...stage,
+    lease,
+    observedAt,
+    expectedSession,
+    expectedRecovery: current.proof,
+  });
+  if (result.state !== 'ready')
+    throw new Error('NanoHost recovery requires the original writer acknowledgement.');
+  return result.value;
+}
+
+async function closeAdmittedAttempt(
+  coreDb: CoreDb,
+  recovery: AdmittedNanoHostAttemptRecovery,
+  current: ReturnType<typeof readNanoHostRecoveryLease>,
+  cause: string,
+  observedAt: string,
+  outcomeRef?: string
+): Promise<SchedulerExecutionAttemptRecord> {
+  const lease = retainedLease(coreDb, current.session.attemptId);
+  const result = await recovery.close({
+    lease,
+    session: current.session,
+    proof: current.proof,
+    cause,
+    observedAt,
+    ...(outcomeRef ? { outcomeRef } : {}),
+  });
+  if (
+    result.state !== 'ready' ||
+    result.value.attemptId !== lease.grant.attemptId ||
+    result.value.operationId !== lease.grant.operationId ||
+    result.value.phase === 'open'
+  )
+    throw new Error('NanoHost recovery has no matching Core close acknowledgement.');
+  return result.value;
+}
+
 /** Classifies native survivors independently before listen, retaining faults for maintenance. */
 export async function classifyNanoHostAttemptsAfterRestart(
   coreDb: CoreDb,
   input: RunNanoHostAttemptRecoveryInput
 ): Promise<{ readonly failedAttemptIds: string[] }> {
   const failedAttemptIds: string[] = [];
+  const recovery = input.admittedNanoHostRecovery;
   const timestamp = input.now?.() ?? new Date().toISOString();
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
-    if (!attempt.operationId) continue;
+    if (!attempt.operationId || attempt.backendId !== input.executionBackend.id) continue;
     try {
-      if (attempt.backendId !== input.executionBackend.id)
-        throw new Error('Retained attempt names an unavailable backend.');
-      const session = getWorkerBackendSession(coreDb, attempt.attemptId);
-      if (!session) continue; // Original operation remains unknown; absence is not a fence.
-      const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
+      if (recovery?.state !== 'ready') {
+        failedAttemptIds.push(attempt.attemptId);
+        continue;
+      }
+      const admitted = recovery.value;
+      const observation = observeAdmittedAttempt(coreDb, admitted, attempt.attemptId);
+      const { session, proof, attempt: native } = observation;
       assertSessionMatchesAttempt(session, native);
       // Restart must preserve the bounded cancellation final without arming ordinary reconnect.
       if (
@@ -112,28 +238,39 @@ export async function classifyNanoHostAttemptsAfterRestart(
       const eligible = isNanoHostAttemptReconnectEligible(native, session, timestamp);
       if (eligible) {
         try {
+          await commitRecoveryStage(
+            coreDb,
+            admitted,
+            session,
+            { kind: 'arm-reconnect', classifiedAt: timestamp },
+            input.now?.() ?? new Date().toISOString(),
+            proof
+          );
           await input.restoreBackendSession(session);
-          await armNanoHostAttemptReconnect(coreDb, {
-            attemptId: attempt.attemptId,
-            classifiedAt: timestamp,
-            expectedRecoveryDeadline: native.recoveryDeadline,
-            ...(input.now ? { now: input.now } : {}),
-          });
           continue;
         } catch {
-          /* Unrestorable native identity belongs to the existing cleanup owner. */
+          // An ambiguous restore or Native acknowledgement retains the original lease.
+          failedAttemptIds.push(attempt.attemptId);
+          continue;
         }
       }
-      await markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: attempt.attemptId,
-        cause: 'restart-native-recovery',
-        ...(input.now ? { now: input.now } : {}),
-      });
-      await markNanoHostAttemptNeedsEvidence(coreDb, attempt.attemptId);
-      if (!['physical-cleaned', 'cleaned'].includes(session.state)) {
-        const fenced = await moveSessionToCleanupPending(coreDb, session, timestamp);
-        input.prepareBackendCleanup(toRestartBackendIdentity(fenced));
-      }
+      await closeAdmittedAttempt(
+        coreDb,
+        admitted,
+        observation,
+        'restart-native-recovery',
+        timestamp
+      );
+      await commitRecoveryStage(
+        coreDb,
+        admitted,
+        session,
+        { kind: 'needs-evidence' },
+        timestamp,
+        proof
+      );
+      if (!['physical-cleaned', 'cleaned'].includes(session.state))
+        requireRecoveryTarget(admitted, session);
     } catch {
       logRecoveryMaintenanceFailure('attempt-recovery', attempt);
       failedAttemptIds.push(attempt.attemptId);
@@ -155,13 +292,20 @@ export async function runNanoHostAttemptRecoveryMaintenance(
   } catch (error) {
     errors.push(error);
   }
+  const selection = input.admittedNanoHostRecovery;
+  if (selection?.state !== 'ready') {
+    if (errors.length) throw new AggregateError(errors, 'Native attempt recovery failed.');
+    return;
+  }
+  const recovery = selection.value;
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     if (attempt.backendId !== input.executionBackend.id) continue;
     try {
-      let session = getWorkerBackendSession(coreDb, attempt.attemptId);
-      if (!session || !attempt.agentSessionId || !attempt.inputRef) continue;
-      const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
+      if (!attempt.operationId) continue;
+      const observation = observeAdmittedAttempt(coreDb, recovery, attempt.attemptId);
+      let { session } = observation;
+      const native = observation.attempt;
       assertSessionMatchesAttempt(session, native);
       const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, attempt.attemptId);
       const captureWorkspace = openRecoveryWorkspace(coreDb, native);
@@ -179,17 +323,22 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       } finally {
         captureWorkspace.db.sqlite.close();
       }
-      const final = getWorkerControlAcceptedFinalStatus(coreDb, {
-        agentSessionId: native.agentSessionId,
-        packageSnapshotId: native.inputRef,
-        requestId: admission.requestId,
-        threadId: native.threadId,
-        turnId: native.turnId,
-        workspaceId: native.workspaceId,
-      });
+      const final = readRecovery(recovery, (sqlite) =>
+        getWorkerControlAcceptedFinalStatus(
+          { sqlite },
+          {
+            agentSessionId: native.agentSessionId,
+            packageSnapshotId: native.inputRef,
+            requestId: admission.requestId,
+            threadId: native.threadId,
+            turnId: native.turnId,
+            workspaceId: native.workspaceId,
+          }
+        )
+      );
       if (final) {
         if (!input.isTurnExecutionActive?.(attempt.turnId))
-          await input.reconcileAcceptedFinalStatus(session);
+          await recovery.reconcileFinal(retainedLease(coreDb, session.attemptId), session, final);
         continue;
       }
       // The original Native and absolute deadlines bound this wait; cleanup resumes on expiry.
@@ -214,11 +363,13 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           : native.heartbeatDeadline <= timestamp;
       if (native.phase === 'open' && !livenessExpired && native.recoveryState !== 'needs-evidence')
         continue;
-      await markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: attempt.attemptId,
-        cause: livenessExpired ? 'native-liveness-expired' : 'native-cleanup',
-        now,
-      });
+      await closeAdmittedAttempt(
+        coreDb,
+        recovery,
+        observation,
+        livenessExpired ? 'native-liveness-expired' : 'native-cleanup',
+        now()
+      );
       // Revoke stale native authority before deferring to a live completion waiter. Its phase
       // observation wakes that owner; the guard prevents a second physical cleanup takeover.
       if (input.isTurnExecutionActive?.(attempt.turnId)) continue;
@@ -252,10 +403,10 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           !anyHandoffRows &&
           workspace.environmentPackage.workspace.inputs.length > 0
         ) {
-          await markNanoHostAttemptNeedsEvidence(coreDb, native.attemptId);
+          await commitRecoveryStage(coreDb, recovery, session, { kind: 'needs-evidence' }, now());
           // Empty tables and a Turn-local cleanup marker cannot authorize deleting surviving Workspace output.
           // Require a different fresh Epoch before asking the existing cleanup owner to prove physical absence; that owner rechecks the exact proof.
-          const target = getNanoHostRuntimeTarget(coreDb, session.runtimeTargetId);
+          const target = requireRecoveryTarget(recovery, session);
           if (
             !target ||
             target.deploymentId !== session.deploymentId ||
@@ -267,7 +418,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
             target.physicalEpoch === session.originPhysicalEpoch
           )
             continue;
-          session = await cleanupPhysicalSession(coreDb, session, now, input.cleanupBackendSession);
+          session = await cleanupPhysicalSession(coreDb, recovery, session, now, target);
           // Publication can finish while cleanup awaits its native acknowledgement.
           // New rows still belong to the existing takeover/disposition owner, never the empty-table path.
           anyHandoffRows =
@@ -297,7 +448,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           )
             continue;
         }
-        session = await cleanupPhysicalSession(coreDb, session, now, input.cleanupBackendSession);
+        session = await cleanupPhysicalSession(coreDb, recovery, session, now);
         const projection = await projectCleanup(
           workspace.db,
           session,
@@ -307,10 +458,13 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         if (!projection.workspaceHandoffComplete)
           throw new Error('Native cleanup workspace handoff is incomplete.');
         if (session.workspaceHandoffState === 'pending')
-          session = await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-            attemptId: attempt.attemptId,
-            now,
-          });
+          session = await commitRecoveryStage(
+            coreDb,
+            recovery,
+            session,
+            { kind: 'workspace-handoff' },
+            now()
+          );
       } finally {
         workspace.db.sqlite.close();
       }
@@ -321,7 +475,8 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           native.attemptId,
           input.store,
           input,
-          timestamp
+          timestamp,
+          recovery
         );
       } else {
         await input.projectRecoveredTurn(session);
@@ -330,12 +485,13 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           hasRecoveredTerminalHandoff(input.store, session, workspace.environmentPackage);
       }
       if (session.state === 'physical-cleaned')
-        session = await transitionWorkerBackendSessionState(coreDb, {
-          fromState: 'physical-cleaned',
-          attemptId: attempt.attemptId,
-          toState: 'cleaned',
-          now,
-        });
+        session = await commitRecoveryStage(
+          coreDb,
+          recovery,
+          session,
+          { kind: 'finish-cleanup' },
+          now()
+        );
       if (settled) {
         // Workspace evaluation prevented destructive loss of pending collection, and the
         // cleanup owner proved local destruction or an Epoch fence. Its handoff and teardown
@@ -351,12 +507,14 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         } as const;
         const terminal = input.store?.getTurnById(native.turnId);
         const settledAttempt = terminal
-          ? await markSchedulerExecutionAttemptClosing(coreDb, {
-              attemptId: native.attemptId,
-              cause: `turn-${terminal.status}`,
-              outcomeRef: `turn:${terminal.id}:${terminal.status}`,
-              now,
-            })
+          ? await closeAdmittedAttempt(
+              coreDb,
+              recovery,
+              observeAdmittedAttempt(coreDb, recovery, native.attemptId),
+              `turn-${terminal.status}`,
+              now(),
+              `turn:${terminal.id}:${terminal.status}`
+            )
           : requireSchedulerExecutionAttempt(coreDb, native.attemptId);
         const correlation = schedulerExecutionCorrelation(settledAttempt);
         const release = await input.executionBackend.release({ ...correlation, proof });
@@ -392,18 +550,18 @@ export async function runNanoHostAttemptRecoveryMaintenance(
     }
   }
   // Closed attempts can retain idle native bindings. No incoming Turn or synthetic attempt owns their retirement.
-  for (const session of listWorkerBackendSessions(coreDb)) {
+  for (const session of readRecovery(recovery, (sqlite) => listWorkerBackendSessions({ sqlite }))) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', session.workspaceId)) continue;
     try {
       const owner = requireSchedulerExecutionAttempt(coreDb, session.attemptId);
       if (owner.backendId !== input.executionBackend.id || owner.phase !== 'closed') continue;
       if (session.state === 'cleaned') continue;
+      const original = observeAdmittedAttempt(coreDb, recovery, session.attemptId);
+      if (!isDeepStrictEqual(original.session, session))
+        throw new Error('Orphan recovery backend changed.');
       // Exact journal ownership excludes orphan cleanup even outside the current candidate page.
       if (input.prepareBackendCleanup(toRestartBackendIdentity(session))) continue;
-      const captureWorkspace = openRecoveryWorkspace(
-        coreDb,
-        requireNanoHostExecutionAttempt(coreDb, session.attemptId)
-      );
+      const captureWorkspace = openRecoveryWorkspace(coreDb, original.attempt);
       try {
         if (
           await hasPendingWorkspaceCapture(
@@ -418,14 +576,9 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       } finally {
         captureWorkspace.db.sqlite.close();
       }
-      const cleaned = await cleanupPhysicalSession(
-        coreDb,
-        session,
-        now,
-        input.cleanupBackendSession
-      );
+      const cleaned = await cleanupPhysicalSession(coreDb, recovery, session, now);
       if (cleaned.state === 'physical-cleaned')
-        await retireOrphanWorkerBackendSession(coreDb, { attemptId: cleaned.attemptId, now });
+        await commitRecoveryStage(coreDb, recovery, cleaned, { kind: 'retire-orphan' }, now());
     } catch (error) {
       logNativeRecoveryFailure(
         session,
@@ -437,10 +590,13 @@ export async function runNanoHostAttemptRecoveryMaintenance(
   }
   if (input.store) {
     const failedStarts = coreDb.sqlite
-      .prepare(`SELECT attempt_id AS attemptId, workspace_id AS workspaceId,
-      thread_id AS threadId, turn_id AS turnId, agent_session_id AS agentSessionId
-      FROM scheduler_execution_attempts WHERE phase = 'closed' AND terminal_cause = 'turn-start-failed'
-      AND backend_id = ? ORDER BY rowid`)
+      .prepare(`SELECT attempt.attempt_id AS attemptId, attempt.workspace_id AS workspaceId,
+      attempt.thread_id AS threadId, attempt.turn_id AS turnId, attempt.agent_session_id AS agentSessionId
+      FROM scheduler_execution_attempts AS attempt
+      JOIN scheduler_admission_entries AS admission ON admission.queue_entry_id = attempt.queue_entry_id
+        AND admission.workspace_id = attempt.workspace_id AND admission.thread_id = attempt.thread_id
+        AND admission.turn_id = attempt.turn_id
+      WHERE attempt.phase = 'closed' AND admission.backend_id = ? ORDER BY attempt.rowid`)
       .all(input.executionBackend.id) as Array<
       Pick<
         SchedulerExecutionAttemptRecord,
@@ -448,9 +604,21 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       >
     >;
     for (const attempt of failedStarts) {
+      if (
+        requireSchedulerExecutionAttempt(coreDb, attempt.attemptId).terminalCause !==
+        'turn-start-failed'
+      )
+        continue;
       if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
       try {
-        await settleTerminalFailedStart(coreDb, attempt.attemptId, input.store, input, timestamp);
+        await settleTerminalFailedStart(
+          coreDb,
+          attempt.attemptId,
+          input.store,
+          input,
+          timestamp,
+          recovery
+        );
       } catch (error) {
         logNativeRecoveryFailure(
           attempt,
@@ -493,45 +661,70 @@ function logNativeRecoveryFailure(
   );
 }
 
-/** Cleans one exact durable physical identity and records the stable completion instant. */
+/** Reads the current physical authority from the same admitted Native owner. */
+function requireRecoveryTarget(
+  recovery: AdmittedNanoHostAttemptRecovery,
+  session: WorkerBackendSessionRecord
+): NanoHostRuntimeTargetRecord {
+  const target = readRecovery(recovery, (sqlite) =>
+    getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId)
+  );
+  if (
+    !target ||
+    target.deploymentId !== session.deploymentId ||
+    !target.ready ||
+    !target.freshEmpty ||
+    !target.predecessorFenced ||
+    !target.physicalEpoch
+  )
+    throw new Error('NanoHost recovery RuntimeTarget is unavailable.');
+  return target;
+}
+
+/** Cleans one exact identity only while the target passed to the deciding writer stays current. */
 async function cleanupPhysicalSession(
   coreDb: CoreDb,
+  recovery: AdmittedNanoHostAttemptRecovery,
   originalSession: WorkerBackendSessionRecord,
   now: () => string,
-  cleanupBackendSession: RunNanoHostAttemptRecoveryInput['cleanupBackendSession']
+  expectedTarget?: NanoHostRuntimeTargetRecord
 ): Promise<WorkerBackendSessionRecord> {
+  const target = requireRecoveryTarget(recovery, originalSession);
+  if (expectedTarget && !isDeepStrictEqual(target, expectedTarget))
+    throw new Error('NanoHost recovery RuntimeTarget changed.');
   if (['physical-cleaned', 'cleaned'].includes(originalSession.state)) {
-    return originalSession;
+    const original = retainedLease(coreDb, originalSession.attemptId);
+    const receipt = readRecovery(recovery, (sqlite) =>
+      readNanoHostPhysicalCleanupReceipt(sqlite, original, target)
+    );
+    if (!receipt) throw new Error('NanoHost recovery has no exact physical cleanup receipt.');
+    return receipt.session;
   }
-  let session =
-    originalSession.state === 'cleanup-failed'
-      ? originalSession
-      : await moveSessionToCleanupPending(coreDb, originalSession, now());
-  if (!cleanupBackendSession) {
-    throw new Error('Scheduler restart recovery requires a backend cleanup implementation.');
-  }
-  try {
-    await cleanupBackendSession(toRestartBackendIdentity(session));
-  } catch (error) {
-    if (session.state === 'cleanup-pending') {
-      await transitionWorkerBackendSessionState(coreDb, {
-        fromState: 'cleanup-pending',
-        attemptId: session.attemptId,
-        now,
-        toState: 'cleanup-failed',
-      });
-    }
-    throw error;
-  }
-  if (session.state === 'cleanup-failed') {
-    session = await moveSessionToCleanupPending(coreDb, session, now());
-  }
-  return await transitionWorkerBackendSessionState(coreDb, {
-    fromState: 'cleanup-pending',
-    attemptId: session.attemptId,
-    now,
-    toState: 'physical-cleaned',
-  });
+  let session = originalSession;
+  if (session.state !== 'cleanup-pending')
+    session = await commitRecoveryStage(
+      coreDb,
+      recovery,
+      session,
+      { kind: 'transition', toState: 'cleanup-pending', target },
+      now()
+    );
+  if (!isDeepStrictEqual(requireRecoveryTarget(recovery, session), target))
+    throw new Error('NanoHost recovery RuntimeTarget changed before physical cleanup.');
+  const cleaned = await recovery.cleanup(
+    toRestartBackendIdentity(session),
+    target,
+    retainedLease(coreDb, session.attemptId)
+  );
+  if (cleaned.state !== 'ready')
+    throw new Error('NanoHost recovery has no exact physical cleanup acknowledgement.');
+  const retained = retainedLease(coreDb, session.attemptId);
+  const receipt = readRecovery(recovery, (sqlite) =>
+    readNanoHostPhysicalCleanupReceipt(sqlite, retained, target)
+  );
+  if (!receipt || !isDeepStrictEqual(cleaned.value, receipt))
+    throw new Error('NanoHost recovery physical result changed before carriage.');
+  return receipt.session;
 }
 
 /** Reconstructs the backend cleanup boundary from the immutable Core manifest. */
@@ -596,21 +789,6 @@ function openRecoveryWorkspace(
 }
 
 /** Advances any effect-owning state to cleanup-pending. */
-async function moveSessionToCleanupPending(
-  coreDb: CoreDb,
-  session: WorkerBackendSessionRecord,
-  timestamp: string
-): Promise<WorkerBackendSessionRecord> {
-  if (session.state === 'cleanup-pending') {
-    return session;
-  }
-  return await transitionWorkerBackendSessionState(coreDb, {
-    fromState: session.state,
-    attemptId: session.attemptId,
-    now: () => timestamp,
-    toState: 'cleanup-pending',
-  });
-}
 
 /** Projects one stable physical cleanup attempt into the workspace database. */
 function projectCleanup(
@@ -644,7 +822,10 @@ function projectCleanup(
 /** Verifies that the Core attempt and physical anchor have identical authority lineage. */
 function assertSessionMatchesAttempt(
   session: WorkerBackendSessionRecord,
-  row: NanoHostExecutionAttemptRecord
+  row: Pick<
+    SchedulerExecutionAttemptRecord,
+    'attemptId' | 'workspaceId' | 'threadId' | 'turnId' | 'agentSessionId' | 'inputRef'
+  >
 ): void {
   if (
     session.attemptId !== row.attemptId ||
@@ -745,68 +926,99 @@ function hasRecoveredTerminalHandoff(
 export function hasNanoHostAttemptPreEffectProof(
   coreDb: CoreDb,
   attemptId: string,
-  nativeDb?: Parameters<typeof getWorkerBackendSession>[0]
+  nativeDb?: Pick<Parameters<typeof getWorkerBackendSession>[0], 'sqlite'>
 ): boolean {
-  const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
-  if (attempt.disposition !== 'not_accepted' || attempt.operationId !== null) return false;
-  const check = (owner: Parameters<typeof getWorkerBackendSession>[0]) =>
-    !getWorkerBackendSession(owner, attemptId) &&
-    hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt, owner);
-  return nativeDb
-    ? check(nativeDb)
-    : requireNanoHostObservation(coreDb, (sqlite) => check({ sqlite }));
+  return (
+    nativeDb !== undefined &&
+    hasNanoHostPreEffectEvidence(
+      nativeDb.sqlite,
+      requireSchedulerExecutionAttempt(coreDb, attemptId)
+    )
+  );
 }
 
-/** The same absent native facts are required by individual and retained-sibling pre-effect proofs. */
-const absentNativeExecutionEvidenceSql = `last_accepted_heartbeat_at IS NULL
-  AND last_worker_sequence IS NULL AND worker_process_key_hash IS NULL
-  AND worker_control_token_hash IS NULL AND worker_inference_token_hash IS NULL
-  AND worker_capability_token_hash IS NULL`;
+function hasNanoHostPreEffectEvidence(
+  sqlite: Database.Database,
+  attempt: SchedulerExecutionAttemptRecord
+): boolean {
+  return (
+    attempt.disposition === 'not_accepted' &&
+    attempt.operationId === null &&
+    !getWorkerBackendSession({ sqlite }, attempt.attemptId) &&
+    hasNanoHostAttemptNoExecutionEvidence(sqlite, attempt)
+  );
+}
 
-/** Reads native evidence without treating a closed attempt or physical cleanup as proof of non-execution. */
+/** Reads retained Native evidence without treating a closed attempt as proof of non-execution. */
 function hasNanoHostAttemptNoExecutionEvidence(
-  coreDb: CoreDb,
-  attempt: SchedulerExecutionAttemptRecord,
-  nativeDb: Parameters<typeof getWorkerBackendSession>[0]
+  sqlite: Database.Database,
+  attempt: SchedulerExecutionAttemptRecord
 ): boolean {
-  const proof = coreDb.sqlite
-    .prepare(`SELECT 1 FROM scheduler_execution_attempts
-      WHERE attempt_id = ? AND ${absentNativeExecutionEvidenceSql}`)
-    .get(attempt.attemptId);
-  const binding = nativeDb.sqlite
-    .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+  return !(
+    sqlite
+      .prepare(`SELECT 1 FROM worker_backend_sessions WHERE attempt_id = ?
+      AND (worker_recovery_json IS NOT NULL OR worker_route_binding_json IS NOT NULL)`)
+      .get(attempt.attemptId) ||
+    sqlite
+      .prepare(`SELECT 1 FROM worker_control_sequence_fingerprints
+      WHERE turn_id = ? AND (? IS NULL OR package_snapshot_id = ?) LIMIT 1`)
+      .get(attempt.turnId, attempt.inputRef, attempt.inputRef) ||
+    sqlite
+      .prepare(`SELECT 1 FROM worker_control_records
+      WHERE turn_id = ? AND (? IS NULL OR package_snapshot_id = ?) LIMIT 1`)
+      .get(attempt.turnId, attempt.inputRef, attempt.inputRef) ||
+    sqlite
+      .prepare(`SELECT 1 FROM agent_session_runtime_bindings
       WHERE agent_session_id = ? OR current_turn_id = ? OR current_attempt_id = ? LIMIT 1`)
-    .get(attempt.agentSessionId, attempt.turnId, attempt.attemptId);
-  return Boolean(proof && !binding);
+      .get(attempt.agentSessionId, attempt.turnId, attempt.attemptId)
+  );
 }
 
-/** Rechecks retained busy siblings in batches so each pass preserves exclusion without per-sibling reads. */
+function hasAdmittedPreEffectProof(
+  recovery: AdmittedNanoHostAttemptRecovery,
+  attempt: SchedulerExecutionAttemptRecord
+): boolean {
+  return readRecovery(recovery, (sqlite) => hasNanoHostPreEffectEvidence(sqlite, attempt));
+}
+
+/** Busy siblings are Core decisions; their contradictory effects belong to the Native file. */
 function hasNanoHostBusySiblingProofs(
   coreDb: CoreDb,
-  attempt: SchedulerExecutionAttemptRecord,
-  nativeDb: Parameters<typeof getWorkerBackendSession>[0]
+  recovery: AdmittedNanoHostAttemptRecovery,
+  attempt: SchedulerExecutionAttemptRecord
 ): boolean {
   const siblings = listSchedulerExecutionAttemptsByTurnId(coreDb, attempt.turnId).filter(
     (sibling) => sibling.attemptId !== attempt.attemptId
   );
   if (siblings.some((sibling) => !isSchedulerExecutionBusyRefusal(sibling))) return false;
   if (siblings.length === 0) return true;
-  const execution = coreDb.sqlite
-    .prepare(`SELECT 1 FROM scheduler_execution_attempts AS sibling
-      WHERE turn_id = ? AND attempt_id <> ? AND NOT (${absentNativeExecutionEvidenceSql}) LIMIT 1`)
-    .get(attempt.turnId, attempt.attemptId);
-  if (execution) return false;
-  const attemptIds = JSON.stringify(siblings.map((sibling) => sibling.attemptId));
-  const sessionIds = JSON.stringify(
-    siblings.flatMap((sibling) => (sibling.agentSessionId === null ? [] : [sibling.agentSessionId]))
-  );
-  return !nativeDb.sqlite
-    .prepare(`SELECT 1 FROM worker_backend_sessions
-      WHERE attempt_id IN (SELECT value FROM json_each(@attempts))
-      UNION ALL SELECT 1 FROM agent_session_runtime_bindings
-      WHERE current_turn_id = @turn OR agent_session_id IN (SELECT value FROM json_each(@sessions))
-        OR current_attempt_id IN (SELECT value FROM json_each(@attempts)) LIMIT 1`)
-    .get({ attempts: attemptIds, sessions: sessionIds, turn: attempt.turnId });
+  return readRecovery(recovery, (sqlite) => {
+    const originals = JSON.stringify(
+      siblings.map(({ attemptId, agentSessionId, inputRef }) => ({
+        attemptId,
+        agentSessionId,
+        inputRef,
+      }))
+    );
+    return !(
+      sqlite
+        .prepare(`SELECT 1 FROM worker_backend_sessions
+        WHERE attempt_id IN (SELECT json_extract(value, '$.attemptId') FROM json_each(?)) LIMIT 1`)
+        .get(originals) ||
+      sqlite
+        .prepare(`SELECT 1 FROM worker_control_sequence_fingerprints
+        WHERE turn_id = ? AND package_snapshot_id IN (
+          SELECT json_extract(value, '$.inputRef') FROM json_each(?)
+        ) LIMIT 1`)
+        .get(attempt.turnId, originals) ||
+      sqlite
+        .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+        WHERE current_turn_id = ? OR agent_session_id IN (
+          SELECT json_extract(value, '$.agentSessionId') FROM json_each(?)
+        ) OR current_attempt_id IN (SELECT json_extract(value, '$.attemptId') FROM json_each(?)) LIMIT 1`)
+        .get(attempt.turnId, originals, originals)
+    );
+  });
 }
 
 /**
@@ -825,8 +1037,9 @@ export function hasNanoHostUnusedFailedStartAnchorProof(
   workspaceDb: WorkspaceDb,
   environmentPackage: AgentEnvironmentPackage,
   attemptId: string,
-  nativeDb: Parameters<typeof getWorkerBackendSession>[0]
+  nativeDb?: Pick<Parameters<typeof getWorkerBackendSession>[0], 'sqlite'>
 ): boolean {
+  if (!nativeDb) return false;
   const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
   const backend = getWorkerBackendSession(nativeDb, attemptId);
   if (
@@ -840,17 +1053,11 @@ export function hasNanoHostUnusedFailedStartAnchorProof(
     attempt.deadline !== null ||
     attempt.outcomeRef !== null ||
     attempt.fenceRef !== null ||
-    !hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt, nativeDb)
+    !hasNanoHostAttemptNoExecutionEvidence(nativeDb.sqlite, attempt)
   )
     return false;
-  const native = requireNanoHostExecutionAttempt(coreDb, attemptId);
-  if (
-    native.recoveryState !== null ||
-    native.recoveryDeadline !== null ||
-    backend.sandboxBindingRef !== attempt.bindingRef
-  )
-    return false;
-  assertSessionMatchesAttempt(backend, native);
+  if (backend.sandboxBindingRef !== attempt.bindingRef) return false;
+  assertSessionMatchesAttempt(backend, attempt);
   assertEnvironmentPackageMatchesSession(environmentPackage, backend);
   return (
     !listBackendWorkspaceHandles(workspaceDb, attempt.workspaceId).some(
@@ -868,7 +1075,8 @@ async function settleTerminalFailedStart(
   attemptId: string,
   store: FsStore,
   input: RunNanoHostAttemptRecoveryInput,
-  timestamp: string
+  timestamp: string,
+  recovery: AdmittedNanoHostAttemptRecovery
 ): Promise<boolean> {
   const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
   if (attempt.backendId !== input.executionBackend.id)
@@ -925,7 +1133,7 @@ async function settleTerminalFailedStart(
       const preparation = JSON.parse(attempt.preparationInputJson);
       if (
         attempt.phase !== 'closed' ||
-        !hasNanoHostAttemptPreEffectProof(coreDb, attemptId) ||
+        !hasAdmittedPreEffectProof(recovery, attempt) ||
         !preparation?.admission ||
         preparation.admission.queueEntryId !== admission.queueEntryId ||
         schedulerAdmissionInputHash(preparation.admission) !== admission.inputHash ||
@@ -940,12 +1148,17 @@ async function settleTerminalFailedStart(
             attempt.agentSessionId,
             attempt.inputRef
           ) !== null) ||
-        requireNanoHostObservation(coreDb, (sqlite) =>
-          sqlite
-            .prepare(`SELECT 1 FROM worker_backend_sessions WHERE agent_session_id = @session
-            OR turn_id = @turn UNION ALL
-            SELECT 1 FROM worker_control_records WHERE turn_id = @turn LIMIT 1`)
-            .get({ session: attempt.agentSessionId, turn: attempt.turnId })
+        readRecovery(
+          recovery,
+          (sqlite) =>
+            sqlite
+              .prepare(
+                'SELECT 1 FROM worker_backend_sessions WHERE agent_session_id = ? OR turn_id = ? LIMIT 1'
+              )
+              .get(attempt.agentSessionId, attempt.turnId) ||
+            sqlite
+              .prepare('SELECT 1 FROM worker_control_records WHERE turn_id = ? LIMIT 1')
+              .get(attempt.turnId)
         )
       )
         throw new Error(
@@ -994,20 +1207,18 @@ async function settleTerminalFailedStart(
     const admissions = coreDb.sqlite
       .prepare('SELECT queue_entry_id FROM scheduler_admission_entries WHERE turn_id = ?')
       .all(attempt.turnId);
-    const otherBackend = requireNanoHostObservation(coreDb, (sqlite) =>
+    const otherBackend = readRecovery(recovery, (sqlite) =>
       sqlite
         .prepare(
           `SELECT attempt_id FROM worker_backend_sessions WHERE (turn_id = ? OR agent_session_id = ?)
-         AND attempt_id <> ? AND state NOT IN ('physical-cleaned', 'cleaned')`
+       AND attempt_id <> ? AND state NOT IN ('physical-cleaned', 'cleaned')`
         )
         .get(attempt.turnId, attempt.agentSessionId, attemptId)
     );
     const turns = store.listThreadTurns(attempt.workspaceId, attempt.threadId);
     if (
       // Proved no-effect capacity deferrals share this Turn but hold no execution ownership.
-      !requireNanoHostObservation(coreDb, (sqlite) =>
-        hasNanoHostBusySiblingProofs(coreDb, attempt, { sqlite })
-      ) ||
+      !hasNanoHostBusySiblingProofs(coreDb, recovery, attempt) ||
       admissions.length !== 1 ||
       competing ||
       otherBackend ||
@@ -1020,7 +1231,7 @@ async function settleTerminalFailedStart(
     )
       throw new Error('Failed-start attempt has a competing execution owner.');
     if (
-      requireNanoHostObservation(coreDb, (sqlite) =>
+      readRecovery(recovery, (sqlite) =>
         sqlite
           .prepare(
             "SELECT turn_id FROM worker_control_records WHERE turn_id = ? AND operation = 'final_status'"
@@ -1039,39 +1250,36 @@ async function settleTerminalFailedStart(
         throw new Error('Failed-start nonterminal Turn retains checkpoint-owned closeout.');
       return false;
     }
-    const nativeProof = coreDb.sqlite
-      .prepare(`SELECT session_compatibility_key AS sessionCompatibilityKey
-      FROM scheduler_execution_attempts WHERE attempt_id = ?`)
-      .get(attemptId) as { sessionCompatibilityKey: string | null };
-    const bindings = requireNanoHostObservation(
-      coreDb,
-      (sqlite) =>
-        sqlite
-          .prepare(
-            `SELECT workspace_id AS workspaceId, thread_id AS threadId, agent_session_id AS agentSessionId,
+    const observation = attempt.operationId
+      ? observeAdmittedAttempt(coreDb, recovery, attemptId)
+      : null;
+    const bindings = readRecovery(recovery, (sqlite) =>
+      sqlite
+        .prepare(
+          `SELECT workspace_id AS workspaceId, thread_id AS threadId, agent_session_id AS agentSessionId,
        agent_session_compatibility_key AS compatibilityKey,
        lifecycle_state AS lifecycleState, cleanup_state AS cleanupState,
        current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId
        FROM agent_session_runtime_bindings WHERE agent_session_id = ? OR current_turn_id = ? OR current_attempt_id = ?`
-          )
-          .all(attempt.agentSessionId, attempt.turnId, attemptId) as Array<{
-          workspaceId: string;
-          threadId: string;
-          agentSessionId: string;
-          compatibilityKey: string;
-          lifecycleState: string;
-          cleanupState: string;
-          currentTurnId: string | null;
-          currentAttemptId: string | null;
-        }>
-    );
+        )
+        .all(attempt.agentSessionId, attempt.turnId, attemptId)
+    ) as Array<{
+      workspaceId: string;
+      threadId: string;
+      agentSessionId: string;
+      compatibilityKey: string;
+      lifecycleState: string;
+      cleanupState: string;
+      currentTurnId: string | null;
+      currentAttemptId: string | null;
+    }>;
     if (
       bindings.some(
         (binding) =>
           binding.workspaceId !== attempt.workspaceId ||
           binding.threadId !== attempt.threadId ||
           binding.agentSessionId !== attempt.agentSessionId ||
-          binding.compatibilityKey !== nativeProof.sessionCompatibilityKey ||
+          binding.compatibilityKey !== observation?.proof.sessionCompatibilityKey ||
           binding.currentTurnId !== null ||
           binding.currentAttemptId !== null ||
           !['open', 'closed', 'failed'].includes(binding.lifecycleState) ||
@@ -1080,24 +1288,21 @@ async function settleTerminalFailedStart(
     ) {
       throw new Error('Failed-start runtime binding has unproved execution ownership.');
     }
-    const backend = requireNanoHostObservation(coreDb, (sqlite) =>
-      getWorkerBackendSession({ sqlite }, attemptId)
-    );
-    const native = backend ? requireNanoHostExecutionAttempt(coreDb, attemptId) : null;
-    // An unused preparation anchor cannot hold the product outcome hostage to cleanup.
-    // Require the closed whole-attempt refusal and absence of every native authority signal.
-    const noEffectAnchor =
-      native !== null &&
-      attempt.phase === 'closed' &&
-      attempt.disposition === 'not_accepted' &&
-      attempt.operationId === null &&
-      attempt.deadline === null &&
-      requireNanoHostObservation(coreDb, (sqlite) =>
-        hasNanoHostAttemptNoExecutionEvidence(coreDb, attempt, { sqlite })
-      );
+    const { backend, noEffectAnchor } = readRecovery(recovery, (sqlite) => ({
+      backend: getWorkerBackendSession({ sqlite }, attemptId),
+      // A closed pre-effect attempt may retain only its unused Native preparation anchor.
+      noEffectAnchor:
+        attempt.phase === 'closed' &&
+        attempt.disposition === 'not_accepted' &&
+        attempt.operationId === null &&
+        attempt.deadline === null &&
+        hasNanoHostAttemptNoExecutionEvidence(sqlite, attempt),
+    }));
+    const native = observation?.attempt;
     if (backend) {
       if (
         !pkg ||
+        (!native && !noEffectAnchor) ||
         !attempt.bindingRef ||
         backend.sandboxBindingRef !== attempt.bindingRef ||
         (!noEffectAnchor &&
@@ -1106,11 +1311,8 @@ async function settleTerminalFailedStart(
             backend.workspaceHandoffState !== 'complete'))
       )
         throw new Error('Failed-start backend cleanup is not definite for this exact attempt.');
-      assertSessionMatchesAttempt(backend, requireNanoHostExecutionAttempt(coreDb, attemptId));
+      assertSessionMatchesAttempt(backend, native ?? attempt);
       assertEnvironmentPackageMatchesSession(pkg, backend);
-      // A closed pre-effect refusal can leave declared inputs entirely unpublished.
-      // Publish only the failed product outcome; pending physical cleanup and its fence stay owned separately.
-      // Any published materialization or handle still requires the complete existing handoff proof.
       const materializationNotPublished =
         noEffectAnchor &&
         !listBackendWorkspaceHandles(workspace.db, attempt.workspaceId).some(
@@ -1121,7 +1323,7 @@ async function settleTerminalFailedStart(
         );
       if (!materializationNotPublished)
         requireCompleteBackendWorkspaceHandleHandoff(workspace.db, pkg);
-    } else if (!hasNanoHostAttemptPreEffectProof(coreDb, attemptId)) {
+    } else if (!hasAdmittedPreEffectProof(recovery, attempt)) {
       throw new Error('Failed-start attempt has no positive pre-effect proof.');
     }
     const deliveryRows = workspace.db.sqlite

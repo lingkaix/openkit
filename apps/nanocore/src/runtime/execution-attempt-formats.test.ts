@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import {
   createSchedulerAdmissionEntry,
@@ -50,11 +51,24 @@ function fixture() {
     inputRef: schedulerFixtureInput(workspaceId, turnId, 'Inspect retained format.'),
     requestedAgentId: 'agent_worker',
   });
+  const declaration = {
+    id: 'security_honey_inbound',
+    vaultGrantId: allocateEntityId('grant'),
+    visibility: 'runtime-env',
+    targetEnvVarName: 'OPENKIT_HONEY_TOKEN',
+  };
   const attempt = createSchedulerExecutionAttempt(db, {
     entry,
-    preparationInput: { admission: entry, descriptiveNote: 'Retain this evidence.' },
+    preparationInput: {
+      admission: entry,
+      descriptiveNote: 'Unretained preparation context.',
+      manifest: {
+        id: entry.requestedAgentId,
+        sandbox: { credentialDeclarations: [declaration] },
+      },
+    },
   });
-  return { db, attempt };
+  return { db, attempt, declaration };
 }
 
 /** Builds real closed retry history and one final open attempt through the existing owner. */
@@ -84,13 +98,56 @@ function attemptHistory(count: number) {
   return { db, entry, expected, scope };
 }
 
-it('writes v1 attempts and reads their exact preparation bytes without rewriting them', () => {
-  const { db, attempt } = fixture();
+it('projects the original v1 claim and keeps preparation bytes outside Core', () => {
+  const { db, attempt, declaration } = fixture();
   const before = db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').get();
   expect(before).toMatchObject({ schema_version: 1 });
+  expect(Object.keys(before as object)).toEqual([
+    'attempt_id',
+    'queue_entry_id',
+    'workspace_id',
+    'thread_id',
+    'turn_id',
+    'agent_session_id',
+    'input_ref',
+    'binding_ref',
+    'phase',
+    'disposition',
+    'operation_id',
+    'deadline',
+    'terminal_cause',
+    'created_at',
+    'schema_version',
+  ]);
+  expect(db.sqlite.pragma('foreign_key_check')).toEqual([]);
+  expect(db.sqlite.pragma('integrity_check', { simple: true })).toBe('ok');
+  const stored = db.sqlite
+    .prepare(
+      'SELECT invocation_json FROM control_execution_steps WHERE execution_id=? AND step_id=?'
+    )
+    .pluck()
+    .get(`scheduler-lifecycle:${attempt.attemptId}`, 'claim') as string;
+  expect(stored).not.toContain('Unretained preparation context.');
+  expect(attempt.inputRef).toBeNull();
+  expect(JSON.parse(attempt.preparationInputJson)).toMatchObject({
+    admission: { queueEntryId: attempt.queueEntryId, backendId: attempt.backendId },
+    manifest: { id: 'agent_worker', sandbox: { credentialDeclarations: [declaration] } },
+  });
+  const reopened = openCoreDb(db.dataRoot);
+  try {
+    expect(requireSchedulerExecutionAttempt(reopened, attempt.attemptId)).toEqual(attempt);
+  } finally {
+    reopened.sqlite.close();
+  }
   expect(requireSchedulerExecutionAttempt(db, attempt.attemptId)).toEqual(attempt);
   expect(listOpenSchedulerExecutionAttempts(db)).toEqual([attempt]);
   expect(db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').get()).toEqual(before);
+  db.sqlite
+    .prepare('UPDATE scheduler_admission_entries SET input_digest = ? WHERE queue_entry_id = ?')
+    .run('a'.repeat(64), attempt.queueEntryId);
+  expect(() => requireSchedulerExecutionAttempt(db, attempt.attemptId)).toThrow(
+    'Attempt preparation has no exact original claim.'
+  );
 });
 
 it('refuses unknown attempt versions before recovery reads or lifecycle mutation', () => {
@@ -119,9 +176,7 @@ it('refuses unknown attempt versions before recovery reads or lifecycle mutation
       fenceRef: null,
     })
   ).toMatchObject({ disposition: 'unknown' });
-  db.sqlite.exec(
-    "UPDATE scheduler_execution_attempts SET schema_version = 2, preparation_input_json = '{'"
-  );
+  db.sqlite.exec('UPDATE scheduler_execution_attempts SET schema_version = 2');
   const before = db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').get();
   db.sqlite.exec(
     "CREATE TRIGGER refuse_unknown_attempt_update BEFORE UPDATE ON scheduler_execution_attempts BEGIN SELECT RAISE(FAIL, 'Unknown attempt reached UPDATE'); END"
@@ -165,7 +220,10 @@ it('keeps the original attempt snapshot when another WAL owner closes the last a
   // statement completes, independent of its page size or whether it is paged at all.
   const observation = vi.spyOn(db.sqlite, 'prepare').mockImplementation((sql) => {
     const statement = prepare(sql);
-    if (sql.includes('FROM scheduler_execution_attempts') && sql.includes('ORDER BY rowid')) {
+    if (
+      sql.includes('FROM scheduler_execution_attempts') &&
+      sql.includes('ORDER BY attempt.rowid')
+    ) {
       const all = statement.all.bind(statement);
       vi.spyOn(statement, 'all').mockImplementation((...parameters) => {
         const rows = all(...parameters);

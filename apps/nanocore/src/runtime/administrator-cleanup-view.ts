@@ -17,6 +17,7 @@ import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
 import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
 import type { StorageResult } from '../storage/storage-owner.js';
+import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import {
   getNanoHostRuntimeTarget,
   requireNanoHostPhysicalEpoch,
@@ -67,7 +68,7 @@ export interface ReadRuntimeCleanupViewInput {
 /** Only known state and opaque target columns enter the projection, never private payloads. */
 const sourceSelects: Record<RuntimeSource, string> = {
   'execution-attempt': `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
-    phase, disposition, updated_at FROM scheduler_execution_attempts ORDER BY attempt_id LIMIT ?`,
+    phase, disposition FROM scheduler_execution_attempts ORDER BY attempt_id LIMIT ?`,
   'backend-session': `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
     state, workspace_handoff_state, physical_cleaned_at, updated_at, runtime_target_id,
     origin_physical_epoch, deployment_id
@@ -295,6 +296,8 @@ function projectRecord(
     // Core rows alone cannot establish that audience; this read never opens Workspace content.
     throw new Error('Cleanup source audience is unavailable.');
   }
+  if (source === 'execution-attempt' && typeof row.attempt_id === 'string')
+    row.updated_at = requireSchedulerExecutionAttempt(coreDb, row.attempt_id).updatedAt;
   return projectKnownFields(sourceDb, source, row, observedAt);
 }
 

@@ -8,6 +8,7 @@ import {
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
 } from './execution-attempt-records.js';
+import { nanoHostStartupDeadline } from './nanohost-attempt-clocks.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import { matchesAcceptedWorkerControlSequence } from './worker-control-sequences.js';
@@ -830,9 +831,7 @@ export function bindNanoHostAttemptPreparation(
       input.inputRef,
       input.bindingRef,
       input.sessionCompatibilityKey,
-      new Date(
-        Date.parse(requireSchedulerExecutionAttempt(coreDb, input.attemptId).createdAt) + 1_500_000
-      ).toISOString(),
+      nanoHostStartupDeadline(requireSchedulerExecutionAttempt(coreDb, input.attemptId)),
       input.attemptId,
       input.agentSessionId,
       input.inputRef,

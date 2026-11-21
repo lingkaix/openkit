@@ -46,18 +46,20 @@ import {
   storageReceipt,
   storageRequestId,
 } from '../storage/storage-owner.js';
-import type {
-  EndedExecutionStep,
-  ExecutionInvocation,
-  ExecutionJournalAnyValue,
-  ExecutionJournalExecution,
-  ExecutionJournalIntent,
-  ExecutionJournalRef,
-  ExecutionJournalSettlement,
-  ExecutionJournalSpan,
-  ExecutionStepControl,
-  ExecutionStepJournalReader,
-  ExecutionStepRef,
+import {
+  type EndedExecutionStep,
+  type ExecutionInvocation,
+  type ExecutionJournalAnyValue,
+  type ExecutionJournalExecution,
+  type ExecutionJournalIntent,
+  type ExecutionJournalRef,
+  type ExecutionJournalSettlement,
+  type ExecutionJournalSpan,
+  type ExecutionStepControl,
+  type ExecutionStepJournalReader,
+  type ExecutionStepRef,
+  type SchedulerPreparationClaim,
+  SchedulerPreparationClaimSchema,
 } from './execution-step-journal.js';
 import {
   createNanoHostEffectRequest,
@@ -84,6 +86,9 @@ export const CORE_REPAIR_EXECUTION_DEFINITION = 'core-repair/v1';
 
 /** The Core control half of a durable scheduler attempt and its independent input obligations. */
 export const CORE_SCHEDULER_EXECUTION_DEFINITION = 'core-scheduler-attempt/v1';
+
+/** Local lifecycle receipts are independent of the backend grant's trace and writer scopes. */
+const CORE_SCHEDULER_LIFECYCLE_DEFINITION = 'core-scheduler-lifecycle/v1';
 
 /** Observed Core identity/revision; selection must reread its owning rows before advancement. */
 export interface ExecutionCandidate {
@@ -343,6 +348,7 @@ const definition = z.enum([
   CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
   CORE_REPAIR_EXECUTION_DEFINITION,
   CORE_SCHEDULER_EXECUTION_DEFINITION,
+  CORE_SCHEDULER_LIFECYCLE_DEFINITION,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 ]);
 const controlSchema = z.object({
@@ -407,6 +413,7 @@ const invocationSchema = z.object({
     requestId: text,
     sequence: count.nullable(),
     bindingRef: text.nullable(),
+    schedulerPreparation: SchedulerPreparationClaimSchema.optional(),
     kernelGrant: KernelGrantStepSchema.optional(),
     repairTerminal: z
       .strictObject({ version: z.literal(1), outcome: repairOutcomeSchema })
@@ -645,7 +652,8 @@ function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
         value === CORE_CONTAINMENT_EXECUTION_DEFINITION ||
         value === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION ||
         value === CORE_REPAIR_EXECUTION_DEFINITION ||
-        value === CORE_SCHEDULER_EXECUTION_DEFINITION
+        value === CORE_SCHEDULER_EXECUTION_DEFINITION ||
+        value === CORE_SCHEDULER_LIFECYCLE_DEFINITION
       : value === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION;
   if (!admitted) throw new Error('Execution definition conflicts with its physical owner.');
 }
@@ -886,6 +894,7 @@ export function writeExecutionJournalIntent(
   const span = spanSchema.parse(input.span);
   if (
     (admission.definitionVersion === CORE_REPAIR_EXECUTION_DEFINITION ||
+      admission.definitionVersion === CORE_SCHEDULER_LIFECYCLE_DEFINITION ||
       input.carriage.kernelGrant ||
       input.carriage.kernelInput ||
       input.carriage.kernelEvidence ||
@@ -903,6 +912,13 @@ export function writeExecutionJournalIntent(
         : control.kind !== 'observe' && control.kind !== 'consume-receipt'))
   )
     throw new Error('Input proof is outside its Core scheduler step.');
+  if (
+    input.carriage.schedulerPreparation &&
+    (admission.definitionVersion !== CORE_SCHEDULER_LIFECYCLE_DEFINITION ||
+      control.kind !== 'admit' ||
+      input.stepId !== 'claim')
+  )
+    throw new Error('Attempt preparation is outside its original claim.');
   requireKernelExecutionCarriage(admission.definitionVersion, control, input.carriage);
   const rootSpan = spanSchema.parse(admission.span);
   definition.parse(admission.definitionVersion);
@@ -1072,7 +1088,7 @@ const verifiedKernelRelease = Symbol('verified-core-scheduler-release');
 export function settleExecutionJournalStep(
   db: CoreDb | WorkspaceDb,
   input: ExecutionJournalSettlement,
-  releaseAuthority?: typeof verifiedKernelRelease
+  releaseAuthority?: typeof verifiedKernelRelease | typeof verifiedKernelStep
 ): EndedExecutionStep {
   requireWriter(db, input.ref.execution);
   const stored = storedStep(db, input.ref);
@@ -1100,6 +1116,11 @@ export function settleExecutionJournalStep(
   }
   const outputRefs = z.array(text).parse(input.outputRefs);
   const exclusionRefs = z.array(text).parse(input.exclusionRefs);
+  if (
+    stored.root.definitionVersion === CORE_SCHEDULER_LIFECYCLE_DEFINITION &&
+    releaseAuthority !== verifiedKernelStep
+  )
+    throw new Error('Attempt lifecycle requires its original native decision.');
   const scheduler = stored.root.definitionVersion === CORE_SCHEDULER_EXECUTION_DEFINITION;
   if (scheduler && stored.root.phase === 'closing' && input.nextPhase === 'open')
     throw new Error('A closing Core scheduler execution cannot reopen.');
@@ -1220,6 +1241,127 @@ export function settleExecutionJournalStep(
     );
   if (advanced.changes !== 1) throw new Error('Execution revision conflicts.');
   return endedStep(db, input.ref);
+}
+
+/** Records the original local transition alongside its attempt CAS. */
+export function commitSchedulerAttemptLifecycleStepInDb(
+  db: CoreDb,
+  input: {
+    readonly attemptId: string;
+    readonly actor: ExecutionStepControl['actor'];
+    readonly turnId: string;
+    readonly admissionHash: string;
+    readonly operationId: string | null;
+    readonly timestamp: string;
+    readonly kind:
+      | 'admit'
+      | 'open-session'
+      | 'resolve-setup'
+      | 'deliver-start'
+      | 'observe'
+      | 'cancel'
+      | 'release';
+    readonly preparation?: SchedulerPreparationClaim;
+    readonly outputRefs?: readonly string[];
+    readonly closed?: boolean;
+  }
+): void {
+  const execution = {
+    owner: { kind: 'server' as const },
+    executionId: `scheduler-lifecycle:${input.attemptId}`,
+  };
+  requireWriter(db, execution);
+  const root = input.kind === 'admit' ? null : readRoot(db, execution);
+  const occurrence = input.kind === 'admit' ? 'claim' : String(root!.revision);
+  const invocationId = `${execution.executionId}:${occurrence}`;
+  const timestamp = BigInt(Date.parse(input.timestamp)) * 1_000_000n;
+  const trace = sha256Hex(execution.executionId);
+  const span: ExecutionJournalIntent['span'] = {
+    traceId: trace.slice(0, 32),
+    spanId: sha256Hex(invocationId).slice(0, 16),
+    flags: 0,
+    name: input.kind,
+    kind: 'INTERNAL',
+    startTimeUnixNano: timestamp,
+    endTimeUnixNano: null,
+    status: { code: 'UNSET' },
+    attributes: [],
+    droppedAttributesCount: 0,
+    events: [],
+    droppedEventsCount: 0,
+    links: [],
+    droppedLinksCount: 0,
+    instrumentationScope: {
+      name: 'openkit.nanocore.runtime',
+      attributes: [],
+      droppedAttributesCount: 0,
+    },
+    resource: { attributes: [], droppedAttributesCount: 0 },
+  };
+  if (root && (root.fingerprint !== input.admissionHash || root.workId !== input.turnId))
+    throw new Error('Attempt lifecycle conflicts with its original claim.');
+  const admitted = writeExecutionJournalIntent(
+    db,
+    {
+      execution: {
+        ref: execution,
+        workId: input.turnId,
+        definitionVersion: CORE_SCHEDULER_LIFECYCLE_DEFINITION,
+        fingerprint: input.admissionHash,
+        exclusionRefs: [],
+        span: root
+          ? { ...root.span, endTimeUnixNano: null }
+          : { ...span, spanId: trace.slice(32, 48) },
+      },
+      stepId: occurrence,
+      parentStepId: null,
+      parent: null,
+      inspectedStep: null,
+      carriage: {
+        operation: input.kind,
+        requestId: invocationId,
+        sequence: null,
+        bindingRef: null,
+        ...(input.preparation ? { schedulerPreparation: input.preparation } : {}),
+      },
+      control: {
+        definitionVersion: CORE_SCHEDULER_LIFECYCLE_DEFINITION,
+        kind: input.kind,
+        target: null,
+        workId: input.turnId,
+        operationId: input.operationId,
+        attemptId: input.attemptId,
+        invocationId,
+        actor: input.actor,
+        inputRefs: [],
+        outputRefs: [],
+        fingerprint: input.admissionHash,
+        permittingDecisionRef: null,
+        authorityRefs: [],
+        retryDeclarationRef: null,
+        retryPermitted: false,
+        deadlineUnixNano: null,
+        physicalFenceRefs: [],
+      },
+      span,
+    },
+    undefined,
+    verifiedKernelStep
+  );
+  settleExecutionJournalStep(
+    db,
+    {
+      ref: admitted.ref,
+      expectedExecutionRevision: readRoot(db, execution).revision,
+      state: 'completed',
+      outputRefs: input.outputRefs ?? [],
+      span: { ...span, endTimeUnixNano: timestamp, status: { code: 'OK' } },
+      nextPhase: input.closed ? 'closed' : 'open',
+      terminalCause: null,
+      exclusionRefs: [],
+    },
+    verifiedKernelStep
+  );
 }
 
 function requireKernelExecutionCarriage(

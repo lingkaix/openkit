@@ -90,11 +90,13 @@ import {
 import { ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
 import { AttentionError } from '../notifications/attention-error.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import {
   applyControlExecutionJournal,
   decodeExecutionJournalIntent,
   decodeExecutionJournalSettlement,
   readExecutionJournalRoot,
+  readKernelSchedulerGrantInDb,
 } from '../runtime/execution-journal.js';
 import { GoalCommandError } from '../runtime/goal-error.js';
 import {
@@ -265,6 +267,7 @@ import {
   type ControlWorkerRequest,
   controlWorkerInputBytes,
   hasControlSqlRollback,
+  hashNanoHostRecoveryObservation,
   isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
@@ -326,6 +329,10 @@ import {
   verifyNanoHostStagedEpochInvalidation,
 } from './nanohost-epoch-invalidation-native.js';
 import type { NanoHostEpochKernelReply } from './nanohost-epoch-kernel-codecs.js';
+import {
+  applyNanoHostRecoveryMutation,
+  readNanoHostRecoveryLease,
+} from './nanohost-recovery-native.js';
 import { applyNanoHostSimulatorFinalStatus } from './nanohost-simulator-final.js';
 import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
 import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
@@ -1519,33 +1526,28 @@ function applyNanoHostEpochKernel(
           : { state: 'conflict' },
     };
 
-  return withCurrentNanoHostRead(core.dataRoot, input.ownerIdentity, (sqlite) =>
-    input.kind === 'reserve'
-      ? {
-          kind: input.kind,
-          value: reserveVaultEpochFenceInDb(core, input.placement, true, (original) =>
-            verifyNanoHostRetiringPlacement(sqlite, original)
-          ),
-        }
-      : {
-          kind: input.kind,
-          value: fenceNanoHostEpochInDb(core, input.intent, true, (original) =>
-            verifyNanoHostStagedEpochInvalidation(sqlite, original)
-          ),
-        }
+  return withCurrentPeerRead(
+    serverStoragePath(core.dataRoot, 'nanohost'),
+    input.ownerIdentity,
+    (sqlite) =>
+      input.kind === 'reserve'
+        ? {
+            kind: input.kind,
+            value: reserveVaultEpochFenceInDb(core, input.placement, true, (original) =>
+              verifyNanoHostRetiringPlacement(sqlite, original)
+            ),
+          }
+        : {
+            kind: input.kind,
+            value: fenceNanoHostEpochInDb(core, input.intent, true, (original) =>
+              verifyNanoHostStagedEpochInvalidation(sqlite, original)
+            ),
+          }
   );
 }
 
-/** Borrows the exact query-only file reserved by the acknowledged NanoHost writer. */
-function withCurrentNanoHostRead<Value>(
-  dataRoot: string,
-  ownerIdentity: string,
-  read: (sqlite: Database.Database) => Value
-): Value {
-  return withCurrentPhysicalRead(serverStoragePath(dataRoot, 'nanohost'), ownerIdentity, read);
-}
-
-function withCurrentPhysicalRead<Value>(
+/** Borrows an exact query-only file reserved by the acknowledged peer writer. */
+function withCurrentPeerRead<Value>(
   path: string,
   ownerIdentity: string,
   read: (sqlite: Database.Database) => Value
@@ -1571,19 +1573,14 @@ function withCurrentPhysicalRead<Value>(
   }
 }
 
-/** Joins the internal self-check to the exact current Native and Core files. */
-function withSimulatorCore<Value>(
+/** Reads the matching Core file without changing the selected Native opening. */
+function withNanoHostCore<Value>(
   owner: OwnedDatabase,
   identity: string | undefined,
   run: (db: CoreDb) => Value
 ): Value {
   const dataRoot = owner.serverOwnerDataRoot;
-  if (
-    process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR !== '1' ||
-    owner.serverOwner !== 'nanohost' ||
-    !dataRoot ||
-    !identity
-  )
+  if (owner.serverOwner !== 'nanohost' || !dataRoot || !identity)
     throw new ServerOwnerAdmissionError('recovery-required');
   const file = lstatSync(owner.path, { throwIfNoEntry: false });
   if (
@@ -1593,8 +1590,91 @@ function withSimulatorCore<Value>(
     realpathSync(owner.path) !== owner.path
   )
     throw new ServerOwnerAdmissionError('recovery-required');
-  return withCurrentPhysicalRead(coreDbPath(dataRoot), identity, (sqlite) =>
+  return withCurrentPeerRead(coreDbPath(dataRoot), identity, (sqlite) =>
     sqlite.transaction(() => run(bindCoreSqlite(sqlite, dataRoot))).deferred()
+  );
+}
+
+/** The internal self-check uses the same physical admission checks. */
+function withSimulatorCore<Value>(
+  owner: OwnedDatabase,
+  identity: string | undefined,
+  run: (db: CoreDb) => Value
+): Value {
+  if (process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR !== '1')
+    throw new ServerOwnerAdmissionError('recovery-required');
+  return withNanoHostCore(owner, identity, run);
+}
+
+/** Selects the exact open Core preparation for the original Native materialization. */
+function requireNanoHostMaterialization(
+  coreDb: CoreDb,
+  input: Extract<Parameters<typeof applyControlBackendSession>[1], { kind: 'materializing' }>
+) {
+  const { workspaceId, threadId, turnId } = input.lineage;
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT attempt_id AS attemptId FROM scheduler_execution_attempts
+      WHERE workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=?
+        AND input_ref=? AND binding_ref=? AND phase='open'`
+    )
+    .get(
+      workspaceId,
+      threadId,
+      turnId,
+      input.identity.agentSessionId,
+      input.identity.packageSnapshotId,
+      input.sandboxBindingRef
+    ) as { attemptId: string } | undefined;
+  if (!row) throw new ServerOwnerAdmissionError('recovery-required');
+  return { coreDb, attempt: requireSchedulerExecutionAttempt(coreDb, row.attemptId) };
+}
+
+/** Resolves only the granted submission retained by the current Core attempt owner. */
+function requireNanoHostRecoveryLease(core: CoreDb, attemptId: string) {
+  const attempt = requireSchedulerExecutionAttempt(core, attemptId);
+  const { operationId, inputRef, bindingRef, agentSessionId } = attempt;
+  const grant =
+    operationId &&
+    readKernelSchedulerGrantInDb(
+      core,
+      { owner: { kind: 'server' }, executionId: attempt.attemptId },
+      operationId
+    );
+  if (!grant || !grant.deadline || !inputRef || !bindingRef || !agentSessionId)
+    throw new ServerOwnerAdmissionError('recovery-required');
+  return { grant, attempt: { ...attempt, agentSessionId, inputRef, bindingRef } };
+}
+
+/** Decides a recovery close only for the exact observation pinned by the Native opening. */
+function applyNanoHostRecoveryClose(
+  owner: OwnedDatabase,
+  request: Extract<WriteRequest, { operation: 'execution-attempt' }>
+) {
+  const captured = request.nanoHostRecoveryClose;
+  if (!captured || request.input.kind !== 'closing') throw new ControlProductPreconditionError();
+  const core = requireCurrentKernelOpening(owner, captured.coreOpeningRequestId);
+  const input = request.input;
+  const lease = requireNanoHostRecoveryLease(core, input.attemptId);
+  const { attempt } = lease;
+  return withCurrentPeerRead(
+    serverStoragePath(core.dataRoot, 'nanohost'),
+    captured.ownerIdentity,
+    (sqlite) =>
+      sqlite.transaction(() => {
+        const { session, proof } = readNanoHostRecoveryLease(sqlite, lease);
+        if (hashNanoHostRecoveryObservation({ lease, session, proof }) !== captured.observationHash)
+          throw new ServerOwnerAdmissionError('recovery-required');
+        if (
+          attempt.phase !== 'open' &&
+          attempt.terminalCause === input.cause &&
+          (input.outcomeRef === undefined || attempt.outcomeRef === input.outcomeRef)
+        )
+          return attempt;
+        if (attempt.phase !== captured.expectedPhase || attempt.phase === 'closed')
+          throw new ServerOwnerAdmissionError('recovery-required');
+        return applyControlExecutionAttempt(core, input);
+      })()
   );
 }
 
@@ -1811,6 +1891,33 @@ function applyNanoHostOwnerMutation(
         kind: mutation.kind,
         value: applyControlBackendSession({ sqlite }, mutation.input),
       };
+    case 'recovery-classification': {
+      const input = mutation.input;
+      if (serverStoragePath(input.dataRoot, 'nanohost') !== owner.path)
+        throw new ServerOwnerAdmissionError('recovery-required');
+      return withCurrentPeerRead(coreDbPath(input.dataRoot), input.coreIdentity, (coreSqlite) =>
+        coreSqlite.transaction(() => {
+          const core = bindCoreSqlite(coreSqlite, input.dataRoot);
+          const lease = requireNanoHostRecoveryLease(core, input.attemptId);
+          const { session, proof } = readNanoHostRecoveryLease(sqlite, lease);
+          if (
+            lease.attempt.phase !== input.expectedPhase ||
+            hashNanoHostRecoveryObservation({ lease, session, proof }) !== input.observationHash
+          )
+            throw new ServerOwnerAdmissionError('recovery-required');
+          return {
+            kind: mutation.kind,
+            value: applyNanoHostRecoveryMutation(sqlite, {
+              ...input.classification,
+              lease,
+              expectedSession: input.expectedSession,
+              expectedRecovery: input.expectedRecovery,
+              observedAt: input.observedAt,
+            }),
+          };
+        })()
+      );
+    }
     case 'worker-storage-binding':
       return {
         kind: mutation.kind,
@@ -1986,7 +2093,10 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     }
     case 'nanohost-owner':
-      if (request.mutation.kind === 'backend-session') {
+      if (
+        request.mutation.kind === 'backend-session' ||
+        request.mutation.kind === 'recovery-classification'
+      ) {
         const { attemptId } = request.mutation.input;
         lanes.add(`attempt:${attemptId}`);
         const session = getWorkerBackendSession({ sqlite: owner.sqlite }, attemptId);
@@ -3166,7 +3276,13 @@ function flush(owner: OwnedDatabase): void {
                 throw new ControlProductPreconditionError();
             }
             const result = withSimulatorCore(owner, request.simulatorCoreIdentity, (core) =>
-              applyControlBackendSession({ sqlite }, input, core)
+              applyControlBackendSession(
+                { sqlite },
+                input,
+                input.kind === 'materializing'
+                  ? requireNanoHostMaterialization(core, input)
+                  : undefined
+              )
             );
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -3192,25 +3308,28 @@ function flush(owner: OwnedDatabase): void {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const db = owner.scopeDb;
             const result = request.nanoHostOwnerIdentity
-              ? withCurrentNanoHostRead(db.dataRoot, request.nanoHostOwnerIdentity, (sqlite) =>
-                  applyControlCoreJournal(
-                    db,
-                    request.input,
-                    owner.runtimePolicy,
-                    createNanoHostCoreReads({
-                      read: (query) => {
-                        try {
-                          return { state: 'ready', value: query(sqlite) };
-                        } catch {
-                          return {
-                            state: 'unavailable',
-                            owner: 'nanohost',
-                            reason: 'recovery-required',
-                          };
-                        }
-                      },
-                    })
-                  )
+              ? withCurrentPeerRead(
+                  serverStoragePath(db.dataRoot, 'nanohost'),
+                  request.nanoHostOwnerIdentity,
+                  (sqlite) =>
+                    applyControlCoreJournal(
+                      db,
+                      request.input,
+                      owner.runtimePolicy,
+                      createNanoHostCoreReads({
+                        read: (query) => {
+                          try {
+                            return { state: 'ready', value: query(sqlite) };
+                          } catch {
+                            return {
+                              state: 'unavailable',
+                              owner: 'nanohost',
+                              reason: 'recovery-required',
+                            };
+                          }
+                        },
+                      })
+                    )
                 )
               : applyControlCoreJournal(db, request.input, owner.runtimePolicy);
             outcome = {
@@ -3522,7 +3641,9 @@ function flush(owner: OwnedDatabase): void {
               );
             } else {
               if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-              result = applyControlExecutionAttempt(owner.scopeDb, input, request.content);
+              result = request.nanoHostRecoveryClose
+                ? applyNanoHostRecoveryClose(owner, request)
+                : applyControlExecutionAttempt(owner.scopeDb, input, request.content);
             }
             outcome = {
               version: CONTROL_WORKER_VERSION,

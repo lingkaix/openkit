@@ -24,7 +24,13 @@ import {
 /** Applies a Harness tuple on the admitted owner. Mixed decisions require the Core binding. */
 export function applyControlHarnessLifecycle(
   owner: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
-  input: ControlHarnessLifecycleInput
+  input: ControlHarnessLifecycleInput,
+  admitted?: {
+    readonly coreDb: CoreDb;
+    readonly submission?: NonNullable<
+      Parameters<typeof records.dispatchNanoHostHarnessOperation>[2]
+    >['submission'];
+  }
 ) {
   assertControlProductWriter(owner.sqlite);
   if (
@@ -36,6 +42,22 @@ export function applyControlHarnessLifecycle(
     throw new ControlProductPreconditionError();
   try {
     switch (input.kind) {
+      case 'operation.queue':
+        if (admitted) return records.queueNanoHostHarnessOperation(admitted.coreDb, input, owner);
+        break;
+      case 'operation.dispatch':
+        if (admitted)
+          return owner.sqlite.transaction(() =>
+            records.dispatchNanoHostHarnessOperation(
+              admitted.coreDb,
+              {
+                sandboxIntegrationBindingRef: input.sandboxIntegrationBindingRef,
+                ...(input.observedAt === undefined ? {} : { now: () => input.observedAt! }),
+              },
+              { owner, ...(admitted.submission ? { submission: admitted.submission } : {}) }
+            )
+          )();
+        break;
       case 'runtime.create':
         records.createNanoHostHarnessRuntime(owner, presentControlFacts(input));
         return null;

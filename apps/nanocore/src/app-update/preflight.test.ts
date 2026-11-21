@@ -117,35 +117,9 @@ describe('content-free deployment maintenance preflight', () => {
     expect(JSON.stringify(result)).not.toMatch(/Private|private|queue_|req_|turn_/);
   });
 
-  it.each([
-    {
-      phase: 'closing',
-      recoveryState: 'needs-evidence',
-      state: 'idle',
-      running: 0,
-      open: 0,
-      closing: 0,
-    },
-    { phase: 'closing', recoveryState: null, state: 'busy', running: 1, open: 0, closing: 1 },
-    {
-      phase: 'open',
-      recoveryState: 'needs-evidence',
-      state: 'busy',
-      running: 1,
-      open: 1,
-      closing: 0,
-    },
-    {
-      phase: 'open',
-      recoveryState: 'awaiting-reconnect',
-      state: 'busy',
-      running: 1,
-      open: 1,
-      closing: 0,
-    },
-  ])(
-    'FS-CORE T2a update observation for $phase/$recoveryState is $state',
-    async ({ phase, recoveryState, state, running, open, closing }) => {
+  it.each(['open', 'closing'] as const)(
+    'keeps a %s attempt busy without admitted Native hold evidence',
+    async (phase) => {
       const root = mkdtempSync(join(tmpdir(), 'openkit-preflight-held-'));
       const coreDb = openCoreDb(root);
       onTestFinished(async () => {
@@ -177,22 +151,21 @@ describe('content-free deployment maintenance preflight', () => {
         requestedAgentId: 'agent_codex_host',
       });
       const attempt = createSchedulerExecutionAttempt(coreDb, { entry, preparationInput: {} });
-      coreDb.sqlite
-        .prepare(
-          'UPDATE scheduler_execution_attempts SET phase=?, recovery_state=? WHERE attempt_id=?'
-        )
-        .run(phase, recoveryState, attempt.attemptId);
+      if (phase === 'closing')
+        markSchedulerExecutionAttemptClosing(coreDb, {
+          attemptId: attempt.attemptId,
+          cause: 'native-cleanup',
+        });
       expect(
         observeAppUpdatePreflight({ coreDb, store, inflightCommands: new WeakMap() })
       ).toMatchObject({
-        state,
+        state: 'busy',
         counts: {
-          runningTurns: running,
+          runningTurns: 1,
           pendingTurns: 0,
           queuedAdmissions: 0,
-          openAttempts: open,
-          closingAttempts: closing,
-          inFlightCommands: 0,
+          openAttempts: phase === 'open' ? 1 : 0,
+          closingAttempts: phase === 'closing' ? 1 : 0,
         },
       });
       expect(store.getTurnById(turn.id).status).toBe('running');

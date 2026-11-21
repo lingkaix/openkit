@@ -57,7 +57,7 @@ import {
   CoreSchedulerResultSchema,
 } from './control-store-admission-codecs.js';
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
-import { readDataRootLayoutMarker } from './fs-layout.js';
+import { coreDbPath, readDataRootLayoutMarker } from './fs-layout.js';
 import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
 import type {
   ControlResolvedAgentSetupInput,
@@ -173,13 +173,18 @@ import {
   OperationError,
   restoreControlCapabilityFailure,
 } from '../operation-error.js';
-import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import {
+  requireSchedulerExecutionAttempt,
+  type SchedulerExecutionAttemptRecord,
+} from '../runtime/execution-attempt-records.js';
 import {
   type ControlExecutionJournalInput,
   decodeExecutionJournalIntent,
   readExecutionJournalInvocation,
+  readKernelSchedulerGrantInDb,
 } from '../runtime/execution-journal.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
+import type { AdmittedNanoHostAttemptRecovery } from '../runtime/nanohost-attempt-recovery.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type { ControlPendingCommandResult } from '../runtime/pending-requests.js';
 import type {
@@ -288,6 +293,7 @@ import {
   controlMaterialTransferSize,
   controlWorkerInputBytes,
   controlWorkObservationTransferSize,
+  hashNanoHostRecoveryObservation,
   isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
@@ -342,6 +348,10 @@ import type {
   NanoHostEpochKernelReply,
 } from './nanohost-epoch-kernel-codecs.js';
 import type { NanoHostStore } from './nanohost-port.js';
+import {
+  type NanoHostRecoveryMutation,
+  readNanoHostRecoveryLease,
+} from './nanohost-recovery-native.js';
 import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 import type { ControlRemoteMcpAudit } from './remote-mcp-audit-codecs.js';
 import type { RepairWorkerInput, RepairWorkerReply } from './repair-kernel-codecs.js';
@@ -565,6 +575,26 @@ interface PolicyReadResource {
   call?: PolicyCall;
 }
 
+/** Resolves the first submitted Core grant before reading its recovery evidence in NanoHost. */
+export function readAdmittedNanoHostAttempt(
+  core: CoreDb,
+  sqlite: Database.Database,
+  attempt: SchedulerExecutionAttemptRecord
+) {
+  const { attemptId, agentSessionId, inputRef, bindingRef, operationId } = attempt;
+  if (!operationId || !agentSessionId || !inputRef || !bindingRef || !attempt.deadline)
+    throw new ServerOwnerAdmissionError('recovery-required');
+  const grant = readKernelSchedulerGrantInDb(
+    core,
+    { owner: { kind: 'server' }, executionId: attemptId },
+    operationId
+  );
+  if (!grant?.deadline || grant.backendId !== 'nanohost')
+    throw new ServerOwnerAdmissionError('recovery-required');
+  const lease = { grant, attempt: { ...attempt, agentSessionId, inputRef, bindingRef } };
+  return { lease, ...readNanoHostRecoveryLease(sqlite, lease) };
+}
+
 /** NanoHost composition supplies the landed readers over the admitted query-only connection. */
 interface NanoHostOwnerReaders {
   readonly isEnrollmentAdministrator?: (
@@ -589,7 +619,7 @@ interface NanoHostServingGate {
 }
 
 /** Private local methods for composition after owner and Core authority admission. */
-interface NanoHostOwnerBinding
+export interface NanoHostOwnerBinding
   extends Pick<
     NanoHostStore,
     'stageEpochInvalidation' | 'readEpochInvalidation' | 'settleEpochInvalidation'
@@ -601,6 +631,11 @@ interface NanoHostOwnerBinding
   ): Promise<void>;
   workerImage(input: NanoHostLocalWorkerImageInput): Promise<void>;
   backendSession(input: NanoHostLocalBackendSessionInput): Promise<ControlBackendSessionResult>;
+  closeRecovery: AdmittedNanoHostAttemptRecovery['close'];
+  classifyRecovery(
+    input: Extract<NanoHostRecoveryMutation, { kind: 'arm-reconnect' | 'needs-evidence' }>
+  ): ReturnType<AdmittedNanoHostAttemptRecovery['commit']>;
+
   workerStorageBinding(input: NanoHostLocalWorkerStorageInput): Promise<WorkerStorageBinding>;
   prepareRuntimeTarget(
     input: ControlRuntimeTargetInput,
@@ -3399,6 +3434,129 @@ class ControlStoreWorkerClient {
             await write({ kind: 'worker-image', input });
           },
           backendSession: async (input) => (await write({ kind: 'backend-session', input })).value,
+          closeRecovery: async ({ lease, session, proof, cause, observedAt, outcomeRef }) => {
+            let nativeHeld = false;
+            try {
+              readCurrent(() => undefined);
+              if (opening.nanoHostTargetTransition || !opening.identity)
+                throw new ControlStoreWorkerError('busy', 'not-committed');
+              const coreKey = `core:${coreDbPath(root)}`;
+              const core = this.openings.get(coreKey);
+              if (!core?.acknowledged || core.openingRequestId === undefined)
+                return { state: 'unavailable', owner: 'control-kernel', reason: 'missing' };
+              const identity = opening.identity;
+              const coreOpeningRequestId = core.openingRequestId;
+              const scope = this.workspaceMutations(root);
+              const workspaceId = lease.attempt.workspaceId;
+              const release = this.enterScope(scope, workspaceId, 'capture');
+              if (!release) throw new ControlStoreWorkerError('busy', 'not-committed');
+              opening.nanoHostWritePending = true;
+              nativeHeld = true;
+              try {
+                return await this.runOperation(
+                  async () => {
+                    const reply = await this.request({
+                      operation: 'execution-attempt',
+                      database: coreKey,
+                      input: {
+                        kind: 'closing',
+                        attemptId: lease.grant.attemptId,
+                        cause,
+                        observedAt,
+                        ...(outcomeRef === undefined ? {} : { outcomeRef }),
+                      },
+                      nanoHostRecoveryClose: {
+                        coreOpeningRequestId,
+                        ownerIdentity: identity,
+                        expectedPhase: lease.attempt.phase,
+                        observationHash: hashNanoHostRecoveryObservation({ lease, session, proof }),
+                      },
+                    });
+                    const value = (reply as Extract<Success, { operation: 'execution-attempt' }>)
+                      .result;
+                    if (
+                      !value ||
+                      value.phase === 'open' ||
+                      value.attemptId !== lease.grant.attemptId ||
+                      value.operationId !== lease.grant.operationId
+                    )
+                      throw new ControlStoreWorkerError('owner-recovery-required', 'unknown');
+                    return { state: 'ready', value };
+                  },
+                  undefined,
+                  database,
+                  undefined,
+                  undefined,
+                  { owner: scope, workspaceId, release },
+                  core.command
+                );
+              } finally {
+                release();
+              }
+            } catch (error) {
+              return serverOwnerUnavailable(nativeHeld ? 'control-kernel' : owner, error);
+            } finally {
+              if (nativeHeld) delete opening.nanoHostWritePending;
+            }
+          },
+          classifyRecovery: async ({
+            lease,
+            expectedSession,
+            expectedRecovery,
+            observedAt,
+            ...classification
+          }) => {
+            const coreKey = `core:${coreDbPath(root)}`;
+            const core = this.openings.get(coreKey);
+            const coreIdentity = core?.identity;
+            if (!core?.acknowledged || !coreIdentity)
+              return { state: 'unavailable', owner: 'control-kernel', reason: 'missing' };
+            const expectedPhase = lease.attempt.phase;
+            if (expectedPhase === 'closed')
+              return { state: 'unavailable', owner: 'control-kernel', reason: 'recovery-required' };
+            const scope = this.workspaceMutations(root);
+            const workspaceId = lease.attempt.workspaceId;
+            const release = this.enterScope(scope, workspaceId, 'capture');
+            if (!release) return { state: 'unavailable', owner, reason: 'recovery-required' };
+            try {
+              return await this.runOperation(
+                () =>
+                  result(
+                    async () =>
+                      (
+                        await write({
+                          kind: 'recovery-classification',
+                          input: {
+                            dataRoot: root,
+                            coreIdentity,
+                            attemptId: lease.grant.attemptId,
+                            expectedPhase,
+                            observationHash: hashNanoHostRecoveryObservation({
+                              lease,
+                              session: expectedSession,
+                              proof: expectedRecovery,
+                            }),
+                            expectedSession,
+                            expectedRecovery,
+                            observedAt,
+                            classification,
+                          },
+                        })
+                      ).value
+                  ),
+                undefined,
+                coreKey,
+                undefined,
+                undefined,
+                { owner: scope, workspaceId, release },
+                opening.command
+              );
+            } catch (error) {
+              return serverOwnerUnavailable(owner, error);
+            } finally {
+              release();
+            }
+          },
           workerStorageBinding: async (input) =>
             (await write({ kind: 'worker-storage-binding', input })).value,
           prepareRuntimeTarget: async (input, occurrenceId) =>

@@ -2838,7 +2838,7 @@ describe('route B queued Task receipts', () => {
     { failPreparation: true, entry: 'direct', replayBeforeCollection: true },
     { failPreparation: true, entry: 'direct', replayBeforeCollection: 'concurrent' },
     { failPreparation: true, entry: 'selected-conversation' },
-    { failPreparation: true, entry: 'direct', proofGap: 'native' },
+    { failPreparation: true, entry: 'direct', proofGap: 'retained-operation' },
     { failPreparation: true, entry: 'direct', proofGap: 'input' },
     { failPreparation: true, entry: 'direct', proofGap: 'owner-missing' },
     { failPreparation: true, entry: 'direct', proofGap: 'owner-unreadable' },
@@ -3112,27 +3112,17 @@ describe('route B queued Task receipts', () => {
               expect(observeExecutionAttempts(coreDb)).toHaveLength(1);
               return;
             }
-            if (proofGap === 'native') {
-              for (const patch of [
-                {
-                  worker_process_key_hash: 'retained-process-proof',
-                  last_accepted_heartbeat_at: new Date().toISOString(),
-                },
-                { worker_process_key_hash: 'retained-process-proof' },
-                { last_accepted_heartbeat_at: new Date().toISOString() },
-                { last_worker_sequence: 1 },
-                { worker_control_token_hash: 'retained-control-proof' },
-                { worker_inference_token_hash: 'retained-inference-proof' },
-                { worker_capability_token_hash: 'retained-capability-proof' },
-              ]) {
-                const columns = Object.keys(patch);
-                coreDb.sqlite
-                  .prepare(
-                    `UPDATE scheduler_execution_attempts SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE attempt_id = ?`
-                  )
-                  .run(...Object.values(patch), attemptId);
+            if (proofGap === 'retained-operation') {
+              const original = coreDb.sqlite.prepare(
+                'UPDATE scheduler_execution_attempts SET operation_id = ? WHERE attempt_id = ?'
+              );
+              original.run('retained-original-operation', attemptId);
+              try {
                 const before = await replay();
-                expect(before.status, 'Native evidence must prevent pre-effect replay.').toBe(409);
+                expect(
+                  before.status,
+                  'The retained Core operation must prevent pre-effect replay.'
+                ).toBe(409);
                 expect(await before.json()).toMatchObject({ code: 'recovery_required' });
                 expect(
                   getWorkerCheckpoint(
@@ -3164,11 +3154,8 @@ describe('route B queued Task receipts', () => {
                     admittedId
                   )
                 ).toEqual(checkpoint);
-                coreDb.sqlite
-                  .prepare(
-                    `UPDATE scheduler_execution_attempts SET ${columns.map((column) => `${column} = NULL`).join(', ')} WHERE attempt_id = ?`
-                  )
-                  .run(attemptId);
+              } finally {
+                original.run(null, attemptId);
               }
               expect(executor.launches).toBe(0);
               expect(prepare).toHaveBeenCalledTimes(1);

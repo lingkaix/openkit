@@ -9,7 +9,12 @@ import type { ControlBackendSessionInput } from './worker-backend-session-codecs
 export function applyControlBackendSession(
   db: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
   input: ControlBackendSessionInput,
-  preparedCore?: CoreDb
+  admittedPreparation?: {
+    readonly coreDb: CoreDb;
+    readonly attempt: NonNullable<
+      Parameters<typeof records.recordWorkerBackendSessionMaterializing>[2]
+    >['attempt'];
+  }
 ) {
   assertControlProductWriter(db.sqlite);
   if (
@@ -29,11 +34,11 @@ export function applyControlBackendSession(
   }
   if (kind === 'handoff')
     return records.markWorkerBackendWorkspaceHandoffComplete(db, { ...input, ...clock });
-  if (kind === 'materializing' && preparedCore)
+  if (kind === 'materializing' && admittedPreparation)
     return records.recordWorkerBackendSessionMaterializing(
-      preparedCore,
+      admittedPreparation.coreDb,
       { ...input, ...clock },
-      db
+      { owner: db, attempt: admittedPreparation.attempt }
     );
   if (db.scope !== 'core') throw new ControlProductPreconditionError();
   switch (kind) {
