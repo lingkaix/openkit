@@ -3,6 +3,7 @@ import {
   AgentSessionIdSchema,
   ExecutionAttemptIdSchema,
   PolicyDocumentV1Schema,
+  ThreadIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
@@ -36,6 +37,33 @@ const imageTarget = z
     physicalEpoch: text,
   })
   .strict();
+
+/** The original normalized Harness result and its exact idle consumer. */
+export const CoreIdleHarnessConsumptionEvidenceSchema = z.strictObject({
+  key: z.strictObject({
+    harnessBindingRef: text.max(512),
+    operationId: z.string().regex(/^[a-f0-9]{64}$/),
+    sequence: z.number().int().nonnegative().safe(),
+    resultFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+  consumer: z.strictObject({
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    agentSessionId: AgentSessionIdSchema,
+    agentSessionRuntimeBindingId: text.max(512),
+  }),
+});
+
+export type CoreIdleHarnessConsumptionEvidence = z.infer<
+  typeof CoreIdleHarnessConsumptionEvidenceSchema
+>;
+
+export const ControlCoreIdleHarnessConsumptionInputSchema =
+  CoreIdleHarnessConsumptionEvidenceSchema.extend({ observedAt: z.iso.datetime().optional() });
+
+export type ControlCoreIdleHarnessConsumptionInput = z.infer<
+  typeof ControlCoreIdleHarnessConsumptionInputSchema
+>;
 
 /** Exact result frame for the original acquisition under the current admitted NanoHost read. */
 export const ControlCoreImageResultSchema = z
