@@ -48,6 +48,26 @@ import {
 } from './nanohost-session-dispatch.js';
 
 describe('authoritative NanoHost session dispatch', () => {
+  it('keeps native readiness held while the admitted NanoHost owner is unavailable', async () => {
+    const app = new Hono<{ Variables: AuthVariables }>();
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
+    const readiness = vi.spyOn(dispatch, 'readiness');
+    registerNanoHostSessionSemanticRoutes({
+      app,
+      dispatch,
+      nativeStorage: { state: 'unavailable', owner: 'nanohost', reason: 'disabled' },
+    });
+
+    const result = await app.request('/api/nanohost/transport/session/readiness', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ physicalEpoch: 'a'.repeat(64) }),
+    });
+    expect(result.status).toBe(503);
+    expect(readiness).not.toHaveBeenCalled();
+  });
+
   it.each(['enabled', 'disabled', 'refused'] as const)(
     'carries initiating context over native H2 independently of poll and export: %s',
     async (mode) => {
