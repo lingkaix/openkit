@@ -2,10 +2,13 @@ import type Database from 'better-sqlite3';
 import * as records from '../runtime/worker-backend-session-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
-import type { ControlBackendSessionInput } from './worker-backend-session-codecs.js';
+import {
+  BackendSessionRefusal,
+  type ControlBackendSessionInput,
+} from './worker-backend-session-codecs.js';
 
 /** Applies the original native state CAS or a previously committed Workspace handoff. */
-export function applyNanoHostLocalBackendSession(
+function applyNanoHostLocalBackendSession(
   owner: { readonly sqlite: Database.Database },
   input: Extract<ControlBackendSessionInput, { kind: 'transition' | 'handoff' }>
 ) {
@@ -18,10 +21,15 @@ export function applyNanoHostLocalBackendSession(
 }
 
 /** Applies one complete existing backend tuple within the Core savepoint and covering FULL commit. */
-export function applyControlBackendSession(db: CoreDb, input: ControlBackendSessionInput) {
+export function applyControlBackendSession(
+  db: CoreDb | { readonly scope: 'nanohost'; readonly sqlite: Database.Database },
+  input: ControlBackendSessionInput
+) {
   if (input.kind === 'transition' || input.kind === 'handoff')
     return applyNanoHostLocalBackendSession(db, input);
   assertControlProductWriter(db.sqlite);
+  if (db.scope !== 'core')
+    throw new BackendSessionRefusal('Backend session tuple requires deciding Core authority.');
   const { kind, observedAt } = input;
   // An absent caller override stays absent: current wall time is sampled inside the deciding section.
   const clock = observedAt === undefined ? {} : { now: () => observedAt };
