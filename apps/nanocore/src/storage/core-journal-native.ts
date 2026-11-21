@@ -7,17 +7,22 @@ import {
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import {
   type ActorRef,
+  canonicalJsonText,
   compareCodeUnits,
   deriveEntityId,
   type KernelAuditEvent,
+  readRetainedV1,
 } from '@openkit/protocol';
-import { policyDigest, sha256Hex } from '@openkit/protocol/digest';
+import { policyDigest, sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
+import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { auditEventFromRow, recordServerAuditEvent } from '../audit-events.js';
 import { validatePolicyDocument } from '../policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
 import {
+  acceptSchedulerExecutionObservation,
   EXECUTION_ATTEMPT_BUDGET_MS,
+  markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionGrantInDb,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
@@ -26,10 +31,12 @@ import {
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_SCHEDULER_EXECUTION_DEFINITION,
+  commitKernelExecutionEvidenceInDb,
   decodeExecutionJournalIntent,
   decodeExecutionJournalSpan,
   encodeExecutionJournalValue,
   executionJournalProcessWitness,
+  inspectKernelProofReceipt,
   readExecutionJournalInvocation,
   readExecutionJournalLinkedInspections,
   readExecutionJournalRoot,
@@ -42,26 +49,50 @@ import type {
   ExecutionStepRef,
 } from '../runtime/execution-step-journal.js';
 import { nanoHostStartupDeadline } from '../runtime/nanohost-attempt-clocks.js';
-import { readNanoHostSubmissionPlacement } from '../runtime/worker-backend-session-records.js';
+import {
+  getWorkerBackendSessionByPackage,
+  readNanoHostSubmissionPlacement,
+} from '../runtime/worker-backend-session-records.js';
+import {
+  getWorkerControlAcceptedFinalStatus,
+  hasPendingWorkerCancellationFinal,
+} from '../runtime/worker-control-records.js';
+import { matchesAcceptedWorkerControlSequence } from '../runtime/worker-control-sequences.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
-import type { NanoHostCoreReads } from './control-kernel-port.js';
+import type { ExecutionProofIntent, NanoHostCoreReads } from './control-kernel-port.js';
 import { commandInputHash } from './control-store-input.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
   type ControlCoreImageResult,
   type ControlCoreJournalInput,
+  type ControlCoreNanoHostAcceptedFinalResult,
+  ControlCoreNanoHostAcceptedFinalResultSchema,
   type ControlNanoHostFirstSubmissionInput,
   type ControlNanoHostFirstSubmissionResult,
   ControlNanoHostFirstSubmissionResultSchema,
   CoreJournalRefusal,
+  CoreNanoHostFinalIntakeSchema,
   readCoreJournalLineage,
   SECURITY_CONTAINMENT_LIMITS,
 } from './core-journal-codecs.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { ExecutionAttemptRefusal } from './execution-attempt-codecs.js';
+import {
+  type NanoHostWorkerFinalDecision,
+  nanoHostWorkerFinalDecisionFingerprint,
+  readRetainedNanoHostSubmission,
+} from './nanohost-submitted-lease.js';
+import {
+  inspectNanoHostWorkerBinding,
+  nanoHostWorkerBindingLiveness,
+} from './nanohost-worker-binding.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { recordContainmentGapInDb } from './security-canary-audit-native.js';
-import type { StorageResult } from './storage-owner.js';
+import { type StorageResult, storageRequestId } from './storage-owner.js';
+import {
+  type ControlWorkerFinalStatusCommand,
+  WorkerFinalStatusRefusal,
+} from './worker-control-final-status-codecs.js';
 import { requireCompleteBackendWorkspaceHandleHandoff } from './workspace-handoff-read.js';
 
 function requireNanoHostEvidence<T>(result: StorageResult<'nanohost', T> | undefined): T {
@@ -430,6 +461,386 @@ export function admitNanoHostFirstSubmissionInDb(
       state,
       attempt: requireSchedulerExecutionAttempt(coreDb, attemptId),
     });
+  })();
+}
+
+type FinalCommand = ControlWorkerFinalStatusCommand;
+type FinalNativeReader = Parameters<typeof inspectNanoHostWorkerBinding>[0];
+const finalIntakeStepId = 'worker-final-intake';
+
+function workerFinalBindingRefusal(
+  reason: 'binding-not-found' | 'lineage-mismatch' | 'reconnect-required' | 'attempt-not-live'
+): never {
+  if (reason === 'binding-not-found')
+    throw new WorkerFinalStatusRefusal(
+      'worker_control_unauthorized',
+      'Worker control request is missing a valid sandbox token.',
+      401
+    );
+  if (reason === 'lineage-mismatch')
+    throw new WorkerFinalStatusRefusal(
+      'worker_control_lineage_mismatch',
+      'Worker control request lineage does not match the durable lease binding.',
+      403
+    );
+  if (reason === 'reconnect-required')
+    throw new WorkerFinalStatusRefusal(
+      'worker_control_reconnect_required',
+      'Worker control session must reconnect after NanoCore restart.',
+      503
+    );
+  throw new WorkerFinalStatusRefusal(
+    'worker_control_lease_not_live',
+    'Worker control request lease is not live.',
+    403
+  );
+}
+
+function workerFinalConflict(): never {
+  throw new WorkerFinalStatusRefusal(
+    'worker_control_sequence_conflict',
+    'Worker final conflicts with its retained original.',
+    409
+  );
+}
+
+function readOriginalWorkerFinalBinding(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  input: FinalCommand
+) {
+  if (!sqlite.readonly)
+    throw new CoreJournalRefusal('Worker final requires the admitted NanoHost reader.');
+  const owner = { sqlite };
+  const session = getWorkerBackendSessionByPackage(owner, input.lineage.packageSnapshotId);
+  const original = session && readRetainedNanoHostSubmission(db, session.attemptId);
+  if (!original) workerFinalBindingRefusal('binding-not-found');
+  const native = inspectNanoHostWorkerBinding(sqlite, original, {
+    lineage: input.lineage,
+    sandboxBindingRef: input.sandboxBindingRef,
+    tokenHash: input.tokenHash,
+    tokenFamily: 'worker-control',
+  });
+  if (native.status === 'rejected') workerFinalBindingRefusal(native.reason);
+  return { native, grant: original.lease.grant };
+}
+
+/** Reads both independently accepted Native records and their exact stored sequence receipts. */
+function hasExactNativeWorkerFinal(
+  sqlite: FinalNativeReader,
+  input: FinalCommand,
+  decision: NanoHostWorkerFinalDecision
+): boolean {
+  const {
+    lineage,
+    payload: { sequence, terminalData },
+  } = input;
+  const event = buildWorkerCanonicalTerminalEventRecord({ data: terminalData, lineage, sequence });
+  const rows = sqlite
+    .prepare(`SELECT operation, schema_version AS schemaVersion,
+    record_json AS recordJson, accepted_at AS acceptedAt
+    FROM worker_control_records
+    WHERE workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=?
+      AND package_snapshot_id=? AND request_id IS ? AND record_key=? AND sequence=?
+      AND operation IN ('final_status', 'event_append') LIMIT 3`)
+    .all(
+      lineage.workspaceId,
+      lineage.threadId,
+      lineage.turnId,
+      lineage.agentSessionId,
+      lineage.packageSnapshotId,
+      lineage.requestId ?? null,
+      String(sequence),
+      sequence
+    ) as {
+    operation: string;
+    schemaVersion: unknown;
+    recordJson: string;
+    acceptedAt: string;
+  }[];
+  const final = rows.find((row) => row.operation === 'final_status');
+  const terminal = rows.find((row) => row.operation === 'event_append');
+  return (
+    rows.length === 2 &&
+    final?.acceptedAt === decision.acceptedAt &&
+    terminal?.acceptedAt === decision.eventAcceptedAt &&
+    readRetainedV1(final, () =>
+      isDeepStrictEqual(JSON.parse(final.recordJson), {
+        ...terminalData,
+        acceptedAt: decision.acceptedAt,
+        sequence,
+      })
+    ) &&
+    readRetainedV1(terminal, () => isDeepStrictEqual(JSON.parse(terminal.recordJson), event)) &&
+    matchesAcceptedWorkerControlSequence(
+      { sqlite },
+      {
+        lineage,
+        operation: 'final_status',
+        sequence,
+        fingerprint: canonicalJsonText({ ...terminalData, lineage, sequence }),
+      }
+    ) === true &&
+    matchesAcceptedWorkerControlSequence(
+      { sqlite },
+      {
+        lineage,
+        operation: 'event_append',
+        sequence,
+        fingerprint: canonicalJsonText(event),
+      }
+    ) === true
+  );
+}
+
+function readCoreWorkerFinalIntake(
+  db: CoreDb,
+  grant: NanoHostWorkerFinalDecision['grant'],
+  input: FinalCommand
+): NanoHostWorkerFinalDecision | null {
+  const ref = { execution: grant.execution, stepId: finalIntakeStepId };
+  if (
+    !db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+      .get(grant.execution.executionId, ref.stepId)
+  )
+    return null;
+  const step = readExecutionJournalInvocation(db, ref);
+  const [kind, acceptedAt, eventAcceptedAt] = step.control.outputRefs;
+  if (
+    step.state !== 'completed' ||
+    step.control.kind !== 'observe' ||
+    step.control.attemptId !== grant.attemptId ||
+    step.control.operationId !== grant.operationId ||
+    step.control.fingerprint !== nanoHostWorkerFinalDecisionFingerprint(input) ||
+    !isDeepStrictEqual(step.control.authorityRefs, [commandInputHash(grant)]) ||
+    !isDeepStrictEqual(step.carriage, {
+      operation: finalIntakeStepId,
+      requestId: grant.operationId,
+      sequence: input.payload.sequence,
+      bindingRef: grant.bindingRef,
+    }) ||
+    step.control.outputRefs.length !== 3
+  )
+    workerFinalConflict();
+  const original = CoreNanoHostFinalIntakeSchema.parse({
+    kind,
+    acceptedAt,
+    eventAcceptedAt,
+    fingerprint: step.control.fingerprint,
+  });
+  return { ...original, grant };
+}
+
+function coreWorkerFinalProposal(
+  db: CoreDb,
+  decision: NanoHostWorkerFinalDecision,
+  stepId: string,
+  sequence: number
+): ExecutionJournalIntent {
+  const { grant, fingerprint, acceptedAt } = decision;
+  const root = readExecutionJournalRoot(db, grant.execution);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, grant.attemptId);
+  const invocationId = `${grant.attemptId}:${stepId}`;
+  const clock = BigInt(Date.parse(acceptedAt)) * 1_000_000n;
+  return {
+    execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
+    stepId,
+    parentStepId: null,
+    parent: null,
+    inspectedStep: null,
+    carriage: {
+      operation: stepId,
+      requestId: grant.operationId,
+      sequence,
+      bindingRef: grant.bindingRef,
+    },
+    control: {
+      definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+      kind: 'observe',
+      target: null,
+      workId: grant.turnId,
+      operationId: grant.operationId,
+      attemptId: grant.attemptId,
+      invocationId,
+      actor: admission.triggerActor,
+      inputRefs: [],
+      outputRefs: [],
+      fingerprint,
+      permittingDecisionRef: grant.operationId,
+      authorityRefs: [commandInputHash(grant)],
+      retryDeclarationRef: null,
+      retryPermitted: false,
+      deadlineUnixNano: null,
+      physicalFenceRefs: [],
+    },
+    span: {
+      ...root.span,
+      name: stepId,
+      spanId: sha256Hex(invocationId).slice(0, 16),
+      parentSpanId: root.span.spanId,
+      // biome-ignore lint/complexity/useMathMinMax: nanosecond clocks use bigint.
+      startTimeUnixNano: clock >= root.span.startTimeUnixNano ? clock : root.span.startTimeUnixNano,
+      endTimeUnixNano: null,
+      status: { code: 'UNSET' },
+      events: [],
+      links: [],
+    },
+  };
+}
+
+/** Retains the first authenticated final intake and its clocks without accepting a Native result. */
+export function admitNanoHostWorkerFinalInDb(
+  db: CoreDb,
+  input: FinalCommand,
+  sqlite: FinalNativeReader
+): NanoHostWorkerFinalDecision {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Worker final requires the Core writer transaction.');
+  return db.sqlite.transaction((): NanoHostWorkerFinalDecision => {
+    const { native, grant } = readOriginalWorkerFinalBinding(db, sqlite, input);
+    const { acceptedAt: now, eventAcceptedAt, terminalData, sequence } = input.payload;
+    const observedAt = new Date(now).toISOString();
+    if (grant.deadline <= observedAt) workerFinalBindingRefusal('attempt-not-live');
+    const prior = readCoreWorkerFinalIntake(db, grant, input);
+    if (getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage)) {
+      if (!prior || !hasExactNativeWorkerFinal(sqlite, input, prior)) workerFinalConflict();
+      return { ...prior, kind: 'replay' };
+    }
+    const live = nanoHostWorkerBindingLiveness(native, observedAt);
+    const cancellation =
+      native.currentPlacement && hasPendingWorkerCancellationFinal(native.attempt, observedAt);
+    if (prior) {
+      const pendingOrdinary =
+        prior.kind === 'decided' &&
+        native.currentPlacement &&
+        native.attempt.phase === 'closing' &&
+        native.attempt.terminalCause === 'worker-final-status' &&
+        native.attempt.fenceRef === null &&
+        native.proof.recoveryState === null &&
+        native.proof.heartbeatDeadline > observedAt;
+      if (
+        Date.parse(now) < Date.parse(prior.acceptedAt) ||
+        !(pendingOrdinary || (prior.kind === 'cancellation-decided' && cancellation))
+      )
+        workerFinalBindingRefusal(live.status === 'rejected' ? live.reason : 'attempt-not-live');
+      return prior;
+    }
+    if (live.status === 'rejected' && !cancellation) workerFinalBindingRefusal(live.reason);
+    if (
+      cancellation &&
+      !(
+        (terminalData.status === 'cancelled' || terminalData.status === 'interrupted') &&
+        terminalData.stopReason === 'aborted'
+      )
+    )
+      throw new WorkerFinalStatusRefusal(
+        'worker_control_lease_not_live',
+        'A closing cancelled Turn accepts only a cancellation or interruption final with aborted StopReason.',
+        403
+      );
+    const decision: NanoHostWorkerFinalDecision = {
+      kind: cancellation ? 'cancellation-decided' : 'decided',
+      grant,
+      fingerprint: nanoHostWorkerFinalDecisionFingerprint(input),
+      acceptedAt: now,
+      eventAcceptedAt,
+    };
+    const proposal = coreWorkerFinalProposal(db, decision, finalIntakeStepId, sequence);
+    const entry = writeExecutionJournalIntent(db, proposal);
+    const attempt = markSchedulerExecutionAttemptClosing(db, {
+      attemptId: grant.attemptId,
+      cause: 'worker-final-status',
+      now: () => now,
+    });
+    const root = readExecutionJournalRoot(db, grant.execution);
+    settleExecutionJournalStep(db, {
+      ref: entry.ref,
+      expectedExecutionRevision: root.revision,
+      state: 'completed',
+      outputRefs: [decision.kind, decision.acceptedAt, decision.eventAcceptedAt],
+      span: {
+        ...proposal.span,
+        endTimeUnixNano: proposal.span.startTimeUnixNano,
+        status: { code: 'OK' },
+      },
+      nextPhase: 'closing',
+      terminalCause: attempt.terminalCause,
+      exclusionRefs: root.exclusionRefs,
+    });
+    return decision;
+  })();
+}
+
+/** Observes the exact accepted Native final after FULL independently of intake, handoff and release. */
+export function observeAcceptedNanoHostFinalInDb(
+  db: CoreDb,
+  input: FinalCommand,
+  sqlite: FinalNativeReader
+): ControlCoreNanoHostAcceptedFinalResult {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Worker final requires the Core writer transaction.');
+  return db.sqlite.transaction((): ControlCoreNanoHostAcceptedFinalResult => {
+    const { native, grant } = readOriginalWorkerFinalBinding(db, sqlite, input);
+    const intake = readCoreWorkerFinalIntake(db, grant, input);
+    if (!intake) return { state: 'unknown' };
+    const verifyNative = () => hasExactNativeWorkerFinal(sqlite, input, intake);
+    const proof = {
+      kind: 'submission',
+      disposition: 'accepted',
+      evidence: {
+        backendId: 'nanohost',
+        ref: `native-final/v1:${grant.attemptId}:${input.payload.sequence}`,
+        digest: commandInputHash({
+          fingerprint: intake.fingerprint,
+          acceptedAt: intake.acceptedAt,
+          eventAcceptedAt: intake.eventAcceptedAt,
+        }),
+      },
+    } as const;
+    const occurrence = {
+      deploymentId: native.session.deploymentId,
+      sourceOwner: 'nanohost',
+      verb: 'apply-execution-proof',
+      occurrenceKey: `worker-final-accepted:${grant.operationId}`,
+    } as const;
+    const intent: ExecutionProofIntent = {
+      ...occurrence,
+      requestId: storageRequestId(occurrence),
+      target: grant,
+      expectedGeneration: grant.generation,
+      inputDigest: sha256CanonicalJson(proof),
+    };
+    const original = inspectKernelProofReceipt(db, intent, true);
+    if (original.state === 'settled')
+      return verifyNative()
+        ? ControlCoreNanoHostAcceptedFinalResultSchema.parse({
+            state: 'inspect-original',
+            receipt: original.receipt,
+          })
+        : { state: 'unknown' };
+    if (original.state !== 'absent') return { state: original.state };
+    const result = commitKernelExecutionEvidenceInDb(
+      db,
+      coreWorkerFinalProposal(db, intake, 'worker-final-accepted', input.payload.sequence),
+      { version: 1, kind: 'submission', intent, proof },
+      true,
+      verifyNative,
+      () =>
+        acceptSchedulerExecutionObservation(db, {
+          ...grant,
+          disposition: 'accepted',
+          execution: 'terminal',
+          outcomeRef: null,
+          fenceRef: null,
+        }) !== null
+    );
+    return result.state === 'settled'
+      ? ControlCoreNanoHostAcceptedFinalResultSchema.parse({
+          state: 'applied',
+          receipt: result.receipt,
+        })
+      : { state: result.state };
   })();
 }
 
