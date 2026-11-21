@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { canonicalIdentifierName } from '@openkit/protocol';
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type { ControlKernelStore } from './control-kernel-port.js';
 import type {
@@ -6,6 +7,10 @@ import type {
   NanoHostEpochReceipt,
   NanoHostStore,
 } from './nanohost-port.js';
+import type {
+  ControlRuntimeTargetInput,
+  ControlRuntimeTargetResult,
+} from './runtime-target-codecs.js';
 import {
   type StorageDecision,
   type StorageOccurrence,
@@ -21,18 +26,80 @@ export interface NanoHostEpochPlacement {
   readonly generation: string;
 }
 
+/** The original holder fence is addressed by the retiring target, Epoch and generation. */
+export function vaultEpochFenceOccurrence(placement: NanoHostEpochPlacement) {
+  return {
+    deploymentId: placement.deploymentId,
+    sourceOwner: 'nanohost',
+    verb: 'fence-vault-epoch',
+    occurrenceKey: canonicalIdentifierName([
+      placement.runtimeTargetId,
+      placement.physicalEpoch,
+      placement.generation,
+    ]),
+  } as const;
+}
+
+type ReserveHolderIntent = (
+  placement: NanoHostEpochPlacement
+) => Promise<StorageResult<'control-kernel', NanoHostEpochInvalidation | null>>;
+
+interface NanoHostEpochRetirementStore extends Pick<NanoHostStore, 'readEpochInvalidation'> {
+  beginEpochRetirement(placement: NanoHostEpochPlacement): Promise<StorageResult<'nanohost', void>>;
+}
+
+/** A2 binds these calls to the admitted NanoHost reader and FULL writer. */
+export interface NanoHostRuntimeTargetEpochStore
+  extends NanoHostEpochRetirementStore,
+    Pick<NanoHostStore, 'stageEpochInvalidation' | 'settleEpochInvalidation'> {
+  readRuntimeTargetRetirement(
+    input: ControlRuntimeTargetInput
+  ): Promise<StorageResult<'nanohost', NanoHostEpochPlacement | null>>;
+  mutateRuntimeTarget(
+    input: ControlRuntimeTargetInput
+  ): Promise<StorageResult<'nanohost', ControlRuntimeTargetResult>>;
+}
+
+/** A2 binds the private reservation and the existing deciding Core ports. */
+export interface NanoHostRuntimeTargetEpochKernel
+  extends Pick<ControlKernelStore, 'fenceNanoHostEpoch' | 'inspectNanoHostEpochFence'> {
+  reserveHolderIntent: ReserveHolderIntent;
+}
+
+/**
+ * Applies an authenticated target transition after settling the original Epoch's Vault fence.
+ * The native target writer rechecks its hold in the same transaction as publication.
+ */
+export async function transitionNanoHostRuntimeTarget(
+  store: NanoHostRuntimeTargetEpochStore,
+  kernel: NanoHostRuntimeTargetEpochKernel,
+  input: ControlRuntimeTargetInput
+): Promise<StorageResult<'nanohost' | 'control-kernel', ControlRuntimeTargetResult>> {
+  const retirement = await store.readRuntimeTargetRetirement(input);
+  if (retirement.state !== 'ready') return retirement;
+  if (retirement.value) {
+    const intent = await prepareNanoHostEpochInvalidation(
+      store,
+      vaultEpochFenceOccurrence(retirement.value),
+      retirement.value,
+      (placement) => kernel.reserveHolderIntent(placement)
+    );
+    if (intent.state !== 'ready') return intent;
+    const fence = await fenceNanoHostEpochBeforeSuccessor(store, kernel, intent.value);
+    if (fence.state !== 'ready') return fence;
+    if (fence.value.state !== 'settled' || fence.value.receipt.disposition !== 'applied') {
+      return { state: 'unavailable', owner: 'control-kernel', reason: 'recovery-required' };
+    }
+  }
+  return await store.mutateRuntimeTarget(input);
+}
+
 /** Reuses the retained intent or reserves the exact holder set after closing native readiness. */
 export async function prepareNanoHostEpochInvalidation(
-  store: Pick<NanoHostStore, 'readEpochInvalidation'> & {
-    beginEpochRetirement(
-      placement: NanoHostEpochPlacement
-    ): Promise<StorageResult<'nanohost', void>>;
-  },
+  store: NanoHostEpochRetirementStore,
   occurrence: StorageOccurrence<'nanohost', 'fence-vault-epoch'>,
   placement: NanoHostEpochPlacement,
-  reserveHolderIntent: (
-    placement: NanoHostEpochPlacement
-  ) => Promise<StorageResult<'control-kernel', NanoHostEpochInvalidation | null>>
+  reserveHolderIntent: ReserveHolderIntent
 ): Promise<StorageResult<'nanohost' | 'control-kernel', NanoHostEpochInvalidation>> {
   const requestId = storageRequestId(occurrence);
   const original = await store.readEpochInvalidation(requestId);

@@ -8,6 +8,7 @@ import {
   epochPlacementOfIntent,
   matchesNanoHostEpochReceipt,
   type NanoHostEpochPlacement,
+  vaultEpochFenceOccurrence,
 } from './nanohost-epoch-invalidation.js';
 import type { NanoHostEpochInvalidation, NanoHostEpochReceipt } from './nanohost-port.js';
 import { type ControlRuntimeTargetInput, RuntimeTargetRefusal } from './runtime-target-codecs.js';
@@ -52,9 +53,11 @@ const retainedEpochFence = z.object({
 });
 
 function matchesEpochIntent(placement: NanoHostEpochPlacement, intent: NanoHostEpochInvalidation) {
+  const occurrence = vaultEpochFenceOccurrence(placement);
   return (
     isDeepStrictEqual(placement, epochPlacementOfIntent(intent)) &&
-    intent.requestId === storageRequestId(intent) &&
+    intent.occurrenceKey === occurrence.occurrenceKey &&
+    intent.requestId === storageRequestId(occurrence) &&
     intent.inputDigest === sha256CanonicalJson(intent.target) &&
     new Set(intent.target.holderReceiptIds).size === intent.target.holderReceiptIds.length
   );
@@ -71,16 +74,19 @@ function readEpochFence(raw: string | null | undefined) {
   return fence;
 }
 
-const targetSelection = `SELECT target_id AS targetId, deployment_id AS deploymentId,
-  physical_epoch AS physicalEpoch, connection_generation AS generation, ready,
+const targetSelection = `SELECT target_id AS targetId, identity_id AS identityId,
+  deployment_id AS deploymentId, physical_epoch AS physicalEpoch,
+  connection_generation AS generation, ready, fresh_empty AS freshEmpty,
   vault_epoch_fence_json AS epochFence FROM nanohost_runtime_targets`;
 
 type EpochTargetRow = {
   readonly targetId: string;
+  readonly identityId: string;
   readonly deploymentId: string;
   readonly physicalEpoch: string | null;
   readonly generation: number;
   readonly ready: 0 | 1;
+  readonly freshEmpty: 0 | 1;
   readonly epochFence: string | null;
 };
 
@@ -88,6 +94,14 @@ function readTarget(sqlite: Database.Database, targetId: string) {
   return sqlite.prepare(`${targetSelection} WHERE target_id = ?`).get(targetId) as
     | EpochTargetRow
     | undefined;
+}
+
+function readTransitionTarget(sqlite: Database.Database, input: ControlRuntimeTargetInput) {
+  if (input.kind !== 'restart') return readTarget(sqlite, input.targetId);
+  const targets = sqlite.prepare(`${targetSelection} LIMIT 2`).all() as EpochTargetRow[];
+  if (targets.length > 1)
+    throw new RuntimeTargetRefusal('NanoHost restart found multiple configured RuntimeTargets.');
+  return targets[0];
 }
 
 function assertRetiringTarget(
@@ -100,9 +114,92 @@ function assertRetiringTarget(
     target.deploymentId !== placement.deploymentId ||
     String(target.generation) !== placement.generation ||
     target.ready !== 0 ||
+    target.freshEmpty !== 0 ||
     target.physicalEpoch !== null
   )
     throw new RuntimeTargetRefusal('NanoHost epoch retirement contradicts the current target.');
+}
+
+/** Reads the original fence for this transition from the admitted target's durable facts. */
+export function readNanoHostRuntimeTargetRetirement(
+  sqlite: Database.Database,
+  input: ControlRuntimeTargetInput
+): NanoHostEpochPlacement | null {
+  const target = readTransitionTarget(sqlite, input);
+  if (!target) return null;
+  if (
+    (input.kind === 'allocate' || input.kind === 'ready') &&
+    (input.deploymentId !== target.deploymentId || input.identityId !== target.identityId)
+  )
+    throw new RuntimeTargetRefusal(
+      'NanoHost RuntimeTarget transition identity or deployment conflicts.'
+    );
+  if (input.kind === 'allocate' && target.generation >= Number.MAX_SAFE_INTEGER)
+    throw new RuntimeTargetRefusal('NanoHost RuntimeTarget connection generation overflow.');
+  if (input.kind === 'close') {
+    if (
+      input.closedGeneration > target.generation ||
+      (input.authoritativeGeneration !== null && input.authoritativeGeneration > target.generation)
+    )
+      throw new RuntimeTargetRefusal(
+        'NanoHost RuntimeTarget close generation exceeds durable high-water.'
+      );
+    if (input.closedGeneration !== target.generation) return null;
+  }
+
+  const fence = readEpochFence(target.epochFence);
+  if (input.kind === 'ready') {
+    if (
+      input.connectionGeneration !== target.generation ||
+      fence?.placement.generation === String(target.generation)
+    ) {
+      throw new RuntimeTargetRefusal('The NanoHost RuntimeTarget generation cannot become ready.');
+    }
+    return target.ready === 0 ? (fence?.placement ?? null) : null;
+  }
+  if (fence && fence.receipt?.disposition !== 'applied') {
+    assertRetiringTarget(target, fence.placement);
+    return fence.placement;
+  }
+  if (!target.ready && !target.freshEmpty && target.physicalEpoch === null)
+    return fence?.placement ?? null;
+  if (!target.ready || !target.freshEmpty || target.physicalEpoch === null)
+    throw new RuntimeTargetRefusal('NanoHost RuntimeTarget readiness facts conflict.');
+  return epochPlacement.parse({
+    deploymentId: target.deploymentId,
+    runtimeTargetId: target.targetId,
+    physicalEpoch: target.physicalEpoch,
+    generation: String(target.generation),
+  });
+}
+
+/** Independently verifies the exact durable readiness hold from an admitted existing-only read. */
+export function verifyNanoHostRetiringPlacement(
+  sqlite: Database.Database,
+  placement: NanoHostEpochPlacement
+): boolean {
+  const target = readTarget(sqlite, placement.runtimeTargetId);
+  const fence = readEpochFence(target?.epochFence);
+  if (
+    !fence ||
+    fence.receipt?.disposition === 'applied' ||
+    !isDeepStrictEqual(fence.placement, placement)
+  )
+    return false;
+  assertRetiringTarget(target, placement);
+  return true;
+}
+
+/** Independently verifies the exact original intent under the native readiness hold. */
+export function verifyNanoHostStagedEpochInvalidation(
+  sqlite: Database.Database,
+  intent: NanoHostEpochInvalidation
+): boolean {
+  const target = readTarget(sqlite, intent.target.runtimeTargetId);
+  const fence = readEpochFence(target?.epochFence);
+  if (!fence || fence.receipt || !isDeepStrictEqual(fence.intent, intent)) return false;
+  assertRetiringTarget(target, fence.placement);
+  return true;
 }
 
 /** Closes readiness and retains the exact retiring placement before Core reserves its holder set. */
@@ -127,6 +224,7 @@ export function beginNanoHostEpochRetirement(
   }
   if (
     target.ready !== 1 ||
+    target.freshEmpty !== 1 ||
     target.physicalEpoch !== placement.physicalEpoch ||
     (previous &&
       (previous.receipt?.disposition !== 'applied' ||
@@ -246,10 +344,7 @@ function assertNanoHostEpochTransition(
   sqlite: Database.Database,
   input: ControlRuntimeTargetInput
 ): void {
-  const target =
-    input.kind === 'restart'
-      ? (sqlite.prepare(targetSelection).get() as EpochTargetRow | undefined)
-      : readTarget(sqlite, input.targetId);
+  const target = readTransitionTarget(sqlite, input);
   if (!target || (input.kind === 'close' && input.closedGeneration !== target.generation)) return;
 
   const fence = readEpochFence(target.epochFence);

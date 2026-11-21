@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { canonicalIdentifierName } from '@openkit/protocol';
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -15,6 +14,7 @@ import type { ControlKernelStore } from './control-kernel-port.js';
 import {
   fenceNanoHostEpochBeforeSuccessor,
   prepareNanoHostEpochInvalidation,
+  vaultEpochFenceOccurrence,
 } from './nanohost-epoch-invalidation.js';
 import type {
   NanoHostEpochInvalidation,
@@ -29,28 +29,19 @@ const target = {
   holderReceiptIds: ['holder-a', 'holder-b'],
 };
 const generation = '8';
-const occurrence = {
+const placement = {
   deploymentId: 'fixture-deployment',
-  sourceOwner: 'nanohost',
-  verb: 'fence-vault-epoch',
-  occurrenceKey: canonicalIdentifierName([
-    target.runtimeTargetId,
-    target.physicalEpoch,
-    generation,
-  ]),
-} as const;
+  runtimeTargetId: target.runtimeTargetId,
+  physicalEpoch: target.physicalEpoch,
+  generation,
+};
+const occurrence = vaultEpochFenceOccurrence(placement);
 const intent: NanoHostEpochInvalidation = {
   ...occurrence,
   requestId: storageRequestId(occurrence),
   expectedGeneration: generation,
   inputDigest: sha256CanonicalJson(target),
   target,
-};
-const placement = {
-  deploymentId: occurrence.deploymentId,
-  runtimeTargetId: target.runtimeTargetId,
-  physicalEpoch: target.physicalEpoch,
-  generation,
 };
 const receipt: NanoHostEpochReceipt = {
   intent,
@@ -196,7 +187,7 @@ describe('NanoHost original epoch invalidation relay', () => {
 });
 
 describe('native no-Turn epoch fence', () => {
-  it('holds successor allocation through both local phases and consumes the exact holder receipt', async () => {
+  it('replays the exact retiring placement and applied fence before successor readiness', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-nanohost-epoch-fence-'));
     const databasePath = join(root, 'state.sqlite');
     const sqlite = new Database(databasePath);
@@ -226,9 +217,11 @@ describe('native no-Turn epoch fence', () => {
           const Database = require(workerData.sqlite);
           const {
             applyNanoHostRuntimeTargetMutation, beginNanoHostEpochRetirement, readNanoHostEpochInvalidation,
-            readPendingNanoHostEpochRetirement, settleNanoHostEpochInvalidation,
-            stageNanoHostEpochInvalidation,
+            readNanoHostRuntimeTargetRetirement, readPendingNanoHostEpochRetirement,
+            settleNanoHostEpochInvalidation, stageNanoHostEpochInvalidation,
+            verifyNanoHostRetiringPlacement, verifyNanoHostStagedEpochInvalidation,
           } = await import(workerData.fenceModule);
+          const { transitionNanoHostRuntimeTarget } = await import(workerData.relayModule);
           const { placement, intent, receipt, databasePath } = workerData;
           const allocation = {
             kind: 'allocate', targetId: intent.target.runtimeTargetId,
@@ -236,11 +229,71 @@ describe('native no-Turn epoch fence', () => {
             observedAt: '2026-11-20T00:00:01.000Z',
           };
           let db = new Database(databasePath, { fileMustExist: true });
-          const mutate = input => db.transaction(() => applyNanoHostRuntimeTargetMutation(db, input))();
-          const begin = () => db.transaction(() => beginNanoHostEpochRetirement(db, placement))();
-          const stage = () => db.transaction(() => stageNanoHostEpochInvalidation(db, intent))();
-          const settle = value => db.transaction(() => settleNanoHostEpochInvalidation(db, value))();
+          const observe = read => {
+            const reader = new Database(databasePath, { fileMustExist: true, readonly: true });
+            try { return read(reader); } finally { reader.close(); }
+          };
+          const write = callback => db.transaction(callback).immediate();
+          const mutate = input => write(() => applyNanoHostRuntimeTargetMutation(db, input));
+          const begin = (value = placement) => write(() => beginNanoHostEpochRetirement(db, value));
+          const stage = (value = intent) => write(() => stageNanoHostEpochInvalidation(db, value));
+          const settle = value => write(() => settleNanoHostEpochInvalidation(db, value));
+          const ready = value => ({ state: 'ready', value });
+          const unavailable = { state: 'unavailable', owner: 'control-kernel', reason: 'recovery-required' };
+          const store = {
+            readRuntimeTargetRetirement: async value => ready(observe(
+              reader => readNanoHostRuntimeTargetRetirement(reader, value),
+            )),
+            readEpochInvalidation: async id => ready(observe(
+              reader => readNanoHostEpochInvalidation(reader, id),
+            )),
+            beginEpochRetirement: async value => ready(begin(value)),
+            stageEpochInvalidation: async value => ready(stage(value)),
+            settleEpochInvalidation: async value => ready(settle(value)),
+            mutateRuntimeTarget: async value => ready(mutate(value)),
+          };
+          let reserved = false;
+          let originalReceipt = null;
+          let reservations = 0;
+          let decisions = 0;
+          const kernel = {
+            reserveHolderIntent: async value => {
+              reservations++;
+              assert.deepEqual(value, placement);
+              assert.equal(observe(reader => verifyNanoHostRetiringPlacement(reader, value)), true);
+              assert.equal(observe(reader => verifyNanoHostStagedEpochInvalidation(reader, intent)), false);
+              reserved = true;
+              return ready(intent);
+            },
+            inspectNanoHostEpochFence: async value => {
+              assert.deepEqual(value, intent);
+              return ready(originalReceipt
+                ? { state: 'settled', receipt: originalReceipt }
+                : { state: 'absent' });
+            },
+            fenceNanoHostEpoch: async value => {
+              assert.deepEqual(value, intent);
+              if (!reserved) return ready({ state: 'unknown' });
+              assert.equal(observe(reader => verifyNanoHostStagedEpochInvalidation(reader, value)), true);
+              decisions++;
+              originalReceipt = receipt;
+              throw new Error('Core fence acknowledgement lost');
+            },
+          };
+          const transition = value => transitionNanoHostRuntimeTarget(store, kernel, value);
           try {
+            assert.deepEqual(readNanoHostRuntimeTargetRetirement(db, allocation), placement);
+            assert.equal(verifyNanoHostRetiringPlacement(db, placement), false);
+            assert.throws(() => readNanoHostRuntimeTargetRetirement(db, {
+              ...allocation, identityId: 'wrong-identity',
+            }), /identity or deployment conflicts/);
+            assert.equal(readNanoHostRuntimeTargetRetirement(db, {
+              kind: 'close', targetId: allocation.targetId, closedGeneration: 7,
+              authoritativeGeneration: 8, observedAt: allocation.observedAt,
+            }), null);
+            assert.deepEqual(readNanoHostRuntimeTargetRetirement(db, {
+              kind: 'restart', observedAt: allocation.observedAt,
+            }), placement);
             assert.throws(() => mutate(allocation), /must be fenced/);
             assert.throws(stage, /no exact retiring placement/);
             begin();
@@ -253,31 +306,46 @@ describe('native no-Turn epoch fence', () => {
             db.prepare('UPDATE nanohost_runtime_targets SET ready = 0').run();
             assert.deepEqual(readPendingNanoHostEpochRetirement(db), placement);
             assert.equal(readNanoHostEpochInvalidation(db, intent.requestId), null);
+            assert.equal(verifyNanoHostRetiringPlacement(db, { ...placement, generation: '9' }), false);
             assert.throws(() => mutate(allocation), /no applied Vault receipt/);
             begin();
-            stage();
+            await assert.rejects(transition(allocation), /Core fence acknowledgement lost/);
             db.close();
             db = new Database(databasePath, { fileMustExist: true });
             assert.deepEqual(readPendingNanoHostEpochRetirement(db), placement);
             assert.deepEqual(readNanoHostEpochInvalidation(db, intent.requestId), intent);
+            assert.equal(verifyNanoHostStagedEpochInvalidation(db, {
+              ...intent, target: { ...intent.target, holderReceiptIds: ['holder-a'] },
+            }), false);
             stage();
             assert.throws(() => mutate(allocation), /no applied Vault receipt/);
             assert.throws(() => settle({
               ...receipt, result: { fencedHolderReceiptIds: ['holder-a'] },
             }), /no exact original intent/);
             assert.throws(() => mutate(allocation), /no applied Vault receipt/);
-            settle(receipt);
-            settle(receipt);
-            assert.equal(readPendingNanoHostEpochRetirement(db), null);
-            assert.throws(() => mutate({
+            await assert.rejects(transition({
               ...allocation, kind: 'ready', connectionGeneration: 8, predecessorFenced: true,
               ready: true, freshEmpty: true, physicalEpoch: intent.target.physicalEpoch,
-            }), /invalidated NanoHost generation/);
-            assert.equal(mutate(allocation).connectionGeneration, 9);
-            assert.equal(mutate({
+            }), /generation cannot become ready/);
+            assert.equal((await transition(allocation)).value.connectionGeneration, 9);
+            assert.equal(reservations, 1);
+            assert.equal(decisions, 1);
+            assert.equal(readPendingNanoHostEpochRetirement(db), null);
+            settle(receipt);
+            const successorReadiness = {
               ...allocation, kind: 'ready', connectionGeneration: 9, predecessorFenced: true,
               ready: true, freshEmpty: true, physicalEpoch: 'e'.repeat(64),
-            }).ready, true);
+            };
+            db.close();
+            db = new Database(databasePath, { fileMustExist: true });
+            reserved = false;
+            originalReceipt = null;
+            assert.deepEqual(await transition(successorReadiness), unavailable);
+            assert.equal(db.prepare('SELECT ready FROM nanohost_runtime_targets').pluck().get(), 0);
+            originalReceipt = receipt;
+            assert.equal((await transition(successorReadiness)).value.ready, true);
+            assert.equal(reservations, 1);
+            assert.equal(decisions, 1);
           } finally {
             db.close();
           }
@@ -293,6 +361,10 @@ describe('native no-Turn epoch fence', () => {
             sqlite: require.resolve('better-sqlite3'),
             fenceModule: new URL(
               '../../dist/storage/nanohost-epoch-invalidation-native.js',
+              import.meta.url
+            ).href,
+            relayModule: new URL(
+              '../../dist/storage/nanohost-epoch-invalidation.js',
               import.meta.url
             ).href,
           },
