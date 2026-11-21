@@ -89,6 +89,7 @@ import {
 } from './data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
+import { serverWorkStorageDescriptor } from './server-work-schema.js';
 import { WORKSPACE_BACKUP_DATABASE_FORMATS } from './workspace-backup.js';
 import {
   parseWorkspaceBackupManifest,
@@ -2614,6 +2615,12 @@ describe('D0-2 same-deployment restore', () => {
           iteration: 0,
           contextDigest: null,
         });
+        // The stopped cleanup must prove global absence through an existing Server-work journal.
+        const serverWork = await getControlStoreWorkerClient().provisionServerOwner(
+          f.dataRoot,
+          serverWorkStorageDescriptor
+        );
+        expect(serverWork).toEqual({ state: 'ready', owner: 'server-work' });
       } finally {
         await shutdownControlStoreWorkerClient();
         siblingDb.sqlite.close();

@@ -17,12 +17,13 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
+import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { OperationError } from '../operation-error.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { WorkerRawOutputStateSchema } from '../runtime/worker-raw-output.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { CapabilityCallFamily } from '../storage/schema/index.js';
+import { serverWorkUnavailable } from '../storage/server-work-command.js';
 import type {
   CapabilityCallLedgerRecord,
   FinishCapabilityCallInput,
@@ -34,6 +35,7 @@ import type {
   StartCapabilityCallInput,
   StartedCapabilityCall,
   StartServerCapabilityCallInput,
+  UsageMeasurementInput,
 } from './usage-ledger.js';
 
 export type CapabilityCallRow = {
@@ -89,31 +91,34 @@ export function readCapabilityAdmissionAttribution(
   };
 }
 
+export type NativeServerWorkDb = {
+  readonly scope: 'server-work';
+  readonly sqlite: CoreDb['sqlite'];
+};
+type ServerWorkCallFinish = Omit<FinishCapabilityCallInput, 'workspaceDb' | 'now'> & {
+  readonly workspaceDb: NativeServerWorkDb;
+  readonly now: Date;
+};
+
 /**
  * Marks one capability call terminal.
  *
  * @param input Terminal status and optional trusted command lineage for audit.
  */
-export function finishCapabilityCallInDb(input: FinishCapabilityCallInput): void {
+export function finishCapabilityCallInDb(
+  input: FinishCapabilityCallInput | ServerWorkCallFinish
+): void {
+  const db = input.workspaceDb;
+  if (db.scope === 'core') throw serverWorkUnavailable();
   const now = input.now ?? new Date();
   const completedAt = now.toISOString();
 
-  input.workspaceDb.sqlite
+  db.sqlite
     .transaction(() => {
-      const call = findCapabilityCallById(input.workspaceDb, input.callId);
+      const call = findCapabilityCallById(db, input.callId);
       if (!call || call.completed_at) {
         return;
       }
-      const admittedAttribution = readCapabilityAdmissionAttribution(
-        input.workspaceDb,
-        call.call_id
-      );
-      const auditRequestId =
-        call.request_id ??
-        admittedAttribution.requestId ??
-        (input.auditLineage === undefined
-          ? null
-          : RequestIdSchema.parse(input.auditLineage.commandRequestId));
       const extensions =
         input.deliveredKnowledgeAnswer === undefined
           ? call.extensions_json
@@ -131,9 +136,9 @@ export function finishCapabilityCallInDb(input: FinishCapabilityCallInput): void
           status: input.status,
           extensions_json: extensions,
         },
-        input.workspaceDb.scope === 'core'
+        db.scope !== 'workspace'
       );
-      const result = input.workspaceDb.sqlite
+      const result = db.sqlite
         .prepare(
           `UPDATE capability_calls
            SET status = ?, error_code = ?, completed_at = ?, extensions_json = ?
@@ -144,7 +149,18 @@ export function finishCapabilityCallInDb(input: FinishCapabilityCallInput): void
         throw new Error(`Capability call changed concurrently: ${input.callId}`);
       }
 
-      const audit: Omit<Parameters<typeof recordServerAuditEvent>[0], 'coreDb'> = {
+      if (db.scope === 'server-work') return;
+      const admittedAttribution = readCapabilityAdmissionAttribution(db, call.call_id);
+      const auditRequestId =
+        call.request_id ??
+        admittedAttribution.requestId ??
+        (input.auditLineage === undefined
+          ? null
+          : RequestIdSchema.parse(input.auditLineage.commandRequestId));
+      const audit: Omit<
+        Parameters<typeof recordWorkspaceAuditEvent>[0],
+        'workspaceDb' | 'workspaceId'
+      > = {
         action: 'capability.finish',
         ...admittedAttribution,
         agentId: call.agent_id,
@@ -163,14 +179,11 @@ export function finishCapabilityCallInDb(input: FinishCapabilityCallInput): void
         threadId: call.thread_id,
         turnId: call.turn_id,
       };
-      if (input.workspaceDb.scope === 'core')
-        recordServerAuditEvent({ ...audit, coreDb: input.workspaceDb });
-      else
-        recordWorkspaceAuditEvent({
-          ...audit,
-          workspaceDb: input.workspaceDb,
-          workspaceId: call.workspace_id!,
-        });
+      recordWorkspaceAuditEvent({
+        ...audit,
+        workspaceDb: db,
+        workspaceId: call.workspace_id!,
+      });
     })
     .immediate();
 }
@@ -364,12 +377,13 @@ export function stampCapabilityCallSchemaSnapshotInDb(
  */
 export function persistLlmCapabilityCallSystemPromptDigestInDb(input: {
   /** Workspace database that owns the opened CapabilityCall. */
-  readonly workspaceDb: WorkspaceDb | CoreDb;
+  readonly workspaceDb: WorkspaceDb | CoreDb | NativeServerWorkDb;
   /** Durable capability call id. */
   readonly callId: string;
   /** Pre-adapter system-prompt digest. */
   readonly systemPromptDigest: string;
 }): void {
+  if (input.workspaceDb.scope === 'core') throw serverWorkUnavailable();
   const systemPromptDigest = SystemPromptDigestSchema.parse(input.systemPromptDigest);
   const retainedCall = input.workspaceDb.sqlite
     .prepare(`SELECT schema_version FROM capability_calls
@@ -392,14 +406,14 @@ export function persistLlmCapabilityCallSystemPromptDigestInDb(input: {
   }
 }
 
-export function writeGatewayRouteLineageInDb(
-  input: Omit<GatewayCallLedgerBinding, 'call'> & {
-    readonly call: Pick<StartedCapabilityCall, 'id'>;
-    readonly logicalModelId: string;
-    readonly entry: GatewayRouteLineageEntry;
-    readonly entryIndex?: number;
-  }
-): number {
+export function writeGatewayRouteLineageInDb(input: {
+  readonly workspaceDb: GatewayCallLedgerBinding['workspaceDb'] | NativeServerWorkDb;
+  readonly call: Pick<StartedCapabilityCall, 'id'>;
+  readonly logicalModelId: string;
+  readonly entry: GatewayRouteLineageEntry;
+  readonly entryIndex?: number;
+}): number {
+  if (input.workspaceDb.scope === 'core') throw serverWorkUnavailable();
   return input.workspaceDb.sqlite.transaction(() => {
     const row = findCapabilityCallById(input.workspaceDb, input.call.id);
     if (!row || row.status !== 'running')
@@ -462,51 +476,68 @@ export function clearCapabilityCallItemInDb(workspaceDb: WorkspaceDb, callId: st
  * @param input Usage rows, durable call summary and optional command audit lineage.
  * @returns Retained IDs, including existing equivalent measurements, in input order.
  */
-export function recordUsageInDb(input: RecordUsageInput): string[] {
-  const context = input.call.context;
+type ServerUsageInput = Omit<RecordUsageInput, 'workspaceDb' | 'call'> & {
+  readonly workspaceDb: NativeServerWorkDb;
+  readonly call: StartedCapabilityCall<ServerGatewayCallContext>;
+};
+
+function projectUsageRecord(
+  call: RecordUsageInput['call'],
+  record: UsageMeasurementInput,
+  recordedAt: string
+): UsageRecord | ServerUsageRecord {
+  assertNoUnsafeLedgerValue(record);
+  const fields = {
+    id: record.usageId ?? allocateEntityId('use'),
+    responsibleUserId: call.context.authorityActor
+      ? responsibleUserIdForActor(call.context.authorityActor)
+      : null,
+    threadId: call.context.threadId ?? null,
+    turnId: call.context.turnId ?? null,
+    itemId: call.context.itemId ?? null,
+    capabilityCallId: call.id,
+    requestId: call.context.requestId ?? null,
+    agentId: call.context.agentId ?? null,
+    agentSessionId: call.context.agentSessionId ?? null,
+    sourceIds: normalizeSourceIds(call.context.sourceIds),
+    category: record.category,
+    unit: record.unit,
+    quantity: record.quantity,
+    modelId: record.modelId ?? null,
+    providerModel: record.providerModel ?? null,
+    providerRef: record.providerRef ?? call.context.providerRef ?? null,
+    source: record.source ?? null,
+    recordedAt,
+  };
+  return 'owner' in call.context
+    ? ServerUsageRecordSchema.parse({ ...fields, owner: call.context.owner })
+    : UsageRecordSchema.parse({ ...fields, workspaceId: call.context.workspaceId });
+}
+
+/** Reads the recorded identity from the Server owner using its exact measurement equivalence. */
+export function readEquivalentServerUsageId(
+  db: NativeServerWorkDb,
+  call: ServerUsageInput['call'],
+  record: UsageMeasurementInput,
+  recordedAt: string
+): string | undefined {
+  return hasEquivalentUsageRecord(db, projectUsageRecord(call, record, recordedAt));
+}
+
+export function recordUsageInDb(input: RecordUsageInput | ServerUsageInput): string[] {
+  const db = input.workspaceDb;
+  if (db.scope === 'core') throw serverWorkUnavailable();
   if (
-    input.workspaceDb.scope === 'core'
-      ? context.workspaceId !== undefined ||
-        !('owner' in context) ||
-        context.owner.kind !== 'server'
-      : context.workspaceId !== input.workspaceDb.workspaceId
+    db.scope === 'workspace'
+      ? input.call.context.workspaceId !== db.workspaceId
+      : !('owner' in input.call.context) || input.call.context.owner.kind !== 'server'
   )
     throw new Error('Usage record database owner mismatch.');
   const ids: string[] = [];
   const recordedAt = (input.now ?? new Date()).toISOString();
-
   try {
     for (const record of input.records) {
-      assertNoUnsafeLedgerValue(record);
-
-      const usage = (
-        input.workspaceDb.scope === 'core' ? ServerUsageRecordSchema : UsageRecordSchema
-      ).parse({
-        id: record.usageId ?? allocateEntityId('use'),
-        ...(input.workspaceDb.scope === 'core'
-          ? { owner: { kind: 'server' } }
-          : { workspaceId: input.call.context.workspaceId }),
-        responsibleUserId: input.call.context.authorityActor
-          ? responsibleUserIdForActor(input.call.context.authorityActor)
-          : null,
-        threadId: input.call.context.threadId ?? null,
-        turnId: input.call.context.turnId ?? null,
-        itemId: input.call.context.itemId ?? null,
-        capabilityCallId: input.call.id,
-        requestId: input.call.context.requestId ?? null,
-        agentId: input.call.context.agentId ?? null,
-        agentSessionId: input.call.context.agentSessionId ?? null,
-        sourceIds: normalizeSourceIds(input.call.context.sourceIds),
-        category: record.category,
-        unit: record.unit,
-        quantity: record.quantity,
-        modelId: record.modelId ?? null,
-        providerModel: record.providerModel ?? null,
-        providerRef: record.providerRef ?? input.call.context.providerRef ?? null,
-        source: record.source ?? null,
-        recordedAt,
-      });
-
+      const usage = projectUsageRecord(input.call, record, recordedAt);
       const equivalent = hasEquivalentUsageRecord(input.workspaceDb, usage);
       ids.push(equivalent ?? usage.id);
       if (equivalent) continue;
@@ -560,15 +591,16 @@ export function recordUsageInDb(input: RecordUsageInput): string[] {
         );
     }
   } catch (error) {
-    try {
-      finishCapabilityCallInDb({
-        auditLineage: input.auditLineage,
-        workspaceDb: input.workspaceDb,
-        callId: input.call.id,
-        errorCode: 'usage_record_failed',
-        status: 'failed',
-      });
-    } catch {}
+    if (db.scope === 'workspace')
+      try {
+        finishCapabilityCallInDb({
+          auditLineage: input.auditLineage,
+          workspaceDb: db,
+          callId: input.call.id,
+          errorCode: 'usage_record_failed',
+          status: 'failed',
+        });
+      } catch {}
     throw error;
   }
   return ids;
@@ -676,12 +708,24 @@ export function normalizeCapabilityRequestId(requestId: string | null | undefine
   return parsed.success ? parsed.data : null;
 }
 
+type ServerWorkCallInput = Omit<
+  StartServerCapabilityCallInput,
+  'workspaceDb' | 'callId' | 'now'
+> & {
+  readonly workspaceDb: NativeServerWorkDb;
+  readonly callId: string;
+  readonly now: Date;
+};
+
+type NativeCallInput =
+  | StartCapabilityCallInput
+  | StartServerCapabilityCallInput
+  | ServerWorkCallInput;
+
 /** Requires existing Workspace LLM/MCP attribution before either admission path writes or dispatches. */
-function assertWorkspaceCapabilityActor(
-  input: StartCapabilityCallInput | StartServerCapabilityCallInput
-): void {
+function assertWorkspaceCapabilityActor(input: NativeCallInput): void {
   if (
-    input.workspaceDb.scope !== 'core' &&
+    input.workspaceDb.scope === 'workspace' &&
     (input.family === 'llm' || input.family === 'mcp') &&
     input.authorityActor == null
   ) {
@@ -700,10 +744,15 @@ export function startCapabilityCallInDb(
 ): StartedCapabilityCall<ServerGatewayCallContext>;
 export function startCapabilityCallInDb(input: StartCapabilityCallInput): StartedCapabilityCall;
 export function startCapabilityCallInDb(
-  input: StartCapabilityCallInput | StartServerCapabilityCallInput
+  input: ServerWorkCallInput
+): StartedCapabilityCall<ServerGatewayCallContext>;
+export function startCapabilityCallInDb(
+  input: NativeCallInput
 ): StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext> {
+  const db = input.workspaceDb;
+  if (db.scope === 'core') throw serverWorkUnavailable();
   assertWorkspaceCapabilityActor(input);
-  return input.workspaceDb.sqlite
+  return db.sqlite
     .transaction(() => {
       const {
         workspaceDb: _workspaceDb,
@@ -726,17 +775,17 @@ export function startCapabilityCallInDb(
       const dayStart = `${startedAt.slice(0, 10)}T00:00:00.000Z`;
       const dayEnd = new Date(Date.parse(dayStart) + 86_400_000).toISOString();
       if (
-        input.workspaceDb.scope === 'core'
-          ? input.workspaceId !== undefined || !('owner' in input) || input.owner.kind !== 'server'
-          : input.workspaceId !== input.workspaceDb.workspaceId
+        input.workspaceDb.scope === 'workspace'
+          ? input.workspaceId !== input.workspaceDb.workspaceId
+          : input.workspaceId !== undefined || !('owner' in input) || input.owner.kind !== 'server'
       ) {
         throw new Error('Capability call database owner mismatch.');
       }
       const protocolCall = CapabilityCallSchema.parse({
         id: callId,
-        ...(input.workspaceDb.scope === 'core'
-          ? { owner: { kind: 'server' } }
-          : { owner: { kind: 'workspace', workspaceId: input.workspaceId } }),
+        ...(input.workspaceDb.scope === 'workspace'
+          ? { owner: { kind: 'workspace', workspaceId: input.workspaceId } }
+          : { owner: { kind: 'server' } }),
         threadId: input.threadId ?? null,
         turnId: input.turnId ?? null,
         itemId: input.itemId ?? null,
@@ -825,7 +874,11 @@ export function startCapabilityCallInDb(
           dayEnd
         );
 
-      if (insertion.changes === 1 && input.authorityActor) {
+      if (
+        insertion.changes === 1 &&
+        input.authorityActor &&
+        input.workspaceDb.scope !== 'server-work'
+      ) {
         const audit = {
           action: 'capability.admit',
           actor: input.authorityActor,
@@ -848,13 +901,11 @@ export function startCapabilityCallInDb(
           threadId: protocolCall.threadId,
           turnId: protocolCall.turnId,
         };
-        if (input.workspaceDb.scope === 'core')
-          recordServerAuditEvent({ ...audit, coreDb: input.workspaceDb });
-        else
+        if (db.scope === 'workspace')
           recordWorkspaceAuditEvent({
             ...audit,
-            workspaceDb: input.workspaceDb,
-            workspaceId: input.workspaceDb.workspaceId,
+            workspaceDb: db,
+            workspaceId: db.workspaceId,
           });
       }
 
@@ -864,6 +915,8 @@ export function startCapabilityCallInDb(
         decisionBudget ? 'Security Review daily invocation budget is exhausted.' : undefined
       );
       assertMatchingCapabilityCallAttribution(stored, protocolCall, input);
+      if (input.workspaceDb.scope === 'server-work' && stored.call_id !== callId)
+        throw new Error('Server capability call identity conflicts with the original admission.');
 
       return {
         id: stored.call_id,
@@ -872,7 +925,10 @@ export function startCapabilityCallInDb(
           agentId: stored.agent_id,
           agentSessionId: stored.agent_session_id,
           authorityActor:
-            readCapabilityAdmissionAttribution(input.workspaceDb, stored.call_id).actor ?? null,
+            input.workspaceDb.scope === 'server-work'
+              ? (input.authorityActor ?? null)
+              : (readCapabilityAdmissionAttribution(input.workspaceDb, stored.call_id).actor ??
+                null),
           capabilityId: stored.capability_id,
           family: stored.family as CapabilityCallFamily,
           itemId: stored.item_id,
@@ -889,9 +945,9 @@ export function startCapabilityCallInDb(
           summary: stored.summary,
           threadId: stored.thread_id,
           turnId: stored.turn_id,
-          ...(input.workspaceDb.scope === 'core'
-            ? { owner: { kind: 'server' as const } }
-            : { workspaceId: input.workspaceDb.workspaceId }),
+          ...(input.workspaceDb.scope === 'workspace'
+            ? { workspaceId: input.workspaceDb.workspaceId }
+            : { owner: { kind: 'server' as const } }),
         },
       };
     })
@@ -907,8 +963,8 @@ export function startCapabilityCallInDb(
  * @returns Stored capability call row.
  */
 function findCapabilityCallByIdOrIdempotency(
-  workspaceDb: WorkspaceDb | CoreDb,
-  input: StartCapabilityCallInput | StartServerCapabilityCallInput,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  input: NativeCallInput,
   missingMessage = 'Capability call was not stored.'
 ): CapabilityCallRow {
   if (input.requestId) {
@@ -961,7 +1017,7 @@ function findCapabilityCallByIdOrIdempotency(
 function assertMatchingCapabilityCallAttribution(
   stored: CapabilityCallRow,
   incoming: CapabilityCall,
-  input: StartCapabilityCallInput | StartServerCapabilityCallInput
+  input: NativeCallInput
 ): void {
   if (
     stored.capability_id !== incoming.capabilityId ||

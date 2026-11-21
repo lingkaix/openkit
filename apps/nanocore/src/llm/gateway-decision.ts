@@ -14,7 +14,7 @@ import type {
 import { admitModelRequest } from '../context/model-request-admission.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialUseContext } from '../providers/registry.js';
-import { openAdmittedWorkspaceReadDb, openCoreReadDb } from '../storage/db.js';
+import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { recordInternalLlmGatewayUsage } from './gateway-usage.js';
 import type { ResolvedLogicalModel } from './logical-models.js';
 import type { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
@@ -206,6 +206,8 @@ export async function requestGatewayDecision(
     capabilityCallId: input.ledger.call.id,
     route,
   });
+  const { workspaceDb } = input.ledger;
+  if (workspaceDb.scope === 'core') return failure('unavailable');
   if (input.signal.aborted) return failure(gatewayDecisionFailureCode(undefined, input.signal));
   if (input.deadline !== undefined && !Number.isFinite(input.deadline))
     return failure('invalid_input');
@@ -232,9 +234,7 @@ export async function requestGatewayDecision(
       context.operation !== 'decision' ||
       context.capabilityId !== 'llm.decision' ||
       !context.authorityActor ||
-      (input.ledger.workspaceDb.scope === 'workspace' &&
-        context.workspaceId !== input.ledger.workspaceDb.workspaceId) ||
-      (input.ledger.workspaceDb.scope === 'core' && !('owner' in context))
+      context.workspaceId !== workspaceDb.workspaceId
     )
       return failure('invalid_input');
     const selected = input.logicalModel.routes.filter((member) => member.id === input.routeId);
@@ -244,13 +244,7 @@ export async function requestGatewayDecision(
       return failure('unavailable');
     // As in the existing internal Gateway, retain an owned reader until the real
     // Provider and native recording settle, even if the participant stops waiting.
-    const db =
-      input.ledger.workspaceDb.scope === 'core'
-        ? openCoreReadDb(input.ledger.workspaceDb.dataRoot)
-        : openAdmittedWorkspaceReadDb(
-            input.ledger.workspaceDb.dataRoot,
-            input.ledger.workspaceDb.workspaceId
-          );
+    const db = openAdmittedWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
     const task = (async (): Promise<GatewayDecisionResult> => {
       let usageKnown = false;
       try {
@@ -721,8 +715,7 @@ export class GatewayDecisionBridgeGuard {
             'cache_read_input_tokens',
             'cache_creation_input_tokens',
           ]) {
-            if (Object.prototype.hasOwnProperty.call(next, key))
-              this.anthropicUsage[key] = next[key];
+            if (Object.hasOwn(next, key)) this.anthropicUsage[key] = next[key];
           }
         }
         const source = this.anthropicUsage;

@@ -5,11 +5,15 @@ import {
   ApplyKnowledgeSchemaResponseSchema,
   GoalViewSchema,
   PreviewKnowledgeSchemaResponseSchema,
+  type ServerEvidenceBundleRecord,
+  ServerEvidenceBundleRecordSchema,
 } from '@openkit/app-api-schemas';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import {
+  ActorRefSchema,
   AuditEventSchema,
   deriveEntityId,
+  GatewayRouteLineageEntrySchema,
   ItemSchema,
   KernelAuditEvidenceSchema,
   KnowledgeBaseIdSchema,
@@ -143,6 +147,7 @@ import {
   type ControlAdmissionInput,
   ControlAdmissionInputSchema,
   type ControlAdmissionResult,
+  ControlKnowledgeAdmissionInputSchema,
   type ControlKnowledgeAdmissionResult,
   ControlKnowledgeAdmissionResultSchema,
   type CoreSchedulerRefusal,
@@ -180,6 +185,8 @@ import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
   ControlProductContentMountSchema,
+  ControlProductEntrySchema,
+  ControlProductMutationSchema,
   type ControlProductOwner,
   type ControlProductTransition,
   ControlProductTransitionSchema,
@@ -246,6 +253,12 @@ import {
   ControlRemoteMcpAuditSchema,
 } from './remote-mcp-audit-codecs.js';
 import {
+  type RepairWorkerInput,
+  RepairWorkerInputSchema,
+  type RepairWorkerReply,
+  RepairWorkerReplySchema,
+} from './repair-kernel-codecs.js';
+import {
   type ControlResolvedAgentSetupInput,
   ControlResolvedAgentSetupInputSchema,
   ControlResolvedAgentSetupRefusalSchema,
@@ -281,6 +294,11 @@ import {
   type ControlServerAdminTokenDefault,
   ControlServerAdminTokenDefaultSchema,
 } from './server-admin-token-default-codecs.js';
+import type {
+  ServerCallAdmission,
+  ServerWorkIntent,
+  ServerWorkReceipt,
+} from './server-work-port.js';
 import type { StorageResult } from './storage-owner.js';
 import {
   type ControlThreadReadMembershipWire,
@@ -924,6 +942,234 @@ const communicationKernelReplySchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
+const serverWorkDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const serverWorkIntentFields = {
+  deploymentId: z.string().min(1),
+  sourceOwner: z.literal('server-work'),
+  occurrenceKey: z.string().min(1),
+  requestId: z.string().min(1),
+  expectedGeneration: z.string().min(1).nullable(),
+  inputDigest: serverWorkDigest,
+};
+const serverWorkTarget = z.strictObject({
+  actor: ActorRefSchema,
+  credentialRef: z.string().min(1).nullable(),
+  recordRef: z.string().min(1),
+});
+const serverThreadTarget = serverWorkTarget.extend({ threadId: z.string().min(1) });
+const serverCallTarget = serverWorkTarget.extend({ callId: z.string().min(1) });
+const serverCallAdmission = z.strictObject({
+  ...serverWorkIntentFields,
+  verb: z.literal('admit-call'),
+  target: serverCallTarget.extend({
+    threadId: z.string().min(1).nullable(),
+    turnId: z.string().min(1).nullable(),
+    routeRef: z.string().min(1),
+    budgetRef: z.string().min(1).nullable(),
+  }),
+});
+const serverWorkIntent = z.union([
+  z.strictObject({
+    ...serverWorkIntentFields,
+    verb: z.literal('admit-thread'),
+    target: serverThreadTarget,
+  }),
+  z.strictObject({
+    ...serverWorkIntentFields,
+    verb: z.enum(['admit-turn', 'settle-turn']),
+    target: serverThreadTarget.extend({ turnId: z.string().min(1) }),
+  }),
+  serverCallAdmission,
+  z.strictObject({
+    ...serverWorkIntentFields,
+    verb: z.enum(['settle-call', 'settle-usage']),
+    target: serverCallTarget,
+  }),
+]);
+const serverWorkAppliedReceipt = z.strictObject({
+  intent: serverWorkIntent,
+  receiptDigest: serverWorkDigest,
+  disposition: z.literal('applied'),
+  result: z.strictObject({ decisionRef: z.string().min(1) }),
+});
+const serverWorkReceipt = z.discriminatedUnion('disposition', [
+  serverWorkAppliedReceipt,
+  z.strictObject({
+    intent: serverWorkIntent,
+    receiptDigest: serverWorkDigest,
+    disposition: z.literal('refused'),
+    reason: z.string().min(1),
+  }),
+]);
+const serverWorkKernelInputSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('inspect'), intent: serverWorkIntent }),
+  z.strictObject({
+    kind: z.literal('decide'),
+    intent: serverWorkIntent,
+    ownerIdentity: z.string().regex(/^\d+:\d+$/),
+  }),
+]);
+
+/** Exact original intent and the admitted file identity required for a first decision. */
+export type ServerWorkKernelInput = z.infer<typeof serverWorkKernelInputSchema>;
+
+const serverWorkSettled = z.strictObject({
+  state: z.literal('settled'),
+  receipt: serverWorkReceipt,
+});
+const serverWorkKernelReplySchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('decide'),
+    value: z.union([receiptHold, serverWorkSettled]),
+  }),
+  z.strictObject({
+    kind: z.literal('inspect'),
+    value: z.union([receiptHold, receiptAbsent, serverWorkSettled]),
+  }),
+]);
+
+/** The original decision or inspection returned by the Core worker. */
+export type ServerWorkKernelReply = z.infer<typeof serverWorkKernelReplySchema>;
+
+const serverWorkTurnAdmission = z.strictObject({
+  ...serverWorkIntentFields,
+  verb: z.literal('admit-turn'),
+  target: serverThreadTarget.extend({ turnId: z.string().min(1) }),
+});
+const serverKnowledgeCommand = z.strictObject({
+  input: ControlKnowledgeAdmissionInputSchema,
+  deploymentId: z.string().min(1),
+  credentialRef: z.string().min(1).nullable(),
+  originalInput: z.string().max(CONTROL_PRODUCT_LIMITS.payloadBytes),
+});
+const serverWorkRouteLineage = z.strictObject({
+  logicalModelId: z.string().min(1),
+  entry: GatewayRouteLineageEntrySchema,
+  entryIndex: z.number().int().nonnegative().optional(),
+});
+const serverWorkTurnProgress = z.strictObject({
+  products: z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries),
+  entries: z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries),
+});
+
+const serverWorkObservation = z.strictObject({
+  threadId: z.string().min(1),
+  turnId: z.string().min(1),
+  observation: z.record(z.string(), z.unknown()),
+  deferBodyPublication: z.literal(true).optional(),
+  bodies: z
+    .array(
+      z.strictObject({
+        id: z.string().min(1),
+        mediaType: z.string().min(1),
+        boundary: z.string().min(1),
+        byteLength: z
+          .number()
+          .int()
+          .min(0)
+          .max(16 * 1024 * 1024),
+      })
+    )
+    .max(CONTROL_PRODUCT_LIMITS.entries),
+});
+const serverWorkOwnerMutationSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('stage'),
+    intent: serverWorkIntent,
+    payload: z.string().max(CONTROL_PRODUCT_LIMITS.payloadBytes),
+  }),
+  z.strictObject({ kind: z.literal('settle'), receipt: serverWorkReceipt }),
+  z.strictObject({
+    kind: z.literal('claim-contact'),
+    receipt: serverWorkAppliedReceipt.extend({ intent: serverCallAdmission }),
+  }),
+  z.strictObject({ kind: z.literal('stage-knowledge'), input: serverKnowledgeCommand }),
+  z.strictObject({
+    kind: z.literal('append-observation'),
+    admission: serverWorkTurnAdmission,
+    input: serverWorkObservation,
+  }),
+  z.strictObject({
+    kind: z.literal('write-route-lineage'),
+    receipt: serverWorkAppliedReceipt.extend({ intent: serverCallAdmission }),
+    input: serverWorkRouteLineage,
+  }),
+  z.strictObject({
+    kind: z.literal('publish-turn-progress'),
+    admission: serverWorkTurnAdmission,
+    input: serverWorkTurnProgress,
+  }),
+  z.strictObject({
+    kind: z.literal('publish-containment'),
+    record: ServerEvidenceBundleRecordSchema.extend({ rawEvidenceRefs: z.tuple([]) }),
+  }),
+]);
+
+export type ServerWorkOwnerMutation =
+  | { readonly kind: 'stage'; readonly intent: ServerWorkIntent; readonly payload: string }
+  | { readonly kind: 'settle'; readonly receipt: ServerWorkReceipt }
+  | {
+      readonly kind: 'claim-contact';
+      readonly receipt: Extract<ServerWorkReceipt<ServerCallAdmission>, { disposition: 'applied' }>;
+    }
+  | { readonly kind: 'stage-knowledge'; readonly input: z.infer<typeof serverKnowledgeCommand> }
+  | {
+      readonly kind: 'append-observation';
+      readonly admission: z.infer<typeof serverWorkTurnAdmission>;
+      readonly input: z.infer<typeof serverWorkObservation>;
+    }
+  | {
+      readonly kind: 'write-route-lineage';
+      readonly receipt: Extract<ServerWorkReceipt<ServerCallAdmission>, { disposition: 'applied' }>;
+      readonly input: z.infer<typeof serverWorkRouteLineage>;
+    }
+  | {
+      readonly kind: 'publish-turn-progress';
+      readonly admission: z.infer<typeof serverWorkTurnAdmission>;
+      readonly input: {
+        readonly products: readonly z.infer<typeof ControlProductMutationSchema>[];
+        readonly entries: readonly z.infer<typeof ControlProductEntrySchema>[];
+      };
+    }
+  | { readonly kind: 'publish-containment'; readonly record: ServerEvidenceBundleRecord };
+
+const serverWorkOwnerResultSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('stage'), value: z.null() }),
+  z.strictObject({ kind: z.literal('settle'), value: z.null() }),
+  z.strictObject({
+    kind: z.literal('stage-knowledge'),
+    value: z.strictObject({
+      intent: serverWorkTurnAdmission,
+      busy: z.boolean(),
+      replayed: z.boolean(),
+    }),
+  }),
+  z.strictObject({ kind: z.literal('publish-turn-progress'), value: z.null() }),
+  z.strictObject({
+    kind: z.literal('append-observation'),
+    value: z.strictObject({
+      disposition: z.enum(['committed', 'duplicate']),
+      observation: z.custom<ControlWorkObservationResult['observation']>((value) => {
+        try {
+          parseWorkObservationRecord(value);
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    }),
+  }),
+  z.strictObject({ kind: z.literal('write-route-lineage'), value: z.number().int().nonnegative() }),
+  z.strictObject({ kind: z.literal('publish-containment'), value: z.null() }),
+  z.strictObject({
+    kind: z.literal('claim-contact'),
+    value: z.strictObject({ state: z.enum(['claimed-now', 'refused', 'inspect-original']) }),
+  }),
+]);
+
+/** One result from the original Server work mutation's covering FULL commit. */
+export type ServerWorkOwnerMutationResult = z.infer<typeof serverWorkOwnerResultSchema>;
+
 /**
  * Trusted internal database-worker requests.
  *
@@ -1027,6 +1273,22 @@ export type ControlWorkerCommand =
           readonly policyRead?: true;
         }
       | { readonly operation: 'nanohost-transport'; readonly input: ControlNanoHostTransportInput }
+      | {
+          readonly operation: 'repair-kernel';
+          readonly openingRequestId: number;
+          readonly input: RepairWorkerInput;
+        }
+      | {
+          readonly operation: 'server-work-kernel';
+          readonly openingRequestId: number;
+          readonly input: ServerWorkKernelInput;
+        }
+      | {
+          readonly operation: 'server-work-owner';
+          readonly openingRequestId: number;
+          readonly mutation: ServerWorkOwnerMutation;
+          readonly content?: ArrayBuffer;
+        }
       | {
           readonly operation: 'nanohost-owner';
           readonly openingRequestId: number;
@@ -1203,6 +1465,8 @@ export function controlWorkerInputBytes(
               command.operation === 'app-kernel' ||
               command.operation === 'schema-application' ||
               command.operation === 'communication-owner' ||
+              (command.operation === 'server-work-owner' &&
+                command.mutation.kind === 'append-observation') ||
               (command.operation === 'transition' &&
                 'kind' in command.transition &&
                 (command.transition.kind === 'command-receipt' ||
@@ -1442,6 +1706,21 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'recovery-safety';
       readonly result: ControlRecoverySafetyResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'repair-kernel';
+      readonly result: RepairWorkerReply;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'server-work-kernel';
+      readonly result: ServerWorkKernelReply;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'server-work-owner';
+      readonly result: ServerWorkOwnerMutationResult;
     }
   | {
       readonly status: 'ok';
@@ -2009,6 +2288,18 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'runtime-policy-publication')
     return RuntimePolicyPublicationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'vault') return ControlVaultResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'repair-kernel')
+    return RepairWorkerReplySchema.safeParse(reply.result).success;
+  if (reply.operation === 'server-work-kernel')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      serverWorkKernelReplySchema.safeParse(reply.result).success
+    );
+  if (reply.operation === 'server-work-owner')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      serverWorkOwnerResultSchema.safeParse(reply.result).success
+    );
   if (reply.operation === 'nanohost-owner')
     return (
       exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
@@ -2633,6 +2924,55 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       boundedInput = { kind: parsed.data.kind, record };
     }
     return Buffer.byteLength(JSON.stringify(boundedInput)) <= CONTROL_PRODUCT_LIMITS.payloadBytes;
+  }
+  if (value.operation === 'repair-kernel')
+    return (
+      exactFields(value, [...scoped, 'openingRequestId', 'input']) &&
+      Number.isSafeInteger(value.openingRequestId) &&
+      (value.openingRequestId as number) >= 0 &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes &&
+      RepairWorkerInputSchema.safeParse(value.input).success
+    );
+  if (value.operation === 'server-work-kernel')
+    return (
+      exactFields(value, [...scoped, 'openingRequestId', 'input']) &&
+      Number.isSafeInteger(value.openingRequestId) &&
+      (value.openingRequestId as number) >= 0 &&
+      serverWorkKernelInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'server-work-owner') {
+    if (
+      !exactFields(value, [...scoped, 'openingRequestId', 'mutation'], ['content']) ||
+      !Number.isSafeInteger(value.openingRequestId) ||
+      (value.openingRequestId as number) < 0
+    )
+      return false;
+    const mutation = serverWorkOwnerMutationSchema.safeParse(value.mutation);
+    if (!mutation.success) return false;
+    if (mutation.data.kind === 'append-observation') {
+      const byteLength = mutation.data.input.bodies.reduce(
+        (total, body) => total + body.byteLength,
+        0
+      );
+      return (
+        byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+        (value.content === undefined
+          ? byteLength === 0
+          : controlMaterialArrayBufferByteLength(value.content) === byteLength) &&
+        Buffer.byteLength(JSON.stringify(mutation.data)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+      );
+    }
+    if (value.content !== undefined) return false;
+    if (mutation.data.kind === 'stage') {
+      // Bound the original UTF-8 draft separately from the envelope's JSON escaping.
+      const { payload, ...metadata } = mutation.data;
+      return (
+        Buffer.byteLength(payload) <= CONTROL_PRODUCT_LIMITS.payloadBytes &&
+        Buffer.byteLength(JSON.stringify(metadata)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+      );
+    }
+    return Buffer.byteLength(JSON.stringify(mutation.data)) <= CONTROL_PRODUCT_LIMITS.payloadBytes;
   }
   if (value.operation === 'nanohost-owner')
     return (

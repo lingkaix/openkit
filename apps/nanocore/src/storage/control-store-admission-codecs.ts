@@ -113,6 +113,52 @@ export const PairingAuditFactsSchema = z.strictObject({
   administratorAtEvent: z.boolean(),
 });
 
+const serverWorkOccurrence = z.strictObject({
+  sourceOwner: z.literal('server-work'),
+  deploymentId: z.string().min(1),
+  occurrenceKey: z.string().min(1),
+  requestId: z.uuid(),
+  expectedGeneration: z.string().min(1).nullable(),
+  inputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+});
+const workTarget = z.strictObject({
+  actor: ActorRefSchema,
+  credentialRef: z.string().min(1).nullable(),
+  recordRef: z.string().min(1),
+});
+const threadTarget = workTarget.extend({ threadId: z.string().min(1) });
+const callTarget = workTarget.extend({ callId: z.string().min(1) });
+
+/** Exact A1 Server work families, including Calls that have no Thread or Turn. */
+export const ServerWorkKernelIntentSchema = z.union([
+  serverWorkOccurrence.extend({ verb: z.literal('admit-thread'), target: threadTarget }),
+  serverWorkOccurrence.extend({
+    verb: z.enum(['admit-turn', 'settle-turn']),
+    target: threadTarget.extend({ turnId: z.string().min(1) }),
+  }),
+  serverWorkOccurrence.extend({
+    verb: z.literal('admit-call'),
+    target: callTarget.extend({
+      threadId: z.string().min(1).nullable(),
+      turnId: z.string().min(1).nullable(),
+      routeRef: z.string().min(1),
+      budgetRef: z.string().min(1).nullable(),
+    }),
+  }),
+  serverWorkOccurrence.extend({
+    verb: z.enum(['settle-call', 'settle-usage']),
+    target: callTarget,
+  }),
+]);
+
+export const ServerWorkKernelRefusalSchema = z.enum([
+  'authority',
+  'policy',
+  'vault',
+  'budget',
+  'conflict',
+]);
+
 /** Five noncredential Server MCP commands retain their original Core receipt partition. */
 export const SERVER_MCP_CORE_COMMAND_RECEIPTS = [
   'administration.server-mcp-create',

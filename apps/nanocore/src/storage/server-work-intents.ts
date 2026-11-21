@@ -4,11 +4,11 @@ import { z } from 'zod';
 import { ControlKnowledgeAdmissionInputSchema } from './control-store-admission-codecs.js';
 import { frameControlScalarText } from './control-store-input.js';
 import {
+  assertControlProductWriter,
   CONTROL_PRODUCT_LIMITS,
   ControlProductMutationSchema,
   ControlProductPreconditionError,
 } from './control-store-product-records.js';
-import { assertControlProductWriter } from './control-store-products.js';
 import type { ServerWorkIntent, ServerWorkReceipt } from './server-work-port.js';
 import { storageRequestId } from './storage-owner.js';
 
@@ -124,6 +124,27 @@ export function readStagedServerWork(
     throw new ControlProductPreconditionError();
   return { intent, payload: row.payload_json, receipt };
 }
+
+/** Returns the one published admission identity used by subsequent Turn mutations. */
+export function readServerTurnAdmission(
+  sqlite: Database.Database,
+  turnId: string
+): ServerTurnAdmission | null {
+  const rows = sqlite
+    .prepare(`SELECT request_id FROM server_work_intents
+    WHERE json_extract(intent_json, '$.verb') = 'admit-turn'
+      AND json_extract(intent_json, '$.target.turnId') = ?
+      AND json_extract(receipt_json, '$.disposition') = 'applied' LIMIT 2`)
+    .pluck()
+    .all(turnId) as string[];
+  if (rows.length > 1) throw new ControlProductPreconditionError();
+  const staged = rows[0] ? readStagedServerWork(sqlite, rows[0]) : null;
+  return staged?.intent.verb === 'admit-turn' && staged.receipt?.disposition === 'applied'
+    ? { ...staged.intent, verb: 'admit-turn' }
+    : null;
+}
+
+export type ServerTurnAdmission = ServerWorkIntent & { readonly verb: 'admit-turn' };
 
 /** Commits the original intent and its exact product bytes before the kernel request can post. */
 export function stageServerWorkIntent<Intent extends ServerWorkIntent>(

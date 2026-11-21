@@ -452,6 +452,7 @@ const serverAdmitCommand = z
     context: serverContext,
     callId: CapabilityCallIdSchema.optional(),
     auditLineage: auditLineage.optional(),
+    systemPromptDigest: SystemPromptDigestSchema.optional(),
     now: timestamp.optional(),
   })
   .strict();
@@ -475,6 +476,8 @@ const serverFinishCommand = z
         auditLineage: true,
         now: true,
         deliveredKnowledgeAnswer: true,
+        upstreamHttpStatus: true,
+        refusedResultBytes: true,
       })
       .partial({ now: true }),
   })
@@ -595,34 +598,14 @@ export class CoreCapabilityRefusal extends Error {}
 /** Restricts the private projection to original controlled domain messages. */
 function isCoreCapabilityRefusal(error: unknown): error is Error {
   if (!(error instanceof Error) || error.name !== 'Error') return false;
-  if (
-    [
-      'Capability call database owner mismatch.',
-      'Usage record database owner mismatch.',
-      'Capability call was not stored.',
-      'Capability call attribution conflicts with the existing request.',
-      'Capability usage ledger values must be redacted before recording.',
-      'Gateway lineage requires its running CapabilityCall.',
-      'Gateway lineage logical model conflicts.',
-      'Gateway lineage entry is missing.',
-      'Boot policy self-check record is contradictory.',
-      'require_approval permission decisions require requiredApprovalKind.',
-      'PermissionDecision enforcement point projection is inconsistent.',
-      'Gate Policy invocation must match its decision and atomic linked Audit.',
-      'Finite Policy uses require a final owner-scoped allow and atomic linked Audit.',
-      'Consumed Policy statements must exactly match requested finite-use limits.',
-    ].includes(error.message)
-  )
-    return true;
   return [
-    'Capability call changed concurrently: ',
-    'Capability call schema snapshot conflicts: ',
-    'LLM capability call system-prompt digest was not recorded: ',
-  ].some(
-    (prefix) =>
-      error.message.startsWith(prefix) &&
-      CapabilityCallIdSchema.safeParse(error.message.slice(prefix.length)).success
-  );
+    'Boot policy self-check record is contradictory.',
+    'require_approval permission decisions require requiredApprovalKind.',
+    'PermissionDecision enforcement point projection is inconsistent.',
+    'Gate Policy invocation must match its decision and atomic linked Audit.',
+    'Finite Policy uses require a final owner-scoped allow and atomic linked Audit.',
+    'Consumed Policy statements must exactly match requested finite-use limits.',
+  ].includes(error.message);
 }
 /** Runs one original Server commit stage on the Core savepoint; it adds no Workspace authority. */
 export function applyControlCoreCapabilityCommand(
@@ -631,70 +614,15 @@ export function applyControlCoreCapabilityCommand(
 ): ControlCapabilityCommandResult {
   if (!db.sqlite.inTransaction || !isServerCapabilityCommand(input))
     throw new WorkerRawOutputAuthorityError();
+  if (input.kind !== 'server-permission')
+    throw new CoreCapabilityRefusal('Server work is unavailable.');
   try {
-    if (input.kind === 'server-permission') {
-      if (input.stage.kind === 'record') {
-        recordControlPermissionDecision(db, input.stage.decision, input.stage.workspaceId);
-      } else {
-        recordBootPolicySelfCheckDecisionsInDb({ ...input.stage, coreDb: db });
-      }
-      return null;
+    if (input.stage.kind === 'record') {
+      recordControlPermissionDecision(db, input.stage.decision, input.stage.workspaceId);
+    } else {
+      recordBootPolicySelfCheckDecisionsInDb({ ...input.stage, coreDb: db });
     }
-    if (input.kind === 'server-admit')
-      return startCapabilityCallInDb(
-        presentControlFacts({
-          ...input.context,
-          workspaceDb: db,
-          ...(input.callId === undefined ? {} : { callId: input.callId }),
-          ...(input.auditLineage === undefined ? {} : { auditLineage: input.auditLineage }),
-          ...(input.now === undefined ? {} : { now: new Date(input.now) }),
-        })
-      );
-    if (input.kind === 'server-usage') {
-      const records = [presentControlFacts(input.measurement)];
-      return recordUsageInDb(
-        presentControlFacts({
-          workspaceDb: db,
-          call: { ...input.call, context: presentControlFacts(input.call.context) },
-          records,
-          ...(input.auditLineage === undefined ? {} : { auditLineage: input.auditLineage }),
-          ...(input.now === undefined ? {} : { now: new Date(input.now) }),
-        })
-      );
-    }
-    if (input.kind === 'server-finish') {
-      const { now, ...facts } = input.finish;
-      finishCapabilityCallInDb(
-        presentControlFacts({
-          ...facts,
-          callId: input.callId,
-          workspaceDb: db,
-          ...(now === undefined ? {} : { now: new Date(now) }),
-        })
-      );
-      return null;
-    }
-    if (input.systemPromptDigest)
-      persistLlmCapabilityCallSystemPromptDigestInDb({
-        workspaceDb: db,
-        callId: input.callId,
-        systemPromptDigest: input.systemPromptDigest,
-      });
-    if (input.schemaSnapshotId)
-      stampCapabilityCallSchemaSnapshotInDb({
-        workspaceDb: db,
-        callId: input.callId,
-        schemaSnapshotId: input.schemaSnapshotId,
-      });
-    return input.routeLineage
-      ? writeGatewayRouteLineageInDb(
-          presentControlFacts({
-            ...input.routeLineage,
-            workspaceDb: db,
-            call: { id: input.callId },
-          })
-        )
-      : null;
+    return null;
   } catch (error) {
     if (isCoreCapabilityRefusal(error)) throw new CoreCapabilityRefusal(error.message);
     throw error;
@@ -764,6 +692,8 @@ export const ControlCapabilityWireInputSchema = z.discriminatedUnion('kind', [
         auditLineage: true,
         now: true,
         deliveredKnowledgeAnswer: true,
+        upstreamHttpStatus: true,
+        refusedResultBytes: true,
       })
       .partial({ now: true })
       .extend({ deliveredKnowledgeAnswer: ControlScalarTextSchema.optional() }),

@@ -1,11 +1,20 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sha256CanonicalJson } from '@openkit/protocol/digest';
+import { allocateEntityId } from '@openkit/protocol';
+import { policyDigest, sha256CanonicalJson } from '@openkit/protocol/digest';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
+import { runKernelRepair } from '../llm/kernel-repair-composition.js';
+import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
+import { validatePolicyDocument } from '../policy/statements.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type {
   ExecutionGrant,
@@ -15,12 +24,15 @@ import type {
 } from '../storage/control-kernel-port.js';
 import type { KernelExecutionEvidence } from '../storage/control-kernel-proof-codecs.js';
 import { controlStoreFor } from '../storage/control-store.js';
-import { openCoreDb } from '../storage/db.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb, serverStoragePath } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { storageRequestId } from '../storage/storage-owner.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
+import { createVaultReference, revokeVaultReference } from '../vault/vault-references.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   readCoreHarnessConsumption,
@@ -1395,6 +1407,238 @@ describe('persisted execution journal contracts', () => {
       )
     ).toStrictEqual(unknown);
   });
+
+  it.each([false, true])(
+    'runs kernel repair with Server work absent, revoked=%s',
+    async (revoked) => {
+      const fixture = journalFixture();
+      const coreDb = fixture.db;
+      const userId = ensureLocalUser(coreDb);
+      const requestActor = { kind: 'local' as const, userId };
+      const actor = { kind: 'user' as const, id: userId };
+      const principal = { kind: 'human' as const, id: userId };
+      const server = { owner: { kind: 'server' }, kind: 'server', id: 'server' } as const;
+      const allocationRef = 'repair-allocation';
+      const policy = validatePolicyDocument({
+        schemaVersion: 1,
+        statements: [
+          {
+            id: allocationRef,
+            kind: 'permission',
+            state: 'active',
+            effect: 'allow',
+            author: principal,
+            authority: { kind: 'human', userId },
+            authoredAt: new Date().toISOString(),
+            scope: {
+              subjects: [principal],
+              actions: ['repair.model-call'],
+              resources: [{ kind: 'container', container: server }],
+            },
+            lifetime: { anchor: server },
+            grant: {
+              kind: 'repair.model-call',
+              scope: 'server',
+              unit: 'model-call',
+              window: 'utc-day',
+            },
+          },
+        ],
+      });
+      const decisionId = allocateEntityId('pd');
+      const permission = {
+        coreDb,
+        ownerScope: 'server' as const,
+        policyEngineVersion: 'nanocore-policy:v1',
+        policySnapshotId: policyDigest(policy),
+        subjectSummary: principal,
+        result: 'allow' as const,
+        reasonCode: 'granted',
+        auditActor: actor,
+      };
+      try {
+        await recordProductPermissionDecision({
+          ...permission,
+          decisionId: allocateEntityId('pd'),
+          action: 'workspace.configure',
+          resourceSummary: { policyRevision: policyDigest(policy) },
+          contextSummary: { operation: 'policy.write' },
+          enforcementPoint: 'policy.write@decide',
+        });
+        await recordProductPermissionDecision({
+          ...permission,
+          decisionId,
+          action: 'repair.model-call',
+          resourceSummary: { route: 'primary' },
+          contextSummary: { operation: 'repair.model-call' },
+          enforcementPoint: 'repair.model-call@admit',
+        });
+        const backend = createEncryptedFileVaultBackend({
+          masterKey: Buffer.alloc(32, 9),
+          storeDir: join(fixture.root, 'server', 'vault'),
+        });
+        const referenceId = allocateEntityId('vault');
+        backend.store({
+          referenceId,
+          material: 'private fixture value',
+          metadata: { ownerScope: 'server' },
+        });
+        await createVaultReference(coreDb, {
+          referenceId,
+          ownerScope: 'server',
+          displayName: 'Repair provider fixture',
+          secretKind: 'provider-api-key',
+          backendKind: 'encrypted-file',
+          backendLocator: `encrypted-file://server/vault/${referenceId}`,
+        });
+
+        const runtime = createRuntimeConfigManager({
+          dataRoot: fixture.root,
+          initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+            dataRoot: fixture.root,
+            openKitConfig: { policy: { mediation: policy } },
+            providerRegistry: new ProviderRegistry([
+              {
+                id: 'repair-provider',
+                displayName: 'Repair fixture',
+                vendor: 'openai',
+                kind: 'direct',
+                models: ['gpt-5.1'],
+                secretRef: `vault://${referenceId}`,
+              },
+            ]),
+            gatewayConfig: {
+              schemaVersion: 1,
+              enabled: true,
+              logicalModels: [
+                {
+                  id: 'repair-model',
+                  displayName: 'Repair model',
+                  contextManagement: [{ type: 'compaction', compactThreshold: 8000 }],
+                  routes: [
+                    {
+                      id: 'primary',
+                      providerProfileId: 'repair-provider',
+                      providerModel: 'gpt-5.1',
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
+        });
+        await runtime.bindNativePolicyPublication(coreDb);
+        const draft = fixture.intent(1);
+        const entry: ExecutionJournalIntent = {
+          ...draft,
+          execution: {
+            ...draft.execution,
+            definitionVersion: CORE_REPAIR_EXECUTION_DEFINITION,
+          },
+          control: {
+            ...draft.control,
+            definitionVersion: CORE_REPAIR_EXECUTION_DEFINITION,
+            kind: 'admit',
+            actor,
+            permittingDecisionRef: decisionId,
+            attemptId: 'original-repair',
+            authorityRefs: ['role:repair'],
+          },
+        };
+        const linkedSpan = (id: number, predecessor: ExecutionJournalSpan) => ({
+          ...openSpan(id),
+          parentSpanId: entry.execution.span.spanId,
+          links: [
+            {
+              traceId: predecessor.traceId,
+              spanId: predecessor.spanId,
+              flags: 0,
+              attributes: [],
+              droppedAttributesCount: 0,
+            },
+          ],
+        });
+        const reservedSpan = linkedSpan(30, entry.span);
+        const callId = allocateEntityId('cap');
+        const contact = vi.fn();
+        const path = serverStoragePath(fixture.root, 'server-work');
+        expect(existsSync(path)).toBe(false);
+        const run = () =>
+          runKernelRepair({
+            coreDb,
+            runtimeConfig: () => runtime.current(),
+            vaultBackend: () => backend,
+            actor: requestActor,
+            logicalModelId: 'repair-model',
+            signal: new AbortController().signal,
+            admission: { callId, routeRef: 'primary', allocationRef, inputDigest: 'a'.repeat(64) },
+            entry,
+            reserve: (intent) => ({
+              ...entry,
+              stepId: 'prepare-reserve',
+              inspectedStep: intent.target.entryStep,
+              control: { ...entry.control, kind: 'reserve', invocationId: intent.requestId },
+              span: reservedSpan,
+            }),
+            terminal: (reservation) => ({
+              ...entry,
+              stepId: 'prepare-terminal',
+              inspectedStep: reservation.result.step,
+              control: { ...entry.control, kind: 'terminal-publication' },
+              span: linkedSpan(31, reservedSpan),
+            }),
+            attempt: async ({ execution }, transport) => {
+              if (revoked) await revokeVaultReference(coreDb, { referenceId });
+              await transport.finalRequestAdmission({
+                payload: { input: 'fixture' },
+                contextWindowTokens: 1000,
+                outputReserveTokens: 10,
+              });
+              contact();
+              execution.commit();
+              return { disposition: 'succeeded', reply: 'repaired', inputTokens: 2 };
+            },
+          });
+        const result = await run();
+        const steps = await fixture.reader.readEndedSteps(entry.execution.ref);
+        expect(steps.map(({ control }) => control.kind)).toEqual([
+          'admit',
+          'reserve',
+          'terminal-publication',
+        ]);
+        if (revoked) {
+          expect(result).toMatchObject({
+            state: 'ready',
+            value: { state: 'refused', reason: 'vault' },
+          });
+          expect(contact).not.toHaveBeenCalled();
+        } else {
+          expect(result).toMatchObject({
+            state: 'ready',
+            value: { state: 'succeeded', reply: 'repaired' },
+          });
+          await expect(run()).resolves.toMatchObject({
+            state: 'ready',
+            value: { state: 'terminal' },
+          });
+          expect(contact).toHaveBeenCalledTimes(1);
+        }
+        const retained = listServerAuditEvents(coreDb).filter(
+          (event) => event.action === 'repair.model-call'
+        );
+        expect(retained).toEqual([
+          expect.objectContaining({
+            actor,
+            permissionDecisionId: decisionId,
+            outcome: revoked ? 'failed' : 'succeeded',
+          }),
+        ]);
+        expect(existsSync(path)).toBe(false);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+      }
+    }
+  );
 
   it('deducts one repair slot and atomically settles the original terminal Audit', async () => {
     const f = journalFixture();

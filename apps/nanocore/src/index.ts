@@ -14,6 +14,7 @@ import {
   createDefaultVaultUnlockState,
   createDefaultWorkerControlGateway,
   prepareCommunicationOwner,
+  prepareServerWorkOwner,
   restoreWorkspaceDeletionMutationAdmission,
 } from './app.js';
 import { createBetterAuth, resolveBetterAuthSecret } from './auth/better-auth.js';
@@ -48,7 +49,6 @@ import {
   restoreWorkspaceRecoveryAdmission,
   restoreWorkspaceRetirementAdmission,
 } from './bootstrap/workspace-recovery.js';
-import { recoverRunningCapabilityCalls } from './capability/usage-ledger.js';
 import { resolveBindHost, resolveBindPort } from './config/bind-host.js';
 import { resolveDataRoot } from './config/data-root.js';
 import { BootConfigError, resolveMode } from './config/mode.js';
@@ -129,6 +129,7 @@ import { drainSecurityNotices } from './security/publication.js';
 import { SecurityTriggerStore } from './security/trigger.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { communicationOwner } from './storage/communication-owner.js';
+import type { ControlStoreProductReadHandle } from './storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -152,6 +153,8 @@ import {
 } from './storage/fs-layout.js';
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
+import { openServerWorkProductReadHandle } from './storage/server-work-product-reads.js';
+import { serverWorkStorageDescriptor } from './storage/server-work-schema.js';
 import { appendRecoveredTurnObservation } from './storage/work-observation-recovery.js';
 import {
   runWorkspaceSnapshotMaintenance,
@@ -205,6 +208,7 @@ let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGatewa
 let workerLifecycleRuntime: ConfiguredWorkerLifecycleRuntime | undefined;
 let runRecoveryMaintenance: SchedulerAttemptMaintenanceInput['runRecoveryMaintenance'] | undefined;
 let sharedStore: FsStore | undefined;
+let serverWorkReader: ControlStoreProductReadHandle | undefined;
 const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
 // Recovery can stage files before the live configuration manager is assembled.
@@ -341,7 +345,6 @@ const bootResult = await runBootPhases({
         coreMigrationsComplete = true;
         restoreWorkspaceRetirementAdmission({ coreDb });
         restoreWorkspaceRecoveryAdmission(coreDb);
-        await recoverRunningCapabilityCalls({ workspaceDb: coreDb });
         // Only active server registry facts establish an expected Workspace; deletion may remove roots.
         for (const { workspaceId } of coreDb.sqlite
           .prepare(
@@ -366,11 +369,19 @@ const bootResult = await runBootPhases({
             },
           };
         }
+        const writer = getControlStoreWorkerClient();
+        const serverWorkOpen = freshCoreInitialization
+          ? await writer.provisionServerOwner(dataRoot, serverWorkStorageDescriptor)
+          : await writer.openServerOwner(dataRoot, serverWorkStorageDescriptor);
+        const serverWorkRead =
+          serverWorkOpen.state === 'ready'
+            ? await openServerWorkProductReadHandle(dataRoot, writer)
+            : serverWorkOpen;
+        if (serverWorkRead.state === 'ready') serverWorkReader = serverWorkRead.value;
         await verifyAndMigrateExistingScopedDatabases(dataRoot, () => {
           // File validation cannot query projections that still need their scoped migrations.
-          FsStore.validateFileAuthority(dataRoot);
+          FsStore.validateFileAuthority(dataRoot, serverWorkReader);
         });
-        sharedStore ??= new FsStore({ dataRoot });
         const indexRebuildEvents = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
         await recordBootStartAudit({
           coreDb,
@@ -380,21 +391,30 @@ const bootResult = await runBootPhases({
           migrationIds: listAppliedMigrationIds(coreDb),
           indexRebuildEvents,
         });
+        const serverWorkBinding =
+          serverWorkRead.state === 'ready'
+            ? await prepareServerWorkOwner(coreDb, () => runtimeConfigManager.current())
+            : serverWorkRead;
+        sharedStore ??= new FsStore({
+          dataRoot,
+          ...(serverWorkReader && { serverWorkReader }),
+          ...(serverWorkBinding.state === 'ready' && { serverWork: serverWorkBinding.value }),
+        });
 
-        if (indexRebuildEvents.length === 0) {
-          return { status: 'ok' };
-        }
-
-        return {
-          status: 'ok',
-          reasons: [
-            {
-              code: 'storage.index-rebuilt',
-              message: `Rebuilt ${indexRebuildEvents.length} workspace index set(s).`,
-              blocks: [],
-            },
-          ],
-        };
+        const reasons = [];
+        if (indexRebuildEvents.length !== 0)
+          reasons.push({
+            code: 'storage.index-rebuilt',
+            message: `Rebuilt ${indexRebuildEvents.length} workspace index set(s).`,
+            blocks: [],
+          });
+        if (serverWorkBinding.state === 'unavailable')
+          reasons.push({
+            code: 'storage.server_work_unavailable',
+            message: `Server work storage is unavailable: ${serverWorkBinding.reason}.`,
+            blocks: [],
+          });
+        return { status: 'ok', reasons };
       },
     },
     {
@@ -1227,23 +1247,30 @@ function releaseProcessResources(): void {
   if (!closeProcessCoreDatabase()) process.exitCode = 1;
 }
 
-/** Closes the process-owned Core connection once, allowing SQLite to checkpoint its WAL. */
+/** Closes the process-owned readers before the corresponding native writers drain. */
 function closeProcessCoreDatabase(): boolean {
-  const sqlite = coreDb?.sqlite;
+  const readers = [
+    ['Server work', serverWorkReader?.sqlite],
+    ['Core', coreDb?.sqlite],
+  ] as const;
   // Detach ownership before close so the exit handler cannot repeat a failed close.
+  serverWorkReader = undefined;
   coreDb = undefined;
-  if (!sqlite?.open) return true;
-  try {
-    sqlite.close();
-    return true;
-  } catch (error) {
-    console.error(
-      `Failed to close Core database during shutdown: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-    return false;
+  let closed = true;
+  for (const [name, sqlite] of readers) {
+    if (!sqlite?.open) continue;
+    try {
+      sqlite.close();
+    } catch (error) {
+      console.error(
+        `Failed to close ${name} database during shutdown: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      closed = false;
+    }
   }
+  return closed;
 }
 
 /**

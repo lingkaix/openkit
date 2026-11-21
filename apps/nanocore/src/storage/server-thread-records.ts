@@ -1,34 +1,31 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { Item, ServerTurnEventEnvelope, Thread, Turn } from '@openkit/protocol';
 import type { z } from 'zod';
+import type { ControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   StoredThreadSnapshotV1Schema,
   StoredTurnPayloadV1Schema,
 } from './retained-work-events-v1.js';
 import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import { assertServerTurnEventLineage } from './server-turn-event-lineage.js';
+import { serverWorkProductScope } from './server-work-product-reads.js';
 import {
   assertImmutableItemAttribution,
   type CaptureCoverageBindingSchema,
   listNativeProducts,
-  nativeProductMetadataScope,
-  nativeProductScope,
   readNativeProduct,
   readNativeTurnEvents,
   readNativeTurnHistory,
 } from './workspace-file-records.js';
 
-/** Reads Server metadata from its actual Core SQLite authority without Item body disclosure. */
+/** Reads Server metadata from the admitted Server-work reader without Item body disclosure. */
 export function readServerTurnRecord(
   dataRoot: string,
   threadId: string,
-  turnId: string
+  turnId: string,
+  reader?: ControlStoreProductReadHandle
 ): z.infer<typeof StoredTurnPayloadV1Schema> {
-  const snapshot = readNativeProduct(
-    nativeProductMetadataScope(dataRoot, { kind: 'server' }),
-    'turn',
-    turnId
-  );
+  const snapshot = readNativeProduct(serverWorkProductScope(dataRoot, reader), 'turn', turnId);
   if (!snapshot || snapshot.record.threadId !== threadId)
     throw new Error(`Server Turn is unavailable: ${turnId}.`);
   return StoredTurnPayloadV1Schema.parse(StoredTurnV1Schema.parse(snapshot.record));
@@ -44,8 +41,11 @@ export interface ServerThreadRecords {
 }
 
 /** Loads native Server history without file fallback, repair, or execution replay. */
-export function loadServerThreadRecords(dataRoot: string): ServerThreadRecords {
-  const metadataScope = nativeProductMetadataScope(dataRoot, { kind: 'server' });
+export function loadServerThreadRecords(
+  dataRoot: string,
+  reader?: ControlStoreProductReadHandle
+): ServerThreadRecords {
+  const scope = serverWorkProductScope(dataRoot, reader);
   const records: ServerThreadRecords = {
     threads: [],
     turns: [],
@@ -53,15 +53,14 @@ export function loadServerThreadRecords(dataRoot: string): ServerThreadRecords {
     turnEvents: new Map(),
     turnCaptureCoverage: new Map(),
   };
-  records.threads = listNativeProducts(metadataScope, 'thread').map((row) =>
+  records.threads = listNativeProducts(scope, 'thread').map((row) =>
     StoredThreadSnapshotV1Schema.parse(row.record)
   );
   const threads = new Set(records.threads.map((thread) => thread.id));
   const itemIds = new Set<string>();
   const active = new Set<string>();
-  const turns = listNativeProducts(metadataScope, 'turn');
+  const turns = listNativeProducts(scope, 'turn');
   if (turns.length === 0) return records;
-  const scope = nativeProductScope(dataRoot, { kind: 'server' });
   for (const row of turns) {
     const history = readNativeTurnHistory(scope, row.record.id as string)!;
     const turn = history.turn;
@@ -79,15 +78,19 @@ export function loadServerThreadRecords(dataRoot: string): ServerThreadRecords {
     records.turns.push(turn);
     records.itemRevisions.push(...history.itemRevisions);
     if (history.captureCoverage) records.turnCaptureCoverage.set(turn.id, history.captureCoverage);
-    records.turnEvents.set(turn.id, readServerTurnEvents(dataRoot, turn));
+    records.turnEvents.set(turn.id, readServerTurnEvents(dataRoot, turn, reader));
   }
   return records;
 }
 
 /** Reads every ordered Server event with exact content and owner proof. */
-export function readServerTurnEvents(dataRoot: string, turn: Turn): ServerTurnEventEnvelope[] {
+export function readServerTurnEvents(
+  dataRoot: string,
+  turn: Turn,
+  reader?: ControlStoreProductReadHandle
+): ServerTurnEventEnvelope[] {
   const events = readNativeTurnEvents(
-    nativeProductScope(dataRoot, { kind: 'server' }),
+    serverWorkProductScope(dataRoot, reader),
     turn
   ) as ServerTurnEventEnvelope[];
   for (const event of events) assertServerTurnEventLineage(event, turn);

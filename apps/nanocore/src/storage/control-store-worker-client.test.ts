@@ -16,7 +16,11 @@ import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
-import type { JsonOperationId, LightAppSchemaInput } from '@openkit/app-api-schemas';
+import type {
+  JsonOperationId,
+  LightAppSchemaInput,
+  ServerEvidenceBundleRecord,
+} from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
   type Item,
@@ -58,14 +62,17 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { openTestServerWork } from '../test-support/server-work-store.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import { commandRequestKey, getCommandRequestRecord } from './command-request-records.js';
 import { requireChannelStorage } from './communication-inbound.js';
 import { communicationOwner } from './communication-owner.js';
+import type { ControlKernelStore } from './control-kernel-port.js';
 import { admitCoreScheduler } from './control-store-admission.js';
 import { WorkspaceQueueInputRefSchema } from './control-store-admission-codecs.js';
+import { frameControlScalarText } from './control-store-input.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
@@ -81,6 +88,7 @@ import * as dataRootBackup from './data-root-backup.js';
 import {
   bindCoreSqlite,
   openCoreDb,
+  openCoreReadDb,
   openUserDb,
   openUserReadDb,
   openWorkspaceDb,
@@ -91,6 +99,7 @@ import {
   ensureLayout,
   ensureUserLayout,
   ensureWorkspaceLayout,
+  readDataRootLayoutMarker,
   userDbPath,
   workspaceDbPath,
 } from './fs-layout.js';
@@ -103,6 +112,19 @@ import {
 } from './nanohost-epoch-invalidation-native.js';
 import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 import type { ControlRuntimeTargetInput } from './runtime-target-codecs.js';
+import { readServerCallUsageIds } from './server-work-call.js';
+import {
+  inspectServerWorkContainmentEvidence,
+  publishContainmentEvidenceHandoff,
+} from './server-work-evidence.js';
+import {
+  isServerWorkPublished,
+  readServerWorkIntent,
+  readServerWorkLocalReceipt,
+  readStagedServerWork,
+} from './server-work-intents.js';
+import type { ServerCallAdmission, ServerWorkIntent } from './server-work-port.js';
+import { serverWorkStorageDescriptor } from './server-work-schema.js';
 import { storageReceipt, storageRequestId } from './storage-owner.js';
 import { advanceThreadReadReceipt, readThreadReadReceipt } from './thread-read-receipts.js';
 import { nativeProductScope } from './workspace-file-records.js';
@@ -738,6 +760,501 @@ it('reads the live Communication expiry policy in the real writer after the rete
   await expect(communication.runRetention(actor, randomUUID(), selection)).resolves.toMatchObject({
     state: 'ready',
     value: { challenges: 0, auditEventId: expect.any(String) },
+  });
+});
+
+const serverWorkReaders = {
+  readServerCallUsageIds,
+  inspectServerWorkContainmentEvidence,
+  publishContainmentEvidenceHandoff,
+  readServerWorkIntent,
+  readServerWorkLocalReceipt,
+  readStagedServerWork,
+  isServerWorkPublished,
+};
+const serverWorkDisabled = { state: 'unavailable', owner: 'server-work', reason: 'disabled' };
+const serverWorkHeld = { state: 'unavailable', owner: 'server-work', reason: 'recovery-required' };
+const serverWorkAck = { state: 'ready', value: undefined };
+
+async function serverWorkWorkerFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'control-server-work-')));
+  roots.push(root);
+  ensureLayout(root);
+  const path = serverStoragePath(root, 'server-work');
+  const gate = new Int32Array(new SharedArrayBuffer(4 * (6 + path.length)));
+  interception.gate = gate.buffer as SharedArrayBuffer;
+  interception.point = 'after';
+  Atomics.store(gate, 2, 2);
+  Atomics.store(gate, 3, 1);
+  Atomics.store(gate, 4, path.length);
+  for (let index = 0; index < path.length; index++)
+    Atomics.store(gate, 5 + index, path.charCodeAt(index));
+  Atomics.store(gate, 0, 1);
+
+  const writer = getControlStoreWorkerClient();
+  client = writer;
+  const corePath = coreDbPath(root);
+  await writer.open({
+    database: `core:${corePath}`,
+    path: corePath,
+    create: true,
+    initialize: 'core',
+    productOwner: { kind: 'server' },
+    dataRoot: root,
+  });
+  await expect(writer.bindServerWorkOwner(root)).resolves.toEqual({
+    state: 'unavailable',
+    owner: 'server-work',
+    reason: 'missing',
+  });
+  expect(existsSync(path)).toBe(false);
+  await expect(writer.provisionServerOwner(root, serverWorkStorageDescriptor)).resolves.toEqual({
+    state: 'ready',
+    owner: 'server-work',
+  });
+  await writer.closeServerOwner(root, 'server-work');
+  return { writer, root, corePath, gate };
+}
+
+function originalServerCall(occurrenceKey = 'original-call') {
+  const actor = { kind: 'system', id: 'fixture-actor', responsibleUserId: null } as const;
+  const callId = allocateEntityId('cap');
+  const payload = JSON.stringify({
+    kind: 'server-admit',
+    callId,
+    now: '2026-11-21T00:00:00.000Z',
+    context: {
+      owner: { kind: 'server' },
+      authorityActor: actor,
+      capabilityId: 'llm.responses',
+      family: 'llm',
+      operation: 'responses.create',
+      redactionClass: 'metadata-only',
+    },
+  });
+  const occurrence = {
+    deploymentId: 'fixture-deployment',
+    sourceOwner: 'server-work',
+    verb: 'admit-call',
+    occurrenceKey,
+  } as const;
+  const intent: ServerCallAdmission = {
+    ...occurrence,
+    requestId: storageRequestId(occurrence),
+    expectedGeneration: null,
+    inputDigest: frameControlScalarText(payload).digest,
+    target: {
+      actor,
+      callId,
+      credentialRef: null,
+      recordRef: 'fixture-draft',
+      routeRef: 'fixture-pinned-route',
+      budgetRef: null,
+      threadId: null,
+      turnId: null,
+    },
+  };
+  const decision = {
+    disposition: 'applied',
+    result: { decisionRef: 'fixture-core-audit' },
+  } as const;
+  return { intent, payload, decision, receipt: storageReceipt(intent, decision) };
+}
+
+const containmentBundle: ServerEvidenceBundleRecord = {
+  id: 'fixture-original-containment',
+  owner: { kind: 'server' },
+  threadId: null,
+  turnId: null,
+  goalId: null,
+  agentSessionId: null,
+  backendType: null,
+  sourceKind: 'security-containment',
+  summary: 'Original containment handoff.',
+  rawEvidenceRefs: [],
+  redactedEvidenceRefs: [{ kind: 'audit-event', ref: 'fixture-original-audit' }],
+  contentDigests: [],
+  retentionClass: 'workspace-audit',
+  sensitivityClass: 'restricted',
+  importStatus: 'collected',
+  requiredFeatures: [],
+  createdAt: '2026-11-21T00:00:00.000Z',
+};
+
+describe('admitted Server work owner worker', () => {
+  it.each([
+    { length: 8, backing: 'inline' },
+    { length: 80_000, backing: 'file-backed' },
+  ])(
+    'retries a public $backing Server Turn completion after loss of the Core FULL ACK',
+    async ({ length, backing }) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'control-server-terminal-')));
+      roots.push(root);
+      initializeTestCore(root);
+      const core = openCoreDb(root);
+      nativeHandles.push(core);
+      const actor = { kind: 'user' as const, id: ensureLocalUser(core) };
+      const gate = new Int32Array(new SharedArrayBuffer(4 * 4));
+      interception.gate = gate.buffer as SharedArrayBuffer;
+      interception.point = 'after';
+      Atomics.store(gate, 0, 1);
+      const opening = await openTestServerWork(core);
+      client = getControlStoreWorkerClient();
+      let terminal: ServerWorkIntent | undefined;
+      const post = Worker.prototype.postMessage;
+      const capture = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+        this: NativeWorker,
+        ...args: Parameters<NativeWorker['postMessage']>
+      ) {
+        const message = args[0] as ControlWorkerRequest;
+        if (
+          message.operation === 'server-work-kernel' &&
+          message.input.kind === 'decide' &&
+          message.input.intent.verb === 'settle-turn'
+        ) {
+          terminal = message.input.intent;
+          Atomics.store(gate, 0, 0);
+        }
+        return post.apply(this, args);
+      });
+      let turnId: string;
+      let item: Item;
+      let completion: { readonly status: 'completed'; readonly completedAt: string };
+      try {
+        const thread = await opening.store.createServerThread(
+          'Native Server terminal',
+          undefined,
+          undefined,
+          { actor, credentialRef: null }
+        );
+        const turn = await opening.store.createServerTurn(
+          thread.id,
+          'Original Server work.',
+          actor
+        );
+        turnId = turn.id;
+        item = await opening.store.createServerItem({
+          id: allocateEntityId('it'),
+          owner: thread.owner,
+          threadId: thread.id,
+          turnId: turn.id,
+          type: 'assistant-message',
+          text: 'a'.repeat(length),
+          status: 'completed',
+          createdAt: turn.startedAt!,
+          completedAt: turn.startedAt!,
+        });
+        completion = { status: 'completed', completedAt: new Date().toISOString() };
+        Atomics.store(gate, 0, 0);
+        const completing = opening.store.completeTurn(turn.id, completion);
+        const result = completing.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error })
+        );
+        await Promise.race([
+          waitForHold(gate),
+          result.then(() => {
+            throw new Error('Terminal returned before the original Core FULL commit.');
+          }),
+        ]);
+        expect(terminal).toMatchObject({ verb: 'settle-turn', target: { turnId } });
+        expect(opening.store.getServerTurnById(turnId).status).toBe('running');
+        expect(
+          core.sqlite
+            .prepare("SELECT count(*) FROM audit_events WHERE action = 'server-work.settle-turn'")
+            .pluck()
+            .get()
+        ).toBe(1);
+        await interception.workers[0]!.terminate();
+        expect(await result).toHaveProperty('error');
+      } finally {
+        capture.mockRestore();
+        release(gate);
+        opening.reader.close();
+      }
+      expect(terminal).toBeDefined();
+      await shutdownControlStoreWorkerClient();
+      interception.gate = undefined;
+      const reopened = await openTestServerWork(core);
+      client = getControlStoreWorkerClient();
+      try {
+        const staged = readStagedServerWork(reopened.reader.sqlite, terminal!.requestId);
+        expect(staged?.intent).toEqual(terminal);
+        expect(staged?.receipt).toBeNull();
+        const [terminalDraft] = JSON.parse(staged!.payload).entries;
+        expect(Boolean(terminalDraft.publication)).toBe(backing === 'file-backed');
+        const readTurn = () => reopened.store.getServerTurnById(turnId!);
+        const retry = () => reopened.store.completeTurn(turnId!, completion!);
+        await expect(
+          reopened.store.completeTurn(turnId!, { ...completion!, status: 'interrupted' })
+        ).rejects.toThrow();
+        const originalItem = item!;
+        if (originalItem.type !== 'assistant-message')
+          throw new Error('Expected the retained Item.');
+        await expect(
+          reopened.store.completeTurn(turnId!, completion!, {
+            items: [{ ...originalItem, text: `b${'a'.repeat(length - 1)}` }],
+          })
+        ).rejects.toThrow();
+        expect(readTurn().status).toBe('running');
+        expect(reopened.store.getServerTurnTranscript(turnId!)).toEqual([]);
+        const completed = await retry();
+        await expect(retry()).resolves.toEqual(completed);
+        expect(readTurn()).toEqual(completed);
+        expect(completed).toMatchObject({ status: 'completed', items: [item!] });
+        expect(reopened.store.getServerTurnTranscript(turnId!).map((event) => event.event)).toEqual(
+          ['turn.completed']
+        );
+        expect(
+          readStagedServerWork(reopened.reader.sqlite, terminal!.requestId)?.receipt
+        ).toMatchObject({
+          intent: terminal,
+          disposition: 'applied',
+        });
+        expect(
+          core.sqlite
+            .prepare("SELECT count(*) FROM audit_events WHERE action = 'server-work.settle-turn'")
+            .pluck()
+            .get()
+        ).toBe(1);
+      } finally {
+        reopened.reader.close();
+      }
+    }
+  );
+
+  it('inspects the original in Core while Server work is closed and refuses a foreign deployment', async () => {
+    const f = await serverWorkWorkerFixture();
+    const db = openCoreReadDb(f.root);
+    try {
+      const kernel = f.writer.serverWorkKernel(db);
+      const { intent } = originalServerCall();
+      const current = {
+        ...intent,
+        deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+      };
+      const foreign = { ...intent, deploymentId: allocateEntityId('dep') };
+      await expect(
+        kernel.inspectServerWork({ ...current, requestId: storageRequestId(current) })
+      ).resolves.toEqual({ state: 'ready', value: { state: 'absent' } });
+      await expect(
+        kernel.inspectServerWork({ ...foreign, requestId: storageRequestId(foreign) })
+      ).resolves.toEqual({ state: 'ready', value: { state: 'conflict' } });
+      await expect(
+        kernel.decideServerWork({ ...current, requestId: storageRequestId(current) })
+      ).resolves.toEqual({
+        state: 'unavailable',
+        owner: 'control-kernel',
+        reason: 'recovery-required',
+      });
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('refuses a root backup through the lifetime of an accepted Server work producer', async () => {
+    const f = await serverWorkWorkerFixture();
+    const bound = await f.writer.bindServerWorkOwner(f.root, serverWorkReaders);
+    if (bound.state !== 'ready') throw new Error('Expected admitted Server work.');
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const producer = bound.value.withProducer(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    await entered.promise;
+    try {
+      await expect(f.writer.pauseForDataRootBackup()).rejects.toMatchObject({ code: 'busy' });
+    } finally {
+      release.resolve();
+      await producer;
+    }
+    const resume = await f.writer.pauseForDataRootBackup();
+    const refused = vi.fn(async () => undefined);
+    try {
+      await expect(bound.value.withProducer(refused)).resolves.toEqual(serverWorkHeld);
+      expect(refused).not.toHaveBeenCalled();
+    } finally {
+      resume();
+    }
+  });
+
+  it('opens existing-only and gates missing Core bindings before posting', async () => {
+    const f = await serverWorkWorkerFixture();
+    const bound = await f.writer.bindServerWorkOwner(f.root, serverWorkReaders);
+    if (bound.state !== 'ready') throw new Error('Expected admitted Server work.');
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const { intent, payload, receipt } = originalServerCall();
+    await expect(bound.value.stage(intent, payload)).resolves.toEqual(serverWorkDisabled);
+    await expect(bound.value.claimCallContact(receipt)).resolves.toEqual(serverWorkDisabled);
+    await expect(bound.value.publishContainment(containmentBundle.id)).resolves.toEqual({
+      state: 'unavailable',
+      owner: 'control-kernel',
+      reason: 'disabled',
+    });
+    expect(posted.mock.calls.some(([message]) => message.operation === 'server-work-owner')).toBe(
+      false
+    );
+    await expect(bound.value.readStaged(intent.requestId)).resolves.toEqual({
+      state: 'ready',
+      value: null,
+    });
+  });
+
+  it('uses the exact admitted Core handoff and covers Server evidence at FULL', async () => {
+    const f = await serverWorkWorkerFixture();
+    let original = containmentBundle;
+    const readContainmentEvidenceHandoff: NonNullable<
+      NonNullable<
+        Parameters<typeof f.writer.bindServerWorkOwner>[2]
+      >['readContainmentEvidenceHandoff']
+    > = (core, id) => {
+      expect(core.sqlite.name).toBe(f.corePath);
+      expect(core.sqlite.readonly).toBe(true);
+      return id === containmentBundle.id ? original : null;
+    };
+    const bound = await f.writer.bindServerWorkOwner(f.root, serverWorkReaders, {
+      readContainmentEvidenceHandoff,
+    });
+    if (bound.state !== 'ready') throw new Error('Expected admitted Server work.');
+    const postMessage = Worker.prototype.postMessage;
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    await expect(bound.value.publishContainment('absent-handoff')).resolves.toEqual({
+      state: 'ready',
+      value: { state: 'unknown' },
+    });
+    expect(posted.mock.calls.some(([message]) => message.operation === 'server-work-owner')).toBe(
+      false
+    );
+
+    posted.mockImplementationOnce(function (this: NativeWorker, message: ControlWorkerRequest) {
+      if (message.operation !== 'server-work-owner') throw new Error('Expected local Server work.');
+      return postMessage.call(this, { ...message, openingRequestId: message.openingRequestId + 1 });
+    });
+    await expect(bound.value.publishContainment(containmentBundle.id)).resolves.toEqual(
+      serverWorkHeld
+    );
+    posted.mockRestore();
+
+    Atomics.store(f.gate, 0, 0);
+    let acknowledged = false;
+    const publication = bound.value.publishContainment(containmentBundle.id).then((result) => {
+      acknowledged = true;
+      return result;
+    });
+    try {
+      await waitForHold(f.gate);
+      expect(acknowledged).toBe(false);
+      expect(Atomics.load(f.gate, f.gate.length - 1)).toBe(2);
+    } finally {
+      release(f.gate);
+    }
+    await expect(publication).resolves.toEqual({ state: 'ready', value: { state: 'published' } });
+    await expect(bound.value.publishContainment(containmentBundle.id)).resolves.toEqual({
+      state: 'ready',
+      value: { state: 'published' },
+    });
+    original = { ...containmentBundle, summary: 'A divergent handoff for the same ID.' };
+    await expect(bound.value.publishContainment(containmentBundle.id)).resolves.toEqual({
+      state: 'ready',
+      value: { state: 'conflict' },
+    });
+    await f.writer.closeServerOwner(f.root, 'server-work');
+    await expect(bound.value.publishContainment(containmentBundle.id)).resolves.toEqual(
+      serverWorkHeld
+    );
+  });
+
+  it('covers fresh, replayed and lost FULL Call claims', async () => {
+    const f = await serverWorkWorkerFixture();
+    const { intent, payload, decision, receipt } = originalServerCall();
+    const originalReceiptIds = new Set<string>();
+    const inspectServerWork: ControlKernelStore['inspectServerWork'] = async (original) => ({
+      state: 'ready',
+      value: originalReceiptIds.has(original.requestId)
+        ? { state: 'settled', receipt: storageReceipt(original, decision) }
+        : { state: 'unknown' },
+    });
+    const bound = await f.writer.bindServerWorkOwner(f.root, serverWorkReaders, {
+      inspectServerWork,
+    });
+    if (bound.state !== 'ready') throw new Error('Expected admitted Server work.');
+    const divergent: ServerWorkIntent = { ...intent, verb: 'settle-usage' };
+    await expect(bound.value.stage(divergent, payload)).resolves.toEqual(serverWorkHeld);
+    await expect(bound.value.stage(intent, payload)).resolves.toEqual({
+      state: 'ready',
+      value: intent,
+    });
+    await expect(bound.value.readStaged(intent.requestId)).resolves.toEqual({
+      state: 'ready',
+      value: { intent, payload, receipt: null },
+    });
+    await expect(bound.value.settle(receipt)).resolves.toEqual(serverWorkHeld);
+    await expect(bound.value.claimCallContact(receipt)).resolves.toEqual(serverWorkHeld);
+    originalReceiptIds.add(intent.requestId);
+    await expect(
+      bound.value.settle({ ...receipt, receiptDigest: `sha256:${'f'.repeat(64)}` })
+    ).resolves.toEqual(serverWorkHeld);
+    await expect(bound.value.settle(receipt)).resolves.toEqual(serverWorkAck);
+
+    Atomics.store(f.gate, 0, 0);
+    let acknowledged = false;
+    const claim = bound.value.claimCallContact(receipt).then((result) => {
+      acknowledged = true;
+      return result;
+    });
+    try {
+      await waitForHold(f.gate);
+      expect(acknowledged).toBe(false);
+      expect(Atomics.load(f.gate, f.gate.length - 1)).toBe(2);
+    } finally {
+      release(f.gate);
+    }
+    await expect(claim).resolves.toEqual({ state: 'ready', value: { state: 'claimed-now' } });
+    await f.writer.closeServerOwner(f.root, 'server-work');
+    const reopened = await f.writer.bindServerWorkOwner(f.root, serverWorkReaders, {
+      inspectServerWork,
+    });
+    if (reopened.state !== 'ready') throw new Error('Expected retained Server work.');
+    await expect(reopened.value.claimCallContact(receipt)).resolves.toEqual({
+      state: 'ready',
+      value: { state: 'inspect-original' },
+    });
+
+    const lost = originalServerCall('lost-contact-ack');
+    originalReceiptIds.add(lost.intent.requestId);
+    await expect(reopened.value.stage(lost.intent, lost.payload)).resolves.toEqual({
+      state: 'ready',
+      value: lost.intent,
+    });
+    await expect(reopened.value.settle(lost.receipt)).resolves.toEqual(serverWorkAck);
+    Atomics.store(f.gate, 0, 0);
+    Atomics.store(f.gate, 1, 0);
+    const lostClaim = reopened.value.claimCallContact(lost.receipt);
+    try {
+      await waitForHold(f.gate);
+      const read = new Database(serverStoragePath(f.root, 'server-work'), {
+        readonly: true,
+        fileMustExist: true,
+      });
+      try {
+        expect(
+          read
+            .prepare('SELECT contact_claimed FROM server_work_intents WHERE request_id = ?')
+            .pluck()
+            .get(lost.intent.requestId)
+        ).toBe(1);
+      } finally {
+        read.close();
+      }
+      await interception.workers[1]!.terminate();
+    } finally {
+      release(f.gate);
+    }
+    await expect(lostClaim).resolves.toEqual({
+      state: 'ready',
+      value: { state: 'inspect-original' },
+    });
   });
 });
 

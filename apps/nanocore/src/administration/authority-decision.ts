@@ -82,6 +82,52 @@ export function readAdministrationPolicyContext(
   return { ...facts, decision: evaluatePolicyKernel(facts) };
 }
 
+/** Reads the original human-authored repair allowance from the active native Server Policy. */
+export function readCurrentRepairAllocation(
+  coreDb: CoreDb,
+  input: {
+    readonly document: unknown;
+    readonly revision: string | undefined;
+    readonly actorId: string;
+    readonly allocationRef: string;
+  }
+) {
+  if (!input.revision) return null;
+  const document = readAdmittedPolicyDocument(coreDb, input.document);
+  const policyRevision = policyDigest(document);
+  if (policyRevision !== input.revision) return null;
+  const now = Date.now();
+  const matching = document.statements.filter(
+    (statement) =>
+      statement.kind === 'permission' &&
+      statement.state === 'active' &&
+      (!statement.lifetime.notAfter || Date.parse(statement.lifetime.notAfter) > now) &&
+      statement.scope.actions.includes('repair.model-call') &&
+      statement.scope.subjects.some(
+        (subject) => subject.kind === 'human' && subject.id === input.actorId
+      ) &&
+      statement.scope.resources.some(
+        (resource) =>
+          resource.kind === 'container' &&
+          resource.container.owner.kind === 'server' &&
+          resource.container.kind === 'server' &&
+          resource.container.id === 'server'
+      )
+  );
+  if (
+    matching.some((statement) => statement.kind === 'permission' && statement.effect === 'prohibit')
+  )
+    return null;
+  const statement = matching.find((statement) => statement.id === input.allocationRef);
+  return statement?.kind === 'permission' &&
+    statement.effect === 'allow' &&
+    statement.grant.kind === 'repair.model-call' &&
+    statement.author.kind === 'human' &&
+    isCurrentServerPolicyAuthor(coreDb, statement.author.id, now)
+    ? { allocation: statement.grant, allocationRef: statement.id, policyRevision }
+    : null;
+}
+
 /** Shared administration projection through the existing Policy recorder; grants no authority. */
 export async function recordAdministrationAuthorityDecision(
   input: Omit<RecordPermissionDecisionInput, 'policyDecision'>,

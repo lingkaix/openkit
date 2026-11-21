@@ -15,16 +15,28 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import Database from 'better-sqlite3';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { FsStore } from '../lib/store.js';
 import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { inspectServerWorkReceipt } from '../storage/command-request-records.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openWorkspaceDb,
+  serverStoragePath,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { readStagedServerWork } from '../storage/server-work-intents.js';
+import { serverWorkStorageDescriptor } from '../storage/server-work-schema.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
@@ -33,6 +45,7 @@ import {
 } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { openTestServerWork } from '../test-support/server-work-store.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -66,6 +79,9 @@ async function createFixture(): Promise<{
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
   const thread = await store.createThread(workspace.id, 'Checkpoint cleanup thread');
+  await expect(
+    getControlStoreWorkerClient().provisionServerOwner(dataRoot, serverWorkStorageDescriptor)
+  ).resolves.toEqual({ state: 'ready', owner: 'server-work' });
   await shutdownControlStoreWorkerClient();
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   onTestFinished(async () => {
@@ -1413,6 +1429,44 @@ function readCheckpoint(
 }
 
 describe('cancelled-admission cleanup global native absence', () => {
+  it('keeps a proved cancelled checkpoint when Server-work history is unavailable', async () => {
+    const fixture = await createFixture();
+    const identity = identityFor(fixture, testEntityId('tu', 'missing_server_work_history'));
+    const requestId = '0190f4c8-0000-7000-8000-000000001204';
+    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await closeFixture(fixture);
+
+    const input = {
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    };
+    const checkpoint = readCheckpoint(fixture.dataRoot, identity);
+    expect(checkpoint).not.toBeNull();
+    await expect(cleanCancelledAdmissionTaskCheckpoints(input)).resolves.toMatchObject({
+      rows: [{ ...identity, decision: 'removable', reason: 'cancelled-admission' }],
+    });
+
+    const path = serverStoragePath(fixture.dataRoot, 'server-work');
+    const retained = join(fixture.dataRoot, 'retained-server-work.sqlite');
+    renameSync(path, retained);
+    const serverBytes = readFileSync(retained);
+    await expect(
+      cleanCancelledAdmissionTaskCheckpoints({ ...input, apply: true })
+    ).resolves.toEqual({
+      applied: false,
+      backupRoot: null,
+      outcome: 'blocked',
+      removedCount: 0,
+      rows: [{ ...identity, decision: 'refused', reason: 'unreadable-history' }],
+    });
+    expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(checkpoint);
+    expect(readdirSync(fixture.backupRoot)).toEqual([]);
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(retained)).toEqual(serverBytes);
+  });
+
   it.each(['Server', 'Workspace'] as const)(
     'refuses retained %s Item and event history whose required native Turn is missing',
     async (evidenceOwner) => {
@@ -1424,27 +1478,32 @@ describe('cancelled-admission cleanup global native absence', () => {
       const requestId = '0190f4c8-0000-7000-8000-000000001203';
       writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
       await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
-      const threadId =
-        evidenceOwner === 'Server'
-          ? (await fixture.store.createServerThread('Retained Server history')).id
-          : fixture.threadId;
-      const turn =
-        evidenceOwner === 'Server'
-          ? await fixture.store.createServerTurn(
-              threadId,
-              'Retained history requires its native Turn authority',
-              ACTOR,
-              null,
-              { turnId: identity.turnId }
-            )
-          : await fixture.store.createTurn(
-              fixture.workspaceId,
-              threadId,
-              'Retained history requires its native Turn authority',
-              ACTOR,
-              null,
-              { turnId: identity.turnId }
-            );
+      const server = evidenceOwner === 'Server' ? await openTestServerWork(fixture.coreDb) : null;
+      if (server) onTestFinished(() => server.reader.close());
+      const threadId = server
+        ? (
+            await server.store.createServerThread('Retained Server history', undefined, undefined, {
+              actor: ACTOR,
+              credentialRef: null,
+            })
+          ).id
+        : fixture.threadId;
+      const turn = server
+        ? await server.store.createServerTurn(
+            threadId,
+            'Retained history requires its native Turn authority',
+            ACTOR,
+            null,
+            { turnId: identity.turnId }
+          )
+        : await fixture.store.createTurn(
+            fixture.workspaceId,
+            threadId,
+            'Retained history requires its native Turn authority',
+            ACTOR,
+            null,
+            { turnId: identity.turnId }
+          );
       const item = {
         id: testEntityId('it', `missing_native_turn_authority_${evidenceOwner}`),
         owner: turn.owner,
@@ -1457,10 +1516,10 @@ describe('cancelled-admission cleanup global native absence', () => {
         createdAt: turn.startedAt!,
         completedAt: turn.startedAt!,
       };
-      if (evidenceOwner === 'Server') {
+      if (server) {
         expect(turn.owner).toEqual({ kind: 'server' });
-        const retainedItem = await fixture.store.createServerItem(item);
-        const event = await fixture.store.persistServerTurnEvent(turn.id, {
+        const retainedItem = await server.store.createServerItem(item);
+        const event = await server.store.persistServerTurnEvent(turn.id, {
           event: 'item.completed',
           threadId,
           turnId: turn.id,
@@ -1486,8 +1545,10 @@ describe('cancelled-admission cleanup global native absence', () => {
         identity.turnId
       );
       expect(checkpointBefore).not.toBeNull();
+      server?.reader.close();
       await closeFixture(fixture);
       const corePath = join(fixture.dataRoot, 'server', 'db', 'core.sqlite');
+      const serverPath = serverStoragePath(fixture.dataRoot, 'server-work');
       const workspacePath = join(
         fixture.dataRoot,
         'workspaces',
@@ -1495,7 +1556,7 @@ describe('cancelled-admission cleanup global native absence', () => {
         'db',
         'workspace.sqlite'
       );
-      const sqlite = new Database(evidenceOwner === 'Server' ? corePath : workspacePath, {
+      const sqlite = new Database(evidenceOwner === 'Server' ? serverPath : workspacePath, {
         fileMustExist: true,
       });
       try {
@@ -1539,11 +1600,9 @@ describe('cancelled-admission cleanup global native absence', () => {
         'workspace_registry',
         'workspace_members',
         'scheduler_admission_entries',
-        'control_threads',
-        'control_turns',
-        'control_product_entries',
         'idempotency_requests',
       ];
+      const serverTables = ['control_threads', 'control_turns', 'control_product_entries'];
       const workspaceTables = [
         'control_workspaces',
         'control_threads',
@@ -1569,6 +1628,7 @@ describe('cancelled-admission cleanup global native absence', () => {
             : [],
         }));
       const coreBefore = retainedRows(corePath, coreTables);
+      const serverBefore = retainedRows(serverPath, serverTables);
       const workspaceBefore = retainedRows(workspacePath, workspaceTables);
       const bytesBefore = retainedBytes();
       expect(bytesBefore[evidenceOwner === 'Server' ? 0 : 1]!.files.length).toBeGreaterThanOrEqual(
@@ -1595,10 +1655,136 @@ describe('cancelled-admission cleanup global native absence', () => {
         ]);
         expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(checkpointBefore);
         expect(retainedRows(corePath, coreTables)).toEqual(coreBefore);
+        expect(retainedRows(serverPath, serverTables)).toEqual(serverBefore);
         expect(retainedRows(workspacePath, workspaceTables)).toEqual(workspaceBefore);
         expect(retainedBytes()).toEqual(bytesBefore);
         expect(schedulerSnapshot(fixture.dataRoot)).toEqual(schedulerBefore);
         expect(readdirSync(fixture.backupRoot, { recursive: true }).sort()).toEqual(backupBefore);
+      }
+    }
+  );
+
+  it.each(['before inspection', 'after backup'] as const)(
+    'preserves a checkpoint when a Server Turn admission appears %s before publication',
+    async (timing) => {
+      const fixture = await createFixture();
+      const identity = identityFor(
+        fixture,
+        testEntityId('tu', 'applied_unpublished_server_admission')
+      );
+      const requestId = '0190f4c8-0000-7000-8000-000000001301';
+      writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+      await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+      const expected = getWorkerCheckpoint(
+        fixture.workspaceDb,
+        identity.workspaceId,
+        identity.threadId,
+        identity.turnId
+      );
+      expect(expected).not.toBeNull();
+
+      const commitUnpublishedAdmission = async (coreDb: CoreDb) => {
+        const server = await openTestServerWork(coreDb);
+        try {
+          const thread = await server.store.createServerThread(
+            'Server admission collision',
+            undefined,
+            undefined,
+            { actor: ACTOR, credentialRef: null }
+          );
+          // Let the real Core writer commit its decision and withhold only the local publication.
+          const settle = vi.spyOn(server.binding.owner, 'settle').mockResolvedValueOnce({
+            state: 'unavailable',
+            owner: 'server-work',
+            reason: 'recovery-required',
+          });
+          try {
+            await expect(
+              server.store.createServerTurn(
+                thread.id,
+                'An applied admission contradicts checkpoint absence',
+                ACTOR,
+                null,
+                { turnId: identity.turnId }
+              )
+            ).rejects.toMatchObject({ code: 'operation_storage_unavailable' });
+            expect(settle).toHaveBeenCalledTimes(1);
+            const receipt = settle.mock.calls[0]![0];
+            expect(receipt).toMatchObject({
+              disposition: 'applied',
+              intent: { verb: 'admit-turn', target: { turnId: identity.turnId } },
+            });
+            expect(inspectServerWorkReceipt(coreDb, receipt.intent, true)).toEqual({
+              state: 'settled',
+              receipt,
+            });
+            expect(
+              readStagedServerWork(server.reader.sqlite, receipt.intent.requestId)?.receipt
+            ).toBeNull();
+            expect(server.store.listServerThreadTurns(thread.id)).toEqual([]);
+          } finally {
+            settle.mockRestore();
+          }
+        } finally {
+          server.reader.close();
+        }
+      };
+      if (timing === 'before inspection') await commitUnpublishedAdmission(fixture.coreDb);
+      await closeFixture(fixture);
+
+      const clean = (apply: boolean) =>
+        cleanCancelledAdmissionTaskCheckpoints({
+          apply,
+          backupRoot: fixture.backupRoot,
+          checkpoints: [identity],
+          dataRoot: fixture.dataRoot,
+        });
+      if (timing === 'before inspection') {
+        for (const apply of [false, true])
+          await expect(clean(apply)).resolves.toMatchObject({
+            removedCount: 0,
+            backupRoot: null,
+            rows: [{ ...identity, decision: 'refused', reason: 'mismatched-turn-lineage' }],
+          });
+      } else {
+        await expect(clean(false)).resolves.toMatchObject({
+          rows: [{ ...identity, decision: 'removable', reason: 'cancelled-admission' }],
+        });
+        const backup = Database.prototype.backup;
+        const afterBackup = vi
+          .spyOn(Database.prototype, 'backup')
+          .mockImplementationOnce(async function (
+            this: Database.Database,
+            ...args: Parameters<typeof backup>
+          ) {
+            const copied = await backup.apply(this, args);
+            const coreDb = openCoreDb(fixture.dataRoot);
+            try {
+              await commitUnpublishedAdmission(coreDb);
+            } finally {
+              await shutdownControlStoreWorkerClient();
+              coreDb.sqlite.close();
+            }
+            return copied;
+          });
+        try {
+          await expect(clean(true)).resolves.toMatchObject({
+            removedCount: 0,
+            backupRoot: fixture.backupRoot,
+            rows: [{ ...identity, decision: 'refused', reason: 'changed-before-delete' }],
+          });
+          expect(afterBackup).toHaveBeenCalledTimes(1);
+        } finally {
+          afterBackup.mockRestore();
+        }
+      }
+      const workspace = openWorkspaceDb(fixture.dataRoot, identity.workspaceId);
+      try {
+        expect(
+          getWorkerCheckpoint(workspace, identity.workspaceId, identity.threadId, identity.turnId)
+        ).toEqual(expected);
+      } finally {
+        workspace.sqlite.close();
       }
     }
   );
@@ -1631,18 +1817,27 @@ describe('cancelled-admission cleanup global native absence', () => {
       let missingRoot: string | null = null;
       const retainedRoot = join(fixture.dataRoot, 'preserved-history-root');
       if (kind === 'Server Turn') {
-        const serverThread = await fixture.store.createServerThread('Retained Server service');
-        const serverTurn = await fixture.store.createServerTurn(
+        const server = await openTestServerWork(fixture.coreDb);
+        onTestFinished(() => server.reader.close());
+        const serverThread = await server.store.createServerThread(
+          'Retained Server service',
+          undefined,
+          undefined,
+          { actor: ACTOR, credentialRef: null }
+        );
+        const serverTurn = await server.store.createServerTurn(
           serverThread.id,
           'Published service history contradicts checkpoint absence',
           ACTOR,
           null,
-          { turnId: identity.turnId, status: 'completed' }
+          { turnId: identity.turnId }
         );
         expect(serverThread.owner).toEqual({ kind: 'server' });
         expect(serverTurn.owner).toEqual({ kind: 'server' });
         expect(serverTurn).not.toHaveProperty('workspaceId');
-        expect(fixture.store.getServerTurnTranscript(serverTurn.id)).toHaveLength(1);
+        expect(serverTurn.status).toBe('running');
+        expect(server.store.getServerTurnById(serverTurn.id)).toEqual(serverTurn);
+        server.reader.close();
       } else {
         const unrelated = await publishUnrelatedTurn(fixture.store, fixture.dataRoot);
         recordWorkspaceOwnerMembership({
@@ -1678,6 +1873,7 @@ describe('cancelled-admission cleanup global native absence', () => {
       await closeFixture(fixture);
       if (missingRoot) renameSync(missingRoot, retainedRoot);
       const corePath = join(fixture.dataRoot, 'server', 'db', 'core.sqlite');
+      const serverPath = serverStoragePath(fixture.dataRoot, 'server-work');
       const workspacePath = join(
         fixture.dataRoot,
         'workspaces',
@@ -1700,11 +1896,9 @@ describe('cancelled-admission cleanup global native absence', () => {
         'workspace_registry',
         'workspace_members',
         'scheduler_admission_entries',
-        'control_threads',
-        'control_turns',
-        'control_product_entries',
         'idempotency_requests',
       ];
+      const serverTables = ['control_threads', 'control_turns', 'control_product_entries'];
       const workspaceTables = [
         'control_workspaces',
         'control_threads',
@@ -1714,6 +1908,7 @@ describe('cancelled-admission cleanup global native absence', () => {
         'worker_turn_checkpoints',
       ];
       const coreBefore = rows(corePath, coreTables);
+      const serverBefore = rows(serverPath, serverTables);
       const workspaceBefore = rows(workspacePath, workspaceTables);
       const retainedFiles = (root: string) =>
         existsSync(root)
@@ -1744,9 +1939,12 @@ describe('cancelled-admission cleanup global native absence', () => {
           expect(result.outcome).toBe('blocked');
           expect(result.rows[0]?.reason).toBe('unreadable-history');
           expect(existsSync(missingRoot!)).toBe(false);
+        } else {
+          expect(result.rows[0]?.reason).toBe('mismatched-turn-lineage');
         }
         expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(checkpointBefore);
         expect(rows(corePath, coreTables)).toEqual(coreBefore);
+        expect(rows(serverPath, serverTables)).toEqual(serverBefore);
         expect(rows(workspacePath, workspaceTables)).toEqual(workspaceBefore);
         expect(new FsStore({ dataRoot: fixture.dataRoot }).getTurnById(healthyTurn.id)).toEqual(
           healthyBefore

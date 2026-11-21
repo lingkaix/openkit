@@ -268,13 +268,31 @@ import {
   CommunicationWriterCommandSchema,
   CommunicationWriterReplySchema,
 } from './storage/communication-writer.js';
+import { verifyOrdinaryServerGatewayAuthority } from './storage/control-store-server-work-authority.js';
 import {
   type CommunicationOwnerBinding,
   getControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
+import { readContainmentEvidenceHandoff } from './storage/core-journal-native.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
 import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
+import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
+import { readServerCallUsageIds } from './storage/server-work-call.js';
+import {
+  type ServerWorkCommandBinding,
+  serverWorkUnavailable,
+} from './storage/server-work-command.js';
+import {
+  inspectServerWorkContainmentEvidence,
+  publishContainmentEvidenceHandoff,
+} from './storage/server-work-evidence.js';
+import {
+  isServerWorkPublished,
+  readServerWorkIntent,
+  readServerWorkLocalReceipt,
+  readStagedServerWork,
+} from './storage/server-work-intents.js';
 import type { StorageResult, StorageUnavailable } from './storage/storage-owner.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
@@ -661,6 +679,65 @@ export function createDefaultVaultUnlockState(
     backendKind: 'encrypted-file',
     storeDir: join(input.dataRoot, 'server', 'vault'),
   });
+}
+
+export { runKernelRepair } from './llm/kernel-repair-composition.js';
+
+/** Supplies the existing native Server owner, exact Core receipts and current Gateway authority. */
+export async function prepareServerWorkOwner(
+  coreDb: CoreDb,
+  currentRuntimeConfig: () => RuntimeConfigSnapshot
+) {
+  const writer = getControlStoreWorkerClient();
+  const kernel = writer.serverWorkKernel(coreDb);
+  const binding = await writer.bindServerWorkOwner(
+    coreDb.dataRoot,
+    {
+      inspectServerWorkContainmentEvidence,
+      publishContainmentEvidenceHandoff,
+      readServerWorkIntent,
+      readServerWorkLocalReceipt,
+      readServerCallUsageIds,
+      readStagedServerWork,
+      isServerWorkPublished,
+    },
+    { inspectServerWork: kernel.inspectServerWork, readContainmentEvidenceHandoff }
+  );
+  if (binding.state === 'unavailable') return binding;
+
+  const command: ServerWorkCommandBinding = {
+    deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+    owner: binding.value,
+    kernel,
+    withProducer: async (effect) => {
+      const accepted = await binding.value.withProducer(async () => {
+        try {
+          return { state: 'completed' as const, value: await effect() };
+        } catch (error) {
+          return { state: 'failed' as const, error };
+        }
+      });
+      if (accepted.state === 'unavailable') throw serverWorkUnavailable();
+      if (accepted.value.state === 'failed') throw accepted.value.error;
+      return accepted.value.value;
+    },
+    // Ordinary Gateway Calls have no independent Budget resource in this format.
+    callBudgetRef: () => null,
+    verifyCallAuthority: ({ target }) => {
+      const snapshot = currentRuntimeConfig();
+      if (
+        target.budgetRef !== null ||
+        snapshot.openKitConfig.security?.pauseAgentWork ||
+        !snapshot.gatewayConfig.enabled ||
+        !snapshot.gatewayConfig.logicalModels.some((model) => model.id === target.routeRef)
+      )
+        return false;
+      if (target.actor.kind === 'system' && target.actor.id === 'knowledge-manager')
+        return target.credentialRef === null && target.threadId !== null && target.turnId !== null;
+      return verifyOrdinaryServerGatewayAuthority(coreDb, target);
+    },
+  };
+  return { state: 'ready' as const, value: command };
 }
 
 type PrepareCommunicationOwner = Omit<
@@ -2328,6 +2405,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     boundProviderIds: boundProviderIdsForSubscriptionAccount,
   };
 
+  const serverWork = sharedStore.getServerWorkBinding();
   registerLlmGatewayRoutes({
     app,
     exposureAvailable: () => operationExposureAvailable('GET /v1/models'),
@@ -2335,6 +2413,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     requestStore,
     llmGatewayDispatcher,
+    ...(serverWork ? { serverWork } : {}),
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     resolveGatewayProvider,
     runtimeConfig,

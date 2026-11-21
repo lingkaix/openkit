@@ -14,6 +14,7 @@ import {
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { type DataRootLock, retainDataRootLock } from '../bootstrap/lock.js';
 import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js';
 import { resolveDataRoot } from '../config/data-root.js';
 import { BootConfigError } from '../config/mode.js';
@@ -104,6 +105,35 @@ export async function openServerOwnerReadConnection(
   const file = await inspectServerOwnerFile(dataRoot, owner);
   if (!file) throw new ServerOwnerAdmissionError('recovery-required');
   assertCurrent(`${file.dev}:${file.ino}`);
+  return openServerOwnerQueryOnly(path);
+}
+
+/** Reads existing owner history while the caller holds this stopped root exclusively. */
+export async function withStoppedServerOwnerReadConnection<Value>(
+  dataRoot: string,
+  owner: SplitStorageOwner,
+  lock: DataRootLock,
+  read: (sqlite: Database.Database) => Value
+): Promise<Awaited<Value>> {
+  const release = retainDataRootLock(lock, dataRoot);
+  if (!release) throw new ServerOwnerAdmissionError('recovery-required');
+  let sqlite: Database.Database | undefined;
+  try {
+    if (!(await inspectServerOwnerFile(dataRoot, owner)))
+      throw new ServerOwnerAdmissionError('recovery-required');
+    sqlite = openServerOwnerQueryOnly(serverStoragePath(dataRoot, owner));
+    assertCurrentServerOwnerSchema(sqlite, owner, () => openSqliteConnection(':memory:', {}));
+    return await read(sqlite);
+  } finally {
+    try {
+      sqlite?.close();
+    } finally {
+      release();
+    }
+  }
+}
+
+function openServerOwnerQueryOnly(path: string): Database.Database {
   const sqlite = openSqliteConnection(path, { fileMustExist: true, readonly: true });
   try {
     sqlite.pragma('query_only = ON');

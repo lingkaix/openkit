@@ -4,6 +4,7 @@ import {
   AuditEventIdSchema,
   canonicalIdentifierName,
   compareCodeUnits,
+  deriveEntityId,
   PolicyDigestV1Schema,
   readRetainedV1,
   WorkspaceIdSchema,
@@ -47,6 +48,8 @@ import {
   ChannelInboundOriginSchema,
   ChannelInboundOutcomeSchema,
   PairingAuditIntentSchema,
+  ServerWorkKernelIntentSchema,
+  ServerWorkKernelRefusalSchema,
 } from './control-store-admission-codecs.js';
 import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
@@ -59,6 +62,7 @@ import {
   type WorkspaceDb,
 } from './db.js';
 import { coreDbPath, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
+import type { ServerWorkIntent, ServerWorkReceipt } from './server-work-port.js';
 import type { StorageReceiptLookup } from './storage-owner.js';
 import { storageReceipt, storageRequestId } from './storage-owner.js';
 
@@ -378,6 +382,94 @@ export function writeChannelInboundSettlement(
     receipt,
   });
   return receipt;
+}
+
+const serverWorkReceiptCarriage = z.strictObject({
+  intent: ServerWorkKernelIntentSchema,
+  receiptDigest: PolicyDigestV1Schema,
+});
+const retainedServerWorkReceiptSchema = z.discriminatedUnion('disposition', [
+  serverWorkReceiptCarriage.extend({
+    disposition: z.literal('applied'),
+    result: z.strictObject({ decisionRef: AuditEventIdSchema }),
+  }),
+  serverWorkReceiptCarriage.extend({
+    disposition: z.literal('refused'),
+    reason: ServerWorkKernelRefusalSchema,
+  }),
+]);
+
+export function serverWorkDecisionEventId(requestId: string): string {
+  return deriveEntityId('aud', [requestId, 'server-work-decision/v1']);
+}
+
+export function serverWorkAuditResource(intent: ServerWorkIntent): string {
+  const { target } = intent;
+  if ('callId' in target) return `call:${target.callId}`;
+  if ('turnId' in target) return `turn:${target.turnId}`;
+  return `thread:${target.threadId}`;
+}
+
+/** Reads the original complete kernel decision and its covering Audit. */
+export function inspectServerWorkReceipt<Intent extends ServerWorkIntent>(
+  db: CoreDb,
+  input: Intent,
+  completeHistory: boolean
+): StorageReceiptLookup<ServerWorkReceipt<Intent>> {
+  const parsed = ServerWorkKernelIntentSchema.safeParse(input);
+  if (!parsed.success || input.requestId !== storageRequestId(input)) return { state: 'conflict' };
+  const row = readKernelRequestRow(db, input.requestId);
+  if (!row) return { state: completeHistory ? 'absent' : 'unknown' };
+  try {
+    const receipt = readRetainedV1(row, () =>
+      retainedServerWorkReceiptSchema.parse(JSON.parse(row.responseJson ?? 'null'))
+    );
+    const eventId = serverWorkDecisionEventId(receipt.intent.requestId);
+    const { intent, receiptDigest, ...outcome } = receipt;
+    if (
+      !matchesKernelRequestRow(row, intent, eventId) ||
+      receiptDigest !== storageReceipt(intent, outcome).receiptDigest ||
+      (receipt.disposition === 'applied' && receipt.result.decisionRef !== eventId)
+    )
+      return { state: 'unknown' };
+    if (canonicalIdentifierName(intent) !== canonicalIdentifierName(parsed.data))
+      return { state: 'conflict' };
+    const eventRow = db.sqlite
+      .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
+      .get(eventId);
+    if (!eventRow) return { state: 'unknown' };
+    const event = auditEventFromRow(eventRow);
+    if (
+      event.workspaceId !== null ||
+      event.requestId !== intent.requestId ||
+      event.action !== `server-work.${intent.verb}` ||
+      event.createdAt !== row.createdAt ||
+      event.resource !== serverWorkAuditResource(intent) ||
+      canonicalIdentifierName(event.actor) !== canonicalIdentifierName(intent.target.actor) ||
+      event.outcome !== (receipt.disposition === 'applied' ? 'succeeded' : 'denied') ||
+      event.errorCode !==
+        (receipt.disposition === 'applied' ? null : `server_work_${receipt.reason}`)
+    )
+      return { state: 'unknown' };
+    return { state: 'settled', receipt: receipt as ServerWorkReceipt<Intent> };
+  } catch {
+    return { state: 'unknown' };
+  }
+}
+
+export function writeServerWorkReceipt<Intent extends ServerWorkIntent>(
+  db: CoreDb,
+  receipt: ServerWorkReceipt<Intent>,
+  createdAt: string
+): void {
+  const original = retainedServerWorkReceiptSchema.parse(receipt);
+  insertKernelRequest(
+    db,
+    original.intent,
+    serverWorkDecisionEventId(original.intent.requestId),
+    original,
+    createdAt
+  );
 }
 
 /** One row serializer on an actual scoped connection; command entry points retain authority, transaction and maintenance ownership. */

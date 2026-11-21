@@ -2,6 +2,7 @@ import { canonicalJsonText, SystemPromptDigestSchema } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import type { persistLlmCapabilityCallSystemPromptDigestInDb } from '../capability/usage-ledger-native.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { serverWorkUnavailable } from '../storage/server-work-command.js';
 
 /** Gateway endpoint family that carries a pre-adapter system prompt. */
 export type LlmSystemPromptEndpoint = 'chat_completions' | 'responses';
@@ -116,16 +117,7 @@ export function digestLlmSystemPrompt(input: {
 export function persistLlmCapabilityCallSystemPromptDigest(
   input: Parameters<typeof persistLlmCapabilityCallSystemPromptDigestInDb>[0]
 ): Promise<void> {
-  if (input.workspaceDb.scope === 'core')
-    return getControlStoreWorkerClient()
-      .coreCapability(input.workspaceDb, {
-        kind: 'server-attribution',
-        callId: input.callId,
-        systemPromptDigest: SystemPromptDigestSchema.parse(input.systemPromptDigest),
-      })
-      .then((result) => {
-        if (result !== null) throw new TypeError('Invalid native prompt attribution result.');
-      });
+  if (input.workspaceDb.scope !== 'workspace') return Promise.reject(serverWorkUnavailable());
   return getControlStoreWorkerClient()
     .workspaceCapability(input.workspaceDb, {
       kind: 'attribution',

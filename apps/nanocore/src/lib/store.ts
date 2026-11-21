@@ -1,4 +1,5 @@
 import { AuditEventIdSchema, ItemDeltaEventSchema, RequestIdSchema } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   contextInfluenceWasCleared,
@@ -57,7 +58,6 @@ import {
   knowledgeProposalId,
 } from '../storage/knowledge-proposal-codecs.js';
 import {
-  decidedTurnFieldsConflict,
   displayProjectionFieldsEqual,
   stopReasonMatchesSealedStatus,
   terminalTurnPublicationConflict,
@@ -243,11 +243,12 @@ import {
 import type { ControlMcpItemCall } from '../storage/control-store-capability.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
-import type { ControlProductMutation } from '../storage/control-store-product-records.js';
 import {
   type ControlProductEntry,
   ControlProductEntrySchema,
+  type ControlProductMutation,
   type ControlProductOwner,
+  type ControlStoreProductReadHandle,
   closeWorkspaceProductReadHandles,
   decode as decodeControlProduct,
   getWorkspaceProductReadHandle,
@@ -268,16 +269,15 @@ import {
   nativeUserDatabasePath,
 } from '../storage/control-store-worker-client.js';
 import {
-  bindCoreSqlite,
   bindWorkspaceSqlite,
   type CoreDb,
+  openCoreReadDb,
   openWorkspaceDbAtRoot,
   openWorkspaceReadDb,
   type UserDb,
   type WorkspaceDb,
 } from '../storage/db.js';
 import {
-  coreDbPath,
   ensureLayoutDirectories,
   ensureWorkspaceLayout,
   resolveDataRootPath,
@@ -300,6 +300,21 @@ import {
 } from '../storage/server-thread-records.js';
 import { assertServerTurnEventLineage } from '../storage/server-turn-event-lineage.js';
 import {
+  publishServerWorkDraft,
+  type ServerWorkCommandBinding,
+  serverWorkBindingAvailable,
+  serverWorkIntent,
+  serverWorkUnavailable,
+  withServerWorkProducer,
+} from '../storage/server-work-command.js';
+import {
+  readServerTurnAdmission,
+  readStagedServerWork,
+  type ServerTurnAdmission,
+} from '../storage/server-work-intents.js';
+import { serverWorkProductScope } from '../storage/server-work-product-reads.js';
+import { storageRequestId } from '../storage/storage-owner.js';
+import {
   AgentSessionRecordSchema,
   assertCanonicalDirectory,
   assertCanonicalRegularFile,
@@ -315,7 +330,6 @@ import {
   loadWorkspace,
   loadWorkspaceFileRecords,
   type NativeProductScope,
-  nativeProductMetadataScope,
   nativeProductScope,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgePage,
@@ -875,7 +889,7 @@ export type CreateServerTurnOptions = Pick<
   | 'triggerSource'
   | 'agentId'
   | 'captureCoverage'
-> & { status?: Turn['status']; completedAt?: string };
+> & { status?: Turn['status']; completedAt?: string; serverWorkCredentialRef?: string | null };
 
 const SERVER_TURN_UPDATE_FIELDS = [
   'externallyInfluenced',
@@ -972,6 +986,10 @@ export interface FsStoreOptions {
   dataRoot?: string;
   /** Actual admitted Workspace connection, borrowed for the existing native read/compute lifetime. */
   nativeProductScope?: NativeProductScope;
+  /** Borrows the acknowledged Server-work reader for the Store lifetime. */
+  serverWorkReader?: ControlStoreProductReadHandle;
+  /** Exact existing-only producer and independent Core decision. */
+  serverWork?: ServerWorkCommandBinding;
   /** Original Main admission facts supplied only to the native request lifetime. */
   scopeRefusals?: readonly ScopeAdmissionFailure[];
 }
@@ -1042,11 +1060,11 @@ function isCommandRequestExpired(record: CommandRequestRecord, referenceTime: st
 export function quickChatWorkspaceIdForUser(userId: string, dataRoot?: string | null): string {
   const initialId = deriveEntityId('ws', ['quick_chat', userId]);
   if (!dataRoot) return initialId;
-  const core = openControlStoreProductReadHandle(coreDbPath(dataRoot), { kind: 'server' });
+  const core = openCoreReadDb(dataRoot);
   try {
     return resolvePersonalWorkspaceIdInDb(core, userId);
   } finally {
-    core.close();
+    core.sqlite.close();
   }
 }
 
@@ -1182,15 +1200,24 @@ export class FsStore {
   private readonly dataRoot: string | null;
   /** A request-scoped existing owner binding; never an owned connection or a second Store. */
   private readonly borrowedProductScope?: NativeProductScope;
+  private readonly serverWork: ServerWorkCommandBinding | undefined;
+  private readonly serverWorkReader: ControlStoreProductReadHandle | undefined;
   private readonly suppliedScopeRefusals: readonly ScopeAdmissionFailure[] | undefined;
 
   /** Validates native product closure and file-owned resources after their native journals are present. */
-  public static validateFileAuthority(dataRoot: string): void {
-    const server = loadServerThreadRecords(dataRoot);
-    const serverIds = new Set([
-      ...server.threads.map(({ id }) => id),
-      ...server.turns.flatMap((turn) => [turn.id, ...turn.items.map(({ id }) => id)]),
-    ]);
+  public static validateFileAuthority(
+    dataRoot: string,
+    serverWorkReader?: ControlStoreProductReadHandle
+  ): void {
+    const server = serverWorkReader && loadServerThreadRecords(dataRoot, serverWorkReader);
+    const serverIds = new Set(
+      server
+        ? [
+            ...server.threads.map(({ id }) => id),
+            ...server.turns.flatMap((turn) => [turn.id, ...turn.items.map(({ id }) => id)]),
+          ]
+        : []
+    );
     for (const records of loadWorkspaceFileRecords(dataRoot)) {
       try {
         FsStore.readWorkspaceHistory(
@@ -1254,6 +1281,8 @@ export class FsStore {
       options.dataRoot ?? (process.env.OPENKIT_DATA_ROOT ? resolveDataRoot(process.env) : null);
 
     this.suppliedScopeRefusals = options.scopeRefusals;
+    this.serverWorkReader = options.serverWorkReader;
+    this.serverWork = options.serverWork;
     if (options.nativeProductScope) {
       const scope = options.nativeProductScope;
       if (
@@ -1277,20 +1306,22 @@ export class FsStore {
       this.liveCaptureCoverage = captureCoverageBindingFromOpenKitConfig(
         loadOpenKitConfig(this.dataRoot)
       );
-      const serverRecords = loadServerThreadRecords(this.dataRoot);
-      for (const thread of serverRecords.threads) this.serverThreads.set(thread.id, thread);
-      for (const turn of serverRecords.turns) {
-        this.serverTurns.set(turn.id, turn);
-        for (const item of turn.items) this.serverItems.set(item.id, item);
-        const events = serverRecords.turnEvents.get(turn.id) ?? [];
-        this.serverStreams.set(turn.id, {
-          sequence: events.at(-1)?.sequence ?? 0,
-          events: events.slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
-          listeners: new Set(),
-        });
+      if (this.serverWorkReader) {
+        const serverRecords = loadServerThreadRecords(this.dataRoot, this.serverWorkReader);
+        for (const thread of serverRecords.threads) this.serverThreads.set(thread.id, thread);
+        for (const turn of serverRecords.turns) {
+          this.serverTurns.set(turn.id, turn);
+          for (const item of turn.items) this.serverItems.set(item.id, item);
+          const events = serverRecords.turnEvents.get(turn.id) ?? [];
+          this.serverStreams.set(turn.id, {
+            sequence: events.at(-1)?.sequence ?? 0,
+            events: events.slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
+            listeners: new Set(),
+          });
+        }
+        for (const [turnId, binding] of serverRecords.turnCaptureCoverage)
+          this.turnCaptureCoverage.set(turnId, binding);
       }
-      for (const [turnId, binding] of serverRecords.turnCaptureCoverage)
-        this.turnCaptureCoverage.set(turnId, binding);
       const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot);
 
       if (workspaceRecords.length > 0) {
@@ -1515,7 +1546,7 @@ export class FsStore {
             ...(await prepareRetainedProductJson(
               scope.contentMount,
               scope.owner,
-              join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+              join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
               writeRetainedV1(updated)
             )),
           };
@@ -3009,23 +3040,17 @@ export class FsStore {
       const root = this.workspaceRootPath(workspaceId);
       if (!lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) {
         // An unpublished target has no Workspace authority; known identity still requires recovery.
-        const core = openControlStoreProductReadHandle(
-          join(this.dataRoot, 'server', 'db', 'core.sqlite'),
-          { kind: 'server' }
-        );
+        const core = openCoreReadDb(this.dataRoot);
         try {
           if (
             this.workspaces.has(workspaceId) ||
-            getWorkspaceRegistryLifecycleFact(
-              bindCoreSqlite(core.sqlite, this.dataRoot),
-              workspaceId
-            )
+            getWorkspaceRegistryLifecycleFact(core, workspaceId)
           ) {
             refuseScope(this.dataRoot, { scope: 'workspace', id: workspaceId, check: 'database' });
             this.assertWorkspacePublicationAcknowledged(workspaceId);
           }
         } finally {
-          core.close();
+          core.sqlite.close();
         }
         throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
       }
@@ -3323,14 +3348,19 @@ export class FsStore {
     progressItem?: ControlItemAppend
   ): Promise<T> {
     if (!this.dataRoot) return prepare(input);
+    if (owner.kind === 'server') {
+      const binding = this.getServerWorkBinding();
+      if (!binding?.owner.publishTurnProgress) return Promise.reject(serverWorkUnavailable());
+      return withServerWorkProducer(binding, () => prepare(input));
+    }
     const scope = this.nativeScope(owner);
     return getControlStoreWorkerClient().runTurnPublication(
       {
-        database: `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`,
+        database: `workspace:${scope.path}`,
         path: scope.path,
         dataRoot: this.dataRoot,
         create: false,
-        initialize: owner.kind === 'server' ? 'core' : 'workspace',
+        initialize: 'workspace',
         productOwner: scope.owner,
         contentMount: scope.contentMount,
       },
@@ -3403,7 +3433,7 @@ export class FsStore {
     const content = await prepareRetainedProductJson(
       scope.contentMount,
       scope.owner,
-      join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+      join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
       writeRetainedV1(retained)
     );
     const entries: ControlProductEntry[] = [
@@ -3471,18 +3501,19 @@ export class FsStore {
       database = `user:${path}`;
       await client.open({ database, path, create: false, initialize: 'user' });
     } else {
-      const scope = this.nativeScope({ kind: 'server' });
-      if (resolve(db.sqlite.name) !== resolve(scope.path))
+      // This scope identifies the existing kernel Audit and receipt writer only.
+      const kernel = nativeProductScope(this.dataRoot, { kind: 'server' });
+      if (resolve(db.sqlite.name) !== resolve(kernel.path))
         throw new NotebookError('recovery_required');
-      database = `core:${scope.path}`;
+      database = `core:${kernel.path}`;
       await client.open({
         database,
-        path: scope.path,
+        path: kernel.path,
         dataRoot: this.dataRoot,
         create: false,
         initialize: 'core',
-        productOwner: scope.owner,
-        contentMount: scope.contentMount,
+        productOwner: kernel.owner,
+        contentMount: kernel.contentMount,
       });
     }
     if (
@@ -3617,10 +3648,37 @@ export class FsStore {
     }
   }
 
+  /** Supplies the current admitted Server owner and independent Core authority. */
+  public getServerWorkBinding(): ServerWorkCommandBinding | undefined {
+    if (!this.serverWorkReader?.sqlite.open || !serverWorkBindingAvailable(this.serverWork))
+      return undefined;
+    return this.serverWork;
+  }
+
+  /** Refuses durable Server mutations until the exact owner publication is wired. */
+  public assertServerWorkMutationAvailable(): void {
+    if (this.dataRoot && !this.getServerWorkBinding()) throw serverWorkUnavailable();
+  }
+
+  /** Carries the original published scope for an admitted Server Turn mutation. */
+  public getServerTurnAdmission(turnId: string): ServerTurnAdmission {
+    const { sqlite } = this.getServerWorkReadScope();
+    const admission = readServerTurnAdmission(sqlite, turnId);
+    if (!admission) throw serverWorkUnavailable();
+    return admission;
+  }
+
+  /** Borrows the existing acknowledged query-only Server work scope. */
+  public getServerWorkReadScope(): ReturnType<typeof serverWorkProductScope> {
+    if (!this.dataRoot) throw serverWorkUnavailable();
+    return serverWorkProductScope(this.dataRoot, this.serverWorkReader);
+  }
+
   /** Resolves the real admitted SQLite and private Storage owner, never an alias or synthetic Workspace. */
   private nativeScope(owner: ControlProductOwner): NativeProductScope {
     if (!this.dataRoot) throw new Error('Native product storage is not configured.');
-    if (owner.kind === 'workspace') this.assertWorkspacePublicationAcknowledged(owner.workspaceId);
+    if (owner.kind === 'server') return this.getServerWorkReadScope();
+    this.assertWorkspacePublicationAcknowledged(owner.workspaceId);
     const borrowed = this.borrowedProductScope;
     if (borrowed && isDeepStrictEqual(borrowed.owner, owner)) return borrowed;
     return nativeProductScope(this.dataRoot, owner);
@@ -3636,19 +3694,35 @@ export class FsStore {
     pending?: readonly ControlPendingCommandInput[],
     publicationGuard?: ControlStorePublicationGuard
   ): Promise<ControlAdmissionResult | undefined> {
-    const release =
-      scope.owner.kind === 'workspace'
-        ? this.enterWorkspaceMutation(scope.owner.workspaceId, 'capture')
-        : () => undefined;
+    if (scope.owner.kind === 'server') {
+      const binding = this.getServerWorkBinding();
+      if (
+        !binding?.owner.publishTurnProgress ||
+        admission ||
+        journalIntents?.length ||
+        pending?.length ||
+        publicationGuard
+      )
+        throw serverWorkUnavailable();
+      const turnId = entries[0]?.turnId ?? products.find(({ kind }) => kind === 'turn')?.record.id;
+      if (typeof turnId !== 'string') throw serverWorkUnavailable();
+      const applied = await binding.owner.publishTurnProgress(this.getServerTurnAdmission(turnId), {
+        products,
+        entries,
+      });
+      if (applied.state !== 'ready') throw serverWorkUnavailable();
+      return undefined;
+    }
+    const release = this.enterWorkspaceMutation(scope.owner.workspaceId, 'capture');
     try {
       const client = getControlStoreWorkerClient();
-      const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+      const database = `workspace:${scope.path}`;
       await client.open({
         database,
         path: scope.path,
         dataRoot: this.dataRoot!,
         create: false,
-        initialize: scope.owner.kind === 'server' ? 'core' : 'workspace',
+        initialize: 'workspace',
         productOwner: scope.owner,
         contentMount: scope.contentMount,
       });
@@ -3684,14 +3758,15 @@ export class FsStore {
     entries: ControlProductEntry[],
     category: ControlPublicationInput['category']
   ): Promise<void> {
+    if (scope.owner.kind === 'server') throw serverWorkUnavailable();
     const client = getControlStoreWorkerClient();
-    const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+    const database = `workspace:${scope.path}`;
     await client.open({
       database,
       path: scope.path,
       dataRoot: this.dataRoot!,
       create: false,
-      initialize: scope.owner.kind === 'server' ? 'core' : 'workspace',
+      initialize: 'workspace',
       productOwner: scope.owner,
       contentMount: scope.contentMount,
     });
@@ -3733,7 +3808,7 @@ export class FsStore {
         ...(await prepareRetainedProductJson(
           scope.contentMount,
           scope.owner,
-          join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+          join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
           writeRetainedV1(item)
         )),
       });
@@ -4131,7 +4206,7 @@ export class FsStore {
       content = await prepareRetainedProductJson(
         scope.contentMount,
         scope.owner,
-        join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
         writeRetainedV1(event)
       );
     }
@@ -4270,7 +4345,7 @@ export class FsStore {
   > {
     if (!this.dataRoot) return undefined;
     const owners: ControlProductOwner[] = [
-      { kind: 'server' },
+      ...(this.serverWorkReader?.sqlite.open ? [{ kind: 'server' as const }] : []),
       ...listDirectoryNames(join(this.dataRoot, 'workspaces'))
         // Match startup readers: refused scopes cannot participate in another owner's discovery.
         .filter(
@@ -4286,11 +4361,12 @@ export class FsStore {
       | undefined;
     for (const owner of owners) {
       if (kind === 'agent-session' && owner.kind === 'server') continue;
+      const serverScope = owner.kind === 'server' ? this.nativeScope(owner) : undefined;
       const root =
-        owner.kind === 'server'
-          ? join(this.dataRoot, 'server')
-          : join(this.dataRoot, 'workspaces', owner.workspaceId);
-      const path = join(root, 'db', owner.kind === 'server' ? 'core.sqlite' : 'workspace.sqlite');
+        owner.kind === 'workspace'
+          ? join(this.dataRoot, 'workspaces', owner.workspaceId)
+          : join(this.dataRoot, 'server');
+      const path = serverScope?.path ?? join(root, 'db', 'workspace.sqlite');
       let reader: ReturnType<typeof openControlStoreProductReadHandle> | undefined;
       try {
         if (owner.kind === 'workspace') {
@@ -4308,7 +4384,7 @@ export class FsStore {
                   ? this.borrowedProductScope.sqlite
                   : undefined
               )
-            : openControlStoreProductReadHandle(path, owner);
+            : openControlStoreProductReadHandle(path, owner, serverScope?.sqlite);
         if (owner.kind === 'workspace' && !reader.get('workspace', owner.workspaceId))
           throw new Error('The native Workspace identity is unavailable.');
       } catch (error) {
@@ -4402,10 +4478,9 @@ export class FsStore {
   /** Lists Server narratives for a caller already admitted by the Server authority owner. */
   public listServerThreads(): Thread[] {
     return this.dataRoot
-      ? listNativeProducts(
-          nativeProductMetadataScope(this.dataRoot!, { kind: 'server' }),
-          'thread'
-        ).map((row) => ThreadSchema.parse(row.record))
+      ? listNativeProducts(this.nativeScope({ kind: 'server' }), 'thread').map((row) =>
+          ThreadSchema.parse(row.record)
+        )
       : structuredClone([...this.serverThreads.values()]);
   }
 
@@ -4413,8 +4488,10 @@ export class FsStore {
   public async createServerThread(
     title: string,
     threadId?: string,
-    entryPath: Thread['entryPath'] = 'knowledge-manager'
+    entryPath: Thread['entryPath'] = 'knowledge-manager',
+    authority?: { readonly actor: ActorRef; readonly credentialRef: string | null }
   ): Promise<Thread> {
+    this.assertServerWorkMutationAvailable();
     const thread = ThreadSchema.parse({
       id: threadId ?? allocateEntityId('th'),
       owner: { kind: 'server' },
@@ -4434,9 +4511,26 @@ export class FsStore {
     )
       throw new Error(`Thread already exists: ${thread.id}`);
     if (this.dataRoot) {
-      await this.writeNativeProducts(this.nativeScope({ kind: 'server' }), [
-        { kind: 'thread', expectedRevision: 0, record: writeRetainedV1(thread) },
-      ]);
+      const binding = this.getServerWorkBinding();
+      if (!binding || !authority) throw serverWorkUnavailable();
+      const payload = JSON.stringify({
+        products: [{ kind: 'thread', expectedRevision: 0, record: writeRetainedV1(thread) }],
+        input: null,
+      });
+      await withServerWorkProducer(binding, () =>
+        publishServerWorkDraft(
+          binding,
+          serverWorkIntent(
+            binding,
+            'admit-thread',
+            thread.id,
+            null,
+            { ...authority, threadId: thread.id },
+            payload
+          ),
+          payload
+        )
+      );
       return this.getServerThread(thread.id);
     }
     this.serverThreads.set(thread.id, thread);
@@ -4446,11 +4540,9 @@ export class FsStore {
   /** Reads one canonical Server narrative after current Server authority admission. */
   public getServerThread(threadId: string): Thread {
     const thread = this.dataRoot
-      ? (readNativeProduct(
-          nativeProductMetadataScope(this.dataRoot!, { kind: 'server' }),
-          'thread',
-          threadId
-        )?.record as Thread | undefined)
+      ? (readNativeProduct(this.nativeScope({ kind: 'server' }), 'thread', threadId)?.record as
+          | Thread
+          | undefined)
       : this.serverThreads.get(threadId);
     if (!thread) throw new StoreRecordNotFoundError(`Server Thread not found: ${threadId}`);
     return ThreadSchema.parse(thread);
@@ -4461,19 +4553,12 @@ export class FsStore {
     threadId: string,
     input: Partial<Pick<Thread, 'name' | 'status'>>
   ): Promise<Thread> {
-    const scope = this.dataRoot ? this.nativeScope({ kind: 'server' }) : undefined;
-    const previous = scope ? readNativeProduct(scope, 'thread', threadId) : undefined;
-    const thread = previous ? ThreadSchema.parse(previous.record) : this.getServerThread(threadId);
+    if (this.dataRoot) throw serverWorkUnavailable();
+    const thread = this.getServerThread(threadId);
     for (const key of Object.keys(input))
       if (!['name', 'status'].includes(key))
         throw new Error(`Server Thread update cannot change field: ${key}`);
     const updated = ThreadSchema.parse({ ...thread, ...input, updatedAt: now() });
-    if (this.dataRoot) {
-      await this.writeNativeProducts(scope!, [
-        { kind: 'thread', expectedRevision: previous!.revision, record: writeRetainedV1(updated) },
-      ]);
-      return this.getServerThread(threadId);
-    }
     this.serverThreads.set(threadId, updated);
     return updated;
   }
@@ -4487,13 +4572,10 @@ export class FsStore {
     entries: ControlProductEntry[] = [],
     pending: readonly ControlPendingCommandInput[] = []
   ): Promise<void> {
-    const event = (
-      scope.owner.kind === 'server' ? ServerTurnEventEnvelopeSchema : SseEventEnvelopeSchema
-    ).parse({
+    if (scope.owner.kind === 'server') throw serverWorkUnavailable();
+    const event = SseEventEnvelopeSchema.parse({
       protocolVersion: PROTOCOL_VERSION,
-      ...(scope.owner.kind === 'server'
-        ? { owner: scope.owner }
-        : { workspaceId: scope.owner.workspaceId }),
+      workspaceId: scope.owner.workspaceId,
       threadId: turn.threadId,
       turnId: turn.id,
       requestId: null,
@@ -4519,18 +4601,18 @@ export class FsStore {
       ...(await prepareRetainedProductJson(
         scope.contentMount,
         scope.owner,
-        join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
         writeRetainedV1(event)
       )),
     });
     const client = getControlStoreWorkerClient();
-    const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+    const database = `workspace:${scope.path}`;
     await client.open({
       database,
       path: scope.path,
       dataRoot: this.dataRoot!,
       create: false,
-      initialize: scope.owner.kind === 'server' ? 'core' : 'workspace',
+      initialize: 'workspace',
       productOwner: scope.owner,
       contentMount: scope.contentMount,
     });
@@ -4561,6 +4643,7 @@ export class FsStore {
     configVersion: number | null = null,
     options: CreateServerTurnOptions = {}
   ): Promise<Turn> {
+    this.assertServerWorkMutationAvailable();
     const thread = this.getServerThread(threadId);
     if (thread.status === 'archived') throw new Error(`Server Thread is archived: ${threadId}`);
     const terminal = isSealedTurnTerminal(options.status ?? 'running');
@@ -4571,9 +4654,10 @@ export class FsStore {
       )
     )
       throw new Error(`Server Thread has a Turn in flight: ${threadId}`);
-    const timestamp = options.startedAt ?? now();
+    const { serverWorkCredentialRef = null, ...turnOptions } = options;
+    const timestamp = turnOptions.startedAt ?? now();
     const turn = TurnSchema.parse({
-      ...options,
+      ...turnOptions,
       id: options.turnId ?? allocateEntityId('tu'),
       owner: { kind: 'server' },
       threadId,
@@ -4601,26 +4685,9 @@ export class FsStore {
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'server' });
       const previousThread = readNativeProduct(scope, 'thread', threadId)!;
-      if (terminal) {
-        await this.createNativeTerminalTurn(
-          scope,
-          turn,
-          options.captureCoverage ?? this.liveCaptureCoverage,
-          [
-            {
-              kind: 'thread',
-              expectedRevision: previousThread.revision,
-              record: writeRetainedV1({
-                ...previousThread.record,
-                preview: input,
-                updatedAt: timestamp,
-              }),
-            },
-          ]
-        );
-        return this.getServerTurnById(turn.id);
-      }
-      await this.writeNativeProducts(scope, [
+      const binding = this.getServerWorkBinding();
+      if (!binding || terminal) throw serverWorkUnavailable();
+      const products = [
         {
           kind: 'thread',
           expectedRevision: previousThread.revision,
@@ -4639,7 +4706,27 @@ export class FsStore {
             captureCoverage: options.captureCoverage ?? this.liveCaptureCoverage,
           }),
         },
-      ]);
+      ];
+      const payload = JSON.stringify({ products, input });
+      await withServerWorkProducer(binding, () =>
+        publishServerWorkDraft(
+          binding,
+          serverWorkIntent(
+            binding,
+            'admit-turn',
+            turn.id,
+            String(previousThread.revision),
+            {
+              actor: triggerActor,
+              credentialRef: serverWorkCredentialRef,
+              threadId,
+              turnId: turn.id,
+            },
+            payload
+          ),
+          payload
+        )
+      );
       this.serverTurnStream(turn.id);
       return this.getServerTurnById(turn.id);
     }
@@ -4894,7 +4981,7 @@ export class FsStore {
       const content = await prepareRetainedProductJson(
         scope.contentMount,
         scope.owner,
-        join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
         writeRetainedV1(envelope)
       );
       const entries: ControlProductEntry[] = [
@@ -4940,7 +5027,7 @@ export class FsStore {
   public getServerTurnTranscript(turnId: string): ServerTurnEventEnvelope[] {
     const turn = this.getServerTurnById(turnId);
     return this.dataRoot
-      ? readServerTurnEvents(this.dataRoot, turn).map((event) =>
+      ? readServerTurnEvents(this.dataRoot, turn, this.serverWorkReader).map((event) =>
           ServerTurnEventEnvelopeSchema.parse(StoredServerEventPayloadV1Schema.parse(event))
         )
       : [...this.serverTurnStream(turnId).events];
@@ -5925,9 +6012,48 @@ export class FsStore {
       : (this.serverTurns.get(args[0])?.owner ?? this.turns.get(args[0])?.owner);
     if (!owner) throw new StoreRecordNotFoundError(`Turn not found: ${args[0]}`);
     if (args[2] === undefined) args[2] = {};
+    if (this.dataRoot && owner.kind === 'server') {
+      const binding = this.getServerWorkBinding();
+      if (!binding) throw serverWorkUnavailable();
+      return (await withServerWorkProducer(binding, () => this.completeTurnPublication(...args)))
+        .turn;
+    }
     return this.publishTurnMutation(owner, args[0], args, (owned) =>
       this.completeTurnPublication(...owned)
     );
+  }
+
+  /** Reuses the original staging frame only for the same Turn metadata and complete event bytes. */
+  private recoverServerTurnSettlement(
+    deploymentId: string,
+    turn: ControlProductMutation,
+    event: { readonly turnId: string; readonly sequence: number; readonly retained: object }
+  ): string | undefined {
+    const requestId = storageRequestId({
+      deploymentId,
+      sourceOwner: 'server-work',
+      verb: 'settle-turn',
+      occurrenceKey: event.turnId,
+    });
+    const original = readStagedServerWork(this.getServerWorkReadScope().sqlite, requestId);
+    if (!original) return undefined;
+
+    const draft = JSON.parse(original.payload) as { turn: unknown; entries: unknown[] };
+    const terminal = ControlProductEntrySchema.parse(
+      Array.isArray(draft?.entries) ? draft.entries.at(-1) : undefined
+    );
+    const body = JSON.stringify(event.retained);
+    if (
+      original.intent.verb !== 'settle-turn' ||
+      !isDeepStrictEqual(draft.turn, JSON.parse(JSON.stringify(turn))) ||
+      terminal.kind !== 'event' ||
+      terminal.turnId !== event.turnId ||
+      terminal.sequence !== event.sequence ||
+      terminal.content.reference.contentDigest !== `sha256:${sha256Hex(body)}` ||
+      terminal.content.byteLength !== Buffer.byteLength(body)
+    )
+      throw terminalTurnPublicationConflict(event.turnId);
+    return original.payload;
   }
 
   /** Applies the original checks inside the admitted same-Turn boundary. */
@@ -5942,6 +6068,7 @@ export class FsStore {
         ? { kind: 'server' as const }
         : this.turns.get(turnId)?.owner;
     if (!owner) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
+    if (owner.kind === 'server') this.assertServerWorkMutationAvailable();
     const scope = this.dataRoot ? this.nativeScope(owner) : undefined;
     const history = scope ? readNativeTurnHistory(scope, turnId) : undefined;
     const before =
@@ -6061,6 +6188,71 @@ export class FsStore {
         !alreadyDecidedPublicationBytesEqual(prior.data.turn, turn))
     )
       throw terminalTurnPublicationConflict(turnId);
+    if (scope && owner.kind === 'server') {
+      if (
+        publication.agentSession ||
+        publication.command ||
+        publication.interruptCommand ||
+        publication.execution ||
+        publication.pending?.length ||
+        publication.evidence?.length ||
+        publication.evidenceContent?.length ||
+        publication.precedingEvents?.length
+      )
+        throw serverWorkUnavailable();
+      if (prior) return { turn: this.getServerTurnById(turnId), notify: false };
+      const binding = this.getServerWorkBinding();
+      if (!binding || !history) throw serverWorkUnavailable();
+      const admission = this.getServerTurnAdmission(turnId);
+      const mutation = {
+        kind: 'turn' as const,
+        expectedRevision: history.revision,
+        record: writeRetainedV1({
+          ...history.metadata,
+          ...patch,
+          completedAt: turn.completedAt,
+          durationMs: turn.durationMs,
+          items: [],
+        }),
+      };
+      const retainedEvent = writeRetainedV1(event);
+      let payload = this.recoverServerTurnSettlement(binding.deploymentId, mutation, {
+        turnId,
+        sequence: event.sequence,
+        retained: retainedEvent,
+      });
+      if (payload === undefined) {
+        const entries = await this.prepareNativeItems(scope, publication.items ?? []);
+        entries.push({
+          kind: 'event',
+          turnId,
+          sequence: event.sequence,
+          expectedRevision: 0,
+          ...(await prepareRetainedProductJson(
+            scope.contentMount,
+            owner,
+            join(this.dataRoot!, 'server', 'runtime', 'staging'),
+            retainedEvent
+          )),
+        });
+        payload = JSON.stringify({ turn: mutation, entries });
+      }
+      const { actor, credentialRef } = admission.target;
+      await publishServerWorkDraft(
+        binding,
+        serverWorkIntent(
+          binding,
+          'settle-turn',
+          turnId,
+          String(history.revision),
+          { actor, credentialRef, threadId: turn.threadId, turnId },
+          payload
+        ),
+        payload
+      );
+      this.acknowledgedTurnEvents.set(event, structuredClone(event));
+      return { turn: this.getServerTurnById(turnId), notify: false };
+    }
     if (scope) {
       const entries: ControlProductEntry[] = [];
       const revisions = readNativeProductEntries(scope, turnId, 'item');
@@ -6073,7 +6265,7 @@ export class FsStore {
         const content = await prepareRetainedProductJson(
           scope.contentMount,
           owner,
-          join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+          join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
           writeRetainedV1(item)
         );
         entries.push({
@@ -6101,7 +6293,7 @@ export class FsStore {
           content = await prepareRetainedProductJson(
             scope.contentMount,
             owner,
-            join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+            join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
             writeRetainedV1(terminalEvent)
           );
         }
@@ -6163,13 +6355,13 @@ export class FsStore {
         }
       }
       const client = getControlStoreWorkerClient();
-      const database = `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+      const database = `workspace:${scope.path}`;
       await client.open({
         database,
         path: scope.path,
         dataRoot: this.dataRoot!,
         create: false,
-        initialize: owner.kind === 'server' ? 'core' : 'workspace',
+        initialize: 'workspace',
         productOwner: owner,
         contentMount: scope.contentMount,
       });
@@ -7455,7 +7647,7 @@ export class FsStore {
         );
       const scope = this.nativeScope({ kind: 'workspace', workspaceId: artifact.workspaceId });
       const turn = this.getTurnById(reference.turnId);
-      const stagingRoot = join(dirname(dirname(scope.path)), 'runtime', 'staging');
+      const stagingRoot = join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging');
       const items = readNativeProductEntries(scope, turn.id, 'item');
       const history = this.getTurnEventsForExport(turn.id);
       const timestamp = submission.receipt.createdAt;
@@ -9048,18 +9240,19 @@ export class FsStore {
   /** Records a redacted refusal through the existing Audit writer before reporting the protocol error. */
   private async recordItemDeltaViolation(owner: Turn['owner'], turnId: string): Promise<void> {
     if (!this.dataRoot) return;
+    if (owner.kind === 'server') throw serverWorkUnavailable();
     const scope = this.nativeScope(owner);
     const head = readNativeProduct(scope, 'turn', turnId);
     if (!head) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     const turn = TurnReaderSchema.parse({ ...head.record, items: [] });
     const client = getControlStoreWorkerClient();
-    const database = `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+    const database = `workspace:${scope.path}`;
     await client.open({
       database,
       path: scope.path,
       dataRoot: this.dataRoot,
       create: false,
-      initialize: owner.kind === 'server' ? 'core' : 'workspace',
+      initialize: 'workspace',
       productOwner: owner,
       contentMount: scope.contentMount,
     });

@@ -22,7 +22,9 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { settleStagedServerWorkCommand } from '../storage/server-work-command.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { openTestServerWork } from '../test-support/server-work-store.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { scanDailyKnowledgeMaintenance } from './knowledge-maintenance-schedule.js';
 import { NotebookError } from './notebook.js';
@@ -32,14 +34,13 @@ const timestamp = '2026-10-20T12:00:00.000Z';
 const userId = allocateEntityId('usr');
 
 /** Runs the actual owner on a real worker connection; test setup finishes before native writing starts. */
-function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
+function fixture(kind: 'workspace' | 'user' = 'workspace') {
   const root = mkdtempSync(join(tmpdir(), 'maintenance-admission-'));
   if (kind === 'user') initializeTestCore(root);
   const workspaceId =
     kind === 'user' ? quickChatWorkspaceIdForUser(userId) : allocateEntityId('ws');
-  const db = kind === 'server' ? openCoreDb(root) : openWorkspaceDb(root, workspaceId);
-  if (db.scope === 'core') applyMigrations(db);
-  else applyScopedMigrations(db);
+  const db = openWorkspaceDb(root, workspaceId);
+  applyScopedMigrations(db);
   db.sqlite.close();
   const require = createRequire(import.meta.url);
   const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;
@@ -55,11 +56,11 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
     `
     import ${JSON.stringify(modules.bootstrap)};
     import { parentPort, workerData } from 'node:worker_threads';
-    import { openCoreDb, openWorkspaceDb } from ${JSON.stringify(modules.db)};
+    import { openWorkspaceDb } from ${JSON.stringify(modules.db)};
     import { applyControlAdmission } from ${JSON.stringify(modules.admission)};
     import { applyControlProducts } from ${JSON.stringify(modules.products)};
-      const db = workerData.kind === 'server' ? openCoreDb(workerData.root) : openWorkspaceDb(workerData.root, workerData.workspaceId);
-      if (workerData.kind !== 'server') db.sqlite.transaction(() => applyControlProducts(db.sqlite,
+      const db = openWorkspaceDb(workerData.root, workerData.workspaceId);
+      db.sqlite.transaction(() => applyControlProducts(db.sqlite,
         {kind:'workspace', workspaceId:workerData.workspaceId}, [{kind:'workspace',expectedRevision:0,record:{
           schemaVersion:1,id:workerData.workspaceId,kind:workerData.kind === 'user' ? 'personal' : 'general',
           status:'active',createdAt:workerData.timestamp,updatedAt:workerData.timestamp
@@ -99,10 +100,7 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
     });
   });
   let nativeClient: ReturnType<typeof getControlStoreWorkerClient> | undefined;
-  const path =
-    kind === 'server'
-      ? join(root, 'server', 'db', 'core.sqlite')
-      : join(root, 'workspaces', workspaceId, 'db', 'workspace.sqlite');
+  const path = join(root, 'workspaces', workspaceId, 'db', 'workspace.sqlite');
   onTestFinished(async () => {
     await nativeClient?.shutdown();
     await worker.terminate();
@@ -121,7 +119,7 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
         }
       }
       if (action === 'exec')
-        return nativeClient.write(`${kind === 'server' ? 'core' : 'workspace'}:${path}`, [
+        return nativeClient.write(`workspace:${path}`, [
           { mode: 'run', sql: value as string, parameters: [] },
         ]);
       throw new Error('Direct owner fixture is stopped after native transport takes ownership.');
@@ -138,20 +136,11 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
   };
   const input = (receipt = kind !== 'user'): ControlKnowledgeAdmissionInput => {
     const requestId = randomUUID();
-    const scope =
-      kind === 'server'
-        ? { coreId: 'server' as const, actorId: userId }
-        : { workspaceId, actorId: userId };
-    const command =
-      kind === 'server' ? ('knowledge.server.maintain' as const) : ('knowledge.maintain' as const);
+    const scope = { workspaceId, actorId: userId };
+    const command = 'knowledge.maintain' as const;
     return {
       purpose: 'maintenance',
-      ownerScope:
-        kind === 'server'
-          ? { kind: 'server' }
-          : kind === 'user'
-            ? { kind: 'user', userId }
-            : { kind: 'workspace', workspaceId },
+      ownerScope: kind === 'user' ? { kind: 'user', userId } : { kind: 'workspace', workspaceId },
       actor: { kind: 'user', id: userId },
       requestId,
       threadId: allocateEntityId('th'),
@@ -159,7 +148,7 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
       startedAt: timestamp,
       trigger: 'request',
       instructions: 'Native maintenance',
-      captureCoverage: { scope: kind === 'server' ? 'server' : 'workspace', value: 'off' },
+      captureCoverage: { scope: 'workspace', value: 'off' },
       ...(receipt
         ? {
             receipt: {
@@ -182,14 +171,14 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
       await ready;
       await worker.terminate();
       nativeClient = getControlStoreWorkerClient();
-      const database = `${kind === 'server' ? 'core' : 'workspace'}:${path}`;
+      const database = `workspace:${path}`;
       await nativeClient.open({
         database,
         path,
         dataRoot: root,
         create: false,
-        initialize: kind === 'server' ? 'core' : 'workspace',
-        productOwner: kind === 'server' ? { kind: 'server' } : { kind: 'workspace', workspaceId },
+        initialize: 'workspace',
+        productOwner: { kind: 'workspace', workspaceId },
       });
       return { client: nativeClient, database };
     },
@@ -199,21 +188,96 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
   };
 }
 
+async function serverFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'server-maintenance-admission-'));
+  const coreDb = openCoreDb(root);
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  const { binding, reader } = await openTestServerWork(coreDb);
+  onTestFinished(async () => {
+    if (reader.sqlite.open) reader.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const input = (withReceipt = true): ControlKnowledgeAdmissionInput => {
+    const requestId = randomUUID();
+    const scope = { coreId: 'server' as const, actorId: userId };
+    const command = 'knowledge.server.maintain' as const;
+    return {
+      purpose: 'maintenance',
+      ownerScope: { kind: 'server' },
+      actor: { kind: 'user', id: userId },
+      requestId,
+      threadId: allocateEntityId('th'),
+      turnId: allocateEntityId('tu'),
+      startedAt: timestamp,
+      trigger: 'request',
+      instructions: 'Native maintenance',
+      captureCoverage: { scope: 'server', value: 'off' },
+      ...(withReceipt
+        ? {
+            receipt: {
+              key: commandRequestKey(command, requestId, scope),
+              command,
+              requestId,
+              scope,
+              inputHash: commandInputHash({ instructions: 'Native maintenance' }),
+              responseKind: 'turn' as const,
+              createdAt: timestamp,
+              expiresAt: '2026-11-20T12:00:00.000Z',
+            },
+          }
+        : {}),
+    };
+  };
+  const stage = (proposal: ControlKnowledgeAdmissionInput) =>
+    binding.owner.stageKnowledge!({
+      input: proposal,
+      deploymentId: binding.deploymentId,
+      credentialRef: null,
+      originalInput: JSON.stringify({ instructions: proposal.instructions }),
+    });
+  const settle = (intent: Parameters<typeof settleStagedServerWorkCommand>[0]) =>
+    binding.withProducer!(() =>
+      settleStagedServerWorkCommand(intent, binding.owner, binding.kernel)
+    );
+  const retained = () => ({
+    threads: reader.sqlite.prepare('SELECT * FROM control_threads ORDER BY id').all(),
+    turns: reader.sqlite.prepare('SELECT * FROM control_turns ORDER BY id').all(),
+    intents: reader.sqlite.prepare('SELECT * FROM server_work_intents ORDER BY request_id').all(),
+    requests: coreDb.sqlite
+      .prepare(
+        "SELECT * FROM idempotency_requests WHERE command_name = 'knowledge.server.maintain'"
+      )
+      .all(),
+    decisions: coreDb.sqlite
+      .prepare("SELECT * FROM idempotency_requests WHERE response_kind = 'storage-receipt'")
+      .all(),
+  });
+  return { coreDb, input, stage, settle, retained, reader, userId };
+}
+
 describe('native Knowledge maintenance admission', () => {
   it('admits only scheduled Server service metadata without a responsible User', async () => {
-    const f = fixture('server');
-    const { client, database } = await f.transport();
+    const f = await serverFixture();
     const actor = { kind: 'system' as const, id: 'knowledge-manager', responsibleUserId: null };
     const daily = { ...f.input(false), actor, trigger: 'schedule' as const };
-    await expect(
-      client.transition(database, { kind: 'knowledge-work', input: daily })
-    ).resolves.toEqual({
-      threadId: daily.threadId,
-      turnId: daily.turnId,
-      busy: false,
-      replayed: false,
+    const staged = await f.stage(daily);
+    expect(staged).toMatchObject({
+      state: 'ready',
+      value: {
+        intent: { target: { threadId: daily.threadId, turnId: daily.turnId } },
+        busy: false,
+        replayed: false,
+      },
     });
-    const rows = (await f.sql('SELECT record_json FROM control_turns')) as {
+    if (staged.state !== 'ready') throw new Error('Server fixture did not stage.');
+    await expect(f.settle(staged.value.intent)).resolves.toMatchObject({
+      state: 'ready',
+      value: { state: 'settled', receipt: { disposition: 'applied' } },
+    });
+    const rows = f.reader.sqlite.prepare('SELECT record_json FROM control_turns').all() as {
       record_json: string;
     }[];
     expect(rows).toHaveLength(1);
@@ -222,9 +286,9 @@ describe('native Knowledge maintenance admission', () => {
       triggerActor: actor,
       triggerSource: { kind: 'automation', summary: 'Knowledge Manager scheduled maintenance.' },
     });
-    expect(await f.sql('SELECT * FROM idempotency_requests')).toEqual([]);
-    const tables = ['control_threads', 'control_turns', 'idempotency_requests'];
-    const before = await Promise.all(tables.map((table) => f.sql(`SELECT * FROM ${table}`)));
+    const before = f.retained();
+    expect(before.requests).toEqual([]);
+    expect(before.decisions).toHaveLength(1);
     const original = f.input();
     const scope = { coreId: 'server' as const, actorId: actor.id };
     const receipt = {
@@ -246,19 +310,71 @@ describe('native Knowledge maintenance admission', () => {
         },
       })),
       { ...daily, ownerScope: { kind: 'workspace', workspaceId: allocateEntityId('ws') } },
-      { ...daily, ownerScope: { kind: 'user', userId } },
+      { ...daily, ownerScope: { kind: 'user', userId: f.userId } },
     ];
     for (const variant of denied) {
-      const input = { ...variant, turnId: allocateEntityId('tu') };
-      const refusal: unknown = await client
-        .transition(database, { kind: 'knowledge-work', input })
-        .catch((error: unknown) => error);
-      expect(refusal).toBeInstanceOf(NotebookError);
-      expect(refusal).toMatchObject({ code: 'invalid_request' });
-      expect(await Promise.all(tables.map((table) => f.sql(`SELECT * FROM ${table}`)))).toEqual(
-        before
-      );
+      await expect(f.stage({ ...variant, turnId: allocateEntityId('tu') })).resolves.toMatchObject({
+        state: 'unavailable',
+        owner: 'server-work',
+      });
+      expect(f.retained()).toEqual(before);
     }
+  }, 30_000);
+
+  it('keeps staged Server products invisible when the covering Core request receipt rolls back', async () => {
+    const f = await serverFixture();
+    const input = f.input();
+    const staged = await f.stage(input);
+    expect(staged).toMatchObject({ state: 'ready', value: { busy: false, replayed: false } });
+    if (staged.state !== 'ready') throw new Error('Server fixture did not stage.');
+    const before = f.retained();
+    expect(before).toMatchObject({ threads: [], turns: [], requests: [], decisions: [] });
+    expect(before.intents).toHaveLength(1);
+
+    f.coreDb.sqlite.exec(
+      "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"
+    );
+    try {
+      await expect(f.settle(staged.value.intent)).resolves.toMatchObject({
+        state: 'unavailable',
+        owner: 'control-kernel',
+      });
+      expect(f.retained()).toEqual(before);
+      expect(
+        f.coreDb.sqlite
+          .prepare("SELECT * FROM audit_events WHERE action LIKE 'server-work.%'")
+          .all()
+      ).toEqual([]);
+    } finally {
+      f.coreDb.sqlite.exec('DROP TRIGGER refuse_receipt');
+    }
+
+    const settled = await f.settle(staged.value.intent);
+    expect(settled).toMatchObject({
+      state: 'ready',
+      value: { state: 'settled', receipt: { disposition: 'applied' } },
+    });
+    const replay = await f.stage({
+      ...input,
+      threadId: allocateEntityId('th'),
+      turnId: allocateEntityId('tu'),
+    });
+    expect(replay).toEqual({ state: 'ready', value: { ...staged.value, replayed: true } });
+    await expect(f.settle(staged.value.intent)).resolves.toEqual(settled);
+    const published = f.retained();
+    expect(published.threads).toEqual([expect.objectContaining({ id: input.threadId })]);
+    expect(published.turns).toEqual([expect.objectContaining({ id: input.turnId })]);
+    expect(published.requests).toEqual([
+      expect.objectContaining({ request_key: input.receipt!.key }),
+    ]);
+    expect(published.decisions).toHaveLength(1);
+    await expect(
+      f.stage({
+        ...input,
+        receipt: { ...input.receipt!, inputHash: commandInputHash({ changed: true }) },
+      })
+    ).resolves.toMatchObject({ state: 'unavailable', owner: 'server-work' });
+    expect(f.retained()).toEqual(published);
   }, 30_000);
 
   it('does not extend Server metadata admission into Workspace or private User work', async () => {
@@ -295,78 +411,70 @@ describe('native Knowledge maintenance admission', () => {
     }
   }, 30_000);
 
-  for (const kind of ['workspace', 'server'] as const) {
-    it(`commits and replays the original ${kind} receipt through production transport after a reached-trigger rollback`, async () => {
-      const f = fixture(kind);
-      const input = f.input();
-      await f.exec(
-        "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"
-      );
-      const { client, database } = await f.transport();
-      await expect(
-        client.transition(database, { kind: 'knowledge-work', input })
-      ).rejects.toMatchObject({
-        code: 'constraint',
-        commit: 'not-committed',
-        message: 'Control database writer operation failed.',
-      });
-      for (const table of ['control_threads', 'control_turns', 'idempotency_requests'])
-        expect(await f.sql(`SELECT * FROM ${table}`)).toEqual([]);
-      await f.exec('DROP TRIGGER refuse_receipt');
-      await expect(client.transition(database, { kind: 'knowledge-work', input })).resolves.toEqual(
-        {
-          threadId: input.threadId,
-          turnId: input.turnId,
-          busy: false,
-          replayed: false,
-        }
-      );
-      await expect(client.transition(database, { kind: 'knowledge-work', input })).resolves.toEqual(
-        {
-          threadId: input.threadId,
-          turnId: input.turnId,
-          busy: false,
-          replayed: true,
-        }
-      );
-      expect(await f.sql('SELECT response_id FROM idempotency_requests')).toEqual([
-        { response_id: input.turnId },
-      ]);
-      await expect(
-        client.transition(database, {
-          kind: 'knowledge-work',
-          input: {
-            ...input,
-            receipt: { ...input.receipt!, inputHash: commandInputHash({ changed: true }) },
-          },
-        })
-      ).rejects.toBeInstanceOf(IdempotencyKeyConflictError);
-      await expect(
-        client.transition(database, {
-          kind: 'knowledge-work',
-          input: {
-            ...f.input(),
-            ownerScope: { kind: 'workspace', workspaceId: allocateEntityId('ws') },
-          },
-        })
-      ).rejects.toBeInstanceOf(NotebookError);
-    }, 30_000);
-  }
+  it('commits and replays the original Workspace receipt through production transport after a reached-trigger rollback', async () => {
+    const f = fixture();
+    const input = f.input();
+    await f.exec(
+      "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"
+    );
+    const { client, database } = await f.transport();
+    await expect(
+      client.transition(database, { kind: 'knowledge-work', input })
+    ).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
+      message: 'Control database writer operation failed.',
+    });
+    for (const table of ['control_threads', 'control_turns', 'idempotency_requests'])
+      expect(await f.sql(`SELECT * FROM ${table}`)).toEqual([]);
+    await f.exec('DROP TRIGGER refuse_receipt');
+    await expect(client.transition(database, { kind: 'knowledge-work', input })).resolves.toEqual({
+      threadId: input.threadId,
+      turnId: input.turnId,
+      busy: false,
+      replayed: false,
+    });
+    await expect(client.transition(database, { kind: 'knowledge-work', input })).resolves.toEqual({
+      threadId: input.threadId,
+      turnId: input.turnId,
+      busy: false,
+      replayed: true,
+    });
+    expect(await f.sql('SELECT response_id FROM idempotency_requests')).toEqual([
+      { response_id: input.turnId },
+    ]);
+    await expect(
+      client.transition(database, {
+        kind: 'knowledge-work',
+        input: {
+          ...input,
+          receipt: { ...input.receipt!, inputHash: commandInputHash({ changed: true }) },
+        },
+      })
+    ).rejects.toBeInstanceOf(IdempotencyKeyConflictError);
+    await expect(
+      client.transition(database, {
+        kind: 'knowledge-work',
+        input: {
+          ...f.input(),
+          ownerScope: { kind: 'workspace', workspaceId: allocateEntityId('ws') },
+        },
+      })
+    ).rejects.toBeInstanceOf(NotebookError);
+  }, 30_000);
 
-  for (const kind of ['workspace', 'server'] as const) {
-    it(`rolls back every ${kind} product when the original receipt insert fails`, async () => {
-      const f = fixture(kind);
-      await f.exec(
-        "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"
-      );
-      await expect(f.apply(f.input())).rejects.toMatchObject({ code: 'SQLITE_CONSTRAINT_TRIGGER' });
-      expect(await f.sql('SELECT id FROM control_threads')).toEqual([]);
-      expect(await f.sql('SELECT id FROM control_turns')).toEqual([]);
-      expect(await f.sql('SELECT request_key FROM idempotency_requests')).toEqual([]);
-      await f.exec('DROP TRIGGER refuse_receipt');
-      await expect(f.apply(f.input())).resolves.toMatchObject({ busy: false, replayed: false });
-    }, 30_000);
-  }
+  it('rolls back every Workspace product when the original receipt insert fails', async () => {
+    const f = fixture();
+    await f.exec(
+      "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"
+    );
+    await expect(f.apply(f.input())).rejects.toMatchObject({ code: 'SQLITE_CONSTRAINT_TRIGGER' });
+    expect(await f.sql('SELECT id FROM control_threads')).toEqual([]);
+    expect(await f.sql('SELECT id FROM control_turns')).toEqual([]);
+    expect(await f.sql('SELECT request_key FROM idempotency_requests')).toEqual([]);
+    await f.exec('DROP TRIGGER refuse_receipt');
+    await expect(f.apply(f.input())).resolves.toMatchObject({ busy: false, replayed: false });
+  }, 30_000);
 
   it('selects current SQL work, retains descriptive fields, and replays only the original receipt', async () => {
     const f = fixture();

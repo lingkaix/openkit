@@ -287,6 +287,15 @@ export async function executeGatewayPlan<T>(input: {
           lastFailure = failure;
           const decision = gatewayFailureDecision(failure.kind, input.autoFailover);
           if (
+            input.singleAttempt &&
+            error instanceof GatewayAttemptFailure &&
+            error.beforeDispatch &&
+            failure.settled &&
+            decision.advance &&
+            !input.signal.aborted
+          )
+            throw new LogicalModelRoutesExhaustedError(failure.kind);
+          if (
             input.singleAttempt ||
             input.signal.aborted ||
             committed ||

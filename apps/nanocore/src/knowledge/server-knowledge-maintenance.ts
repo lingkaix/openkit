@@ -7,6 +7,7 @@ import {
   type Item,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
+import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { Actor } from '../auth/identity.js';
 import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -24,8 +25,15 @@ import {
 } from '../runtime/idempotent-command.js';
 import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { ControlKnowledgeAdmissionInputSchema } from '../storage/control-store-admission-codecs.js';
+import { frameControlScalarText } from '../storage/control-store-input.js';
 import type { CoreDb } from '../storage/db.js';
-import { admitControlMaintenance } from './knowledge-agent-maintenance.js';
+import {
+  requireAppliedServerWork,
+  serverWorkUnavailable,
+  settleStagedServerWorkCommand,
+  withServerWorkProducer,
+} from '../storage/server-work-command.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import {
   createNotebookAgentEditing,
@@ -107,6 +115,22 @@ function prefix(text: string, maximum = 16_384): string {
   return bytes.subarray(0, end).toString('utf8');
 }
 
+/** Acquires every admitted owner needed before a maintenance command can stage or register input. */
+function serverMaintenanceBinding(store: FsStore) {
+  const binding = store.getServerWorkBinding();
+  if (
+    !binding?.owner.stageKnowledge ||
+    !binding.owner.publishTurnProgress ||
+    !binding.owner.appendObservation ||
+    !binding.owner.readUsageIds ||
+    !binding.owner.writeRouteLineage ||
+    !binding.verifyCallAuthority ||
+    !binding.callBudgetRef
+  )
+    throw serverWorkUnavailable();
+  return { binding, stage: binding.owner.stageKnowledge.bind(binding.owner) };
+}
+
 /** Admits one fresh Server Turn, or an ordinary visible skipped/failed outcome without model replay. */
 export async function prepareServerKnowledgeMaintenance(
   dependencies: ServerKnowledgeMaintenanceDependencies,
@@ -116,6 +140,7 @@ export async function prepareServerKnowledgeMaintenance(
     dependencies.runtimeConfigManager.current().openKitConfig.security?.pauseAgentWork
   );
   const { store, coreDb } = dependencies;
+  const { binding, stage } = serverMaintenanceBinding(store);
   if (input.trigger === 'request')
     requireAdministratorOperation(
       coreDb,
@@ -125,26 +150,44 @@ export async function prepareServerKnowledgeMaintenance(
       'knowledge'
     );
   input.signal.throwIfAborted();
-  const admitted = await admitControlMaintenance(
-    coreDb.dataRoot,
-    undefined,
-    ControlKnowledgeAdmissionInputSchema.parse({
-      purpose: 'maintenance',
-      ownerScope: { kind: 'server' },
-      actor: input.actor,
-      requestId: input.requestId,
-      threadId: allocateEntityId('th'),
-      turnId: allocateEntityId('tu'),
-      startedAt: input.startedAt ?? new Date().toISOString(),
-      trigger: input.trigger,
-      instructions: input.instructions,
-      captureCoverage: store.getLiveCaptureCoverage(),
-      ...(input.receipt ? { receipt: input.receipt } : {}),
-    })
-  );
+  frameControlScalarText(input.instructions);
+  if (input.tellContent !== undefined) frameControlScalarText(input.tellContent);
+  const admitted = await withServerWorkProducer(binding, async () => {
+    const staged = await stage({
+      deploymentId: binding.deploymentId,
+      credentialRef: input.requestActor
+        ? auditAuthenticationFromActor(input.requestActor).credentialId
+        : null,
+      originalInput: JSON.stringify({
+        instructions: input.instructions,
+        sources: input.sources,
+        pageIds: input.pageIds,
+        tellContent: input.tellContent,
+      }),
+      input: ControlKnowledgeAdmissionInputSchema.parse({
+        purpose: 'maintenance',
+        ownerScope: { kind: 'server' },
+        actor: input.actor,
+        requestId: input.requestId,
+        threadId: allocateEntityId('th'),
+        turnId: allocateEntityId('tu'),
+        startedAt: input.startedAt ?? new Date().toISOString(),
+        trigger: input.trigger,
+        instructions: input.instructions,
+        captureCoverage: store.getLiveCaptureCoverage(),
+        ...(input.receipt ? { receipt: input.receipt } : {}),
+      }),
+    });
+    if (staged.state !== 'ready') throw serverWorkUnavailable();
+    const original = staged.value;
+    requireAppliedServerWork(
+      await settleStagedServerWorkCommand(original.intent, binding.owner, binding.kernel)
+    );
+    return original;
+  });
   if (admitted.replayed) throw new NotebookError('recovery_required');
-  const thread = store.getServerThread(admitted.threadId);
-  const turn = store.getServerTurnById(admitted.turnId);
+  const thread = store.getServerThread(admitted.intent.target.threadId);
+  const turn = store.getServerTurnById(admitted.intent.target.turnId);
   const history = store.listServerThreadTurns(thread.id).filter((prior) => prior.id !== turn.id);
   const busy = admitted.busy;
   const git = new KnowledgeNotebook({
@@ -618,6 +661,7 @@ export async function runServerKnowledgeMaintenanceCommand(
     undefined,
     'knowledge'
   );
+  serverMaintenanceBinding(dependencies.store);
   const command =
     input.tellContent === undefined ? 'knowledge.server.maintain' : 'knowledge.server.tell';
   const scope = { coreId: 'server' as const, actorId: input.actor.id };
@@ -694,7 +738,11 @@ export function admitServerKnowledgeBoot(coreDb: CoreDb): void {
 }
 
 /** Boot marks interrupted Server KM work inspect-only; it never replays a model or notebook effect. */
-export async function recoverServerKnowledgeManagerTurns(store: FsStore): Promise<void> {
+export async function recoverServerKnowledgeManagerTurns(
+  store: FsStore
+): Promise<StorageResult<'server-work', void>> {
+  if (store.getDataRoot())
+    return { state: 'unavailable', owner: 'server-work', reason: 'disabled' };
   for (const thread of store.listServerThreads())
     for (const turn of store.listServerThreadTurns(thread.id)) {
       if (turn.agentId !== 'knowledge-manager' || !['pending', 'running'].includes(turn.status))
@@ -709,4 +757,5 @@ export async function recoverServerKnowledgeManagerTurns(store: FsStore): Promis
         },
       });
     }
+  return { state: 'ready', value: undefined };
 }

@@ -25,6 +25,7 @@ import { createApp } from './test-support/app.js';
 import { testGoalDomainProposal } from './test-support/goal-domain.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { openTestServerWork } from './test-support/server-work-store.js';
 import { createThread, updateThread } from './thread-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -83,15 +84,27 @@ it('admits Server history only with current Server authority and never through a
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
+  let server: Awaited<ReturnType<typeof openTestServerWork>> | undefined;
   onTestFinished(async () => {
+    server?.reader.close();
     await getControlStoreWorkerClient().shutdown();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const store = new FsStore({ dataRoot });
+  const native = await openTestServerWork(coreDb);
+  server = native;
+  const { store } = native;
   const workspace = await store.createWorkspace('Ordinary Workspace');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const thread = await store.createServerThread('Private Server maintenance');
+  const thread = await store.createServerThread(
+    'Private Server maintenance',
+    undefined,
+    undefined,
+    {
+      actor: { kind: 'user', id: userId },
+      credentialRef: null,
+    }
+  );
   const admin = createOpenKitAccessTokenRecord(coreDb, {
     ownerUserId: userId,
     scope: 'server-admin',
@@ -241,7 +254,17 @@ it('rolls back the public Thread change and Audit when its native receipt insert
 it('rolls back Server maintenance history when its native receipt insert fails', async () => {
   const f = await productFixture();
   const requestId = randomUUID();
-  const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+  const native = await openTestServerWork(f.coreDb);
+  const closeReader = () => {
+    if (native.reader.sqlite.open) native.reader.close();
+  };
+  onTestFinished(closeReader);
+  const app = createApp({
+    coreDb: f.coreDb,
+    dataRoot: f.dataRoot,
+    store: native.store,
+    runtimeConfigManager: native.runtimeConfigManager,
+  });
   const beforeAudit = f.coreDb.sqlite
     .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
     .all();
@@ -257,10 +280,21 @@ it('rolls back Server maintenance history when its native receipt insert fails',
       }
     )
   );
-  expect(response.status).toBeGreaterThanOrEqual(500);
+  expect(response.status, await response.clone().text()).toBe(503);
+  await expect(response.json()).resolves.toMatchObject({ code: 'operation_storage_unavailable' });
+  expect(
+    native.reader.sqlite.prepare('SELECT receipt_json FROM server_work_intents').all()
+  ).toEqual([{ receipt_json: null }]);
   f.coreDb.sqlite.exec('DROP TRIGGER refuse_server_receipt');
+  closeReader();
   await getControlStoreWorkerClient().shutdown();
-  expect(new FsStore({ dataRoot: f.dataRoot }).listServerThreads()).toEqual([]);
+  const reopened = await openTestServerWork(f.coreDb);
+  try {
+    expect(reopened.store.listServerThreads()).toEqual([]);
+    expect(reopened.reader.sqlite.prepare('SELECT id FROM control_turns').all()).toEqual([]);
+  } finally {
+    reopened.reader.close();
+  }
   expect(
     f.coreDb.sqlite.prepare('SELECT * FROM idempotency_requests WHERE request_id=?').all(requestId)
   ).toEqual([]);

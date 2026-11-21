@@ -137,6 +137,7 @@ export function createServerThreadOperations(
             503
           );
         requireCurrentDeploymentAdmin(coreDb, publicOperationActor(context));
+        store.assertServerWorkMutationAvailable();
         store.getServerTurnById(input.turnId);
         return {
           turnId: input.turnId,

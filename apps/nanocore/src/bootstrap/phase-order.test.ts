@@ -205,9 +205,6 @@ function evaluateEntrypointShutdown(effects: {
     events.push('attention.started');
     return effects.communicationAdmission;
   });
-  const recoverRunningCapabilityCalls = vi.fn(async () => {
-    events.push('recovery.started');
-  });
   const bindings = {
     closeWithDeadline,
     forceShutdownAtDeadline,
@@ -223,11 +220,11 @@ function evaluateEntrypointShutdown(effects: {
     applyMigrations,
     mode: 'local',
     communicationBinding: undefined,
+    serverWorkReader: undefined,
     prepareCommunicationOwner,
     events,
     restoreWorkspaceRetirementAdmission: vi.fn(),
     restoreWorkspaceRecoveryAdmission: vi.fn(),
-    recoverRunningCapabilityCalls,
     admitServerKnowledgeBoot: vi.fn(),
     NotebookError: class extends Error {},
     verifyAndMigrateExistingScopedDatabases: async (_root: string, validate: () => void) =>
@@ -312,7 +309,6 @@ function evaluateEntrypointShutdown(effects: {
     openCoreDbWithIntegrityCheck,
     applyMigrations,
     prepareCommunicationOwner,
-    recoverRunningCapabilityCalls,
     shutdownControlStoreWorkerClient,
     getControlStoreWorkerClient,
     exit,

@@ -1,817 +1,499 @@
+// openkit-test-platform: posix
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { CapabilityCallSchema, ServerUsageRecordSchema } from '@openkit/protocol';
-import { expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
+import { openServerGatewayCall } from '../llm/gateway-server-work.js';
+import { digestLlmSystemPrompt } from '../llm/system-prompt-digest.js';
 import {
-  digestLlmSystemPrompt,
-  persistLlmCapabilityCallSystemPromptDigest,
-} from '../llm/system-prompt-digest.js';
-import {
-  ControlStoreWorkerError,
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
+import type { ControlWorkerRequest } from '../storage/control-store-worker-protocol.js';
+import { type CoreDb, openCoreDb, serverStoragePath } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { nativeProductScope } from '../storage/workspace-file-records.js';
-import { closeTestCoreDb } from '../test-support/store.js';
+import { withServerWorkProducer } from '../storage/server-work-command.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { openTestServerWork } from '../test-support/server-work-store.js';
 import {
-  finishCapabilityCall,
   listServerCapabilityCalls,
   listServerUsageRecords,
-  recordUsage,
   recoverRunningCapabilityCalls,
-  type StartServerCapabilityCallInput,
-  stampCapabilityCallSchemaSnapshot,
   startCapabilityCall,
-  writeGatewayRouteLineage,
 } from './usage-ledger.js';
 
-/** Opens the real existing Core owner; query-only Main makes any live SQL fallback fail. */
-async function openNativeServerLedger(coreDb: CoreDb): Promise<void> {
-  const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
-  coreDb.sqlite.pragma('query_only = ON');
-  await getControlStoreWorkerClient().open({
-    database: `core:${scope.path}`,
-    path: scope.path,
-    dataRoot: coreDb.dataRoot,
-    create: false,
-    initialize: 'core',
-    productOwner: scope.owner,
-    contentMount: scope.contentMount,
-  });
-  expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
-}
+const logicalModelId = 'maintenance';
+const measurement = {
+  category: 'llm',
+  unit: 'tokens',
+  quantity: 7,
+  modelId: logicalModelId,
+  source: 'input',
+} as const;
+const attempt = {
+  kind: 'attempt',
+  routeMemberId: 'member',
+  providerProfileId: 'provider_test',
+  providerModel: 'test-model',
+  selectionReason: 'configured',
+  attemptOrder: 0,
+  retryIndex: 0,
+  outputBegan: true,
+  terminalResult: 'succeeded',
+} as const;
 
-/** Supplies trusted Server inputs without manufacturing a retained Call or Audit. */
-function serverInput(coreDb: CoreDb): StartServerCapabilityCallInput {
-  return {
-    workspaceDb: coreDb,
+async function fixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'server-usage-'));
+  const coreDb = openCoreDb(dataRoot);
+  let native: Awaited<ReturnType<typeof openTestServerWork>> | undefined;
+  onTestFinished(async () => {
+    native?.reader.close();
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  applyMigrations(coreDb);
+  const actor = { kind: 'user', id: ensureLocalUser(coreDb) } as const;
+  const config = {
+    gatewayConfig: {
+      schemaVersion: 1,
+      enabled: true,
+      logicalModels: [
+        {
+          id: logicalModelId,
+          displayName: 'Server maintenance',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8000 }],
+          routes: [
+            { id: 'member', providerProfileId: 'provider_test', providerModel: 'test-model' },
+          ],
+        },
+      ],
+    },
+  } satisfies Parameters<typeof openTestServerWork>[1];
+  const opening = await openTestServerWork(coreDb, config);
+  native = opening;
+  const run = <Value>(effect: () => Promise<Value>) =>
+    withServerWorkProducer(opening.binding, effect);
+  const readCalls = () => listServerCapabilityCalls(coreDb, opening.reader);
+  const finishAfterAdmission = (callId: string) => {
+    const admitted = readCalls().find(({ id }) => id === callId);
+    if (!admitted) throw new Error('Expected the acknowledged Server Call.');
+    return new Date(Date.parse(admitted.startedAt) + 1);
+  };
+  const readUsage = () => listServerUsageRecords(coreDb, opening.reader);
+  const readAudit = (verb: string) =>
+    listServerAuditEvents(coreDb).filter((event) => event.action === `server-work.${verb}`);
+  const context = {
     owner: { kind: 'server' },
-    authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    authorityActor: actor,
     capabilityId: 'llm.responses',
     family: 'llm',
     operation: 'responses.create',
-    providerRef: 'provider_test',
     redactionClass: 'metadata-only',
-    requestId: '00000000-0000-4000-8000-000000000001',
-    now: new Date('2026-10-18T00:00:00.000Z'),
+    requestId: randomUUID(),
+  } as const;
+  const start = (input: Partial<Parameters<typeof openServerGatewayCall>[1]> = {}) =>
+    openServerGatewayCall(opening.binding, { context, logicalModelId, ...input });
+  const serverFile = serverStoragePath(dataRoot, 'server-work');
+  const withServerSql = (run: (sqlite: Database.Database) => void) => {
+    const sqlite = new Database(serverFile, { fileMustExist: true });
+    try {
+      run(sqlite);
+    } finally {
+      sqlite.close();
+    }
+  };
+  return {
+    ...opening,
+    dataRoot,
+    coreDb,
+    actor,
+    finishAfterAdmission,
+    config,
+    context,
+    start,
+    run,
+    readCalls,
+    readUsage,
+    readAudit,
+    withServerSql,
   };
 }
 
-it('retains Server calls and measured usage in Core without a Workspace and recovers without replay', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-usage-'));
-  let coreDb = openCoreDb(dataRoot);
+function expectNoCoreProducts(core: CoreDb) {
+  expect(
+    core.sqlite
+      .prepare(`SELECT name FROM sqlite_schema WHERE type = 'table'
+    AND name IN ('capability_calls', 'usage_records')`)
+      .all()
+  ).toEqual([]);
+}
+
+it('refuses Server Security Review before posting any Call to the worker', async () => {
+  const f = await fixture();
+  const post = vi.spyOn(getControlStoreWorkerClient(), 'coreCapability');
   try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    const input = {
-      workspaceDb: coreDb,
-      owner: { kind: 'server' as const },
-      authorityActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
-      capabilityId: 'llm.responses',
-      family: 'llm' as const,
-      operation: 'responses.create',
-      providerRef: 'provider_test',
-      redactionClass: 'metadata-only',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      turnId: 'tu_00000000-0000-7000-8000-000000000001',
-      requestId: '00000000-0000-4000-8000-000000000001',
-      now: new Date('2026-10-18T00:00:00.000Z'),
-    };
-    // Core Storage, SQLite Layers: Main cannot own the moved live writer or split its linked tuple.
-    const call = await startCapabilityCall(input);
-    expect(
-      coreDb.sqlite
-        .prepare(
-          "SELECT actor_json FROM audit_events WHERE capability_call_id = ? AND action = 'capability.admit'"
-        )
-        .get(call.id)
-    ).toEqual({ actor_json: JSON.stringify(input.authorityActor) });
-    expect(await startCapabilityCall(input)).toMatchObject({ id: call.id, inserted: false });
     await expect(
-      Promise.resolve().then(() =>
-        startCapabilityCall({ ...input, turnId: 'tu_00000000-0000-7000-8000-000000000002' })
-      )
-    ).rejects.toThrow('attribution conflicts');
-    const systemPromptDigest = digestLlmSystemPrompt({
-      endpoint: 'responses',
-      request: { instructions: 'Server maintenance prompt', input: 'Inspect status' },
-    });
-    await persistLlmCapabilityCallSystemPromptDigest({
-      workspaceDb: coreDb,
-      callId: call.id,
-      systemPromptDigest,
-    });
-    await writeGatewayRouteLineage({
-      workspaceDb: coreDb,
-      call,
-      logicalModelId: 'maintenance',
-      entry: {
-        kind: 'attempt',
-        routeMemberId: 'member',
-        providerProfileId: 'provider_test',
-        providerModel: 'test-model',
-        selectionReason: 'configured',
-        attemptOrder: 0,
-        retryIndex: 0,
-        outputBegan: true,
-        terminalResult: 'succeeded',
-      },
-    });
-    const records = [
-      {
-        category: 'llm' as const,
-        unit: 'tokens' as const,
-        quantity: 7,
-        modelId: 'maintenance',
-        source: 'input',
-      },
-    ];
-    const usageIds = await recordUsage({ workspaceDb: coreDb, call, records, now: input.now });
-    expect(await recordUsage({ workspaceDb: coreDb, call, records, now: input.now })).toEqual(
-      usageIds
-    );
-    await finishCapabilityCall({
-      workspaceDb: coreDb,
-      callId: call.id,
-      status: 'succeeded',
-      now: input.now,
-    });
-    const [retained] = listServerCapabilityCalls(coreDb);
-    expect(retained).toHaveProperty('systemPromptDigest', systemPromptDigest);
-    expect(retained?.extensions).toMatchObject({
-      'openkit.gateway/routeLineage': {
-        logicalModelId: 'maintenance',
-        entries: [
-          {
-            kind: 'attempt',
-            routeMemberId: 'member',
-            providerProfileId: 'provider_test',
-            providerModel: 'test-model',
-            selectionReason: 'configured',
-            attemptOrder: 0,
-            retryIndex: 0,
-            outputBegan: true,
-            terminalResult: 'succeeded',
-          },
-        ],
-      },
-    });
-    const [usage] = listServerUsageRecords(coreDb);
-    expect(CapabilityCallSchema.parse(retained)).toMatchObject({
-      owner: { kind: 'server' },
-      status: 'succeeded',
-    });
-    expect(retained).not.toHaveProperty('workspaceId');
-    expect(ServerUsageRecordSchema.parse(usage)).toMatchObject({
-      owner: { kind: 'server' },
-      quantity: 7,
-      capabilityCallId: call.id,
-      responsibleUserId: input.authorityActor.id,
-    });
-    expect(usage).not.toHaveProperty('workspaceId');
-    coreDb.sqlite.pragma('query_only = OFF');
-    try {
-      for (const table of ['capability_calls', 'usage_records'])
-        expect(() =>
-          coreDb.sqlite
-            .prepare(`UPDATE ${table} SET workspace_id = ?`)
-            .run('ws_00000000-0000-7000-8000-000000000001')
-        ).toThrow('CHECK constraint failed');
-    } finally {
-      coreDb.sqlite.pragma('query_only = ON');
-    }
-    expect(
-      ServerUsageRecordSchema.safeParse({
-        ...usage,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      }).success
-    ).toBe(false);
-    expect(coreDb.sqlite.prepare('SELECT workspace_id FROM capability_calls').get()).toEqual({
-      workspace_id: null,
-    });
-    expect(
-      coreDb.sqlite.prepare('SELECT workspace_id, capability_call_id FROM audit_events').get()
-    ).toMatchObject({ workspace_id: null, capability_call_id: call.id });
-    const auditBeforeRestart = listServerAuditEvents(coreDb).filter(
-      (event) => event.capabilityCallId === call.id
-    );
-    expect(auditBeforeRestart).toHaveLength(2);
-    expect(auditBeforeRestart).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          action: 'capability.admit',
-          actor: input.authorityActor,
-          requestId: input.requestId,
-          outcome: 'unknown',
-        }),
-        expect.objectContaining({
-          action: 'capability.finish',
-          actor: input.authorityActor,
-          requestId: input.requestId,
-          outcome: 'succeeded',
-        }),
-      ])
-    );
-    const retainedBeforeRestart = listServerCapabilityCalls(coreDb);
-    const usageBeforeRestart = listServerUsageRecords(coreDb);
-    const pending = await startCapabilityCall({
-      ...input,
-      requestId: null,
-      auditLineage: { commandRequestId: input.requestId },
-    });
-    await shutdownControlStoreWorkerClient();
-    coreDb.sqlite.close();
-    coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    expect(await recoverRunningCapabilityCalls({ workspaceDb: coreDb, now: input.now })).toBe(1);
-    expect(listServerCapabilityCalls(coreDb).filter((row) => row.id === call.id)).toEqual(
-      retainedBeforeRestart
-    );
-    expect(listServerUsageRecords(coreDb)).toEqual(usageBeforeRestart);
-    expect(
-      listServerAuditEvents(coreDb).filter((event) => event.capabilityCallId === call.id)
-    ).toEqual(auditBeforeRestart);
-    expect(await startCapabilityCall({ ...input, workspaceDb: coreDb })).toMatchObject({
-      id: call.id,
-      inserted: false,
-    });
-    expect(await recordUsage({ workspaceDb: coreDb, call, records, now: input.now })).toEqual(
-      usageIds
-    );
-    expect(
-      listServerAuditEvents(coreDb).filter((event) => event.capabilityCallId === call.id)
-    ).toEqual(auditBeforeRestart);
-    expect(
-      listServerCapabilityCalls(coreDb).find((entry) => entry.id === pending.id)
-    ).toMatchObject({ status: 'unknown', errorCode: 'capability_call_recovered_after_restart' });
-    expect(listServerUsageRecords(coreDb)).toHaveLength(1);
-    expect(
-      coreDb.sqlite
-        .prepare(
-          "SELECT actor_json, request_id FROM audit_events WHERE capability_call_id = ? AND action = 'capability.finish'"
-        )
-        .get(pending.id)
-    ).toEqual({ actor_json: JSON.stringify(input.authorityActor), request_id: input.requestId });
+      startCapabilityCall({
+        ...f.context,
+        workspaceDb: f.coreDb,
+        capabilityId: 'llm.decision',
+        operation: 'decision',
+      })
+    ).rejects.toMatchObject({ code: 'operation_storage_unavailable', status: 503 });
+    expect(post).not.toHaveBeenCalled();
+    expect(f.readCalls()).toEqual([]);
   } finally {
-    await shutdownControlStoreWorkerClient();
-    if (coreDb.sqlite.open) coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+    post.mockRestore();
+  }
+});
+
+it('retains Server calls and measured usage in the Server owner and reopens without another contact', async () => {
+  const f = await fixture();
+  const promptDigest = digestLlmSystemPrompt({
+    endpoint: 'responses',
+    request: { instructions: 'Server maintenance prompt', input: 'Inspect status' },
+  });
+  const call = await f.run(async () => {
+    const call = await f.start({
+      ...(promptDigest === undefined ? {} : { systemPromptDigest: promptDigest }),
+    });
+    await call.claimContact();
+    await expect(call.claimContact()).rejects.toMatchObject({
+      code: 'operation_storage_unavailable',
+    });
+    await call.writeRouteLineage({ logicalModelId, entry: attempt });
+    const ids = await call.recordUsage({ records: [measurement] });
+    expect(await call.recordUsage({ records: [measurement] })).toEqual(ids);
+    await call.finish({ status: 'succeeded', now: f.finishAfterAdmission(call.call.id) });
+    return call.call;
+  });
+  const [retained] = f.readCalls();
+  const [usage] = f.readUsage();
+  expect(CapabilityCallSchema.parse(retained)).toMatchObject({
+    owner: { kind: 'server' },
+    status: 'succeeded',
+    systemPromptDigest: promptDigest,
+    extensions: { 'openkit.gateway/routeLineage': { logicalModelId, entries: [attempt] } },
+  });
+  expect(retained).not.toHaveProperty('workspaceId');
+  expect(ServerUsageRecordSchema.parse(usage)).toMatchObject({
+    owner: { kind: 'server' },
+    quantity: 7,
+    capabilityCallId: call.id,
+    responsibleUserId: f.actor.id,
+  });
+  expect(usage).not.toHaveProperty('workspaceId');
+  expectNoCoreProducts(f.coreDb);
+  f.withServerSql((sqlite) => {
+    for (const table of ['capability_calls', 'usage_records']) {
+      expect(() =>
+        sqlite.prepare(`UPDATE ${table} SET workspace_id = ?`).run('workspace-fixture')
+      ).toThrow('CHECK constraint failed');
+    }
+  });
+  expect(f.readAudit('admit-call')).toEqual([expect.objectContaining({ actor: f.actor })]);
+  expect(f.readAudit('settle-usage')).toHaveLength(1);
+  expect(f.readAudit('settle-call')).toHaveLength(1);
+
+  f.reader.close();
+  await shutdownControlStoreWorkerClient();
+  const reopened = await openTestServerWork(f.coreDb, f.config);
+  try {
+    await expect(
+      withServerWorkProducer(reopened.binding, () =>
+        openServerGatewayCall(reopened.binding, { context: f.context, logicalModelId })
+      )
+    ).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(listServerCapabilityCalls(f.coreDb, reopened.reader)).toEqual([retained]);
+    expect(listServerUsageRecords(f.coreDb, reopened.reader)).toEqual([usage]);
+    expect(f.readAudit('admit-call')).toHaveLength(1);
+    expect(f.readAudit('settle-call')).toHaveLength(1);
+    await expect(recoverRunningCapabilityCalls({ workspaceDb: f.coreDb })).resolves.toEqual({
+      state: 'unavailable',
+      owner: 'server-work',
+      reason: 'disabled',
+    });
+  } finally {
+    reopened.reader.close();
   }
 });
 
 it.each(['llm', 'mcp'] as const)(
-  'keeps unattributed Server %s diagnostics separate from Workspace admission',
+  'holds unattributed Server %s diagnostics before Call admission',
   async (family) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'server-null-admission-'));
-    const coreDb = openCoreDb(dataRoot);
-    try {
-      applyMigrations(coreDb);
-      await openNativeServerLedger(coreDb);
-      const call = await startCapabilityCall({
-        workspaceDb: coreDb,
-        owner: { kind: 'server' },
-        authorityActor: null,
-        capabilityId: `${family}.server_diagnostic`,
-        family,
-        operation: 'diagnostic.observe',
-        redactionClass: 'metadata-only',
-      });
-      expect(call.context.authorityActor).toBeNull();
-      expect(listServerCapabilityCalls(coreDb)).toEqual([
-        expect.objectContaining({ id: call.id, owner: { kind: 'server' }, family }),
-      ]);
-      expect(coreDb.sqlite.prepare('SELECT workspace_id FROM capability_calls').get()).toEqual({
-        workspace_id: null,
-      });
-      expect(coreDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      closeTestCoreDb(coreDb);
-      rmSync(dataRoot, { recursive: true, force: true });
-    }
+    const f = await fixture();
+    await expect(
+      f.run(() =>
+        f.start({
+          context: {
+            ...f.context,
+            family,
+            capabilityId: `${family}.server_diagnostic`,
+            authorityActor: null,
+          },
+        })
+      )
+    ).rejects.toMatchObject({ code: 'operation_storage_unavailable' });
+    expect(f.readCalls()).toEqual([]);
+    expect(f.readAudit('admit-call')).toEqual([]);
   }
 );
 
-it('rolls back Server admission when its actual linked Audit fails and returns no success acknowledgement', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-admit-audit-fault-'));
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    // Fault injection follows real schema and native-owner setup. It creates no product records.
-    coreDb.sqlite.pragma('query_only = OFF');
-    coreDb.sqlite.exec(`CREATE TRIGGER refuse_server_admission_audit BEFORE INSERT ON audit_events
-      WHEN NEW.action = 'capability.admit'
-      BEGIN SELECT RAISE(ABORT, 'injected Server admission Audit failure'); END`);
-    coreDb.sqlite.pragma('query_only = ON');
-    await expect(
-      Promise.resolve().then(() => startCapabilityCall(serverInput(coreDb)))
-    ).rejects.toMatchObject({ commit: 'not-committed' });
-    expect(listServerCapabilityCalls(coreDb)).toEqual([]);
-    expect(listServerUsageRecords(coreDb)).toEqual([]);
-    expect(listServerAuditEvents(coreDb)).toEqual([]);
-    coreDb.sqlite.pragma('query_only = OFF');
-    coreDb.sqlite.exec('DROP TRIGGER refuse_server_admission_audit');
-    coreDb.sqlite.pragma('query_only = ON');
-    const call = await startCapabilityCall(serverInput(coreDb));
-    expect(call.inserted).toBe(true);
-    expect(listServerAuditEvents(coreDb)).toEqual([
-      expect.objectContaining({ action: 'capability.admit', capabilityCallId: call.id }),
-    ]);
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
-  }
+it('holds Server admission when its covering Core Audit fails', async () => {
+  const f = await fixture();
+  f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_server_call_admission BEFORE INSERT ON audit_events
+    WHEN NEW.action = 'server-work.admit-call'
+    BEGIN SELECT RAISE(ABORT, 'fixture admission Audit refusal'); END`);
+  await expect(f.run(() => f.start())).rejects.toMatchObject({
+    code: 'operation_storage_unavailable',
+  });
+  expect(f.readCalls()).toEqual([]);
+  expect(f.readUsage()).toEqual([]);
+  expect(f.readAudit('admit-call')).toEqual([]);
+  f.coreDb.sqlite.exec('DROP TRIGGER refuse_server_call_admission');
+  const fresh = await f.run(() => f.start({ context: { ...f.context, requestId: randomUUID() } }));
+  expect(fresh.call.inserted).toBe(true);
+  expect(f.readAudit('admit-call')).toHaveLength(1);
 });
 
-it('keeps the earlier Server usage commit when terminal Audit fails and never acknowledges a partial finish', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-finish-audit-fault-'));
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    const call = await startCapabilityCall(serverInput(coreDb));
-    const records = [
-      { category: 'llm' as const, unit: 'tokens' as const, quantity: 7, source: 'input' },
-    ];
-    const ids = await recordUsage({ workspaceDb: coreDb, call, records });
-    const usage = listServerUsageRecords(coreDb);
-    const audit = listServerAuditEvents(coreDb);
-    // Usage and finish are separate original commits; a failed finish cannot roll back acknowledged usage.
-    coreDb.sqlite.pragma('query_only = OFF');
-    coreDb.sqlite.exec(`CREATE TRIGGER refuse_server_finish_audit BEFORE INSERT ON audit_events
-      WHEN NEW.action = 'capability.finish'
-      BEGIN SELECT RAISE(ABORT, 'injected Server finish Audit failure'); END`);
-    coreDb.sqlite.pragma('query_only = ON');
-    await expect(
-      Promise.resolve().then(() =>
-        finishCapabilityCall({
-          workspaceDb: coreDb,
-          callId: call.id,
-          status: 'succeeded',
-        })
-      )
-    ).rejects.toMatchObject({ commit: 'not-committed' });
-    expect(listServerCapabilityCalls(coreDb)).toEqual([
-      expect.objectContaining({ id: call.id, status: 'running', completedAt: null }),
-    ]);
-    expect(listServerUsageRecords(coreDb)).toEqual(usage);
-    expect(listServerAuditEvents(coreDb)).toEqual(audit);
-    coreDb.sqlite.pragma('query_only = OFF');
-    coreDb.sqlite.exec('DROP TRIGGER refuse_server_finish_audit');
-    coreDb.sqlite.pragma('query_only = ON');
-    await finishCapabilityCall({ workspaceDb: coreDb, callId: call.id, status: 'succeeded' });
-    await shutdownControlStoreWorkerClient();
-    const reopened = openCoreDb(dataRoot);
-    try {
-      expect(listServerCapabilityCalls(reopened)).toEqual([
-        expect.objectContaining({ id: call.id, status: 'succeeded' }),
-      ]);
-      expect(listServerUsageRecords(reopened)).toEqual(usage);
-      expect(listServerUsageRecords(reopened).map((row) => row.id)).toEqual(ids);
-      expect(
-        listServerAuditEvents(reopened).filter((row) => row.action === 'capability.finish')
-      ).toEqual([
-        expect.objectContaining({
-          capabilityCallId: call.id,
-          actor: serverInput(coreDb).authorityActor,
-          outcome: 'succeeded',
-        }),
-      ]);
-    } finally {
-      closeTestCoreDb(reopened);
+it('preserves acknowledged Server usage when the terminal Core Audit refuses', async () => {
+  const f = await fixture();
+  const call = await f.run(async () => {
+    const call = await f.start();
+    await call.claimContact();
+    await call.recordUsage({ records: [measurement] });
+    return call;
+  });
+  const originalUsage = f.readUsage();
+  f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_server_call_finish BEFORE INSERT ON audit_events
+    WHEN NEW.action = 'server-work.settle-call'
+    BEGIN SELECT RAISE(ABORT, 'fixture terminal Audit refusal'); END`);
+  const terminal = { status: 'succeeded', now: f.finishAfterAdmission(call.call.id) } as const;
+  await expect(f.run(() => call.finish(terminal))).rejects.toMatchObject({
+    code: 'operation_storage_unavailable',
+  });
+  expect(f.readCalls()).toEqual([
+    expect.objectContaining({ status: 'running', completedAt: null }),
+  ]);
+  expect(f.readUsage()).toEqual(originalUsage);
+  expect(f.readAudit('settle-call')).toEqual([]);
+  f.coreDb.sqlite.exec('DROP TRIGGER refuse_server_call_finish');
+  await f.run(() => call.finish(terminal));
+  expect(f.readCalls()).toEqual([expect.objectContaining({ status: 'succeeded' })]);
+  expect(f.readUsage()).toEqual(originalUsage);
+  expect(f.readAudit('settle-call')).toHaveLength(1);
+});
+
+it('refuses Workspace addressing before admission and retains native Server schema attribution', async () => {
+  const f = await fixture();
+  const malformed = { ...f.context, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
+  await expect(f.run(() => f.start({ context: malformed }))).rejects.toThrow();
+  expect(f.readCalls()).toEqual([]);
+  expect(f.readAudit('admit-call')).toEqual([]);
+  const schemaSnapshotId = `sha256:${'a'.repeat(64)}`;
+  const call = await f.run(() => f.start({ context: { ...f.context, schemaSnapshotId } }));
+  expect(f.readCalls()).toEqual([expect.objectContaining({ id: call.call.id, schemaSnapshotId })]);
+  expectNoCoreProducts(f.coreDb);
+});
+
+it('refuses a failed Server measurement and accepts the original Call closeout', async () => {
+  const f = await fixture();
+  await f.run(async () => {
+    const call = await f.start();
+    await call.claimContact();
+    f.withServerSql((sqlite) =>
+      sqlite.exec(`CREATE TRIGGER refuse_server_usage BEFORE INSERT ON usage_records
+      BEGIN SELECT RAISE(ABORT, 'fixture Server usage refusal'); END`)
+    );
+    await expect(call.recordUsage({ records: [measurement] })).rejects.toThrow();
+    expect(f.readUsage()).toEqual([]);
+    await call.finish({ status: 'failed', errorCode: 'usage_record_failed' });
+  });
+  expect(f.readCalls()).toEqual([
+    expect.objectContaining({ status: 'failed', errorCode: 'usage_record_failed' }),
+  ]);
+  expect(f.readAudit('settle-call')).toHaveLength(1);
+});
+
+it('requires Gateway-entry eligibility for the original Server prompt digest', async () => {
+  const f = await fixture();
+  const systemPromptDigest = digestLlmSystemPrompt({
+    endpoint: 'responses',
+    request: { instructions: 'Server prompt' },
+  });
+  if (systemPromptDigest === undefined) throw new Error('Fixture is missing its original digest.');
+  for (const [family, capabilityId, eligible] of [
+    ['llm', 'llm.chat_completions', true],
+    ['llm', 'llm.responses', true],
+    ['llm', 'inference.local.goal_coordinator', false],
+    ['mcp', 'mcp.call-tool', false],
+  ] as const) {
+    const admission = f.run(() =>
+      f.start({
+        context: { ...f.context, family, capabilityId, requestId: randomUUID() },
+        systemPromptDigest,
+      })
+    );
+    if (!eligible) {
+      await expect(admission).rejects.toThrow();
+      continue;
     }
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
+    const call = await admission;
+    expect(f.readCalls().find((entry) => entry.id === call.call.id)).toHaveProperty(
+      'systemPromptDigest',
+      systemPromptDigest
+    );
   }
+  expect(f.readCalls()).toHaveLength(2);
 });
 
-it('refuses Workspace addressing in Core before admission or usage and retains Server schema attribution', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-owner-boundary-'));
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const malformed = {
-      ...serverInput(coreDb),
-      workspaceId,
-    } as unknown as StartServerCapabilityCallInput;
-    await expect(Promise.resolve().then(() => startCapabilityCall(malformed))).rejects.toThrow();
-    expect(listServerCapabilityCalls(coreDb)).toEqual([]);
-    expect(listServerAuditEvents(coreDb)).toEqual([]);
-    const call = await startCapabilityCall(serverInput(coreDb));
-    const schemaSnapshotId = 'sha256:' + 'a'.repeat(64);
-    await stampCapabilityCallSchemaSnapshot({
-      workspaceDb: coreDb,
-      callId: call.id,
-      schemaSnapshotId,
-    });
-    await stampCapabilityCallSchemaSnapshot({
-      workspaceDb: coreDb,
-      callId: call.id,
-      schemaSnapshotId,
-    });
-    expect(listServerCapabilityCalls(coreDb)).toEqual([
-      expect.objectContaining({ id: call.id, schemaSnapshotId, owner: { kind: 'server' } }),
-    ]);
-    await expect(
-      Promise.resolve().then(() =>
-        stampCapabilityCallSchemaSnapshot({
-          workspaceDb: coreDb,
-          callId: call.id,
-          schemaSnapshotId: 'sha256:' + 'b'.repeat(64),
-        })
-      )
-    ).rejects.toThrow();
-    const malformedCall = { ...call, context: { ...call.context, workspaceId } };
-    await expect(
-      Promise.resolve().then(() =>
-        recordUsage({
-          workspaceDb: coreDb,
-          call: malformedCall,
-          records: [{ category: 'llm', unit: 'tokens', quantity: 7 }],
-        })
-      )
-    ).rejects.toThrow();
-    expect(listServerUsageRecords(coreDb)).toEqual([]);
-    expect(listServerCapabilityCalls(coreDb)).toHaveLength(1);
-    expect(listServerAuditEvents(coreDb)).toHaveLength(1);
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
-
-it('fails the Server call with its linked Audit when usage storage refuses its measurement and returns no usage acknowledgement', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-usage-fault-'));
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    const input = serverInput(coreDb);
-    const call = await startCapabilityCall(input);
-    coreDb.sqlite.pragma('query_only = OFF');
-    coreDb.sqlite.exec(`CREATE TRIGGER refuse_server_usage BEFORE INSERT ON usage_records
-      BEGIN SELECT RAISE(ABORT, 'injected Server usage failure'); END`);
-    coreDb.sqlite.pragma('query_only = ON');
-    await expect(
-      Promise.resolve().then(() =>
-        recordUsage({
-          workspaceDb: coreDb,
-          call,
-          records: [{ category: 'llm', unit: 'tokens', quantity: 7 }],
-        })
-      )
-    ).rejects.toThrow();
-    expect(listServerUsageRecords(coreDb)).toEqual([]);
-    expect(listServerCapabilityCalls(coreDb)).toEqual([
-      expect.objectContaining({ id: call.id, status: 'failed', errorCode: 'usage_record_failed' }),
-    ]);
-    expect(
-      listServerAuditEvents(coreDb).filter((row) => row.action === 'capability.finish')
-    ).toEqual([
-      expect.objectContaining({
-        capabilityCallId: call.id,
-        actor: input.authorityActor,
-        requestId: input.requestId,
-        outcome: 'failed',
-        errorCode: 'usage_record_failed',
-      }),
-    ]);
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
-
-it('keeps Server prompt-digest eligibility and missing-row refusal on the native owner', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-prompt-digest-'));
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    const systemPromptDigest = digestLlmSystemPrompt({
-      endpoint: 'responses',
-      request: { instructions: 'Server prompt' },
-    });
-    // Work Data Retention Format limits this existing slot to the two Gateway-entry capabilities.
-    for (const [family, capabilityId, eligible] of [
-      ['llm', 'llm.chat_completions', true],
-      ['llm', 'llm.responses', true],
-      ['llm', 'inference.local.goal_coordinator', false],
-      ['mcp', 'mcp.call-tool', false],
-    ] as const) {
-      const call = await startCapabilityCall({
-        ...serverInput(coreDb),
-        requestId: null,
-        family,
-        capabilityId,
-      });
-      const persistence = Promise.resolve().then(() =>
-        persistLlmCapabilityCallSystemPromptDigest({
-          workspaceDb: coreDb,
-          callId: call.id,
-          systemPromptDigest,
-        })
-      );
-      if (eligible) await persistence;
-      else await expect(persistence).rejects.toThrow();
-      const retained = listServerCapabilityCalls(coreDb).find((row) => row.id === call.id);
-      expect(retained).toBeDefined();
-      if (eligible) expect(retained).toHaveProperty('systemPromptDigest', systemPromptDigest);
-      else expect(retained).not.toHaveProperty('systemPromptDigest');
-    }
-    await expect(
-      Promise.resolve().then(() =>
-        persistLlmCapabilityCallSystemPromptDigest({
-          workspaceDb: coreDb,
-          callId: 'cap_00000000-0000-7000-8000-000000000001',
-          systemPromptDigest,
-        })
-      )
-    ).rejects.toThrow();
-    expect(listServerCapabilityCalls(coreDb)).toHaveLength(4);
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
-
-it('retains earlier Core measurement commits when a later measurement fails and closes out the Server call as usage_record_failed', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-partial-usage-closeout-'));
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    const auditLineage = { commandRequestId: '00000000-0000-4000-8000-000000000911' };
-    const input = {
-      ...serverInput(coreDb),
-      requestId: null,
-      auditLineage,
-    };
-    const call = await startCapabilityCall(input);
-    coreDb.sqlite.pragma('query_only = OFF');
-    coreDb.sqlite.exec(`CREATE TRIGGER refuse_second_server_usage BEFORE INSERT ON usage_records
+it('preserves the first Server measurement when a later measurement refuses', async () => {
+  const f = await fixture();
+  await f.run(async () => {
+    const call = await f.start();
+    await call.claimContact();
+    f.withServerSql((sqlite) =>
+      sqlite.exec(`CREATE TRIGGER refuse_second_server_usage BEFORE INSERT ON usage_records
       WHEN NEW.source = 'output-fault'
-      BEGIN SELECT RAISE(ABORT, 'injected second Server usage failure'); END`);
-    coreDb.sqlite.pragma('query_only = ON');
-
+      BEGIN SELECT RAISE(ABORT, 'fixture second usage refusal'); END`)
+    );
     await expect(
-      recordUsage({
-        workspaceDb: coreDb,
-        call,
-        auditLineage,
+      call.recordUsage({
         records: [
-          { category: 'llm', unit: 'tokens', quantity: 5, source: 'input-committed' },
-          { category: 'llm', unit: 'tokens', quantity: 9, source: 'output-fault' },
+          { ...measurement, quantity: 5 },
+          { ...measurement, quantity: 9, source: 'output-fault' },
         ],
       })
     ).rejects.toThrow();
-
-    expect(listServerUsageRecords(coreDb)).toEqual([
-      expect.objectContaining({
-        capabilityCallId: call.id,
-        owner: { kind: 'server' },
-        quantity: 5,
-        source: 'input-committed',
-        responsibleUserId: input.authorityActor!.id,
-      }),
+    expect(f.readUsage()).toEqual([
+      expect.objectContaining({ capabilityCallId: call.call.id, quantity: 5 }),
     ]);
-    expect(listServerCapabilityCalls(coreDb)).toEqual([
-      expect.objectContaining({
-        id: call.id,
-        owner: { kind: 'server' },
-        status: 'failed',
-        errorCode: 'usage_record_failed',
-      }),
-    ]);
-    expect(
-      listServerAuditEvents(coreDb).filter((row) => row.action === 'capability.finish')
-    ).toEqual([
-      expect.objectContaining({
-        capabilityCallId: call.id,
-        actor: input.authorityActor,
-        requestId: auditLineage.commandRequestId,
-        outcome: 'failed',
-        errorCode: 'usage_record_failed',
-      }),
-    ]);
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
-  }
+    await call.finish({ status: 'failed', errorCode: 'usage_record_failed' });
+  });
+  expect(f.readAudit('settle-usage')).toHaveLength(2);
+  expect(
+    f.reader.sqlite
+      .prepare(`SELECT count(*) FROM server_work_intents
+      WHERE json_extract(intent_json, '$.verb') = 'settle-usage' AND receipt_json IS NOT NULL`)
+      .pluck()
+      .get()
+  ).toBe(1);
+  expect(f.readCalls()).toEqual([
+    expect.objectContaining({ status: 'failed', errorCode: 'usage_record_failed' }),
+  ]);
 });
 
-it('preserves Server delivered answers across finish replay and refuses unsupported admission-audit formats before mutating Core', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-finish-delivery-replay-'));
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    const input = serverInput(coreDb);
-    const call = await startCapabilityCall(input);
-    await writeGatewayRouteLineage({
-      workspaceDb: coreDb,
-      call,
-      logicalModelId: 'server-tier',
-      entry: {
-        kind: 'attempt',
-        routeMemberId: 'primary',
-        providerProfileId: 'provider_test',
-        providerModel: 'server-model',
-        selectionReason: 'configured',
-        attemptOrder: 0,
-        retryIndex: 0,
-        outputBegan: true,
-        terminalResult: 'succeeded',
-      },
-    });
-
-    coreDb.sqlite.pragma('query_only = OFF');
-    coreDb.sqlite
-      .prepare(
-        "UPDATE audit_events SET schema_version = 2 WHERE capability_call_id = ? AND action = 'capability.admit'"
-      )
-      .run(call.id);
-    coreDb.sqlite.pragma('query_only = ON');
-
-    await expect(
-      finishCapabilityCall({
-        workspaceDb: coreDb,
-        callId: call.id,
-        status: 'succeeded',
-        deliveredKnowledgeAnswer: 'Refused Server answer',
-        now: new Date('2026-10-18T00:00:01.000Z'),
+it('requires the original admission Audit and preserves exact Server delivered answers across replay', async () => {
+  const f = await fixture();
+  const call = await f.run(() => f.start());
+  const setVersion = (version: number) =>
+    f.coreDb.sqlite
+      .prepare("UPDATE audit_events SET schema_version = ? WHERE action = 'server-work.admit-call'")
+      .run(version);
+  const terminal = {
+    status: 'succeeded',
+    now: f.finishAfterAdmission(call.call.id),
+    deliveredKnowledgeAnswer: 'Exact Server delivered answer',
+  } as const;
+  setVersion(2);
+  await expect(f.run(() => call.finish(terminal))).rejects.toThrow();
+  expect(f.readCalls()).toEqual([
+    expect.objectContaining({ status: 'running', completedAt: null }),
+  ]);
+  setVersion(1);
+  await f.run(() => call.finish(terminal));
+  await f.run(() => call.finish(terminal));
+  await expect(
+    f.run(() =>
+      call.finish({
+        ...terminal,
+        deliveredKnowledgeAnswer: 'Divergent late answer',
       })
-    ).rejects.toThrow(TypeError);
-    expect(listServerCapabilityCalls(coreDb)).toEqual([
-      expect.objectContaining({ id: call.id, status: 'running', completedAt: null }),
-    ]);
-    expect(() => listServerAuditEvents(coreDb)).toThrow(TypeError);
-    expect(
-      coreDb.sqlite
-        .prepare(
-          "SELECT * FROM audit_events WHERE capability_call_id = ? AND action = 'capability.finish'"
-        )
-        .all(call.id)
-    ).toEqual([]);
-
-    coreDb.sqlite.pragma('query_only = OFF');
-    coreDb.sqlite
-      .prepare(
-        "UPDATE audit_events SET schema_version = 1 WHERE capability_call_id = ? AND action = 'capability.admit'"
-      )
-      .run(call.id);
-    coreDb.sqlite.pragma('query_only = ON');
-
-    const completedAt = new Date('2026-10-18T00:00:02.000Z');
-    await finishCapabilityCall({
-      workspaceDb: coreDb,
-      callId: call.id,
+    )
+  ).rejects.toThrow();
+  expect(f.readCalls()).toEqual([
+    expect.objectContaining({
+      id: call.call.id,
       status: 'succeeded',
-      deliveredKnowledgeAnswer: 'Exact Server delivered answer',
-      now: completedAt,
-    });
-    const [settled] = listServerCapabilityCalls(coreDb);
-    expect(settled).toMatchObject({
-      id: call.id,
-      owner: { kind: 'server' },
-      status: 'succeeded',
-      errorCode: null,
-      completedAt: completedAt.toISOString(),
-      extensions: {
-        'openkit.gateway/routeLineage': {
-          logicalModelId: 'server-tier',
-          entries: [expect.objectContaining({ routeMemberId: 'primary' })],
-        },
-        'openkit.knowledge/delivery': {
-          answer: 'Exact Server delivered answer',
-        },
-      },
-    });
-    const finishAudits = listServerAuditEvents(coreDb).filter(
-      (row) => row.action === 'capability.finish'
-    );
-    expect(finishAudits).toHaveLength(1);
-
-    await finishCapabilityCall({
-      workspaceDb: coreDb,
-      callId: call.id,
-      status: 'failed',
-      errorCode: 'late_server_replay',
-      deliveredKnowledgeAnswer: 'Ignored Server replay answer',
-      now: new Date('2026-10-18T00:00:03.000Z'),
-    });
-    expect(listServerCapabilityCalls(coreDb)).toEqual([settled]);
-    expect(
-      listServerAuditEvents(coreDb).filter((row) => row.action === 'capability.finish')
-    ).toEqual(finishAudits);
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
-  }
+      extensions: { 'openkit.knowledge/delivery': { answer: terminal.deliveredKnowledgeAnswer } },
+    }),
+  ]);
+  expect(f.readAudit('settle-call')).toHaveLength(1);
 });
 
-it('never diagnoses usage_record_failed or retries Server usage when its worker ACK is unknown', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-usage-unknown-ack-'));
-  const coreDb = openCoreDb(dataRoot);
-  let emitSpy: ReturnType<typeof vi.spyOn> | undefined;
-  let postSpy: ReturnType<typeof vi.spyOn> | undefined;
-  try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    const call = await startCapabilityCall(serverInput(coreDb));
-
-    const emit = Worker.prototype.emit;
-    let droppedAck = false;
-    emitSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
-      this: Worker,
-      event: string | symbol,
-      ...args: unknown[]
+it('never diagnoses a failure or retries a second Server measurement after an unknown FULL ACK', async () => {
+  const f = await fixture();
+  const call = await f.run(async () => {
+    const call = await f.start();
+    await call.claimContact();
+    return call;
+  });
+  let settlementId: number | undefined;
+  let dropped = false;
+  const post = Worker.prototype.postMessage;
+  const posted = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+    this: Worker,
+    ...args: Parameters<Worker['postMessage']>
+  ) {
+    const request = args[0] as ControlWorkerRequest;
+    if (
+      request.operation === 'server-work-owner' &&
+      request.mutation.kind === 'settle' &&
+      request.mutation.receipt.intent.verb === 'settle-usage'
+    )
+      settlementId = request.id;
+    return post.apply(this, args);
+  });
+  const emit = Worker.prototype.emit;
+  const received = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+    this: Worker,
+    event: string | symbol,
+    ...args: unknown[]
+  ) {
+    const reply = args[0] as { id?: number; status?: string; operation?: string } | undefined;
+    if (
+      !dropped &&
+      event === 'message' &&
+      settlementId !== undefined &&
+      reply?.id === settlementId &&
+      reply.operation === 'server-work-owner' &&
+      reply.status === 'ok'
     ) {
-      const reply = args[0] as { id?: number; status?: string; operation?: string } | undefined;
-      if (
-        !droppedAck &&
-        event === 'message' &&
-        reply?.operation === 'capability' &&
-        reply.status === 'ok'
-      ) {
-        droppedAck = true;
-        return emit.call(this, 'message', {
-          version: 99,
-          id: reply.id ?? 1,
-          status: 'ok',
-          operation: 'capability',
-          result: null,
-        });
-      }
-      return emit.apply(this, [event, ...args]);
-    });
-    postSpy = vi.spyOn(Worker.prototype, 'postMessage');
-
-    const outcome = await recordUsage({
-      workspaceDb: coreDb,
-      call,
-      records: [
-        { category: 'llm', unit: 'tokens', quantity: 4, source: 'first-stage' },
-        { category: 'llm', unit: 'tokens', quantity: 6, source: 'second-stage' },
-      ],
-    }).then(
-      () => ({ ok: true as const }),
-      (error: unknown) => ({ ok: false as const, error })
-    );
-
-    expect(droppedAck).toBe(true);
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) throw new Error('Expected unknown Server usage ACK rejection.');
-    expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
-    expect(outcome.error).toMatchObject({ code: 'unavailable', commit: 'unknown' });
-
-    const capabilityPosts = postSpy.mock.calls.filter(
-      ([request]) =>
-        typeof request === 'object' &&
-        request !== null &&
-        (request as { operation?: string }).operation === 'capability'
-    );
-    expect(capabilityPosts).toHaveLength(1);
-    expect(listServerUsageRecords(coreDb)).toEqual([
-      expect.objectContaining({
-        capabilityCallId: call.id,
-        quantity: 4,
-        source: 'first-stage',
-      }),
-    ]);
-    expect(listServerCapabilityCalls(coreDb)).toEqual([
-      expect.objectContaining({
-        id: call.id,
-        status: 'running',
-        errorCode: null,
-        completedAt: null,
-      }),
-    ]);
+      dropped = true;
+      return emit.call(this, 'message', { ...reply, version: 99 });
+    }
+    return emit.apply(this, [event, ...args]);
+  });
+  try {
+    await expect(
+      f.run(() =>
+        call.recordUsage({
+          records: [
+            { ...measurement, quantity: 4 },
+            { ...measurement, quantity: 6, source: 'second-stage' },
+          ],
+        })
+      )
+    ).rejects.toThrow();
+    expect(dropped).toBe(true);
     expect(
-      listServerAuditEvents(coreDb).filter((row) => row.action === 'capability.finish')
-    ).toEqual([]);
+      posted.mock.calls.filter(
+        ([value]) => value.operation === 'server-work-owner' && value.mutation.kind === 'settle'
+      )
+    ).toHaveLength(1);
+    expect(f.readUsage()).toEqual([expect.objectContaining({ quantity: 4 })]);
+    expect(f.readCalls()).toEqual([
+      expect.objectContaining({ status: 'running', errorCode: null }),
+    ]);
+    expect(f.readAudit('settle-call')).toEqual([]);
   } finally {
-    emitSpy?.mockRestore();
-    postSpy?.mockRestore();
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
+    received.mockRestore();
+    posted.mockRestore();
   }
 });

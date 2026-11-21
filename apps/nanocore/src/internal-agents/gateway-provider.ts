@@ -1,6 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { assertOperationNames, operationToolName } from '@openkit/app-api-schemas';
 import type { ReasoningEffort } from '@openkit/protocol';
-
 import {
   type CapabilityAuditLineage,
   finishCapabilityCall,
@@ -18,6 +18,7 @@ import {
   LogicalModelRoutesExhaustedError,
 } from '../llm/gateway-execution.js';
 import { dispatchLogicalModel, projectGatewayFailure } from '../llm/gateway-routes.js';
+import { openServerGatewayCall, type ServerGatewayCallLedger } from '../llm/gateway-server-work.js';
 import { recordInternalLlmGatewayUsage } from '../llm/gateway-usage.js';
 import {
   type LogicalModelSupply,
@@ -35,7 +36,8 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import { TurnStartValidationError } from '../operation-error.js';
 import type { RegistryGatewayProviderResolver } from '../providers/llm-config.js';
-import { openAdmittedWorkspaceReadDb, openCoreReadDb } from '../storage/db.js';
+import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import { serverWorkUnavailable, withServerWorkProducer } from '../storage/server-work-command.js';
 import type {
   AgentAssistantMessage,
   AgentMessage,
@@ -101,15 +103,17 @@ export function createInternalAgentGatewayProvider(
   options: InternalAgentGatewayProviderOptions
 ): InternalAgentProviderCall {
   let executionStarted = false;
-  return async (request) => {
+  const execute: InternalAgentProviderCall = async (request) => {
     if (!executionStarted) options.assertExecutionAvailable?.();
     if (!options.capture) throw new ModelCaptureError();
+    const captureDb = options.capture.workspaceDb;
+    const serverCapture = options.capture.serverWork;
+    if (captureDb.scope === 'core' && !serverCapture) throw serverWorkUnavailable();
     if (request.model.logicalModelId !== options.logicalModel.id) {
       throw new Error('Internal Agent logical model changed after admission.');
     }
     const { canonicalToAlias, aliasToCanonical, providerInput, providerTools } =
       projectInternalAgentRequest(request);
-    const captureDb = options.capture.workspaceDb;
     const context = options.callContext;
     const lineage = {
       providerRef: null,
@@ -118,47 +122,49 @@ export function createInternalAgentGatewayProvider(
     };
     // The database and attribution must have the same admitted immutable owner.
     if (
-      context &&
-      (captureDb.scope === 'core'
-        ? !('owner' in context) || context.owner.kind !== 'server'
-        : 'owner' in context || context.workspaceId !== captureDb.workspaceId)
+      captureDb.scope === 'core'
+        ? !context || !('owner' in context)
+        : context && ('owner' in context || context.workspaceId !== captureDb.workspaceId)
     )
       throw new ModelCaptureError();
     // The bounded role can release capture before the cancelled Provider finishes unwinding.
     // Keep the existing ledger connection alive through this call's own terminal write.
-    const workspaceDb = !context
-      ? captureDb
-      : captureDb.scope === 'core'
-        ? openCoreReadDb(captureDb.dataRoot)
+    const workspaceDb =
+      !context || captureDb.scope === 'core'
+        ? captureDb
         : openAdmittedWorkspaceReadDb(captureDb.dataRoot, captureDb.workspaceId);
-    let call: StartedCapabilityCall | StartedCapabilityCall<ServerGatewayCallContext> | undefined;
+    let call: StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext> | undefined;
+    let serverWorkCall: ServerGatewayCallLedger | undefined;
+    const serverLedger = () => (serverWorkCall ? { serverWorkCall } : {});
     let callFinished = false;
     let failurePhase: InternalGatewayFailurePhase = 'pre-transport';
     let observedStatus: number | undefined;
     let dispatchCorrelation: { corr: string; attempt: number } | undefined;
     try {
-      call = context
-        ? workspaceDb.scope === 'core' && 'owner' in context
-          ? await startCapabilityCall({
-              ...context,
-              ...lineage,
-              workspaceDb,
-              ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
-            })
-          : workspaceDb.scope === 'workspace' && !('owner' in context)
-            ? await startCapabilityCall({
-                ...context,
-                ...lineage,
-                workspaceDb,
-                ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
-              })
-            : undefined
-        : undefined;
+      if (workspaceDb.scope === 'core' && serverCapture && context && 'owner' in context) {
+        serverWorkCall = await openServerGatewayCall(serverCapture.binding, {
+          context: { ...context, ...lineage, requestId: context.requestId ?? randomUUID() },
+          logicalModelId: options.logicalModel.id,
+          credentialRef: serverCapture.admission.target.credentialRef,
+          ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
+          ...(options.assertExecutionAvailable
+            ? { assertAuthority: options.assertExecutionAvailable }
+            : {}),
+        });
+        call = serverWorkCall.call;
+      } else if (context && !('owner' in context) && workspaceDb.scope === 'workspace') {
+        call = await startCapabilityCall({
+          ...context,
+          ...lineage,
+          workspaceDb,
+          ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
+        });
+      }
       const selectedSupply = options.resolveLogicalModelSupply(options.logicalModel.id);
       if (!selectedSupply) throw new LogicalModelRoutesExhaustedError();
       const { logicalModel, registry } = selectedSupply;
       const selected = await dispatchLogicalModel({
-        ...(call ? { ledger: { workspaceDb, call } } : {}),
+        ...(call ? { ledger: { workspaceDb, call, ...serverLedger() } } : {}),
         logicalModel,
         requiredCapabilities: request.model.capabilities,
         ...(options.reasoningEffort === undefined
@@ -252,6 +258,7 @@ export function createInternalAgentGatewayProvider(
                     await execution.addUsageRecordIds(
                       await recordInternalLlmGatewayUsage({
                         workspaceDb,
+                        ...serverLedger(),
                         call,
                         ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                         logicalModelId: options.logicalModel.id,
@@ -275,6 +282,7 @@ export function createInternalAgentGatewayProvider(
                       await execution.assertAuthority?.();
                       if (!executionStarted) options.assertExecutionAvailable?.();
                       // Stock handoff precedes asynchronous auth; only this final boundary admits the first request.
+                      await serverWorkCall?.claimContact();
                       executionStarted = true;
                     } catch (error) {
                       // Stock can flatten hook errors; preserve this trusted refusal for loop closeout.
@@ -343,6 +351,7 @@ export function createInternalAgentGatewayProvider(
             await execution.addUsageRecordIds(
               await recordInternalLlmGatewayUsage({
                 workspaceDb,
+                ...serverLedger(),
                 call,
                 ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                 logicalModelId: options.logicalModel.id,
@@ -360,6 +369,7 @@ export function createInternalAgentGatewayProvider(
       if (call)
         await finishCapabilityCall({
           workspaceDb,
+          ...serverLedger(),
           callId: call.id,
           status: 'succeeded',
           ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
@@ -383,6 +393,7 @@ export function createInternalAgentGatewayProvider(
       if (call)
         await finishCapabilityCall({
           workspaceDb,
+          ...serverLedger(),
           callId: call.id,
           // Classify the actual failure; a later caller abort cannot relabel a settled Provider error.
           status:
@@ -405,9 +416,9 @@ export function createInternalAgentGatewayProvider(
             failureKind: internalGatewayFailureKind(error),
             ...(observedStatus === undefined ? {} : { httpStatus: observedStatus }),
             ...(call?.context.requestId ? { requestId: call.context.requestId } : {}),
-            ...(workspaceDb.scope === 'core'
-              ? { owner: { kind: 'server' } }
-              : { workspaceId: workspaceDb.workspaceId }),
+            ...(workspaceDb.scope === 'workspace'
+              ? { workspaceId: workspaceDb.workspaceId }
+              : { owner: { kind: 'server' } }),
             threadId: options.capture.threadId,
             turnId: options.capture.turnId,
             ...(call ? { capabilityCallId: call.id } : {}),
@@ -419,9 +430,11 @@ export function createInternalAgentGatewayProvider(
       }
       throw error;
     } finally {
-      if (context) workspaceDb.sqlite.close();
+      if (workspaceDb !== captureDb) workspaceDb.sqlite.close();
     }
   };
+  return (request) =>
+    withServerWorkProducer(options.capture?.serverWork?.binding, () => execute(request));
 }
 
 /** Projects only the existing closed Gateway kind; private codes and exception text stay private. */

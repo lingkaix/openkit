@@ -5,6 +5,7 @@ import {
   evidenceBundleFromRow,
   insertEvidenceBundle,
 } from './storage/evidence-bundle-records.js';
+import { serverWorkUnavailable } from './storage/server-work-command.js';
 
 export { recordWorkspaceEvidenceBundle } from './storage/evidence-bundle-records.js';
 
@@ -26,6 +27,7 @@ import {
 } from '@openkit/storage';
 
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import type { ServerWorkObservationDb } from './storage/work-observations.js';
 import { assertSafeWorkspacePathSegment } from './storage/workspace-file-records.js';
 
 /** Input for compacting expired workspace evidence bundle refs. */
@@ -197,16 +199,18 @@ export interface WorkObservationEvidenceInput {
 
 /** Checks existing evidence identity and prevents source expiry from being undone by replay. */
 function workBodyRecord(
-  workspaceDb: WorkspaceDb | CoreDb,
+  workspaceDb: WorkspaceDb | CoreDb | ServerWorkObservationDb,
   input: WorkObservationEvidenceInput
 ): EvidenceBundleRecord | ServerEvidenceBundleRecord | undefined {
+  if (workspaceDb.scope === 'core') throw serverWorkUnavailable();
   const row = workspaceDb.sqlite
     .prepare('SELECT * FROM evidence_bundles WHERE evidence_bundle_id = ?')
     .get(input.bundleId) as EvidenceBundleRow | undefined;
   if (!row) return undefined;
-  const record = evidenceBundleFromRow(row, workspaceDb.scope === 'core');
+  const record = evidenceBundleFromRow(row, workspaceDb.scope === 'server-work');
   if (
-    record.workspaceId !== (workspaceDb.scope === 'core' ? undefined : workspaceDb.workspaceId) ||
+    record.workspaceId !==
+      (workspaceDb.scope === 'workspace' ? workspaceDb.workspaceId : undefined) ||
     record.threadId !== input.threadId ||
     record.turnId !== input.turnId ||
     record.sourceKind !== 'work-observation-body' ||
@@ -220,16 +224,17 @@ function workBodyRecord(
 
 /** Resolves the restricted owner path without following directory links. */
 function workBodyRoot(
-  workspaceDb: WorkspaceDb | CoreDb,
+  workspaceDb: WorkspaceDb | CoreDb | ServerWorkObservationDb,
   bundleId: string,
   create: boolean
 ): string {
+  if (workspaceDb.scope === 'core') throw serverWorkUnavailable();
   assertSafeWorkspacePathSegment(bundleId, 'Observation evidence bundle');
   if (workspaceDb.scope === 'workspace')
     assertSafeWorkspacePathSegment(workspaceDb.workspaceId, 'Observation Workspace');
   let path = workspaceDb.dataRoot;
   for (const part of [
-    ...(workspaceDb.scope === 'core' ? ['server'] : ['workspaces', workspaceDb.workspaceId]),
+    ...(workspaceDb.scope === 'server-work' ? ['server'] : ['workspaces', workspaceDb.workspaceId]),
     'evidence',
     'backend',
     bundleId,
@@ -244,7 +249,7 @@ function workBodyRoot(
 
 /** Publishes only evidence metadata after its file bytes have reached their durability boundary. */
 function recordWorkBody(
-  workspaceDb: WorkspaceDb | CoreDb,
+  workspaceDb: WorkspaceDb | CoreDb | ServerWorkObservationDb,
   input: WorkObservationEvidenceInput,
   promoted: boolean
 ): void {
@@ -253,6 +258,7 @@ function recordWorkBody(
     Number(workspaceDb.sqlite.pragma('synchronous', { simple: true })) < 2
   )
     throw new Error('Observation evidence requires a durable independent owner commit');
+  if (workspaceDb.scope === 'core') throw serverWorkUnavailable();
   const existing = workBodyRecord(workspaceDb, input);
   if (existing) {
     if (existing.importStatus === 'expired') throw new Error('Observation evidence is expired');
@@ -266,12 +272,12 @@ function recordWorkBody(
   }
   insertEvidenceBundle(
     workspaceDb,
-    (workspaceDb.scope === 'core'
+    (workspaceDb.scope === 'server-work'
       ? ServerEvidenceBundleRecordSchema
       : EvidenceBundleRecordSchema
     ).parse({
       id: input.bundleId,
-      ...(workspaceDb.scope === 'core'
+      ...(workspaceDb.scope === 'server-work'
         ? { owner: { kind: 'server' } }
         : { workspaceId: workspaceDb.workspaceId }),
       threadId: input.threadId,
@@ -295,11 +301,12 @@ function recordWorkBody(
 
 /** Adopts exact complete bytes under existing evidence retention; never restores expired content. */
 export function retainWorkObservationBody(
-  workspaceDb: WorkspaceDb | CoreDb,
+  workspaceDb: WorkspaceDb | CoreDb | ServerWorkObservationDb,
   input: WorkObservationEvidenceInput & { readonly bytes: Uint8Array }
 ): 'retained' | 'expired' {
   if (createHash('sha256').update(input.bytes).digest('hex') !== input.sha256)
     throw new Error('Observation body digest mismatch');
+  if (workspaceDb.scope === 'core') throw serverWorkUnavailable();
   const existing = workBodyRecord(workspaceDb, input);
   if (existing?.importStatus === 'expired') return 'expired';
   const root = workBodyRoot(workspaceDb, input.bundleId, true);
@@ -315,7 +322,7 @@ export function retainWorkObservationBody(
 
 /** Reads exact currently available evidence after the caller's owning Thread audience check; expiry is not corruption. */
 export function readWorkObservationBody(
-  workspaceDb: WorkspaceDb | CoreDb,
+  workspaceDb: WorkspaceDb | CoreDb | ServerWorkObservationDb,
   input: WorkObservationEvidenceInput
 ): Uint8Array | null {
   const record = workBodyRecord(workspaceDb, input);

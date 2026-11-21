@@ -1,13 +1,17 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
+import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import type { AuthVariables } from '../auth/middleware.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
   listServerCapabilityCalls,
+  listServerUsageRecords,
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
   recordUsage,
@@ -16,10 +20,15 @@ import {
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
+import { resolveProviderProfileToLLMConfig } from '../providers/llm-config.js';
 import { type ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
+import type { ControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import type { ServerWorkCommandBinding } from '../storage/server-work-command.js';
+import type { ServerWorkIntent, ServerWorkReceipt } from '../storage/server-work-port.js';
+import { storageReceipt } from '../storage/storage-owner.js';
 import { type CreateAppOptions, createApp } from '../test-support/app.js';
 import {
   heldServerPermissionAck,
@@ -28,8 +37,10 @@ import {
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { openTestServerWork } from '../test-support/server-work-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { GatewayAttemptFailure } from './gateway-execution.js';
+import { registerLlmGatewayRoutes } from './gateway-routes.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 
@@ -153,9 +164,11 @@ async function fixture(missingKey = false, enabled = true, managedConfiguration 
         readRuntimeConfigStatus: () => manager.status(),
       })
     : undefined;
-  const app = createApp({ ...options, ...(manager ? { runtimeConfigManager: manager } : {}) });
+  const currentAppOptions = { ...options, ...(manager ? { runtimeConfigManager: manager } : {}) };
+  const app = createApp(currentAppOptions);
+  let serverWorkApp: typeof app | undefined;
   const post = (endpoint: string, stream = false, attributed = true) =>
-    app.request(`/v1/${endpoint}`, {
+    (attributed ? app : (serverWorkApp ?? app)).request(`/v1/${endpoint}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -180,6 +193,35 @@ async function fixture(missingKey = false, enabled = true, managedConfiguration 
       db.sqlite.close();
     }
   };
+  let serverWorkReader: ControlStoreProductReadHandle | undefined;
+  const admitServerLedger = async () => {
+    const owner = await openTestServerWork(coreDb, {
+      gatewayConfig: options.gatewayConfig!,
+      providerRegistry: options.providerRegistry!,
+    });
+    serverWorkReader = owner.reader;
+    // Faux providers have no HTTP serializer. Exercise the real Server contact claim at their boundary.
+    const chat = dispatcher.createChatCompletion.bind(dispatcher);
+    vi.spyOn(dispatcher, 'createChatCompletion').mockImplementation(
+      async (provider, request, context) => {
+        const admit = context?.transport?.finalRequestAdmission;
+        if (!admit) throw new Error('Server contact requires final transport admission.');
+        await admit({ payload: request, contextWindowTokens: 16_000, outputReserveTokens: 1_000 });
+        return chat(provider, request, context);
+      }
+    );
+    const responses = dispatcher.createResponses.bind(dispatcher);
+    vi.spyOn(dispatcher, 'createResponses').mockImplementation(
+      async (provider, request, context) => {
+        const admit = context?.transport?.finalRequestAdmission;
+        if (!admit) throw new Error('Server contact requires final transport admission.');
+        await admit({ payload: request, contextWindowTokens: 16_000, outputReserveTokens: 1_000 });
+        return responses(provider, request, context);
+      }
+    );
+    serverWorkApp = createApp({ ...currentAppOptions, store: owner.store });
+    return serverWorkApp;
+  };
   return {
     app,
     coreDb,
@@ -195,13 +237,159 @@ async function fixture(missingKey = false, enabled = true, managedConfiguration 
     backup,
     post,
     read,
+    admitServerLedger,
+    readServerCalls: () => listServerCapabilityCalls(coreDb, serverWorkReader),
+    readServerUsage: () => listServerUsageRecords(coreDb, serverWorkReader),
     async close() {
+      serverWorkReader?.close();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     },
   };
 }
+
+it('retains the Server Gateway producer through stream settlement and recovery of a lost owner ACK', async () => {
+  const f = await fixture(false, true, true);
+  const requestOwner = new AsyncLocalStorage<{ active: boolean }>();
+  const terminalStarted = Promise.withResolvers<void>();
+  const releaseTerminal = Promise.withResolvers<void>();
+  const producerFinished = Promise.withResolvers<void>();
+  const intents = new Map<string, ServerWorkIntent>();
+  const receipts = new Map<string, ServerWorkReceipt>();
+  const calls: string[] = [];
+  const ready = <Value>(value: Value) => ({ state: 'ready' as const, value });
+  const producer = { active: false };
+  const owned = (action: string) => {
+    expect(requestOwner.getStore()).toBe(producer);
+    expect(producer.active).toBe(true);
+    calls.push(action);
+  };
+  const binding: ServerWorkCommandBinding = {
+    deploymentId: 'server-producer-test',
+    withProducer: async (effect) => {
+      expect(producer.active).toBe(false);
+      producer.active = true;
+      try {
+        return await requestOwner.run(producer, effect);
+      } finally {
+        producer.active = false;
+        producerFinished.resolve();
+      }
+    },
+    owner: {
+      status: () => ({ state: 'ready', owner: 'server-work' }),
+      stage: async (intent) => {
+        owned(`stage:${intent.verb}`);
+        intents.set(intent.requestId, intent);
+        return ready(intent);
+      },
+      readIntent: async (requestId) => ready(intents.get(requestId) ?? null),
+      readLocalReceipt: async (requestId) => ready(receipts.get(requestId) ?? null),
+      settle: async (receipt) => {
+        owned(`settle:${receipt.intent.verb}`);
+        if (receipt.intent.verb === 'settle-call') {
+          terminalStarted.resolve();
+          await releaseTerminal.promise;
+        }
+        receipts.set(receipt.intent.requestId, receipt);
+        if (receipt.intent.verb === 'settle-call') throw new Error('Committed owner ACK lost.');
+        return ready(undefined);
+      },
+      isPublished: async (receipt) => {
+        owned(`published:${receipt.intent.verb}`);
+        return ready(receipts.get(receipt.intent.requestId) === receipt);
+      },
+      claimCallContact: async () => {
+        owned('contact');
+        return ready({ state: 'claimed-now' });
+      },
+      readUsageIds: async () => ready([]),
+      writeRouteLineage: async (_receipt, { entryIndex }) => {
+        owned('route');
+        return ready(entryIndex ?? 0);
+      },
+    },
+    kernel: {
+      status: () => ({ state: 'ready', owner: 'control-kernel' }),
+      decideServerWork: async (intent) => {
+        owned(`decide:${intent.verb}`);
+        expect(intents.get(intent.requestId)).toEqual(intent);
+        return ready({
+          state: 'settled',
+          receipt: storageReceipt(intent, {
+            disposition: 'applied',
+            result: { decisionRef: intent.requestId },
+          }),
+        });
+      },
+      inspectServerWork: async () => ready({ state: 'absent' }),
+    },
+    callBudgetRef: () => null,
+    verifyCallAuthority: () => true,
+  };
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use('*', async (context, next) => {
+    context.set('actor', {
+      kind: 'local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
+    await next();
+  });
+  registerLlmGatewayRoutes({
+    app,
+    coreDb: f.coreDb,
+    serverWork: binding,
+    llmGatewayDispatcher: f.dispatcher,
+    resolveGatewayProvider: (providerId, model, _context, registry) =>
+      resolveProviderProfileToLLMConfig(registry.get(providerId)!, undefined, model),
+    runtimeConfig: () => f.manager!.current(),
+  });
+  f.primary.setResponses([fauxAssistantMessage('served')]);
+  // The synthetic in-memory provider has no HTTP serializer. Invoke the declared
+  // final transport admission before forwarding to its reversible stream.
+  const syntheticStream = f.dispatcher.createChatCompletionStream.bind(f.dispatcher);
+  vi.spyOn(f.dispatcher, 'createChatCompletionStream').mockImplementation(
+    async (provider, request, dispatchContext) => {
+      const admit = dispatchContext?.transport?.finalRequestAdmission;
+      if (!admit) throw new Error('Server contact requires final transport admission.');
+      await admit({ payload: request, contextWindowTokens: 16_000, outputReserveTokens: 1_000 });
+      return syntheticStream(provider, request, dispatchContext);
+    }
+  );
+  try {
+    const response = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'tier',
+        stream: true,
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(producer.active).toBe(true);
+    const text = response.text();
+    await Promise.race([
+      terminalStarted.promise,
+      text.then(() => {
+        throw new Error('The stream completed before its native finish began.');
+      }),
+    ]);
+    expect(producer.active).toBe(true);
+    expect(calls.filter((call) => call === 'contact')).toHaveLength(1);
+    releaseTerminal.resolve();
+    expect(await text).toContain('served');
+    await producerFinished.promise;
+    expect(producer.active).toBe(false);
+    expect(calls).toContain('settle:settle-usage');
+    expect(calls).toContain('published:settle-call');
+    expect(f.primary.state.callCount).toBe(1);
+  } finally {
+    releaseTerminal.resolve();
+    await f.close();
+  }
+}, 60_000);
 
 it('keeps private decision transport out of authenticated public discovery and endpoint registration', async () => {
   const f = await fixture();
@@ -282,14 +470,33 @@ describe('public Gateway decision Audit call linkage', () => {
       }
     });
 
+    it(`${endpoint} holds Server inference before Policy admission and Provider contact`, async () => {
+      const f = await fixture();
+      try {
+        const response = await f.post(endpoint, false, false);
+        expect(response.status).toBe(503);
+        expect(await response.json()).toMatchObject({
+          error: { code: 'operation_storage_unavailable' },
+        });
+        expect(f.read().calls).toEqual([]);
+        expect(listServerPermissionDecisions(f.coreDb)).toEqual([]);
+        expect(f.credentialResolver).not.toHaveBeenCalled();
+        expect(f.primary.state.callCount).toBe(0);
+        expect(f.backup.state.callCount).toBe(0);
+      } finally {
+        await f.close();
+      }
+    });
+
     for (const attributed of [true, false]) {
       it(`${endpoint} ${attributed ? 'Workspace' : 'Server'} decision links the exact assigned call`, async () => {
         const f = await fixture();
         f.primary.setResponses([fauxAssistantMessage('served')]);
         try {
+          if (!attributed) await f.admitServerLedger();
           const response = await f.post(endpoint, false, attributed);
           expect(response.status, await response.text()).toBe(200);
-          const calls = attributed ? f.read().calls : listServerCapabilityCalls(f.coreDb);
+          const calls = attributed ? f.read().calls : f.readServerCalls();
           expect(calls).toHaveLength(1);
           expect(calls[0]).toMatchObject({ status: 'succeeded' });
           const decisions = listServerPermissionDecisions(f.coreDb);
@@ -323,6 +530,7 @@ describe('public Gateway decision Audit call linkage', () => {
         const f = await fixture(true);
         f.backup.setResponses([fauxAssistantMessage('must not run')]);
         try {
+          if (!attributed) await f.admitServerLedger();
           // Fail only the required allowed-decision Audit crossing, leaving call closeout writable.
           f.coreDb.sqlite.exec(`
             CREATE TRIGGER fail_gateway_decision_audit
@@ -343,7 +551,7 @@ describe('public Gateway decision Audit call linkage', () => {
           expect.soft(f.credentialResolver.mock.calls.filter(([, context]) => context)).toEqual([]);
           expect.soft(f.primary.state.callCount).toBe(0);
           expect.soft(f.backup.state.callCount).toBe(0);
-          const calls = attributed ? f.read().calls : listServerCapabilityCalls(f.coreDb);
+          const calls = attributed ? f.read().calls : f.readServerCalls();
           expect(calls.length).toBeLessThanOrEqual(1);
           for (const call of calls) expect.soft(call.status).toBe('failed');
           expect(listServerPermissionDecisions(f.coreDb)).toEqual([]);
@@ -361,6 +569,7 @@ describe('public Gateway decision Audit call linkage', () => {
     it(`${endpoint} disabled policy denies without a call link or Provider effects`, async () => {
       const f = await fixture(true, false);
       try {
+        await f.admitServerLedger();
         const response = await f.post(endpoint);
         expect(response.status).toBe(403);
         expect(await response.json()).toMatchObject({ error: { code: 'gateway_disabled' } });
@@ -377,7 +586,7 @@ describe('public Gateway decision Audit call linkage', () => {
           capabilityCallId: null,
         });
         expect(f.read().calls).toEqual([]);
-        expect(listServerCapabilityCalls(f.coreDb)).toEqual([]);
+        expect(f.readServerCalls()).toEqual([]);
         expect(f.credentialResolver).not.toHaveBeenCalled();
         expect(f.primary.state.callCount).toBe(0);
         expect(f.backup.state.callCount).toBe(0);
@@ -389,6 +598,7 @@ describe('public Gateway decision Audit call linkage', () => {
     it(`${endpoint} denied Workspace access creates no call or false Audit join`, async () => {
       const f = await fixture(true);
       try {
+        await f.admitServerLedger();
         const response = await f.app.request(`/v1/${endpoint}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -403,7 +613,7 @@ describe('public Gateway decision Audit call linkage', () => {
         expect(response.status).toBe(403);
         expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
         expect(f.read().calls).toEqual([]);
-        expect(listServerCapabilityCalls(f.coreDb)).toEqual([]);
+        expect(f.readServerCalls()).toEqual([]);
         for (const event of listServerAuditEvents(f.coreDb))
           expect(event.capabilityCallId).toBeNull();
         for (const decision of listServerPermissionDecisions(f.coreDb))
@@ -490,64 +700,60 @@ describe('public durable logical Gateway lineage', () => {
   it('retains a public call without Workspace metadata in the Server ledger and keeps Core open', async () => {
     const f = await fixture(true);
     try {
+      const app = await f.admitServerLedger();
       f.primary.setResponses([
         fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'invalid_api_key' }),
       ]);
       const served = fauxAssistantMessage('server served');
       served.usage = { ...served.usage, input: 7, output: 3, totalTokens: 10 };
       f.backup.setResponses([served]);
-      const response = await f.app.request('/v1/chat/completions', {
+      const response = await app.request('/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'tier', messages: [{ role: 'user', content: 'hello' }] }),
       });
       expect(response.status, await response.text()).toBe(200);
-      const call = f.coreDb.sqlite
-        .prepare('SELECT call_id, workspace_id, status FROM capability_calls')
-        .get() as { call_id: string };
-      expect(call).toMatchObject({ workspace_id: null, status: 'succeeded' });
-      const audits = f.coreDb.sqlite
-        .prepare(
-          'SELECT action, actor_json, authentication_json FROM audit_events WHERE capability_call_id = ? ORDER BY created_at'
-        )
-        .all(call.call_id);
-      expect(audits).toEqual([
-        expect.objectContaining({
-          action: 'capability.admit',
-          authentication_json: JSON.stringify({ credentialKind: 'local', credentialId: null }),
-          actor_json: JSON.stringify({
-            kind: 'user',
-            id: 'usr_00000000-0000-7000-8000-000000000001',
-          }),
-        }),
-        {
-          action: 'permission.decision',
-          actor_json: null,
-          authentication_json: null,
-        },
-        expect.objectContaining({
-          action: 'capability.finish',
-          authentication_json: JSON.stringify({ credentialKind: 'local', credentialId: null }),
-          actor_json: JSON.stringify({
-            kind: 'user',
-            id: 'usr_00000000-0000-7000-8000-000000000001',
-          }),
-        }),
+      expect(f.readServerCalls()).toEqual([
+        expect.objectContaining({ owner: { kind: 'server' }, status: 'succeeded' }),
       ]);
+      const [call] = f.readServerCalls();
+      const audits = listServerAuditEvents(f.coreDb).filter(
+        (event) => event.capabilityCallId === call!.id || event.resource === `call:${call!.id}`
+      );
+      expect(audits).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'server-work.admit-call',
+            actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            resource: `call:${call!.id}`,
+          }),
+          expect.objectContaining({
+            action: 'permission.decision',
+            capabilityCallId: call!.id,
+          }),
+          expect.objectContaining({
+            action: 'server-work.settle-call',
+            actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            resource: `call:${call!.id}`,
+          }),
+        ])
+      );
       expect(f.credentialResolver).toHaveBeenCalledWith(
         'test:backup',
         expect.objectContaining({
           actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          capabilityCallId: call.call_id,
+          capabilityCallId: call!.id,
         })
       );
+      const usage = f.readServerUsage().filter((record) => record.capabilityCallId === call!.id);
       expect(
-        f.coreDb.sqlite
-          .prepare(
-            "SELECT sum(quantity) AS quantity FROM usage_records WHERE capability_call_id = ? AND unit = 'tokens'"
-          )
-          .get(call.call_id)
-      ).toEqual({ quantity: 10 });
+        usage
+          .filter((record) => record.unit === 'tokens')
+          .reduce((sum, record) => sum + record.quantity, 0)
+      ).toBe(10);
+      expect(f.read().calls).toEqual([]);
+      expect(f.primary.state.callCount).toBe(0);
+      expect(f.backup.state.callCount).toBe(1);
       expect(f.coreDb.sqlite.open).toBe(true);
     } finally {
       await f.close();
@@ -873,6 +1079,7 @@ describe('public durable logical Gateway lineage', () => {
     const f = await fixture();
     f.primary.setResponses([fauxAssistantMessage('blind')]);
     try {
+      await f.admitServerLedger();
       expect((await f.post('responses', false, false)).status).toBe(200);
       expect(f.read().calls).toEqual([]);
     } finally {

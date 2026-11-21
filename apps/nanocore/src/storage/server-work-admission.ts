@@ -396,3 +396,25 @@ export function readPublishedServerWorkInput(
   const { input } = parseServerProductAdmissionDraft(payload);
   return input !== null && sha256Hex(input) === ref.digest ? input : null;
 }
+
+export {
+  claimServerWorkCallContact,
+  readServerCallUsageIds,
+  settleServerCallAdmission,
+  settleServerCallFinish,
+  settleServerCallUsage,
+  stageServerCallAdmission,
+  stageServerCallFinish,
+  stageServerCallUsage,
+  writeServerCallRouteLineage,
+} from './server-work-call.js';
+export { readServerTurnAdmission, type ServerTurnAdmission } from './server-work-intents.js';
+export {
+  applyServerTurnObservation,
+  applyServerTurnProgress,
+  prepareServerTurnObservation,
+  prepareServerTurnProgress,
+  prepareServerTurnSettlement,
+  settleServerTurnSettlement,
+  stageServerTurnSettlement,
+} from './server-work-turn.js';

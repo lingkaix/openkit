@@ -13,6 +13,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import type { ServerGatewayCallLedger } from '../llm/gateway-server-work.js';
 import { OperationError } from '../operation-error.js';
 import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import {
@@ -23,12 +24,16 @@ import {
   mcpToolContactUsage,
 } from '../storage/control-store-capability.js';
 import { presentControlFacts } from '../storage/control-store-input.js';
+import type { ControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { CapabilityCallFamily } from '../storage/schema/index.js';
+import { serverWorkUnavailable } from '../storage/server-work-command.js';
+import { serverWorkProductScope } from '../storage/server-work-product-reads.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 
 import {
   assertWorkspaceCapabilityActor,
@@ -171,6 +176,7 @@ export interface CapabilityAuditLineage {
 
 /** Input for recording usage rows for one capability call. */
 export interface RecordUsageInput {
+  readonly serverWorkCall?: ServerGatewayCallLedger;
   /** Database handle for the immutable call owner. */
   workspaceDb: WorkspaceDb | CoreDb;
   /** Started call returned by startCapabilityCall. */
@@ -185,6 +191,7 @@ export interface RecordUsageInput {
 
 /** Input for finishing one capability call. */
 export interface FinishCapabilityCallInput {
+  readonly serverWorkCall?: ServerGatewayCallLedger;
   /** Actual upstream HTTP status, retained as numeric context in the terminal Audit summary. */
   upstreamHttpStatus?: number;
   /** Exact serialized byte size of a complete semantic result refused by its bound. */
@@ -252,32 +259,20 @@ export function startCapabilityCall(
 > {
   assertWorkspaceCapabilityActor(input);
   if (input.workspaceDb.scope === 'core') {
-    const { workspaceDb, callId, auditLineage, now, ...context } =
-      input as StartServerCapabilityCallInput;
-    if (input.workspaceId !== undefined || context.owner?.kind !== 'server')
+    if (
+      input.workspaceId !== undefined ||
+      (input as StartServerCapabilityCallInput).owner?.kind !== 'server'
+    )
       throw new Error('Capability call database owner mismatch.');
-    return getControlStoreWorkerClient()
-      .coreCapability(
-        workspaceDb,
-        ControlCapabilityCommandInputSchema.parse({
-          kind: 'server-admit',
-          context,
-          callId,
-          auditLineage,
-          now: now?.toISOString(),
-        })
-      )
-      .then((result) => {
-        if (
-          result === null ||
-          typeof result !== 'object' ||
-          !('inserted' in result) ||
-          !('owner' in result.context) ||
-          result.context.owner.kind !== 'server'
+    if (input.family === 'llm' && input.capabilityId === 'llm.decision')
+      return Promise.reject(
+        new OperationError(
+          'operation_storage_unavailable',
+          'Server Security Review is unavailable.',
+          503
         )
-          throw new TypeError('Invalid native Server capability admission result.');
-        return presentControlFacts(result) as StartedCapabilityCall<ServerGatewayCallContext>;
-      });
+      );
+    return Promise.reject(serverWorkUnavailable());
   }
   const {
     workspaceDb,
@@ -386,48 +381,6 @@ export async function finishMcpToolCall(
   }
 }
 
-/** Preserves each original Core measurement commit and its separate failure closeout. */
-async function recordCoreUsage(
-  input: RecordUsageInput & { workspaceDb: CoreDb }
-): Promise<string[]> {
-  const context = input.call.context;
-  if (context.workspaceId !== undefined || !('owner' in context) || context.owner.kind !== 'server')
-    throw new Error('Usage record database owner mismatch.');
-  const ids: string[] = [];
-  const now = (input.now ?? new Date()).toISOString();
-  try {
-    for (const measurement of input.records) {
-      const result = await getControlStoreWorkerClient().coreCapability(
-        input.workspaceDb,
-        ControlCapabilityCommandInputSchema.parse({
-          kind: 'server-usage',
-          call: input.call,
-          measurement,
-          auditLineage: input.auditLineage,
-          now,
-        })
-      );
-      if (!Array.isArray(result)) throw new TypeError('Invalid native usage result.');
-      ids.push(...result);
-    }
-  } catch (error) {
-    // A lost acknowledgement is unknown, never authority to diagnose and rewrite the Call.
-    if (!(error instanceof ControlStoreWorkerError && error.commit === 'unknown')) {
-      try {
-        await finishCapabilityCall({
-          workspaceDb: input.workspaceDb,
-          callId: input.call.id,
-          auditLineage: input.auditLineage,
-          status: 'failed',
-          errorCode: 'usage_record_failed',
-        });
-      } catch {}
-    }
-    throw error;
-  }
-  return ids;
-}
-
 /** Records measurements through the same bounded owner for either canonical database scope. */
 export function recordUsage(input: RecordUsageInput & { workspaceDb: CoreDb }): Promise<string[]>;
 export function recordUsage(
@@ -436,7 +389,10 @@ export function recordUsage(
 export function recordUsage(input: RecordUsageInput): Promise<string[]>;
 export function recordUsage(input: RecordUsageInput): Promise<string[]> {
   const db = input.workspaceDb;
-  if (db.scope === 'core') return recordCoreUsage({ ...input, workspaceDb: db });
+  if (db.scope === 'core')
+    return input.serverWorkCall?.call.id === input.call.id
+      ? input.serverWorkCall.recordUsage(input)
+      : Promise.reject(serverWorkUnavailable());
   return (async () => {
     if (input.call.context.workspaceId !== db.workspaceId)
       throw new Error('Usage record database owner mismatch.');
@@ -489,22 +445,11 @@ export function finishCapabilityCall(
 ): Promise<void>;
 export function finishCapabilityCall(input: FinishCapabilityCallInput): Promise<void>;
 export function finishCapabilityCall(input: FinishCapabilityCallInput): Promise<void> {
-  if (input.workspaceDb.scope === 'core') {
-    const { workspaceDb, now, callId, ...facts } = input;
-    return getControlStoreWorkerClient()
-      .coreCapability(
-        workspaceDb,
-        ControlCapabilityCommandInputSchema.parse({
-          kind: 'server-finish',
-          callId,
-          finish: { ...facts, now: now?.toISOString() },
-        })
-      )
-      .then((result) => {
-        if (result !== null) throw new TypeError('Invalid native capability finish result.');
-      });
-  }
-  const { workspaceDb, now, callId, ...finish } = input;
+  const { workspaceDb, now, callId, serverWorkCall, ...finish } = input;
+  if (workspaceDb.scope === 'core')
+    return serverWorkCall?.call.id === callId
+      ? serverWorkCall.finish({ ...finish, ...(now ? { now } : {}) })
+      : Promise.reject(serverWorkUnavailable());
   return getControlStoreWorkerClient()
     .workspaceCapability(
       workspaceDb,
@@ -524,16 +469,7 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): Promise<
 export function stampCapabilityCallSchemaSnapshot(
   input: StampCapabilityCallSchemaSnapshotInput
 ): Promise<void> {
-  if (input.workspaceDb.scope === 'core')
-    return getControlStoreWorkerClient()
-      .coreCapability(input.workspaceDb, {
-        kind: 'server-attribution',
-        callId: input.callId,
-        schemaSnapshotId: input.schemaSnapshotId,
-      })
-      .then((result) => {
-        if (result !== null) throw new TypeError('Invalid native schema stamp result.');
-      });
+  if (input.workspaceDb.scope === 'core') return Promise.reject(serverWorkUnavailable());
   return getControlStoreWorkerClient()
     .workspaceCapability(input.workspaceDb, {
       kind: 'attribution',
@@ -557,30 +493,19 @@ export function recoverRunningCapabilityCalls(
 ): number;
 export function recoverRunningCapabilityCalls(
   input: RecoverRunningCapabilityCallsInput & { workspaceDb: CoreDb }
-): Promise<number>;
+): Promise<StorageResult<'server-work', number>>;
 export function recoverRunningCapabilityCalls(
   input: RecoverRunningCapabilityCallsInput
-): number | Promise<number>;
+): number | Promise<StorageResult<'server-work', number>>;
 export function recoverRunningCapabilityCalls(
   input: RecoverRunningCapabilityCallsInput
-): number | Promise<number> {
+): number | Promise<StorageResult<'server-work', number>> {
+  if (input.workspaceDb.scope === 'core')
+    return Promise.resolve({ state: 'unavailable', owner: 'server-work', reason: 'disabled' });
   const now = input.now ?? new Date();
   const calls = input.workspaceDb.sqlite
     .prepare('SELECT * FROM capability_calls WHERE status = ?')
     .all('running') as CapabilityCallRow[];
-  if (input.workspaceDb.scope === 'core')
-    return (async () => {
-      for (const call of calls)
-        await finishCapabilityCall({
-          callId: call.call_id,
-          errorCode: 'capability_call_recovered_after_restart',
-          now,
-          status: 'unknown',
-          workspaceDb: input.workspaceDb,
-        });
-      return calls.length;
-    })();
-
   for (const call of calls) {
     finishCapabilityCallInDb({
       callId: call.call_id,
@@ -787,18 +712,24 @@ export function listWorkspaceUsageRecords(
     .map((row) => usageRecordFromRow(row));
 }
 
-/** Reads Server calls from the same ledger family after Server audience authorization. */
-export function listServerCapabilityCalls(coreDb: CoreDb): CapabilityCallLedgerRecord[] {
-  return coreDb.sqlite
-    .prepare('SELECT * FROM capability_calls ORDER BY started_at, call_id')
+/** Reads Server calls from the admitted owner after Server audience authorization. */
+export function listServerCapabilityCalls(
+  core: Pick<CoreDb, 'dataRoot'>,
+  reader?: ControlStoreProductReadHandle
+): CapabilityCallLedgerRecord[] {
+  return serverWorkProductScope(core.dataRoot, reader)
+    .sqlite.prepare('SELECT * FROM capability_calls ORDER BY started_at, call_id')
     .all()
     .map((row) => capabilityCallFromRow(row, true));
 }
 
 /** Reads Server measurements after Server audience authorization. */
-export function listServerUsageRecords(coreDb: CoreDb): ServerUsageRecord[] {
-  return coreDb.sqlite
-    .prepare('SELECT * FROM usage_records ORDER BY recorded_at, usage_id')
+export function listServerUsageRecords(
+  core: Pick<CoreDb, 'dataRoot'>,
+  reader?: ControlStoreProductReadHandle
+): ServerUsageRecord[] {
+  return serverWorkProductScope(core.dataRoot, reader)
+    .sqlite.prepare('SELECT * FROM usage_records ORDER BY recorded_at, usage_id')
     .all()
     .map((row) => usageRecordFromRow(row, true) as ServerUsageRecord);
 }
@@ -1053,6 +984,7 @@ function usageRecordFromRow(row: unknown, server = false): UsageRecord | ServerU
 
 /** Existing call and admitted owner supplied to the shared Gateway dispatcher. */
 export interface GatewayCallLedgerBinding {
+  readonly serverWorkCall?: ServerGatewayCallLedger;
   readonly workspaceDb: WorkspaceDb | CoreDb;
   readonly call: StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext>;
 }
@@ -1067,23 +999,9 @@ export function writeGatewayRouteLineage(
   }
 ): Promise<number> {
   if (input.workspaceDb.scope === 'core')
-    return getControlStoreWorkerClient()
-      .coreCapability(
-        input.workspaceDb,
-        ControlCapabilityCommandInputSchema.parse({
-          kind: 'server-attribution',
-          callId: input.call.id,
-          routeLineage: {
-            logicalModelId: input.logicalModelId,
-            entry: input.entry,
-            entryIndex: input.entryIndex,
-          },
-        })
-      )
-      .then((result) => {
-        if (typeof result !== 'number') throw new TypeError('Invalid native lineage result.');
-        return result;
-      });
+    return input.serverWorkCall?.call.id === input.call.id
+      ? input.serverWorkCall.writeRouteLineage(input)
+      : Promise.reject(serverWorkUnavailable());
   return getControlStoreWorkerClient()
     .workspaceCapability(
       input.workspaceDb,

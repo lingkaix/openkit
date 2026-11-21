@@ -3,31 +3,79 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { readWorkObservationBody, workObservationBodyBundleId } from '../evidence-bundles.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { withServerWorkProducer } from '../storage/server-work-command.js';
+import { openServerWorkProductReadHandle } from '../storage/server-work-product-reads.js';
 import {
-  appendWorkObservation,
-  readWorkObservations,
+  type ControlWorkObservationPreparation,
+  readControlWorkObservations,
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { openTestServerWork } from '../test-support/server-work-store.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
+
+const authority = { actor, credentialRef: null };
+const serverOwner = { kind: 'server' } as const;
+const held = { code: 'operation_storage_unavailable', status: 503 };
+
+function serverFixture(coreDb: CoreDb) {
+  const { dataRoot } = coreDb;
+  let opening: Awaited<ReturnType<typeof openTestServerWork>> | undefined;
+  const readers: Array<Awaited<ReturnType<typeof openTestServerWork>>['reader']> = [];
+  const closeReaders = () => {
+    for (const reader of readers.splice(0)) reader.close();
+    opening = undefined;
+  };
+  return {
+    async open() {
+      ensureLocalUser(coreDb);
+      opening = await openTestServerWork(coreDb);
+      readers.push(opening.reader);
+      return opening.store;
+    },
+    async reopen() {
+      if (!opening) throw new Error('The Server fixture must be open.');
+      const result = await openServerWorkProductReadHandle(dataRoot, getControlStoreWorkerClient());
+      if (result.state !== 'ready') throw new Error(result.reason);
+      readers.push(result.value);
+      return new FsStore({ dataRoot, serverWorkReader: result.value, serverWork: opening.binding });
+    },
+    async stop() {
+      closeReaders();
+      await getControlStoreWorkerClient().shutdown();
+    },
+    async dispose() {
+      closeReaders();
+      await disposeTestStore(dataRoot, coreDb);
+    },
+  };
+}
 
 describe('Server-owned canonical history', () => {
   it('retains Server Thread, Turn, Item revisions and transcript without Workspace placement', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'server-threads-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const fixture = serverFixture(coreDb);
     try {
-      const store = new FsStore({ dataRoot });
+      const store = await fixture.open();
       const workspace = await store.createWorkspace('Workspace');
       const workspaceThread = await store.createThread(workspace.id, 'Workspace work');
-      const thread = await store.createServerThread('Server maintenance');
+      const thread = await store.createServerThread(
+        'Server maintenance',
+        undefined,
+        undefined,
+        authority
+      );
       const turn = await store.createServerTurn(thread.id, 'Maintain', actor);
       const item = await store.createServerItem({
         id: allocateEntityId('it'),
@@ -52,7 +100,7 @@ describe('Server-owned canonical history', () => {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
-      const reopened = new FsStore({ dataRoot });
+      const reopened = await fixture.reopen();
       expect(reopened.getServerThread(thread.id)).toMatchObject({
         ...thread,
         preview: 'Maintain',
@@ -77,29 +125,36 @@ describe('Server-owned canonical history', () => {
       expect(reopened.listWorkspaceItemRevisions(workspace.id)).toEqual([]);
       expect(reopened.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'on' });
       expect(() => reopened.getTurnById(turn.id)).toThrow('Turn not found');
-      const retained = coreDb.sqlite
+      const sqlite = store.getServerWorkReadScope().sqlite;
+      const retained = sqlite
         .prepare('SELECT record_json FROM control_threads WHERE id=?')
         .get(thread.id) as { record_json: string };
       expect(retained.record_json).not.toContain('workspaceId');
       expect(
-        coreDb.sqlite
+        sqlite
           .prepare(
             "SELECT revision FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision"
           )
           .all(item.id)
       ).toEqual([{ revision: 1 }, { revision: 2 }]);
     } finally {
-      await disposeTestStore(dataRoot, coreDb);
+      await fixture.dispose();
     }
   });
 
   it('retains Server observations and exact bodies across rollback, terminal publication and cold reopen', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'server-observations-'));
-    let coreDb = openCoreDb(dataRoot);
+    const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const fixture = serverFixture(coreDb);
     try {
-      const store = new FsStore({ dataRoot });
-      const thread = await store.createServerThread('Server capture');
+      const store = await fixture.open();
+      const thread = await store.createServerThread(
+        'Server capture',
+        undefined,
+        undefined,
+        authority
+      );
       const turn = await store.createServerTurn(thread.id, 'Capture Server work', actor, null, {
         startedAt: '2026-10-20T00:00:00.000Z',
         captureCoverage: { scope: 'server', value: 'on' },
@@ -117,21 +172,30 @@ describe('Server-owned canonical history', () => {
           tools: [],
         },
       };
-      const first = await appendWorkObservation(coreDb, {
+      const binding = store.getServerWorkBinding()!;
+      const admission = store.getServerTurnAdmission(turn.id);
+      const submit = (input: ControlWorkObservationPreparation) =>
+        withServerWorkProducer(binding, () => binding.owner.appendObservation!(admission, input));
+      const append = async (input: ControlWorkObservationPreparation) => {
+        const result = await submit(input);
+        if (result.state !== 'ready') throw new Error(result.reason);
+        return result.value;
+      };
+      const read = (current: FsStore) =>
+        readControlWorkObservations(current.getServerWorkReadScope().sqlite, serverOwner, owner);
+      const first = await append({
         ...owner,
         observation: environment,
         bodies: [],
       });
       expect(first.disposition).toBe('committed');
       expect(first.observation.seq).toBe(1);
-      expect(
-        await appendWorkObservation(coreDb, { ...owner, observation: environment, bodies: [] })
-      ).toEqual({
+      expect(await append({ ...owner, observation: environment, bodies: [] })).toEqual({
         ...first,
         disposition: 'duplicate',
       });
       const bytes = Buffer.from('{"prompt":"Exact Server capture"}\r\n');
-      await appendWorkObservation(coreDb, {
+      await append({
         ...owner,
         observation: {
           id: 'server-request',
@@ -167,15 +231,20 @@ describe('Server-owned canonical history', () => {
         createdAt: '2026-10-20T00:00:02.000Z',
         sha256: createHash('sha256').update(bytes).digest('hex'),
       };
-      const retained = readWorkObservations(coreDb, owner);
+      const readBody = (current: FsStore) =>
+        readWorkObservationBody(
+          { scope: 'server-work', dataRoot, sqlite: current.getServerWorkReadScope().sqlite },
+          body
+        );
+      const retained = read(store);
       expect(retained.map((value) => [value.seq, value.type])).toEqual([
         [1, 'env.bound'],
         [2, 'model.observed'],
         [3, 'content.published'],
       ]);
-      expect(Buffer.from(readWorkObservationBody(coreDb, body)!)).toEqual(bytes);
+      expect(Buffer.from(readBody(store)!)).toEqual(bytes);
       await expect(
-        appendWorkObservation(coreDb, {
+        append({
           ...owner,
           observation: {
             ...environment,
@@ -190,37 +259,38 @@ describe('Server-owned canonical history', () => {
           bodies: [],
         })
       ).rejects.toThrow();
-      expect(readWorkObservations(coreDb, owner)).toEqual(retained);
+      expect(read(store)).toEqual(retained);
       // Deliberate native failure follows genuine public Thread, Turn and observation admission.
-      coreDb.sqlite.exec(`CREATE TRIGGER refuse_server_observation BEFORE INSERT ON control_work_observations
-        BEGIN SELECT RAISE(ABORT, 'injected Server observation refusal'); END`);
+      const mutator = new Database(store.getServerWorkReadScope().path, { fileMustExist: true });
       try {
+        mutator.exec(`CREATE TRIGGER refuse_server_observation BEFORE INSERT ON control_work_observations
+        BEGIN SELECT RAISE(ABORT, 'injected Server observation refusal'); END`);
         await expect(
-          appendWorkObservation(coreDb, {
+          submit({
             ...owner,
             observation: { ...environment, id: 'refused-environment' },
             bodies: [],
           })
-        ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+        ).resolves.toMatchObject({ state: 'unavailable', owner: 'server-work' });
       } finally {
-        coreDb.sqlite.exec('DROP TRIGGER refuse_server_observation');
+        mutator.exec('DROP TRIGGER IF EXISTS refuse_server_observation');
+        mutator.close();
       }
-      expect(readWorkObservations(coreDb, owner)).toEqual(retained);
-      expect(Buffer.from(readWorkObservationBody(coreDb, body)!)).toEqual(bytes);
+      expect(read(store)).toEqual(retained);
+      expect(Buffer.from(readBody(store)!)).toEqual(bytes);
       await store.updateServerTurn(turn.id, {
         status: 'completed',
         completedAt: '2026-10-20T00:00:03.000Z',
       });
-      const sealed = readWorkObservations(coreDb, owner);
+      const sealed = read(store);
       expect(sealed.at(-1)).toMatchObject({ type: 'turn.reap', payload: { reason: 'completed' } });
-      await getControlStoreWorkerClient().shutdown();
-      coreDb.sqlite.close();
-      coreDb = openCoreDb(dataRoot);
-      expect(new FsStore({ dataRoot }).getServerTurnById(turn.id).status).toBe('completed');
-      expect(readWorkObservations(coreDb, owner)).toEqual(sealed);
-      expect(Buffer.from(readWorkObservationBody(coreDb, body)!)).toEqual(bytes);
+      await fixture.stop();
+      const restarted = await fixture.open();
+      expect(restarted.getServerTurnById(turn.id).status).toBe('completed');
+      expect(read(restarted)).toEqual(sealed);
+      expect(Buffer.from(readBody(restarted)!)).toEqual(bytes);
     } finally {
-      await disposeTestStore(dataRoot, coreDb);
+      await fixture.dispose();
     }
   });
 
@@ -228,45 +298,19 @@ describe('Server-owned canonical history', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'server-threads-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const fixture = serverFixture(coreDb);
     try {
-      const store = new FsStore({ dataRoot });
-      const thread = await store.createServerThread('Server');
+      const store = await fixture.open();
+      const thread = await store.createServerThread('Server', undefined, undefined, authority);
       const turn = await store.createServerTurn(thread.id, 'Work', actor);
-      const reopened = new FsStore({ dataRoot });
+      const reopened = await fixture.reopen();
       expect(reopened.getServerTurnById(turn.id).status).toBe('running');
-      const skipped = await reopened.createServerTurn(thread.id, 'Skipped: busy', actor, null, {
-        status: 'completed',
-      });
-      const skipItem = await reopened.publishSettledTurnItem({
-        id: allocateEntityId('it'),
-        owner: { kind: 'server' },
-        threadId: thread.id,
-        turnId: skipped.id,
-        type: 'status',
-        level: 'info',
-        title: 'Skipped: busy',
-        summary: null,
-        status: 'completed',
-        createdAt: skipped.startedAt!,
-        completedAt: skipped.completedAt,
-      });
-      const skipEvent = await reopened.publishSettledTurnEvent(skipped.id, {
-        event: 'item.completed',
-        threadId: thread.id,
-        turnId: skipped.id,
-        data: { type: 'item-completed', itemId: skipItem.id, item: skipItem },
-      });
-      reopened.emitServerTurnEvent(skipped.id, skipEvent);
-      expect(reopened.getServerTurnTranscript(skipped.id)).toEqual([
-        expect.objectContaining({
-          event: 'turn.completed',
-          data: { type: 'turn-completed', stopReason: 'completed', turn: skipped },
-        }),
-        skipEvent,
-      ]);
-      expect(skipped.durationMs).toBe(0);
-      expect(reopened.getServerItemById(skipItem.id).type).toBe('status');
-      expect(new FsStore({ dataRoot }).listServerThreadTurns(thread.id)).toHaveLength(2);
+      await expect(
+        reopened.createServerTurn(thread.id, 'Skipped: busy', actor, null, {
+          status: 'completed',
+        })
+      ).rejects.toMatchObject(held);
+      expect(reopened.listServerThreadTurns(thread.id)).toEqual([turn]);
 
       await expect(reopened.createServerTurn(thread.id, 'Overlap', actor)).rejects.toThrow(
         'in flight'
@@ -276,56 +320,76 @@ describe('Server-owned canonical history', () => {
       ).rejects.toThrow('cannot change');
       await expect(
         reopened.updateServerThread(thread.id, { owner: { kind: 'workspace' } } as never)
-      ).rejects.toThrow('cannot change');
+      ).rejects.toMatchObject(held);
       await reopened.updateServerTurn(turn.id, {
         status: 'interrupted',
         completedAt: new Date().toISOString(),
       });
-      await reopened.updateServerThread(thread.id, { status: 'archived' });
-      await expect(reopened.createServerTurn(thread.id, 'After archive', actor)).rejects.toThrow(
+      await expect(
+        reopened.updateServerThread(thread.id, { status: 'archived' })
+      ).rejects.toMatchObject(held);
+      const mutator = new Database(reopened.getServerWorkReadScope().path, { fileMustExist: true });
+      try {
+        expect(
+          mutator
+            .prepare(
+              "UPDATE control_threads SET status='archived',record_json=json_set(record_json,'$.status','archived') WHERE id=?"
+            )
+            .run(thread.id).changes
+        ).toBe(1);
+      } finally {
+        mutator.close();
+      }
+      const archived = await fixture.reopen();
+      await expect(archived.createServerTurn(thread.id, 'After archive', actor)).rejects.toThrow(
         'archived'
       );
     } finally {
-      await disposeTestStore(dataRoot, coreDb);
+      await fixture.dispose();
     }
   });
   it('preserves retained additions and refuses corrupt owner or terminal facts', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'server-threads-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const fixture = serverFixture(coreDb);
+    let mutator: Database.Database | undefined;
     try {
-      const store = new FsStore({ dataRoot });
-      const thread = await store.createServerThread('Server');
+      const store = await fixture.open();
+      mutator = new Database(store.getServerWorkReadScope().path, { fileMustExist: true });
+      const thread = await store.createServerThread('Server', undefined, undefined, authority);
       const turn = await store.createServerTurn(thread.id, 'Work', actor);
       // Add descriptive fields to the actual native authority, not retired JSON files.
       const rawThread = JSON.parse(
         (
-          coreDb.sqlite
-            .prepare('SELECT record_json FROM control_threads WHERE id=?')
-            .get(thread.id) as { record_json: string }
+          mutator.prepare('SELECT record_json FROM control_threads WHERE id=?').get(thread.id) as {
+            record_json: string;
+          }
         ).record_json
       );
       rawThread.note = 'retained';
       expect(
-        coreDb.sqlite
+        mutator
           .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
           .run(JSON.stringify(rawThread), thread.id).changes
       ).toBe(1);
       const rawTurn = JSON.parse(
         (
-          coreDb.sqlite
-            .prepare('SELECT record_json FROM control_turns WHERE id=?')
-            .get(turn.id) as { record_json: string }
+          mutator.prepare('SELECT record_json FROM control_turns WHERE id=?').get(turn.id) as {
+            record_json: string;
+          }
         ).record_json
       );
       rawTurn.triggerActor.note = 'retained actor description';
       expect(
-        coreDb.sqlite
+        mutator
           .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
           .run(JSON.stringify(rawTurn), turn.id).changes
       ).toBe(1);
-      const reopened = new FsStore({ dataRoot });
-      await reopened.updateServerThread(thread.id, { name: 'Renamed' });
+      const reopened = await fixture.reopen();
+      await expect(
+        reopened.updateServerThread(thread.id, { name: 'Renamed' })
+      ).rejects.toMatchObject(held);
       await reopened.updateServerTurn(turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
@@ -333,21 +397,22 @@ describe('Server-owned canonical history', () => {
       expect(
         JSON.parse(
           (
-            coreDb.sqlite
+            mutator
               .prepare('SELECT record_json FROM control_threads WHERE id=?')
               .get(thread.id) as { record_json: string }
           ).record_json
         )
       ).toMatchObject({
+        name: thread.name,
         note: 'retained',
         owner: { kind: 'server' },
       });
       expect(
         JSON.parse(
           (
-            coreDb.sqlite
-              .prepare('SELECT record_json FROM control_turns WHERE id=?')
-              .get(turn.id) as { record_json: string }
+            mutator.prepare('SELECT record_json FROM control_turns WHERE id=?').get(turn.id) as {
+              record_json: string;
+            }
           ).record_json
         ).triggerActor.note
       ).toBe('retained actor description');
@@ -371,7 +436,7 @@ describe('Server-owned canonical history', () => {
       });
       expect(terminalEvent).toEqual(committedEvents[0]);
       reopened.emitServerTurnEvent(turn.id, terminalEvent);
-      expect(new FsStore({ dataRoot }).getServerTurnTranscript(turn.id)).toEqual(committedEvents);
+      expect((await fixture.reopen()).getServerTurnTranscript(turn.id)).toEqual(committedEvents);
       await expect(
         reopened.persistServerTurnEvent(turn.id, {
           event: 'turn.completed',
@@ -387,21 +452,22 @@ describe('Server-owned canonical history', () => {
       // WorkOwner carries immutable authority; unknown fields must fail closed.
       rawThread.owner.note = 'retained owner description';
       expect(
-        coreDb.sqlite
+        mutator
           .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
           .run(JSON.stringify(rawThread), thread.id).changes
       ).toBe(1);
-      expect(() => new FsStore({ dataRoot })).toThrow();
+      await expect(fixture.reopen()).rejects.toThrow();
       delete rawThread.owner.note;
       rawThread.owner.kind = 'workspace';
       expect(
-        coreDb.sqlite
+        mutator
           .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
           .run(JSON.stringify(rawThread), thread.id).changes
       ).toBe(1);
-      expect(() => new FsStore({ dataRoot })).toThrow();
+      await expect(fixture.reopen()).rejects.toThrow();
     } finally {
-      await disposeTestStore(dataRoot, coreDb);
+      mutator?.close();
+      await fixture.dispose();
     }
   });
 });
@@ -412,12 +478,14 @@ it.each(['workspace', 'server'] as const)(
     const dataRoot = mkdtempSync(join(tmpdir(), 'sql-history-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const server = scope === 'server' ? serverFixture(coreDb) : undefined;
+    const open = () => (server ? server.open() : new FsStore({ dataRoot }));
     try {
-      const store = new FsStore({ dataRoot });
+      const store = await open();
       const workspace = await store.createWorkspace('History');
       const thread =
         scope === 'server'
-          ? await store.createServerThread('History')
+          ? await store.createServerThread('History', undefined, undefined, authority)
           : await store.createThread(workspace.id, 'History');
       const turn =
         scope === 'server'
@@ -436,7 +504,8 @@ it.each(['workspace', 'server'] as const)(
       };
       if (scope === 'server') await store.createServerItem(item);
       else await store.createItem(item);
-      await getControlStoreWorkerClient().shutdown();
+      if (server) await server.stop();
+      else await getControlStoreWorkerClient().shutdown();
       rmSync(
         join(
           dataRoot,
@@ -444,7 +513,7 @@ it.each(['workspace', 'server'] as const)(
         ),
         { recursive: true, force: true }
       );
-      const reopened = new FsStore({ dataRoot });
+      const reopened = await open();
       const threads =
         scope === 'server' ? reopened.listServerThreads() : reopened.listThreads(workspace.id);
       expect(threads.map((entry) => entry.id)).toEqual([thread.id]);
@@ -454,7 +523,8 @@ it.each(['workspace', 'server'] as const)(
           : reopened.listThreadItems(workspace.id, thread.id);
       expect(items).toEqual([item]);
     } finally {
-      await disposeTestStore(dataRoot, coreDb);
+      if (server) await server.dispose();
+      else await disposeTestStore(dataRoot, coreDb);
     }
   }
 );
@@ -465,14 +535,16 @@ it.each(['workspace', 'server', 'agent-session'] as const)(
     const dataRoot = mkdtempSync(join(tmpdir(), 'sql-exclusion-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const server = scope === 'server' ? serverFixture(coreDb) : undefined;
+    const open = () => (server ? server.open() : new FsStore({ dataRoot }));
     try {
-      const store = new FsStore({ dataRoot });
+      const store = await open();
       const workspace = await store.createWorkspace('Exclusion');
       const thread =
         scope === 'server'
-          ? await store.createServerThread('Exclusion')
+          ? await store.createServerThread('Exclusion', undefined, undefined, authority)
           : await store.createThread(workspace.id, 'Exclusion');
-      const other = new FsStore({ dataRoot });
+      const other = server ? await server.reopen() : new FsStore({ dataRoot });
       const results = await Promise.allSettled(
         [store, other].map(async (producer) => {
           if (scope === 'server') return await producer.createServerTurn(thread.id, 'Work', actor);
@@ -493,8 +565,9 @@ it.each(['workspace', 'server', 'agent-session'] as const)(
       );
       expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
       expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
-      await getControlStoreWorkerClient().shutdown();
-      const reopened = new FsStore({ dataRoot });
+      if (server) await server.stop();
+      else await getControlStoreWorkerClient().shutdown();
+      const reopened = await open();
       const retained =
         scope === 'server'
           ? reopened.listServerThreadTurns(thread.id)
@@ -505,7 +578,8 @@ it.each(['workspace', 'server', 'agent-session'] as const)(
         results.flatMap((result) => (result.status === 'fulfilled' ? [result.value.id] : []))
       );
     } finally {
-      await disposeTestStore(dataRoot, coreDb);
+      if (server) await server.dispose();
+      else await disposeTestStore(dataRoot, coreDb);
     }
   }
 );

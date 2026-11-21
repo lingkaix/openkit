@@ -33,7 +33,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
-import { createTestStore } from '../test-support/store.js';
+import { closeTestCoreDb, createTestCoreDb, createTestStore } from '../test-support/store.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import {
   advanceActiveVaultReferenceVersion,
@@ -137,6 +137,39 @@ function request(input = 'Read status.') {
     signal: new AbortController().signal,
   };
 }
+
+it('holds Server internal Gateway inference before route selection or provider preparation', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'held-server-internal-gateway-'));
+  roots.push(dataRoot);
+  const coreDb = createTestCoreDb(dataRoot);
+  const resolveLogicalModelSupply = vi.fn(() => null);
+  const resolveGatewayProvider = vi.fn();
+  const createResponses = vi.fn();
+  try {
+    const provider = createInternalAgentGatewayProvider({
+      capture: {
+        workspaceDb: coreDb,
+        threadId: allocateEntityId('th'),
+        turnId: allocateEntityId('tu'),
+      },
+      logicalModel,
+      resolveLogicalModelSupply,
+      resolveGatewayProvider,
+      dispatcher: { createResponses },
+      promptCacheScope: { sessionId: 'server-gateway-hold' },
+      usageEndpoint: 'responses',
+    });
+    await expect(provider(request())).rejects.toMatchObject({
+      code: 'operation_storage_unavailable',
+      status: 503,
+    });
+    expect(resolveLogicalModelSupply).not.toHaveBeenCalled();
+    expect(resolveGatewayProvider).not.toHaveBeenCalled();
+    expect(createResponses).not.toHaveBeenCalled();
+  } finally {
+    closeTestCoreDb(coreDb);
+  }
+});
 
 describe('internal Agent Gateway provider', () => {
   it.each(['before-admission', 'after-resolution', 'already-running'] as const)(

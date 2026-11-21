@@ -10,7 +10,12 @@ import {
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
-import { createTestWorkspaceDb, disposeTestStore } from '../test-support/store.js';
+import {
+  closeTestCoreDb,
+  createTestCoreDb,
+  createTestWorkspaceDb,
+  disposeTestStore,
+} from '../test-support/store.js';
 import {
   decisionUsageIsComplete,
   GatewayDecisionBridgeGuard,
@@ -404,6 +409,23 @@ async function scenario(
     run,
   };
 }
+
+it('withholds Server Security Review before credential resolution or transport', async () => {
+  const f = await scenario('native');
+  const coreDb = createTestCoreDb(native.root);
+  try {
+    expect(await f.run({ ledger: { ...f.input.ledger, workspaceDb: coreDb } })).toMatchObject({
+      decision: 'escalate',
+      metric: { kind: 'failure', code: 'unavailable' },
+      usageRecordIds: [],
+    });
+    expect(f.resolveGatewayProvider).not.toHaveBeenCalled();
+    expect(f.input.assertAuthority).not.toHaveBeenCalled();
+    expect(f.requests).toEqual([]);
+  } finally {
+    closeTestCoreDb(coreDb);
+  }
+});
 
 describe('E9 Gateway decision native evidence and actual transport', () => {
   it.each([0.899999, 0.9])(

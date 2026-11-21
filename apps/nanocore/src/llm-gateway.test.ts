@@ -47,6 +47,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
+import { openTestServerWork } from './test-support/server-work-store.js';
 import { createTestStore, openTestNativeWorkspace } from './test-support/store.js';
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -1889,24 +1890,35 @@ describe('OpenAI-compatible agent gateway', () => {
     }
   });
 
-  it('opens no CapabilityCall for a public Gateway request that has a workspace database but no lineage', async () => {
+  it('uses Server work for a public Gateway request without Workspace lineage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-unattributed-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    const workspace = await store.createWorkspace('Unattributed gateway');
+    const providerOptions = createAnthropicProviderOptions();
+    let reader: Awaited<ReturnType<typeof openTestServerWork>>['reader'] | undefined;
 
     try {
+      ensureLocalUser(coreDb);
+      const owner = await openTestServerWork(coreDb, providerOptions);
+      reader = owner.reader;
+      const workspace = await owner.store.createWorkspace('Unattributed gateway');
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
         coreDb,
         dataRoot,
-        store,
-        ...createAnthropicProviderOptions(),
+        store: owner.store,
+        ...providerOptions,
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: asPiAiGatewayClientDouble({
-            createChatCompletion: async (_provider, request, onUsage) => {
+            createChatCompletion: async (_provider, request, onUsage, transport) => {
+              if (!transport?.finalRequestAdmission)
+                throw new Error('Server contact requires final transport admission.');
+              await transport.finalRequestAdmission({
+                payload: request,
+                contextWindowTokens: 16_000,
+                outputReserveTokens: 1_000,
+              });
               await onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
               return {
                 choices: [
@@ -1935,6 +1947,9 @@ describe('OpenAI-compatible agent gateway', () => {
         headers: { 'content-type': 'application/json' },
       });
       expect(res.status, await res.text()).toBe(200);
+      expect(listServerCapabilityCalls(coreDb, owner.reader)).toEqual([
+        expect.objectContaining({ status: 'succeeded', capabilityId: 'llm.chat_completions' }),
+      ]);
 
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
@@ -1946,8 +1961,10 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      reader?.sqlite.close();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -2806,8 +2823,10 @@ describe('OpenAI-compatible agent gateway', () => {
     });
     const seenApiKeys: Array<string | null> = [];
 
+    let reader: Awaited<ReturnType<typeof openTestServerWork>>['reader'] | undefined;
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
       vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
       vaultUnlockState.backend().store({
         material: ['s', 'k-vault-gateway'].join(''),
@@ -2832,14 +2851,26 @@ describe('OpenAI-compatible agent gateway', () => {
         vendor: 'openai',
       };
       const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+      const providerRegistry = new ProviderRegistry([profile]);
+      const gatewayConfig = logicalGatewayConfig(profile);
+      const owner = await openTestServerWork(coreDb, { gatewayConfig, providerRegistry });
+      reader = owner.reader;
       const app = createApp({
         coreDb,
         dataRoot,
-        gatewayConfig: logicalGatewayConfig(profile),
+        store: owner.store,
+        gatewayConfig,
         openKitConfig: {},
-        providerRegistry: new ProviderRegistry([profile]),
+        providerRegistry,
         llmPiAiClient: asPiAiGatewayClientDouble({
-          createChatCompletion: async (provider, request) => {
+          createChatCompletion: async (provider, request, _onUsage, transport) => {
+            if (!transport?.finalRequestAdmission)
+              throw new Error('Server contact requires final transport admission.');
+            await transport.finalRequestAdmission({
+              payload: request,
+              contextWindowTokens: 16_000,
+              outputReserveTokens: 1_000,
+            });
             seenApiKeys.push(provider.apiKey);
 
             return {
@@ -2885,10 +2916,10 @@ describe('OpenAI-compatible agent gateway', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(200);
+      expect(res.status, await res.clone().text()).toBe(200);
       await expect(res.json()).resolves.toMatchObject({ id: 'chatcmpl_vault_gateway' });
       expect(seenApiKeys).toEqual([['s', 'k-vault-gateway'].join('')]);
-      const calls = listServerCapabilityCalls(coreDb);
+      const calls = listServerCapabilityCalls(coreDb, owner.reader);
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({ capabilityId: 'llm.chat_completions', status: 'succeeded' });
       const uses = listVaultUseRecords(coreDb);
@@ -2907,8 +2938,10 @@ describe('OpenAI-compatible agent gateway', () => {
         ['s', 'k-vault-gateway'].join('')
       );
     } finally {
+      reader?.sqlite.close();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -2920,8 +2953,10 @@ describe('OpenAI-compatible agent gateway', () => {
       storeDir: join(dataRoot, 'server', 'vault'),
     });
 
+    let reader: Awaited<ReturnType<typeof openTestServerWork>>['reader'] | undefined;
     try {
       applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
       await createVaultReference(coreDb, {
         referenceId: 'vault_00000000-0000-79a9-ad82-3f4a5baeac82',
         ownerScope: 'server',
@@ -2938,12 +2973,17 @@ describe('OpenAI-compatible agent gateway', () => {
         secretRef: 'vault://vault_00000000-0000-79a9-ad82-3f4a5baeac82',
         vendor: 'openai',
       };
+      const providerRegistry = new ProviderRegistry([profile]);
+      const gatewayConfig = logicalGatewayConfig(profile);
+      const owner = await openTestServerWork(coreDb, { gatewayConfig, providerRegistry });
+      reader = owner.reader;
       const app = createApp({
         coreDb,
         dataRoot,
-        gatewayConfig: logicalGatewayConfig(profile),
+        store: owner.store,
+        gatewayConfig,
         openKitConfig: {},
-        providerRegistry: new ProviderRegistry([profile]),
+        providerRegistry,
         llmPiAiClient: asPiAiGatewayClientDouble({
           createChatCompletion: async () => {
             throw new Error('provider should not be called while vault is locked');
@@ -2961,7 +3001,7 @@ describe('OpenAI-compatible agent gateway', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(503);
+      expect(res.status, await res.clone().text()).toBe(503);
       await expect(res.json()).resolves.toMatchObject({
         error: {
           code: 'gateway_logical_model_unavailable',
@@ -2983,8 +3023,10 @@ describe('OpenAI-compatible agent gateway', () => {
         )
       );
     } finally {
+      reader?.sqlite.close();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 

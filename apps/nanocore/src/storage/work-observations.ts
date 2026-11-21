@@ -36,6 +36,7 @@ import {
 } from './native-thread-login.js';
 import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
+import { serverWorkUnavailable } from './server-work-command.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 
 /** A scoped citation; publication edges are minted only by the storage owner. */
@@ -389,23 +390,18 @@ export function readWorkObservationTurnBinding(
   workspaceDb: WorkspaceDb | CoreDb,
   input: { readonly threadId: string; readonly turnId: string }
 ) {
-  const owner: ControlProductOwner =
-    workspaceDb.scope === 'core'
-      ? { kind: 'server' }
-      : { kind: 'workspace', workspaceId: workspaceDb.workspaceId };
+  if (workspaceDb.scope === 'core') throw serverWorkUnavailable();
+  const owner = { kind: 'workspace' as const, workspaceId: workspaceDb.workspaceId };
   const binding = readControlWorkObservationTurnBinding(workspaceDb.sqlite, owner, input);
-  const root =
-    owner.kind === 'server'
-      ? join(workspaceDb.dataRoot, 'server', 'threads', input.threadId, 'turns', input.turnId)
-      : join(
-          workspaceDb.dataRoot,
-          'workspaces',
-          owner.workspaceId,
-          'threads',
-          input.threadId,
-          'turns',
-          input.turnId
-        );
+  const root = join(
+    workspaceDb.dataRoot,
+    'workspaces',
+    owner.workspaceId,
+    'threads',
+    input.threadId,
+    'turns',
+    input.turnId
+  );
   return { root, turn: binding.turn, coverage: binding.coverage };
 }
 
@@ -414,10 +410,8 @@ export function readWorkObservations(
   workspaceDb: WorkspaceDb | CoreDb,
   input: { readonly threadId: string; readonly turnId: string }
 ): readonly WorkObservationRecord[] {
-  const owner: ControlProductOwner =
-    workspaceDb.scope === 'core'
-      ? { kind: 'server' }
-      : { kind: 'workspace', workspaceId: workspaceDb.workspaceId };
+  if (workspaceDb.scope === 'core') throw serverWorkUnavailable();
+  const owner = { kind: 'workspace' as const, workspaceId: workspaceDb.workspaceId };
   const records: WorkObservationRecord[] = [];
   let afterSequence = 0;
   for (;;) {
@@ -438,10 +432,8 @@ export async function appendWorkObservation(
 ): Promise<Pick<ControlWorkObservationResult, 'disposition' | 'observation'>> {
   if (workspaceDb.sqlite.inTransaction)
     throw new Error('Observation submission cannot span a Main transaction');
-  const owner: ControlProductOwner =
-    workspaceDb.scope === 'core'
-      ? { kind: 'server' }
-      : { kind: 'workspace', workspaceId: workspaceDb.workspaceId };
+  if (workspaceDb.scope === 'core') throw serverWorkUnavailable();
+  const owner = { kind: 'workspace' as const, workspaceId: workspaceDb.workspaceId };
   const prepared = prepareControlWorkObservation(owner, input);
   const scope = nativeProductScope(workspaceDb.dataRoot, owner);
   // Load only on the producer path; the native SQL owner must not start another writer host.
@@ -957,15 +949,25 @@ export function prepareControlWorkObservation(
   };
 }
 
+/** Existing Server work writer with the immutable Server evidence root. */
+export type ServerWorkObservationDb = {
+  readonly scope: 'server-work';
+  readonly sqlite: Database.Database;
+  readonly dataRoot: string;
+};
+
 /** Uses the existing evidence owner outside SQL, preserving its independent FULL-commit and expiry guards. */
 export function publishControlWorkObservationBodies(
-  db: WorkspaceDb | CoreDb,
+  db: WorkspaceDb | CoreDb | ServerWorkObservationDb,
   input: ControlWorkObservationPreparation
 ): ControlWorkObservationInput {
   if (db.sqlite.inTransaction || Number(db.sqlite.pragma('synchronous', { simple: true })) < 2)
     throw new Error('Observation evidence requires a durable independent owner commit');
+  if (db.scope === 'core') throw serverWorkUnavailable();
   const owner: ControlProductOwner =
-    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId };
+    db.scope === 'workspace'
+      ? { kind: 'workspace', workspaceId: db.workspaceId }
+      : { kind: 'server' };
   const prepared = prepareControlWorkObservation(owner, input);
   const binding = readControlWorkObservationTurnBinding(db.sqlite, owner, input);
   if (!binding.coverage || (prepared.bodies.length && binding.coverage.value !== 'on'))
@@ -1011,9 +1013,10 @@ export function prepareControlWorkObservationCommand(
   input: ControlWorkObservationCommandInput,
   content: ArrayBuffer | undefined
 ): ControlWorkObservationInput {
+  if (db.scope === 'core') throw serverWorkUnavailable();
   if ('chunk' in input) {
     const parsed = ControlWorkObservationChunkInputSchema.parse(input);
-    if (db.scope !== 'workspace' || (content?.byteLength ?? 0) !== parsed.chunk.byteLength)
+    if ((content?.byteLength ?? 0) !== parsed.chunk.byteLength)
       throw new Error('Invalid native observation chunk');
     const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
     const binding = readControlWorkObservationTurnBinding(db.sqlite, owner, parsed);
@@ -1082,8 +1085,7 @@ export function prepareControlWorkObservationCommand(
   });
   if (offset !== (content?.byteLength ?? 0)) throw new Error('Observation body length mismatch');
   const preparation = { ...input, bodies };
-  const owner: ControlProductOwner =
-    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId };
+  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
   // Recheck the complete immutable declaration before any independently durable file or row effect.
   if (!isDeepStrictEqual(prepareControlWorkObservation(owner, preparation), input))
     throw new Error('Observation body declaration mismatch');

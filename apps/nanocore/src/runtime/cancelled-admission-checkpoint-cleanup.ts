@@ -1,15 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { readRetainedV1 } from '@openkit/protocol';
 import { assertCanonicalDirectory, assertCanonicalRegularFile } from '@openkit/storage';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import {
   type DurableCommandRequestRead,
+  inspectServerWorkReceipt,
   readDurableCommandRequestRecords,
 } from '../storage/command-request-records.js';
 import { clearWorkerCheckpointIfUnchanged } from '../storage/control-store-checkpoints.js';
 import {
+  bindServerWorkProductReadHandle,
   type ControlProductOwner,
   openControlStoreProductReadHandle,
 } from '../storage/control-store-product-records.js';
@@ -17,9 +20,13 @@ import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
   openExistingCoreDbWithIntegrityCheck,
+  serverStoragePath,
   type WorkspaceDb,
+  withStoppedServerOwnerReadConnection,
 } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { loadServerThreadRecords } from '../storage/server-thread-records.js';
+import { readStagedServerWork } from '../storage/server-work-intents.js';
 import {
   assertSafeWorkspacePathSegment,
   listDirectoryNames,
@@ -144,7 +151,12 @@ export async function cleanCancelledAdmissionTaskCheckpoints(
     if (!openedCoreDb) {
       return blocked(input.checkpoints, 'unreadable-history');
     }
-    const history = readCleanupHistory(dataRoot, openedCoreDb);
+    const history = await readCleanupHistory(
+      dataRoot,
+      openedCoreDb,
+      lock,
+      input.checkpoints.map(({ turnId }) => turnId)
+    );
     const receipts = readDurableCommandRequestRecords(dataRoot);
     if (history.status === 'unreadable' || receipts.status === 'unreadable') {
       return blocked(input.checkpoints, 'unreadable-history');
@@ -216,7 +228,7 @@ export async function cleanCancelledAdmissionTaskCheckpoints(
         rows.push({ ...row, decision: 'refused', reason: 'changed-before-delete' });
         continue;
       }
-      const againHistory = readCleanupHistory(dataRoot, openedCoreDb);
+      const againHistory = await readCleanupHistory(dataRoot, openedCoreDb, lock, [row.turnId]);
       const againReceipts = readDurableCommandRequestRecords(dataRoot);
       if (againHistory.status === 'unreadable' || againReceipts.status === 'unreadable') {
         rows.push({ ...row, decision: 'refused', reason: 'changed-before-delete' });
@@ -374,15 +386,65 @@ type CleanupHistoryRead =
   | { readonly status: 'unreadable' };
 
 /** Validates complete native work history before absence can authorize checkpoint deletion. */
-function readCleanupHistory(dataRoot: string, coreDb: CoreDb): CleanupHistoryRead {
+async function readCleanupHistory(
+  dataRoot: string,
+  coreDb: CoreDb,
+  lock: DataRootLock,
+  selectedTurnIds: readonly string[]
+): Promise<CleanupHistoryRead> {
   try {
-    if (coreDb.sqlite.prepare('PRAGMA foreign_key_check(control_product_entries)').get())
-      return { status: 'unreadable' };
-    const turns: CleanupTurnIdentity[] = loadServerThreadRecords(dataRoot).turns.map((turn) => ({
-      owner: turn.owner,
-      threadId: turn.threadId,
-      turnId: turn.id,
-    }));
+    const turns: CleanupTurnIdentity[] = await withStoppedServerOwnerReadConnection(
+      dataRoot,
+      'server-work',
+      lock,
+      (sqlite) => {
+        if (sqlite.prepare('PRAGMA foreign_key_check(control_product_entries)').get())
+          throw new Error('Server-work product history has broken foreign keys.');
+        const reader = bindServerWorkProductReadHandle(
+          serverStoragePath(dataRoot, 'server-work'),
+          sqlite
+        );
+        const published: CleanupTurnIdentity[] = loadServerThreadRecords(
+          dataRoot,
+          reader
+        ).turns.map((turn) => ({ owner: turn.owner, threadId: turn.threadId, turnId: turn.id }));
+        // Include the original Core decision before the Server owner publishes the product row.
+        const local = sqlite.prepare(`SELECT request_id FROM server_work_intents
+          WHERE json_extract(intent_json, '$.verb') = 'admit-turn'
+            AND json_extract(intent_json, '$.target.turnId') = ?`);
+        const decided = coreDb.sqlite.prepare(`SELECT request_id FROM idempotency_requests
+          WHERE command_name = 'admit-turn' AND response_kind = 'storage-receipt'
+            AND json_extract(response_json, '$.intent.target.turnId') = ?`);
+        const { deploymentId } = readDataRootLayoutMarker(dataRoot);
+        for (const turnId of new Set(selectedTurnIds)) {
+          for (const requestId of new Set([
+            ...(local.pluck().all(turnId) as string[]),
+            ...(decided.pluck().all(turnId) as string[]),
+          ])) {
+            const original = readStagedServerWork(sqlite, requestId);
+            if (
+              original?.intent.verb !== 'admit-turn' ||
+              original.intent.target.turnId !== turnId ||
+              original.intent.deploymentId !== deploymentId
+            )
+              throw new Error('Server Turn admission lacks its original owner.');
+            const decision = inspectServerWorkReceipt(coreDb, original.intent, true);
+            if (
+              decision.state !== 'settled' ||
+              (original.receipt && !isDeepStrictEqual(original.receipt, decision.receipt))
+            )
+              throw new Error('Server Turn admission outcome is unproved.');
+            if (decision.receipt.disposition === 'applied') {
+              const { threadId } = original.intent.target;
+              if (!published.some((turn) => turn.turnId === turnId && turn.threadId === threadId)) {
+                published.push({ owner: { kind: 'server' }, threadId, turnId });
+              }
+            }
+          }
+        }
+        return published;
+      }
+    );
     const workspaceIds = listDirectoryNames(join(dataRoot, 'workspaces')).filter(
       (id) => id !== '.staging'
     );

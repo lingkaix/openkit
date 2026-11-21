@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { allocateEntityId, ThreadSchema, TurnSchema, writeRetainedV1 } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  PROTOCOL_VERSION,
+  ThreadSchema,
+  TurnSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -152,6 +158,9 @@ it('publishes the original Server Turn and its exact input once after a lost ker
         stageServerKnowledgeAdmission,
         settleServerProductAdmission,
         readPublishedServerWorkInput,
+        prepareServerTurnSettlement,
+        stageServerTurnSettlement,
+        settleServerTurnSettlement,
       } = await load(workerData.admissionUrl);
       const { readServerWorkIntent, readServerWorkLocalReceipt, readStagedServerWork, isServerWorkPublished } = await load(workerData.intentsUrl);
       const { publishServerWorkCommand } = await load(workerData.commandUrl);
@@ -420,15 +429,6 @@ it('publishes the original Server Turn and its exact input once after a lost ker
       settle(applied(validIntent));
       assert.deepEqual(stage(validIntent, validPayload), validIntent);
 
-      // The retained owner lookup checks the decoded scalar even if the outer digest is exact.
-      const badReceipt = applied(invalidScalarIntent);
-      db.prepare('INSERT INTO server_work_intents (request_id,schema_version,intent_json,payload_json,receipt_json) VALUES (?,1,?,?,?)')
-        .run(invalidScalarIntent.requestId, JSON.stringify(invalidScalarIntent), invalidScalarPayload, JSON.stringify(badReceipt));
-      assert.throws(() => readPublishedServerWorkInput(db, badReceipt, {
-        owner: { kind: 'server' }, inputId: invalidScalarIntent.target.recordRef, digest: workerData.replacementDigest,
-      }), /exact UTF-8/);
-      assert.throws(() => readServerWorkIntent(db, invalidScalarIntent.requestId), /exact UTF-8/);
-
       const publicKnowledge = workerData.publicKnowledge;
       const publicReceipt = publicKnowledge.input.receipt;
       const withReceipt = (overrides) => ({ ...publicKnowledge, input: { ...publicKnowledge.input,
@@ -443,6 +443,71 @@ it('publishes the original Server Turn and its exact input once after a lost ker
       assert.throws(() => stageKnowledge(withReceipt({
         createdAt: publicReceipt.expiresAt, expiresAt: '2026-11-22T12:00:00.000Z',
       })), { code: 'recovery_required' });
+      const { prepareRetainedProductJson } = await load(workerData.contentUrl);
+      const { join } = require('node:path');
+      const contentMount = { root: join(workerData.root, 'evidence', 'backend'), mount: 'backend-evidence', knowledgeBaseId: null };
+      const terminal = { ...activeDraft.products[0].record, status: 'completed',
+        completedAt: '2026-11-20T12:01:00.000Z', durationMs: 60_000 };
+      const { schemaVersion, ...eventTurn } = terminal;
+      const body = await prepareRetainedProductJson(contentMount, { kind: 'server' }, join(workerData.root, 'staging'), {
+        schemaVersion: 1,
+        protocolVersion: workerData.protocolVersion, owner: { kind: 'server' },
+        threadId: terminal.threadId, turnId: terminal.id, requestId: null,
+        timestamp: terminal.completedAt, sequence: 1, event: 'turn.completed',
+        data: { type: 'turn-completed', stopReason: 'completed', turn: eventTurn },
+      });
+      const terminalBody = JSON.stringify({
+        turn: { kind: 'turn', expectedRevision: 1, record: terminal },
+        entries: [{ kind: 'event', turnId: terminal.id, sequence: 1, expectedRevision: 0, ...body }],
+      });
+      const terminalIntent = makeIntent('settle-turn', terminal.id, activeIntent.target, terminalBody, '1');
+      const terminalReceipt = applied(terminalIntent);
+      let decidingPosts = 0;
+      let inspectionPosts = 0;
+      const terminalCommand = {
+        intent: terminalIntent,
+        store: {
+          stage: async () => {
+            const prepared = await prepareServerTurnSettlement(db, terminalIntent, terminalBody, contentMount);
+            return ready(db.transaction(() => stageServerTurnSettlement(db, terminalIntent, terminalBody, prepared)).immediate());
+          },
+          settle: async () => {
+            const prepared = await prepareServerTurnSettlement(db, terminalIntent, terminalBody, contentMount);
+            db.transaction(() => settleServerTurnSettlement(db, terminalReceipt, prepared)).immediate();
+          },
+          isPublished: async (receipt) => ready(isServerWorkPublished(db, receipt)),
+          readLocalReceipt: async (key) => ready(readServerWorkLocalReceipt(db, key)),
+        },
+        kernel: {
+          decideServerWork: async () => {
+            decidingPosts += 1;
+            assert.equal(db.prepare('SELECT status FROM control_turns WHERE id=?').pluck().get(terminal.id), 'running');
+            assert.equal(db.prepare('SELECT count(*) FROM control_product_entries WHERE turn_id=?').pluck().get(terminal.id), 0);
+            db.close();
+            db = open();
+            throw new Error('lost terminal kernel ACK');
+          },
+          inspectServerWork: async () => {
+            inspectionPosts += 1;
+            return ready({ state: 'settled', receipt: terminalReceipt });
+          },
+        },
+      };
+      assert.deepEqual(await publishServerWorkCommand(terminalCommand), ready({ state: 'settled', receipt: terminalReceipt }));
+      assert.deepEqual(await publishServerWorkCommand(terminalCommand), ready({ state: 'settled', receipt: terminalReceipt }));
+      assert.equal(decidingPosts, 1);
+      assert.equal(inspectionPosts, 2);
+      assert.equal(db.prepare('SELECT status FROM control_turns WHERE id=?').pluck().get(terminal.id), 'completed');
+      assert.deepEqual(db.prepare('SELECT kind,sequence FROM control_product_entries WHERE turn_id=?').all(terminal.id), [{ kind: 'event', sequence: 1 }]);
+      // The retained owner lookup checks the decoded scalar even if the outer digest is exact.
+      const badReceipt = applied(invalidScalarIntent);
+      db.prepare('INSERT INTO server_work_intents (request_id,schema_version,intent_json,payload_json,receipt_json) VALUES (?,1,?,?,?)')
+        .run(invalidScalarIntent.requestId, JSON.stringify(invalidScalarIntent), invalidScalarPayload, JSON.stringify(badReceipt));
+      assert.throws(() => readPublishedServerWorkInput(db, badReceipt, {
+        owner: { kind: 'server' }, inputId: invalidScalarIntent.target.recordRef, digest: workerData.replacementDigest,
+      }), /exact UTF-8/);
+      assert.throws(() => readServerWorkIntent(db, invalidScalarIntent.requestId), /exact UTF-8/);
+
       db.close();
       parentPort.postMessage('passed');
     })().catch((error) => { throw error; });
@@ -455,6 +520,9 @@ it('publishes the original Server Turn and its exact input once after a lost ker
       intentsUrl: new URL('./server-work-intents.ts', import.meta.url).href,
       commandUrl: new URL('./server-work-command.ts', import.meta.url).href,
       inputUrl: new URL('./control-store-input.ts', import.meta.url).href,
+      contentUrl: new URL('./immutable-content.ts', import.meta.url).href,
+      root,
+      protocolVersion: PROTOCOL_VERSION,
       ownerUrl: new URL('./storage-owner.ts', import.meta.url).href,
       sqliteUrl: pathToFileURL(require.resolve('better-sqlite3')).href,
       dbPath,

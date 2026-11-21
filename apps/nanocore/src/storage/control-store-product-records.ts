@@ -26,6 +26,7 @@ import {
   StoredWorkOwnerV1Schema,
   StoredWorkspaceV1Schema,
 } from './retained-work-metadata-v1.js';
+import { serverWorkUnavailable } from './server-work-command.js';
 
 /** Current finite metadata/page defaults; exact work bodies use inline bytes or immutable Storage objects. */
 export const CONTROL_PRODUCT_LIMITS = {
@@ -166,6 +167,12 @@ export function inlineControlContentBytes(
 }
 
 /** A rejected tuple, including stale revision or missing native dependency; no caller-supplied diagnostics escape. */
+/** Refuses direct main-thread use of native product writers without disabling unrelated legacy writable handles. */
+export function assertControlProductWriter(sqlite: Database.Database): void {
+  if (isMainThread || !sqlite.inTransaction || sqlite.readonly)
+    throw new ControlProductPreconditionError();
+}
+
 export class ControlProductPreconditionError extends Error {
   constructor() {
     super('Control product transition precondition failed.');
@@ -832,6 +839,13 @@ export function closeWorkspaceProductReadHandles(root?: string): void {
   }
 }
 
+const admittedServerWorkReaders = new WeakSet<Database.Database>();
+
+/** Identifies an acknowledged Server-work reader independently of the caller's owner label. */
+export function isAdmittedServerWorkProductReader(sqlite: Database.Database): boolean {
+  return sqlite.open && admittedServerWorkReaders.has(sqlite);
+}
+
 /** Reads through an admitted native connection or opens its own query-only connection; never acquires write authority. */
 export function openControlStoreProductReadHandle(
   path: string,
@@ -843,6 +857,8 @@ export function openControlStoreProductReadHandle(
     throw new ControlProductPreconditionError();
   if (borrowed && (!borrowed.open || resolve(borrowed.name) !== resolve(path)))
     throw new ControlProductPreconditionError();
+  if (borrowed && owner.kind === 'server' && admittedServerWorkReaders.has(borrowed))
+    return bindProductReadHandle(borrowed, owner, false);
   const sqlite = borrowed ?? new Database(path, { readonly: true, fileMustExist: true });
   try {
     assertSupportedNativeLedger(sqlite, owner.kind === 'server' ? 'core' : 'workspace');
@@ -856,12 +872,6 @@ export function openControlStoreProductReadHandle(
     if (!borrowed) sqlite.close();
     throw error;
   }
-  // Only known metadata and entry queries are prepared; no canonical row survives a read.
-  const prepared: ProductReadStatements = new Map();
-  let closed = false;
-  const assertReaderOpen = () => {
-    if (borrowed && closed) throw new ControlProductPreconditionError();
-  };
   if (!borrowed) {
     try {
       sqlite.pragma('busy_timeout = 5');
@@ -872,6 +882,38 @@ export function openControlStoreProductReadHandle(
       throw error;
     }
   }
+  return bindProductReadHandle(sqlite, owner, !borrowed);
+}
+
+/** Binds the read-only connection returned by the exact Server-work generation. */
+export function bindServerWorkProductReadHandle(
+  path: string,
+  sqlite: Database.Database
+): ControlStoreProductReadHandle {
+  if (
+    !sqlite.open ||
+    !sqlite.readonly ||
+    resolve(sqlite.name) !== resolve(path) ||
+    sqlite.pragma('query_only', { simple: true }) !== 1
+  )
+    throw new ControlProductPreconditionError();
+  admittedServerWorkReaders.add(sqlite);
+  return bindProductReadHandle(sqlite, { kind: 'server' }, true);
+}
+
+function bindProductReadHandle(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  ownsConnection: boolean
+): ControlStoreProductReadHandle {
+  // Only known metadata and entry queries are prepared; no canonical row survives a read.
+  const prepared: ProductReadStatements = new Map();
+  let closed = false;
+  const assertReaderOpen = () => {
+    if (!ownsConnection && closed) throw new ControlProductPreconditionError();
+    if (owner.kind === 'server' && !isAdmittedServerWorkProductReader(sqlite))
+      throw serverWorkUnavailable();
+  };
   return {
     sqlite,
     /** Reads one known metadata view and its native revision without pruning or publication. */
@@ -914,7 +956,7 @@ export function openControlStoreProductReadHandle(
     close() {
       closed = true;
       prepared.clear();
-      if (!borrowed) sqlite.close();
+      if (ownsConnection) sqlite.close();
     },
   };
 }

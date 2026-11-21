@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
   type AuditEvent,
+  PermissionDecisionIdSchema,
   readRetainedV1,
   responsibleUserIdForActor,
   writeRetainedV1,
@@ -8,7 +9,7 @@ import {
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import { prepareAuditEventStatement } from '../audit-events.js';
+import { prepareAuditEvent, prepareAuditEventStatement } from '../audit-events.js';
 import {
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
@@ -51,13 +52,17 @@ import {
   insertChannelInboundReservation,
   inspectChannelInboundReceipt,
   inspectPairingAuditReceipt,
+  inspectServerWorkReceipt,
   mapCommandRequestRow,
   normalizeCommandRequestResponse,
   recordControlCommandRequestRecordInDb,
   replaceChannelInboundStage,
+  serverWorkAuditResource,
+  serverWorkDecisionEventId,
   writeChannelInboundSettlement,
   writeCommandRequestRecordInDb,
   writePairingAuditReceipt,
+  writeServerWorkReceipt,
 } from './command-request-records.js';
 import type {
   ChannelInboundEnvelope,
@@ -91,6 +96,8 @@ import {
   PairingAuditIntentSchema,
   SCOPED_NOTEBOOK_SERVER_RECEIPTS,
   SCOPED_NOTEBOOK_USER_RECEIPTS,
+  ServerWorkKernelIntentSchema,
+  type ServerWorkKernelRefusalSchema,
 } from './control-store-admission-codecs.js';
 import { commandInputHash, presentControlFacts } from './control-store-input.js';
 import {
@@ -113,12 +120,14 @@ import {
 } from './control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { insertExternalTriggerAdmission } from './external-trigger-admissions.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import {
   applyNativeRecurringWork,
   findRecurringAutomationFromDb,
 } from './recurring-attempt-native.js';
 import { StoredItemV1Schema } from './retained-work-items-v1.js';
-import { type StorageDecision, storageRequestId } from './storage-owner.js';
+import type { ServerWorkIntent, ServerWorkReceipt } from './server-work-port.js';
+import { type StorageDecision, storageReceipt, storageRequestId } from './storage-owner.js';
 import { nativeProductScope } from './workspace-file-records.js';
 import { hasCommittedWorkspaceQueueInput } from './workspace-queue-inputs.js';
 
@@ -248,6 +257,76 @@ export function settleChannelInboundInDb(
       return { state: 'unknown' };
   }
   return { state: 'settled', receipt: writeChannelInboundSettlement(db, existing, result.data) };
+}
+
+type ServerWorkKernelVerdict =
+  | {
+      readonly state: 'applied';
+      readonly permissionDecisionId?: string;
+      /** Native-local deciding transaction for this operation, including a queue/occurrence where required. */
+      readonly apply?: () => void;
+    }
+  | {
+      readonly state: 'refused';
+      readonly reason: z.infer<typeof ServerWorkKernelRefusalSchema>;
+      readonly permissionDecisionId?: string;
+    }
+  | { readonly state: 'unknown' };
+
+/** Runs the current operation's native decision only for the exact committed Server work draft. */
+export function decideServerWorkInDb<Intent extends ServerWorkIntent>(
+  db: CoreDb,
+  intent: Intent,
+  completeHistory: boolean,
+  readStaged: (
+    requestId: string
+  ) => { readonly intent: ServerWorkIntent; readonly receipt: ServerWorkReceipt | null } | null,
+  verifyCurrent: (original: Intent) => ServerWorkKernelVerdict
+): StorageDecision<ServerWorkReceipt<Intent>> {
+  assertControlProductWriter(db.sqlite);
+  if (
+    !ServerWorkKernelIntentSchema.safeParse(intent).success ||
+    intent.deploymentId !== readDataRootLayoutMarker(db.dataRoot).deploymentId
+  )
+    return { state: 'conflict' };
+  const prior = inspectServerWorkReceipt(db, intent, completeHistory);
+  if (prior.state !== 'absent') return prior;
+  const staged = readStaged(intent.requestId);
+  if (!staged || staged.receipt) return { state: 'unknown' };
+  if (!isDeepStrictEqual(staged.intent, intent)) return { state: 'conflict' };
+  const verdict = verifyCurrent(intent);
+  if (verdict.state === 'unknown') return verdict;
+
+  const permission = verdict.permissionDecisionId;
+  if (permission !== undefined && !PermissionDecisionIdSchema.safeParse(permission).success)
+    return { state: 'conflict' };
+  const decisionRef = serverWorkDecisionEventId(intent.requestId);
+  const receipt =
+    verdict.state === 'applied'
+      ? storageReceipt(intent, { disposition: 'applied', result: { decisionRef } })
+      : storageReceipt(intent, { disposition: 'refused', reason: verdict.reason });
+  const audit = prepareAuditEvent({
+    auditEventId: decisionRef,
+    action: `server-work.${intent.verb}`,
+    actor: intent.target.actor,
+    category: 'system',
+    workspaceId: null,
+    requestId: intent.requestId,
+    permissionDecisionId: permission ?? null,
+    resource: serverWorkAuditResource(intent),
+    severity: verdict.state === 'applied' ? 'info' : 'warning',
+    outcome: verdict.state === 'applied' ? 'succeeded' : 'denied',
+    errorCode: verdict.state === 'applied' ? null : `server_work_${verdict.reason}`,
+    summary:
+      verdict.state === 'applied'
+        ? 'Original Server work decision applied.'
+        : 'Original Server work decision refused.',
+  });
+  if (verdict.state === 'applied') verdict.apply?.();
+  const statement = prepareAuditEventStatement(audit);
+  db.sqlite.prepare(statement.sql).run(...statement.parameters);
+  writeServerWorkReceipt(db, receipt, audit.createdAt);
+  return { state: 'settled', receipt };
 }
 
 /** Verifies the actual physical receipt owner, without treating extra resource selectors as new authority. */

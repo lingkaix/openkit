@@ -42,6 +42,9 @@ describe('nanocore e2e local boot', () => {
     });
     expect(statSync(join(harness.dataRoot, 'workspaces')).isDirectory()).toBe(true);
     expect(existsSync(join(harness.dataRoot, 'server', 'db', 'core.sqlite'))).toBe(true);
+    expect(
+      existsSync(join(harness.dataRoot, 'server', 'services', 'server-work', 'state.sqlite'))
+    ).toBe(true);
 
     const listed = await postJson(`${harness.baseUrl}/api/app/operations/workspace.list`, {});
     expect(listed.status).toBe(200);
@@ -73,5 +76,11 @@ describe('nanocore e2e local boot', () => {
     });
     expect(retained.status).toBe(200);
     await expect(retained.json()).resolves.toMatchObject({ id: thread.id });
+    const serverHistory = await postJson(
+      `${harness.baseUrl}/api/app/operations/thread.server.list`,
+      {}
+    );
+    expect(serverHistory.status).toBe(200);
+    await expect(serverHistory.json()).resolves.toEqual({ items: [] });
   });
 });

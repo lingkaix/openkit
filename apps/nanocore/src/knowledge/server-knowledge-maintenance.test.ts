@@ -21,6 +21,7 @@ import {
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { openTestServerWork } from '../test-support/server-work-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { attributedNotebookPageBytes } from './okf.js';
@@ -96,7 +97,7 @@ function closedInitialNotebook() {
 }
 
 /** Actual private Server notebook, Core receipts, Thread records and publisher surround only a fake bounded role. */
-function fixture(enabled: boolean, baseline = closedInitialNotebook()) {
+async function fixture(enabled: boolean, baseline = closedInitialNotebook()) {
   // The first case pays preparation within its original bound; later cases copy only closed bytes.
   const dataRoot = mkdtempSync(join(tmpdir(), 'server-km-'));
   cpSync(baseline.dataRoot, dataRoot, { recursive: true });
@@ -104,12 +105,15 @@ function fixture(enabled: boolean, baseline = closedInitialNotebook()) {
   const userId = baseline.userId;
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
+  let closeServerReader: (() => void) | undefined;
   onTestFinished(async () => {
+    closeServerReader?.();
     await shutdownControlStoreWorkerClient();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const store = new FsStore({ dataRoot });
+  const { store, reader } = await openTestServerWork(coreDb);
+  closeServerReader = () => reader.close();
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'server', 'knowledge', 'notebook.git'),
   });
@@ -147,9 +151,9 @@ function fixture(enabled: boolean, baseline = closedInitialNotebook()) {
       summary: 'Keep the human overview and add the explicit fact.',
     });
     expect(input.validateResult(JSON.stringify({ summary: 'Finished.' }))).toBeUndefined();
-    await store.updateServerTurn(input.turn.id, {
-      status: 'completed',
-      completedAt: new Date().toISOString(),
+    const terminal = { status: 'completed' as const, completedAt: new Date().toISOString() };
+    await store.completeTurn(input.turn.id, terminal, {
+      items: input.terminalItems?.(terminal) ?? [],
     });
     return { turnId: input.turn.id, text: '{"summary":"Finished."}' };
   });
@@ -187,7 +191,17 @@ function fixture(enabled: boolean, baseline = closedInitialNotebook()) {
     tellContent: 'The explicit Server fact is BLUE-HERON-7.',
     signal: new AbortController().signal,
   };
-  return { dependencies, input, run, store, notebook, human, coreDb, requestActor };
+  return {
+    closeServerReader,
+    dependencies,
+    input,
+    run,
+    store,
+    notebook,
+    human,
+    coreDb,
+    requestActor,
+  };
 }
 
 let citationNotebook:
@@ -203,7 +217,7 @@ let citationNotebook:
 /** Captures the acknowledged citation prerequisite once, then admits each case from closed private bytes. */
 async function fixtureWithCitationTarget(enabled: boolean) {
   if (!citationNotebook) {
-    const f = fixture(enabled);
+    const f = await fixture(enabled);
     const context = { ...f.dependencies, actor: f.requestActor };
     const source = await registerServerKnowledgeSource(context, {
       requestId: randomUUID(),
@@ -234,6 +248,7 @@ async function fixtureWithCitationTarget(enabled: boolean) {
       },
     });
     f.notebook.publish({ baseRevision: sourceBaseRevision, candidateRevision: baseRevision });
+    f.closeServerReader();
     await shutdownControlStoreWorkerClient();
     closeWorkspaceProductReadHandles(f.coreDb.dataRoot);
     f.coreDb.sqlite.close();
@@ -253,7 +268,7 @@ async function fixtureWithCitationTarget(enabled: boolean) {
     }
   }
   return {
-    f: fixture(enabled, citationNotebook),
+    f: await fixture(enabled, citationNotebook),
     target: citationNotebook.target,
     baseRevision: citationNotebook.baseRevision,
   };
@@ -323,9 +338,9 @@ it.each([
             signal: run.signal,
           });
       }
-      await f.store.updateServerTurn(run.turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
+      const terminal = { status: 'completed' as const, completedAt: new Date().toISOString() };
+      await f.store.completeTurn(run.turn.id, terminal, {
+        items: run.terminalItems?.(terminal) ?? [],
       });
       return { turnId: run.turn.id, text: '{"summary":"Finished."}' };
     });
@@ -377,7 +392,7 @@ it.each([
 );
 
 it('keeps independent historical human page bodies when their original Source is unavailable', async () => {
-  const f = fixture(true);
+  const f = await fixture(true);
   const source = await registerServerKnowledgeSource(
     { ...f.dependencies, actor: f.requestActor },
     {
@@ -430,9 +445,9 @@ it('keeps independent historical human page bodies when their original Source is
         { summary: 'Preserve the independent human edits.' },
         { callId: randomUUID(), toolOccurrence: 1, signal: run.signal }
       );
-    await f.store.updateServerTurn(run.turn.id, {
-      status: 'completed',
-      completedAt: new Date().toISOString(),
+    const terminal = { status: 'completed' as const, completedAt: new Date().toISOString() };
+    await f.store.completeTurn(run.turn.id, terminal, {
+      items: run.terminalItems?.(terminal) ?? [],
     });
     return { turnId: run.turn.id, text: '{"summary":"Preserved."}' };
   });
@@ -448,7 +463,7 @@ it('keeps independent historical human page bodies when their original Source is
 it.each([true, false])(
   'keeps Server maintenance off Workspace storage, preserves human inputs and uses delegation=%s or exact review',
   async (enabled) => {
-    const f = fixture(enabled);
+    const f = await fixture(enabled);
     const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
     expect(result.outcome).toBe(enabled ? 'published' : 'review-required');
     expect(f.run).toHaveBeenCalledTimes(1);
@@ -496,7 +511,7 @@ it.each([true, false])(
 );
 
 it('recalls the exact Server candidate only after its human Review publishes the shown bytes', async () => {
-  const f = fixture(false);
+  const f = await fixture(false);
   const context = {
     ...f.dependencies,
     actor: f.requestActor,
@@ -618,8 +633,13 @@ it('recalls the exact Server candidate only after its human Review publishes the
 }, 60_000);
 
 it('retains skipped active-writer and missing-authority schedule outcomes without a model call', async () => {
-  const f = fixture(true);
-  const thread = await f.store.createServerThread('Server Knowledge maintenance');
+  const f = await fixture(true);
+  const thread = await f.store.createServerThread(
+    'Server Knowledge maintenance',
+    undefined,
+    undefined,
+    { actor: f.input.actor, credentialRef: null }
+  );
   const active = await f.store.createServerTurn(thread.id, 'Active run', f.input.actor, null, {
     agentId: 'knowledge-manager',
   });
@@ -640,6 +660,7 @@ it('retains skipped active-writer and missing-authority schedule outcomes withou
   const failed = await (
     await prepareServerKnowledgeMaintenance(f.dependencies, {
       ...f.input,
+      requestId: randomUUID(),
       requestActor: undefined,
       trigger: 'schedule',
     })
@@ -654,7 +675,7 @@ it('retains skipped active-writer and missing-authority schedule outcomes withou
 it.each([true, false])(
   'retains a completed native outcome when the later model call fails, delegation=%s',
   async (enabled) => {
-    const f = fixture(enabled);
+    const f = await fixture(enabled);
     f.run.mockImplementationOnce(async (run) => {
       const execute = async (name: string, value: unknown) =>
         run.tools
@@ -680,7 +701,7 @@ it.each([true, false])(
 );
 
 it('previews and reviews a valid candidate larger than the display limit using the shared bounded path cursor', async () => {
-  const f = fixture(false);
+  const f = await fixture(false);
   const context = {
     ...f.dependencies,
     actor: f.requestActor,
@@ -725,7 +746,7 @@ it('previews and reviews a valid candidate larger than the display limit using t
 });
 
 it('reads retained Proposal/Review annotations and preserves them on the next human decision', async () => {
-  const f = fixture(false);
+  const f = await fixture(false);
   const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
   const context = {
     ...f.dependencies,
@@ -801,7 +822,7 @@ it.each([
   'terminal-order',
 ] as const)('refuses contradictory retained Server evidence: %s', async (fault) => {
   const { existsSync } = await import('node:fs');
-  const f = fixture(false);
+  const f = await fixture(false);
   const context = {
     ...f.dependencies,
     actor: f.requestActor,
@@ -934,7 +955,7 @@ it('keeps the producing human and another current Server administrator distinct 
   const { createBetterAuth } = await import('../auth/better-auth.js');
   const { createOpenKitAccessTokenRecord } = await import('../auth/access-token-store.js');
   const { verifyOpenKitAccessTokenRecord } = await import('../auth/access-token-verification.js');
-  const f = fixture(false);
+  const f = await fixture(false);
   const auth = createBetterAuth(f.coreDb, { env: { PORT: '3000' } });
   const response = await auth.handler(
     new Request('http://127.0.0.1:3000/api/auth/sign-up/email', {
@@ -1023,7 +1044,7 @@ it('retains the exact human Server Proposal command receipt and Audit on accepte
     '../storage/command-request-records.js'
   );
   const { listServerAuditEvents } = await import('../audit-events.js');
-  const f = fixture(false);
+  const f = await fixture(false);
   const context = {
     ...f.dependencies,
     actor: f.requestActor,
@@ -1119,7 +1140,7 @@ it.each(['rejected', 'deferred'] as const)(
   'retains one Server Proposal %s Audit without relabeling it on exact replay',
   async (decision) => {
     const { listServerAuditEvents } = await import('../audit-events.js');
-    const f = fixture(false);
+    const f = await fixture(false);
     const context = {
       ...f.dependencies,
       actor: f.requestActor,
@@ -1187,7 +1208,7 @@ it.each(['rejected', 'deferred'] as const)(
 it.each(['rejected', 'deferred'] as const)(
   'refuses Server %s replay after the actual Audit write failed after Review retention',
   async (decision) => {
-    const f = fixture(false);
+    const f = await fixture(false);
     const context = {
       ...f.dependencies,
       actor: f.requestActor,
@@ -1291,7 +1312,7 @@ it.each(['rejected', 'deferred'] as const)(
   'refuses Server %s replay when its original Audit survives a lost Review file',
   async (decision) => {
     const { existsSync, unlinkSync } = await import('node:fs');
-    const f = fixture(false);
+    const f = await fixture(false);
     const context = {
       ...f.dependencies,
       actor: f.requestActor,
@@ -1406,7 +1427,7 @@ it.each(['rejected', 'deferred'] as const)(
 it.each(['rejected', 'deferred', 'accepted'] as const)(
   'Server stale new %s decision preserves current publication and its exact reviewed tuple',
   async (decision) => {
-    const f = fixture(false);
+    const f = await fixture(false);
     const pending = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
     expect(pending.outcome).toBe('review-required');
     const context = {
@@ -1479,7 +1500,7 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
 );
 
 it('propagates Server Proposal base and candidate provenance to the actual receiving model Session (#740)', async () => {
-  const f = fixture(true);
+  const f = await fixture(true);
   const workspace = await f.store.createWorkspace('Proposal reader');
   recordWorkspaceOwnerMembership({
     coreDb: f.coreDb,

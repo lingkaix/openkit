@@ -37,10 +37,10 @@ import {
   contextIsExternallyInfluenced,
   receivedItemInfluences,
 } from '../security/context-influence.js';
-import type { ControlAdmission } from './control-store-admission-codecs.js';
 import { prepareControlPendingCommands } from './control-store-pending.js';
 import {
   assertControlProductOwner,
+  assertControlProductWriter,
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
   type ControlProductEntry,
@@ -73,12 +73,15 @@ import {
 } from './retained-work-items-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import { assertServerTurnEventLineage } from './server-turn-event-lineage.js';
+import { serverWorkUnavailable } from './server-work-command.js';
 import { threadSegmentUsage } from './thread-segmentation.js';
 import {
   assertImmutableItemAttribution,
   assertTurnEventPayloadLineage,
   preserveDescriptiveRecord,
 } from './workspace-file-records.js';
+
+export { assertControlProductWriter } from './control-store-product-records.js';
 
 /** Counts descriptor metadata separately from bounded inline entry bodies; actual queue bytes stay charged. */
 export function controlProductMetadataJson(value: {
@@ -121,7 +124,7 @@ export interface ControlContentPublication {
 }
 /** Native-local preparation obligations; shared publications live only until their selected batch or refusal. */
 export interface ControlContentPreparation {
-  readonly db: CoreDb | WorkspaceDb | undefined;
+  readonly db: ProductEntryDb | undefined;
   readonly directories: Set<string>;
   readonly publications: Map<string, ControlContentPublication>;
   readonly published: Set<string>;
@@ -159,12 +162,6 @@ const terminalFillableFields = new Set([
   'triggerSource',
   'configVersion',
 ]);
-
-/** Refuses direct main-thread use of native product writers without disabling unrelated legacy writable handles. */
-export function assertControlProductWriter(sqlite: Database.Database): void {
-  if (isMainThread || !sqlite.inTransaction || sqlite.readonly)
-    throw new ControlProductPreconditionError();
-}
 
 /** Preserves immutable identity and keeps terminal admission private to the complete SQL owner. */
 function checkReplacement(
@@ -721,9 +718,10 @@ export async function prepareControlEntries(
   contentMount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[],
   newDirectories?: ControlContentPreparation,
-  db?: CoreDb | WorkspaceDb,
+  db?: ProductEntryDb,
   products: readonly ControlProductMutation[] = []
 ): Promise<PreparedControlEntry[]> {
+  if (db?.scope === 'core') throw serverWorkUnavailable();
   const prepared = await prepareEntries(
     owner,
     contentMount,
@@ -766,17 +764,22 @@ export async function prepareControlEntries(
   return prepared;
 }
 
+type ProductEntryDb = CoreDb | WorkspaceDb | { scope: 'server-work'; sqlite: Database.Database };
+
 /** Reads exact committed dependencies without repeating their first-publication sync; SQL must still recheck their descriptors. */
 export async function prepareRetainedControlEntries(
-  db: CoreDb | WorkspaceDb,
+  db: ProductEntryDb,
   mount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[],
   terminal?: Record<string, unknown>,
   sealedTurn?: Record<string, unknown>
 ): Promise<PreparedControlEntry[]> {
   if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
+  if (db.scope === 'core') throw serverWorkUnavailable();
   const owner: ControlProductOwner =
-    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId };
+    db.scope === 'workspace'
+      ? { kind: 'workspace', workspaceId: db.workspaceId }
+      : { kind: 'server' };
   const rows = entries.map((entry) => {
     const row = db.sqlite
       .prepare(
@@ -824,7 +827,7 @@ async function readControlContentFile(file: FileHandle, content: StorageContent)
 
 /** An existing canonical name is reusable only when this database proves its completed descriptor. */
 async function hasCommittedControlContent(
-  db: CoreDb | WorkspaceDb | undefined,
+  db: Pick<CoreDb, 'sqlite'> | undefined,
   entry: ControlProductEntry,
   bytes: Buffer
 ): Promise<boolean> {
@@ -1013,6 +1016,33 @@ async function synchronizeControlContent(
   return bytes;
 }
 
+/** Holds Server-worker publication directories until their exact bytes are synchronized. */
+export function prepareServerProductContent(db: Pick<CoreDb, 'sqlite'>): ControlContentPreparation {
+  return {
+    db: { scope: 'server-work', sqlite: db.sqlite },
+    directories: new Set(),
+    publications: new Map(),
+    published: new Set(),
+  };
+}
+
+/** Completes the exact file directory barrier before Server work can stage or publish rows. */
+export async function syncServerProductDirectories(
+  preparation: ControlContentPreparation
+): Promise<void> {
+  for (const path of preparation.directories) {
+    const directory = await open(
+      path,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+    );
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  }
+}
+
 /** Reads and synchronizes immutable content before SQL; the terminal identity is private to complete preparation. */
 async function prepareEntries(
   owner: ControlProductOwner,
@@ -1021,7 +1051,7 @@ async function prepareEntries(
   terminal?: Record<string, unknown>,
   sealedTurn?: Record<string, unknown>,
   newDirectories?: ControlContentPreparation | null,
-  retainedDb?: CoreDb | WorkspaceDb,
+  retainedDb?: ProductEntryDb,
   products: readonly ControlProductMutation[] = []
 ): Promise<PreparedControlEntry[]> {
   if (isMainThread) throw new ControlProductPreconditionError();
@@ -1207,7 +1237,7 @@ async function prepareEntries(
 
 /** Reconstructs correlation only from verified retained events and actual Item bytes, never a retained cursor. */
 async function assertControlItemDelta(
-  db: CoreDb | WorkspaceDb,
+  db: ProductEntryDb,
   mount: ControlProductContentMount | undefined,
   event: { turnId: string; sequence: number; data: unknown },
   entries: readonly PreparedControlEntry[] = [],
@@ -1217,7 +1247,9 @@ async function assertControlItemDelta(
   const data = event.data;
   if (!data || typeof data !== 'object' || !('type' in data) || data.type !== 'item-delta') return;
   const owner: ControlProductOwner =
-    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId };
+    db.scope === 'workspace'
+      ? { kind: 'workspace', workspaceId: db.workspaceId }
+      : { kind: 'server' };
   const retained = readProduct(db.sqlite, owner, 'turn', event.turnId);
   const turn = retained?.record ?? (proposedTurn && decode('turn', proposedTurn, owner));
   if (!turn || turn.id !== event.turnId) throw new ItemDeltaProtocolError(event.turnId);
@@ -2317,57 +2349,31 @@ export function nativeUserDatabasePath(db: UserDb): string {
 
 /** Resolves the physical SQL owner from the supplied same-connection domain handle. */
 function terminalOwner(db: CoreDb | WorkspaceDb, owner: ControlProductOwner): void {
-  assertControlProductOwner(
-    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId },
-    owner
-  );
+  if (db.scope === 'core') throw serverWorkUnavailable();
+  assertControlProductOwner({ kind: 'workspace', workspaceId: db.workspaceId }, owner);
   // Drizzle exposes the bound client. A sibling ORM must never join this tuple by implication.
   if (!('$client' in db.db) || db.db.$client !== db.sqlite)
     throw new ControlProductPreconditionError();
 }
 
-/** Synchronizes actual immutable terminal bodies and captures dependencies outside SQL, never on Main. */
-export async function prepareControlTerminal(
-  db: CoreDb | WorkspaceDb,
-  value: ControlTerminalTransition,
+/** Verifies one terminal snapshot and every immutable Item dependency for either work owner. */
+async function prepareTerminalEntries(
+  db: ProductEntryDb,
+  owner: ControlProductOwner,
+  turn: Record<string, unknown>,
+  descriptors: readonly ControlProductEntry[],
   contentMount: ControlProductContentMount | undefined,
   newDirectories?: ControlContentPreparation
-): Promise<PreparedControlTerminal> {
-  if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
-  if (!terminalOwners) {
-    const [store, requests, audit, task, evidence, observations] = await Promise.all([
-      import('./command-request-records.js'),
-      import('./command-request-records.js'),
-      import('../audit-events.js'),
-      import('../runtime/task-terminal-fact.js'),
-      import('../runtime/runtime-evidence.js'),
-      import('./work-observations.js'),
-    ]);
-    terminalOwners = { store, requests, audit, task, evidence, observations };
-  }
-  if (db.sqlite.inTransaction) throw new ControlProductPreconditionError();
-  const input = ControlTerminalTransitionSchema.parse(value);
-  terminalOwner(db, input.owner);
-  const turn = decode('turn', input.turn.record, input.owner);
-  if (
-    ['pending', 'running'].includes(String(turn.status)) ||
-    !turn.completedAt ||
-    input.products.some((product) => product.kind === 'turn') ||
-    input.products.length + input.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
-    Buffer.byteLength(controlProductMetadataJson(input)) > CONTROL_PRODUCT_LIMITS.metadataBytes
-  )
-    throw new ControlProductPreconditionError();
-  for (const content of input.evidenceContent)
-    await synchronizeControlContent(input.owner, contentMount, content, newDirectories);
-  const before = readProduct(db.sqlite, input.owner, 'turn', String(turn.id));
+) {
+  const before = readProduct(db.sqlite, owner, 'turn', String(turn.id));
   const sealedTurn =
     before && !['pending', 'running'].includes(String(before.record.status))
       ? before.record
       : undefined;
   const entries = await prepareEntries(
-    input.owner,
+    owner,
     contentMount,
-    input.entries,
+    descriptors,
     turn,
     sealedTurn,
     newDirectories,
@@ -2501,6 +2507,105 @@ export async function prepareControlTerminal(
       throw new ControlProductPreconditionError();
   }
   if ([...supplied.keys()].some((id) => !ids.has(id))) throw new ControlProductPreconditionError();
+  return { entries, dependencies };
+}
+
+type ServerTerminalPreparation = Awaited<ReturnType<typeof prepareTerminalEntries>>;
+
+/** Synchronizes only the admitted Server terminal tuple on its existing worker connection. */
+export async function prepareServerTerminalProducts(
+  sqlite: Database.Database,
+  mutation: ControlProductMutation,
+  entries: readonly ControlProductEntry[],
+  contentMount: ControlProductContentMount
+): Promise<ServerTerminalPreparation> {
+  if (
+    sqlite.inTransaction ||
+    mutation.kind !== 'turn' ||
+    entries.length >= CONTROL_PRODUCT_LIMITS.entries
+  )
+    throw new ControlProductPreconditionError();
+  const owner = { kind: 'server' } as const;
+  const turn = decode('turn', mutation.record, owner);
+  const preparation = prepareServerProductContent({ sqlite });
+  const prepared = await prepareTerminalEntries(
+    { scope: 'server-work', sqlite },
+    owner,
+    turn,
+    entries,
+    contentMount,
+    preparation
+  );
+  await syncServerProductDirectories(preparation);
+  return prepared;
+}
+
+/** Applies verified terminal products without touching any Core-owned journal or receipt. */
+export function applyServerTerminalProducts(
+  sqlite: Database.Database,
+  mutation: ControlProductMutation,
+  preparation: ServerTerminalPreparation
+): void {
+  assertControlProductWriter(sqlite);
+  const owner = { kind: 'server' } as const;
+  const turn = decode('turn', mutation.record, owner);
+  const previous = readProduct(sqlite, owner, 'turn', String(turn.id));
+  if (!previous || previous.revision !== mutation.expectedRevision)
+    throw new ControlProductPreconditionError();
+  for (const field of ['startedAt', 'captureCoverage', 'fileInputs', 'internalExecution']) {
+    if (
+      previous.record[field] !== undefined &&
+      previous.record[field] !== null &&
+      !isDeepStrictEqual(previous.record[field], turn[field])
+    )
+      throw new ControlProductPreconditionError();
+  }
+  assertTerminalEntryDependencies(sqlite, String(turn.id), preparation.dependencies);
+  applyProducts(sqlite, owner, [mutation], preparation.entries, String(turn.id));
+  assertTerminalItemCoverage(sqlite, String(turn.id), preparation.entries);
+}
+
+/** Synchronizes actual immutable terminal bodies and captures dependencies outside SQL, never on Main. */
+export async function prepareControlTerminal(
+  db: CoreDb | WorkspaceDb,
+  value: ControlTerminalTransition,
+  contentMount: ControlProductContentMount | undefined,
+  newDirectories?: ControlContentPreparation
+): Promise<PreparedControlTerminal> {
+  if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
+  if (!terminalOwners) {
+    const [store, requests, audit, task, evidence, observations] = await Promise.all([
+      import('./command-request-records.js'),
+      import('./command-request-records.js'),
+      import('../audit-events.js'),
+      import('../runtime/task-terminal-fact.js'),
+      import('../runtime/runtime-evidence.js'),
+      import('./work-observations.js'),
+    ]);
+    terminalOwners = { store, requests, audit, task, evidence, observations };
+  }
+  if (db.sqlite.inTransaction) throw new ControlProductPreconditionError();
+  const input = ControlTerminalTransitionSchema.parse(value);
+  terminalOwner(db, input.owner);
+  const turn = decode('turn', input.turn.record, input.owner);
+  if (
+    ['pending', 'running'].includes(String(turn.status)) ||
+    !turn.completedAt ||
+    input.products.some((product) => product.kind === 'turn') ||
+    input.products.length + input.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
+    Buffer.byteLength(controlProductMetadataJson(input)) > CONTROL_PRODUCT_LIMITS.metadataBytes
+  )
+    throw new ControlProductPreconditionError();
+  for (const content of input.evidenceContent)
+    await synchronizeControlContent(input.owner, contentMount, content, newDirectories);
+  const { entries, dependencies } = await prepareTerminalEntries(
+    db,
+    input.owner,
+    turn,
+    input.entries,
+    contentMount,
+    newDirectories
+  );
   const bundleIds = [...new Set(input.evidence.flatMap((record) => record.evidenceBundleIds))];
   if (bundleIds.length > CONTROL_PRODUCT_LIMITS.entries)
     throw new ControlProductPreconditionError();
@@ -2801,6 +2906,43 @@ function applyTerminalExecution(
   return { executionId: root.id, revision: after.revision, phase: 'closing' };
 }
 
+function assertTerminalEntryDependencies(
+  sqlite: Database.Database,
+  turnId: string,
+  dependencies: ServerTerminalPreparation['dependencies']
+): void {
+  for (const dependency of dependencies) {
+    const row = sqlite
+      .prepare(
+        'SELECT revision,content_json FROM control_product_entries WHERE kind=? AND turn_id=? AND id=? ORDER BY revision DESC LIMIT 1'
+      )
+      .get(dependency.entry.input.kind, turnId, dependency.entry.id) as
+      | { revision: number; content_json: string }
+      | undefined;
+    if (!row || row.revision !== dependency.revision || row.content_json !== dependency.contentJson)
+      throw new ControlProductPreconditionError();
+  }
+}
+
+function assertTerminalItemCoverage(
+  sqlite: Database.Database,
+  turnId: string,
+  entries: readonly PreparedControlEntry[]
+): void {
+  const terminalEvent = entries.find(
+    (entry) =>
+      (preparedPayloads.get(entry) as { data?: { type?: string } }).data?.type === 'turn-completed'
+  )!;
+  if (
+    sqlite
+      .prepare(
+        "SELECT 1 FROM control_product_entries WHERE kind='item' AND turn_id=? AND id NOT IN (SELECT value FROM json_each(?)) LIMIT 1"
+      )
+      .get(turnId, JSON.stringify(terminalEvent.referencedItemIds ?? []))
+  )
+    throw new ControlProductPreconditionError();
+}
+
 /** Applies the complete terminal tuple in its caller's active savepoint. It never commits, publishes or acknowledges. */
 export function applyControlTerminal(
   db: CoreDb | WorkspaceDb,
@@ -2852,17 +2994,7 @@ export function applyControlTerminal(
         throw new ControlProductPreconditionError();
     }
   } else if (!turn.captureCoverage) throw new ControlProductPreconditionError();
-  for (const dependency of preparation.dependencies) {
-    const row = db.sqlite
-      .prepare(
-        'SELECT revision,content_json FROM control_product_entries WHERE kind=? AND turn_id=? AND id=? ORDER BY revision DESC LIMIT 1'
-      )
-      .get(dependency.entry.input.kind, turn.id, dependency.entry.id) as
-      | { revision: number; content_json: string }
-      | undefined;
-    if (!row || row.revision !== dependency.revision || row.content_json !== dependency.contentJson)
-      throw new ControlProductPreconditionError();
-  }
+  assertTerminalEntryDependencies(db.sqlite, String(turn.id), preparation.dependencies);
   for (const bundle of preparation.evidenceBundles) {
     if (
       JSON.stringify(
@@ -2907,18 +3039,7 @@ export function applyControlTerminal(
     preparation.entries,
     String(turn.id)
   );
-  const terminalEvent = preparation.entries.find(
-    (entry) =>
-      (preparedPayloads.get(entry) as { data?: { type?: string } }).data?.type === 'turn-completed'
-  )!;
-  if (
-    db.sqlite
-      .prepare(
-        "SELECT 1 FROM control_product_entries WHERE kind='item' AND turn_id=? AND id NOT IN (SELECT value FROM json_each(?)) LIMIT 1"
-      )
-      .get(turn.id, JSON.stringify(terminalEvent.referencedItemIds ?? []))
-  )
-    throw new ControlProductPreconditionError();
+  assertTerminalItemCoverage(db.sqlite, String(turn.id), preparation.entries);
   if (!terminalOwners) throw new ControlProductPreconditionError();
   if (db.scope === 'workspace')
     terminalOwners.task.recordTaskTerminalFact(db, {

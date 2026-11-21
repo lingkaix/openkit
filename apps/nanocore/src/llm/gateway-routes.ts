@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { constants as zlibConstants, zstdDecompress } from 'node:zlib';
 import {
@@ -40,6 +41,7 @@ import {
   ModelRequestAdmissionError,
 } from '../context/model-request-admission.js';
 import type { FsStore } from '../lib/store.js';
+import { OperationError } from '../operation-error-core.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
 import type {
   RegistryGatewayProviderResolver,
@@ -64,6 +66,7 @@ import {
 import { createWorkerRuntimeOriginRef } from '../runtime/worker-runtime-provenance.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
+import type { ServerWorkCommandBinding } from '../storage/server-work-command.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import {
   executeGatewayPlan,
@@ -76,6 +79,7 @@ import {
   planLogicalModel,
   planLogicalModelAsync,
 } from './gateway-execution.js';
+import { openServerGatewayCall, withServerGatewayResponseProducer } from './gateway-server-work.js';
 import { GatewayUnsupportedFeatureError } from './pi-ai-client.js';
 import type { PiAiFailure, PiAiFailureKind } from './pi-ai-failure.js';
 
@@ -107,10 +111,7 @@ import {
   resolveGatewaySubscriptionModels,
 } from './provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
-import {
-  digestLlmSystemPrompt,
-  persistLlmCapabilityCallSystemPromptDigest,
-} from './system-prompt-digest.js';
+import { digestLlmSystemPrompt } from './system-prompt-digest.js';
 import {
   readWorkerInferenceRuntimeHint,
   type WorkerInferenceRuntimeHint,
@@ -198,6 +199,10 @@ async function startPublicLlmGatewayCall(input: {
   authentication: NonNullable<AuditEvent['authentication']>;
   /** Optional Core database handle for durable workspace storage. */
   coreDb?: CoreDb;
+  serverWork?: ServerWorkCommandBinding | undefined;
+  retainProducer?: ((terminal: Promise<void>) => void) | undefined;
+  logicalModelId: string;
+  assertAuthority: () => void;
   /** Gateway endpoint family. */
   endpoint: 'chat_completions' | 'responses';
   /** OpenAI-compatible request metadata. */
@@ -210,10 +215,39 @@ async function startPublicLlmGatewayCall(input: {
   }
 
   const lineage = readPublicLlmGatewayLineage(input.metadata);
-
-  const workspaceDb = lineage
-    ? openWorkspaceReadDb(input.coreDb.dataRoot, lineage.workspaceId)
-    : input.coreDb;
+  if (!lineage) {
+    const serverWorkCall = await openServerGatewayCall(input.serverWork, {
+      logicalModelId: input.logicalModelId,
+      assertAuthority: input.assertAuthority,
+      systemPromptDigest: digestLlmSystemPrompt({
+        endpoint: input.endpoint,
+        request: input.request,
+      }),
+      context: {
+        owner: { kind: 'server' },
+        authorityActor: input.authorityActor,
+        authentication: input.authentication,
+        capabilityId: `llm.${input.endpoint}`,
+        family: 'llm',
+        operation: input.endpoint,
+        providerRef: null,
+        redactionClass: 'metadata-only',
+        requestId: randomUUID(),
+        serviceRef: 'llm-gateway',
+        summary: `Public ${input.endpoint} LLM gateway call. Model capture unavailable: no Turn admission.`,
+      },
+    });
+    const producerCompletion = input.retainProducer ? Promise.withResolvers<void>() : undefined;
+    if (producerCompletion) input.retainProducer?.(producerCompletion.promise);
+    return {
+      call: serverWorkCall.call,
+      workspaceDb: input.coreDb,
+      serverWorkCall,
+      finished: false,
+      ...(producerCompletion ? { onFinished: producerCompletion.resolve } : {}),
+    };
+  }
+  const workspaceDb = openWorkspaceReadDb(input.coreDb.dataRoot, lineage.workspaceId);
 
   try {
     const call = await startPublicLlmGatewayCallOnOwner(workspaceDb, { ...input, lineage });
@@ -224,19 +258,19 @@ async function startPublicLlmGatewayCall(input: {
       workspaceDb,
     };
   } catch (error) {
-    if (workspaceDb.scope === 'workspace') workspaceDb.sqlite.close();
+    workspaceDb.sqlite.close();
     throw error;
   }
 }
 
 /** Admits the complete public Gateway tuple through its existing database owner. */
 async function startPublicLlmGatewayCallOnOwner(
-  workspaceDb: CoreDb | WorkspaceDb,
+  workspaceDb: WorkspaceDb,
   input: Pick<
     Parameters<typeof startPublicLlmGatewayCall>[0],
     'authorityActor' | 'authentication' | 'endpoint' | 'request'
   > & {
-    readonly lineage: ReturnType<typeof readPublicLlmGatewayLineage>;
+    readonly lineage: NonNullable<ReturnType<typeof readPublicLlmGatewayLineage>>;
   }
 ): Promise<DurableLlmGatewayCall['call']> {
   const { lineage } = input;
@@ -265,28 +299,14 @@ async function startPublicLlmGatewayCallOnOwner(
     endpoint: input.endpoint,
     request: input.request,
   });
-  if (workspaceDb.scope === 'workspace') {
-    return startCapabilityCall({
-      ...callInput,
-      family: 'llm',
-      workspaceDb,
-      workspaceId: workspaceDb.workspaceId,
-      freshSystemPromptDigest: systemPromptDigest,
-      singleUseRequestId: true,
-    });
-  }
-  const call = await startCapabilityCall({
+  return startCapabilityCall({
     ...callInput,
     family: 'llm',
     workspaceDb,
-    owner: { kind: 'server' },
+    workspaceId: workspaceDb.workspaceId,
+    freshSystemPromptDigest: systemPromptDigest,
+    singleUseRequestId: true,
   });
-  await persistLlmCapabilityCallSystemPromptDigest({
-    workspaceDb,
-    callId: call.id,
-    systemPromptDigest,
-  });
-  return call;
 }
 
 /** Selects capture lineage only after the route has authenticated and authorized the exact owner. */
@@ -482,6 +502,9 @@ async function recordLlmGatewayUsage(input: {
     call: input.durableCall.call,
     records,
     workspaceDb: input.durableCall.workspaceDb,
+    ...(input.durableCall.serverWorkCall
+      ? { serverWorkCall: input.durableCall.serverWorkCall }
+      : {}),
   });
 }
 
@@ -510,6 +533,7 @@ async function finishDurableLlmGatewayCall(
       ...(failureCode ? { errorCode: failureCode } : {}),
       status: durableCall.rawOutputFailureCode && status === 'succeeded' ? 'failed' : status,
       workspaceDb: durableCall.workspaceDb,
+      ...(durableCall.serverWorkCall ? { serverWorkCall: durableCall.serverWorkCall } : {}),
     });
   } finally {
     try {
@@ -1289,6 +1313,19 @@ function asWorkerInferenceError(error: unknown): Response {
  * Exhaustion exposes only the final closed kind; selection without an attempt omits cause.
  */
 function asOpenAIGatewayError(error: unknown): Response {
+  if (error instanceof OperationError && error.code === 'operation_storage_unavailable') {
+    return Response.json(
+      {
+        error: {
+          message: 'Gateway work storage is unavailable.',
+          type: 'provider_error',
+          code: error.code,
+        },
+      },
+      { status: 503 }
+    );
+  }
+
   if (error instanceof LogicalModelRoutesExhaustedError) {
     return Response.json(
       {
@@ -1501,8 +1538,8 @@ function normalizeGatewayTerminalStream(
     reader.releaseLock();
   }
 
-  return new ReadableStream<Uint8Array>({
-    async cancel(reason) {
+  const source = {
+    async cancel(reason: unknown) {
       if (terminal) {
         return;
       }
@@ -1525,7 +1562,7 @@ function normalizeGatewayTerminalStream(
         }
       }
     },
-    async pull(controller) {
+    async pull(controller: ReadableStreamDefaultController<Uint8Array>) {
       if (terminal) {
         return;
       }
@@ -1623,7 +1660,13 @@ function normalizeGatewayTerminalStream(
       observeTerminalFrames(result.value);
       controller.enqueue(result.value);
     },
-  });
+  };
+  if (options.durableCall?.serverWorkCall && options.durableCall.onFinished) {
+    // Downstream readers can pull or cancel outside the request's producer context.
+    source.pull = AsyncLocalStorage.bind(source.pull);
+    source.cancel = AsyncLocalStorage.bind(source.cancel);
+  }
+  return new ReadableStream(source);
 }
 
 /**
@@ -3040,7 +3083,7 @@ export async function dispatchLogicalModel<T>(input: {
       return manager.tryWeeklyCodexReset(pair, signal, version);
     },
     autoFailover: input.logicalModel.autoFailover,
-    ...(input.singleAttempt ? { singleAttempt: true } : {}),
+    ...(input.singleAttempt || input.ledger?.serverWorkCall ? { singleAttempt: true } : {}),
     signal: input.signal,
     ...(input.clock ? { clock: input.clock } : {}),
     attempt: async (selection, execution) => {
@@ -3240,6 +3283,7 @@ export function registerLlmGatewayRoutes({
   exposureAvailable,
   providerCredentialConfigured,
   coreDb,
+  serverWork,
   requestStore,
   llmGatewayDispatcher,
   providerSubscriptionAccountManager,
@@ -3248,6 +3292,7 @@ export function registerLlmGatewayRoutes({
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb?: CoreDb;
+  readonly serverWork?: ServerWorkCommandBinding;
   /** Fresh shared resource restriction; this does not replace the Gateway's caller authority. */
   readonly exposureAvailable?: () => boolean;
   readonly requestStore?: (context: Context<{ Variables: AuthVariables }>) => FsStore;
@@ -3455,143 +3500,160 @@ export function registerLlmGatewayRoutes({
         }),
       };
 
-      const durableCall = await startPublicLlmGatewayCall({
-        ...(coreDb ? { coreDb } : {}),
-        authorityActor,
-        authentication: auditAuthenticationFromActor(c.get('actor')),
-        endpoint: 'chat_completions',
-        metadata: (request as { metadata?: unknown }).metadata,
-        request,
-      });
-      if (durableCall) durableCall.assertAuthority = assertAuthority;
-      try {
-        await recordLlmGatewayPolicyDecision({
-          action: 'llm.gateway.chat_completions',
-          ...(durableCall ? { capabilityCallId: durableCall.call.id } : {}),
-          providerId: logicalModel.routes[0]?.providerProfileId ?? null,
-          reasonCode: 'gateway_allowed',
-          result: 'allow',
-          route: '/v1/chat/completions',
+      const metadata = (request as { metadata?: unknown }).metadata;
+      const producer = coreDb && !readPublicLlmGatewayLineage(metadata) ? serverWork : undefined;
+      return await withServerGatewayResponseProducer(producer, async (retainProducer) => {
+        const durableCall = await startPublicLlmGatewayCall({
+          ...(coreDb ? { coreDb } : {}),
+          authorityActor,
+          authentication: auditAuthenticationFromActor(c.get('actor')),
+          serverWork,
+          retainProducer: input.stream ? retainProducer : undefined,
+          logicalModelId: logicalModel.id,
+          assertAuthority,
+          endpoint: 'chat_completions',
+          metadata,
+          request,
         });
-        assertAuthority();
-        const recordedEffort = recordedEffortForCall(durableCall);
-        const result = await dispatchLogicalModel<Response>({
-          ...(durableCall ? { ledger: durableCall } : {}),
-          reasoningEffort: {
-            ...(input.reasoning_effort === undefined ? {} : { requested: input.reasoning_effort }),
-            ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
-            binding: 'auxiliary',
-          },
-          logicalModel,
-          requiredCapabilities: ['chat-completions'],
-          ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-          resolveGatewayProvider: (id, model, context) =>
-            resolveGatewayProvider(id, model, context, registry),
-          signal: c.req.raw.signal,
-          attempt: async ({
-            provider,
-            providerModel,
-            subscriptionModels,
-            corr,
-            attempt,
-            execution,
-            effectiveEffort,
-          }) => {
-            const assertAttemptAuthority = async () => {
-              await execution.assertAuthority?.();
-              assertAuthority();
-            };
-            if (durableCall) durableCall.assertAuthority = assertAttemptAuthority;
-            const fittedRequest = withGatewayEffort(request, 'chat_completions', effectiveEffort);
-            if (input.stream) {
-              const stream = await llmGatewayDispatcher.createChatCompletionStream(
-                provider,
-                { ...fittedRequest, model: providerModel, stream: true },
-                {
-                  capture: captureForCall(durableCall, corr, attempt),
-                  onUsage: async (usage) =>
-                    execution.addUsageRecordIds(
-                      await recordLlmGatewayUsage({
-                        durableCall,
-                        model: logicalModel.id,
-                        providerModel,
-                        provider,
-                        usage,
-                      })
+        if (durableCall) durableCall.assertAuthority = assertAuthority;
+        try {
+          await recordLlmGatewayPolicyDecision({
+            action: 'llm.gateway.chat_completions',
+            ...(durableCall ? { capabilityCallId: durableCall.call.id } : {}),
+            providerId: logicalModel.routes[0]?.providerProfileId ?? null,
+            reasonCode: 'gateway_allowed',
+            result: 'allow',
+            route: '/v1/chat/completions',
+          });
+          assertAuthority();
+          const recordedEffort = recordedEffortForCall(durableCall);
+          const result = await dispatchLogicalModel<Response>({
+            ...(durableCall ? { ledger: durableCall } : {}),
+            reasoningEffort: {
+              ...(input.reasoning_effort === undefined
+                ? {}
+                : { requested: input.reasoning_effort }),
+              ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
+              binding: 'auxiliary',
+            },
+            logicalModel,
+            requiredCapabilities: ['chat-completions'],
+            ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+            resolveGatewayProvider: (id, model, context) =>
+              resolveGatewayProvider(id, model, context, registry),
+            signal: c.req.raw.signal,
+            attempt: async ({
+              provider,
+              providerModel,
+              subscriptionModels,
+              corr,
+              attempt,
+              execution,
+              effectiveEffort,
+            }) => {
+              const assertAttemptAuthority = async () => {
+                await execution.assertAuthority?.();
+                assertAuthority();
+              };
+              if (durableCall) durableCall.assertAuthority = assertAttemptAuthority;
+              const admitTransport = async () => {
+                await assertAttemptAuthority();
+                await durableCall?.serverWorkCall?.claimContact();
+              };
+              const fittedRequest = withGatewayEffort(request, 'chat_completions', effectiveEffort);
+              if (input.stream) {
+                const stream = await llmGatewayDispatcher.createChatCompletionStream(
+                  provider,
+                  { ...fittedRequest, model: providerModel, stream: true },
+                  {
+                    capture: captureForCall(durableCall, corr, attempt),
+                    onUsage: async (usage) =>
+                      execution.addUsageRecordIds(
+                        await recordLlmGatewayUsage({
+                          durableCall,
+                          model: logicalModel.id,
+                          providerModel,
+                          provider,
+                          usage,
+                        })
+                      ),
+                    ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                    transport: {
+                      finalRequestAdmission: admitTransport,
+                      signal: c.req.raw.signal,
+                      deadline: execution.deadline,
+                      ...(execution.onProviderHandoff
+                        ? { onProviderHandoff: execution.onProviderHandoff }
+                        : {}),
+                    },
+                  }
+                );
+                return new Response(
+                  normalizeGatewayTerminalStream(
+                    rewriteGatewayStreamModel(
+                      await execution.prepareStream(stream),
+                      logicalModel.id
                     ),
-                  ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: {
-                    finalRequestAdmission: assertAttemptAuthority,
-                    signal: c.req.raw.signal,
-                    deadline: execution.deadline,
-                    ...(execution.onProviderHandoff
-                      ? { onProviderHandoff: execution.onProviderHandoff }
-                      : {}),
-                  },
-                }
-              );
-              return new Response(
-                normalizeGatewayTerminalStream(
-                  rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
-                  'chat_completions',
-                  { durableCall, signal: c.req.raw.signal }
-                ),
-                {
-                  headers: {
-                    'content-type': 'text/event-stream; charset=utf-8',
-                    'cache-control': 'no-cache',
-                    connection: 'keep-alive',
-                  },
-                }
-              );
-            }
+                    'chat_completions',
+                    { durableCall, signal: c.req.raw.signal }
+                  ),
+                  {
+                    headers: {
+                      'content-type': 'text/event-stream; charset=utf-8',
+                      'cache-control': 'no-cache',
+                      connection: 'keep-alive',
+                    },
+                  }
+                );
+              }
 
-            const completion: OpenAICompatibleChatCompletionResponse =
-              await llmGatewayDispatcher.createChatCompletion(
-                provider,
-                { ...fittedRequest, model: providerModel, stream: false },
-                {
-                  capture: captureForCall(durableCall, corr, attempt),
-                  onUsage: async (usage) =>
-                    execution.addUsageRecordIds(
-                      await recordLlmGatewayUsage({
-                        durableCall,
-                        model: logicalModel.id,
-                        providerModel,
-                        provider,
-                        usage,
-                      })
-                    ),
-                  ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: {
-                    finalRequestAdmission: assertAttemptAuthority,
-                    signal: c.req.raw.signal,
-                    deadline: execution.deadline,
-                    ...(execution.onProviderHandoff
-                      ? { onProviderHandoff: execution.onProviderHandoff }
-                      : {}),
-                  },
-                }
-              );
-            return c.json({ ...completion, model: logicalModel.id });
-          },
-        });
-        if (!input.stream) {
-          await finishDurableLlmGatewayCall(durableCall, 'succeeded');
-          await durableCall?.assertAuthority?.();
+              const completion: OpenAICompatibleChatCompletionResponse =
+                await llmGatewayDispatcher.createChatCompletion(
+                  provider,
+                  { ...fittedRequest, model: providerModel, stream: false },
+                  {
+                    capture: captureForCall(durableCall, corr, attempt),
+                    onUsage: async (usage) =>
+                      execution.addUsageRecordIds(
+                        await recordLlmGatewayUsage({
+                          durableCall,
+                          model: logicalModel.id,
+                          providerModel,
+                          provider,
+                          usage,
+                        })
+                      ),
+                    ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                    transport: {
+                      finalRequestAdmission: admitTransport,
+                      signal: c.req.raw.signal,
+                      deadline: execution.deadline,
+                      ...(execution.onProviderHandoff
+                        ? { onProviderHandoff: execution.onProviderHandoff }
+                        : {}),
+                    },
+                  }
+                );
+              return c.json({ ...completion, model: logicalModel.id });
+            },
+          });
+          if (!input.stream) {
+            await finishDurableLlmGatewayCall(durableCall, 'succeeded');
+            await durableCall?.assertAuthority?.();
+          }
+          return result;
+        } catch (error) {
+          const cancelled = await finishDurableLlmGatewayFailure(
+            durableCall,
+            error,
+            c.req.raw.signal,
+            'llm_gateway_failed',
+            'llm_gateway_cancelled'
+          );
+          if (cancelled) throw new GatewayRequestCancelledError();
+          throw error;
         }
-        return result;
-      } catch (error) {
-        const cancelled = await finishDurableLlmGatewayFailure(
-          durableCall,
-          error,
-          c.req.raw.signal,
-          'llm_gateway_failed',
-          'llm_gateway_cancelled'
-        );
-        if (cancelled) throw new GatewayRequestCancelledError();
-        throw error;
-      }
+      });
     } catch (error) {
       return asOpenAIGatewayError(error);
     }
@@ -3644,145 +3706,160 @@ export function registerLlmGatewayRoutes({
         stream: input.stream ?? false,
       };
 
-      const durableCall = await startPublicLlmGatewayCall({
-        ...(coreDb ? { coreDb } : {}),
-        authorityActor,
-        authentication: auditAuthenticationFromActor(c.get('actor')),
-        endpoint: 'responses',
-        metadata: (request as { metadata?: unknown }).metadata,
-        request,
-      });
-      if (durableCall) durableCall.assertAuthority = assertAuthority;
-      try {
-        await recordLlmGatewayPolicyDecision({
-          action: 'llm.gateway.responses',
-          ...(durableCall ? { capabilityCallId: durableCall.call.id } : {}),
-          providerId: logicalModel.routes[0]?.providerProfileId ?? null,
-          reasonCode: 'gateway_allowed',
-          result: 'allow',
-          route: '/v1/responses',
+      const metadata = (request as { metadata?: unknown }).metadata;
+      const producer = coreDb && !readPublicLlmGatewayLineage(metadata) ? serverWork : undefined;
+      return await withServerGatewayResponseProducer(producer, async (retainProducer) => {
+        const durableCall = await startPublicLlmGatewayCall({
+          ...(coreDb ? { coreDb } : {}),
+          authorityActor,
+          authentication: auditAuthenticationFromActor(c.get('actor')),
+          serverWork,
+          retainProducer: input.stream ? retainProducer : undefined,
+          logicalModelId: logicalModel.id,
+          assertAuthority,
+          endpoint: 'responses',
+          metadata,
+          request,
         });
-        assertAuthority();
-        const recordedEffort = recordedEffortForCall(durableCall);
-        const result = await dispatchLogicalModel<Response>({
-          ...(durableCall ? { ledger: durableCall } : {}),
-          reasoningEffort: {
-            ...(input.reasoning?.effort === undefined
-              ? {}
-              : { requested: input.reasoning?.effort }),
-            ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
-            binding: 'auxiliary',
-          },
-          logicalModel,
-          requiredCapabilities: ['responses'],
-          ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-          resolveGatewayProvider: (id, model, context) =>
-            resolveGatewayProvider(id, model, context, registry),
-          signal: c.req.raw.signal,
-          attempt: async ({
-            provider,
-            providerModel,
-            subscriptionModels,
-            corr,
-            attempt,
-            execution,
-            effectiveEffort,
-          }) => {
-            const assertAttemptAuthority = async () => {
-              await execution.assertAuthority?.();
-              assertAuthority();
-            };
-            if (durableCall) durableCall.assertAuthority = assertAttemptAuthority;
-            const fittedRequest = withGatewayEffort(request, 'responses', effectiveEffort);
-            if (input.stream) {
-              const stream = await llmGatewayDispatcher.createResponsesStream(
-                provider,
-                { ...fittedRequest, model: providerModel, stream: true },
-                {
-                  capture: captureForCall(durableCall, corr, attempt),
-                  onUsage: async (usage) =>
-                    execution.addUsageRecordIds(
-                      await recordLlmGatewayUsage({
-                        durableCall,
-                        model: logicalModel.id,
-                        providerModel,
-                        provider,
-                        usage,
-                      })
+        if (durableCall) durableCall.assertAuthority = assertAuthority;
+        try {
+          await recordLlmGatewayPolicyDecision({
+            action: 'llm.gateway.responses',
+            ...(durableCall ? { capabilityCallId: durableCall.call.id } : {}),
+            providerId: logicalModel.routes[0]?.providerProfileId ?? null,
+            reasonCode: 'gateway_allowed',
+            result: 'allow',
+            route: '/v1/responses',
+          });
+          assertAuthority();
+          const recordedEffort = recordedEffortForCall(durableCall);
+          const result = await dispatchLogicalModel<Response>({
+            ...(durableCall ? { ledger: durableCall } : {}),
+            reasoningEffort: {
+              ...(input.reasoning?.effort === undefined
+                ? {}
+                : { requested: input.reasoning?.effort }),
+              ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
+              binding: 'auxiliary',
+            },
+            logicalModel,
+            requiredCapabilities: ['responses'],
+            ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+            resolveGatewayProvider: (id, model, context) =>
+              resolveGatewayProvider(id, model, context, registry),
+            signal: c.req.raw.signal,
+            attempt: async ({
+              provider,
+              providerModel,
+              subscriptionModels,
+              corr,
+              attempt,
+              execution,
+              effectiveEffort,
+            }) => {
+              const assertAttemptAuthority = async () => {
+                await execution.assertAuthority?.();
+                assertAuthority();
+              };
+              if (durableCall) durableCall.assertAuthority = assertAttemptAuthority;
+              const admitTransport = async () => {
+                await assertAttemptAuthority();
+                await durableCall?.serverWorkCall?.claimContact();
+              };
+              const fittedRequest = withGatewayEffort(request, 'responses', effectiveEffort);
+              if (input.stream) {
+                const stream = await llmGatewayDispatcher.createResponsesStream(
+                  provider,
+                  { ...fittedRequest, model: providerModel, stream: true },
+                  {
+                    capture: captureForCall(durableCall, corr, attempt),
+                    onUsage: async (usage) =>
+                      execution.addUsageRecordIds(
+                        await recordLlmGatewayUsage({
+                          durableCall,
+                          model: logicalModel.id,
+                          providerModel,
+                          provider,
+                          usage,
+                        })
+                      ),
+                    ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                    transport: {
+                      finalRequestAdmission: admitTransport,
+                      signal: c.req.raw.signal,
+                      deadline: execution.deadline,
+                      ...(execution.onProviderHandoff
+                        ? { onProviderHandoff: execution.onProviderHandoff }
+                        : {}),
+                    },
+                  }
+                );
+                return new Response(
+                  normalizeGatewayTerminalStream(
+                    rewriteGatewayStreamModel(
+                      await execution.prepareStream(stream),
+                      logicalModel.id
                     ),
-                  ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: {
-                    finalRequestAdmission: assertAttemptAuthority,
-                    signal: c.req.raw.signal,
-                    deadline: execution.deadline,
-                    ...(execution.onProviderHandoff
-                      ? { onProviderHandoff: execution.onProviderHandoff }
-                      : {}),
-                  },
-                }
-              );
-              return new Response(
-                normalizeGatewayTerminalStream(
-                  rewriteGatewayStreamModel(await execution.prepareStream(stream), logicalModel.id),
-                  'responses',
-                  { durableCall, signal: c.req.raw.signal }
-                ),
-                {
-                  headers: {
-                    'content-type': 'text/event-stream; charset=utf-8',
-                    'cache-control': 'no-cache',
-                    connection: 'keep-alive',
-                  },
-                }
-              );
-            }
+                    'responses',
+                    { durableCall, signal: c.req.raw.signal }
+                  ),
+                  {
+                    headers: {
+                      'content-type': 'text/event-stream; charset=utf-8',
+                      'cache-control': 'no-cache',
+                      connection: 'keep-alive',
+                    },
+                  }
+                );
+              }
 
-            const response: OpenAICompatibleResponsesResponse =
-              await llmGatewayDispatcher.createResponses(
-                provider,
-                { ...fittedRequest, model: providerModel },
-                {
-                  capture: captureForCall(durableCall, corr, attempt),
-                  onUsage: async (usage) =>
-                    execution.addUsageRecordIds(
-                      await recordLlmGatewayUsage({
-                        durableCall,
-                        model: logicalModel.id,
-                        providerModel,
-                        provider,
-                        usage,
-                      })
-                    ),
-                  ...(subscriptionModels ? { models: subscriptionModels } : {}),
-                  transport: {
-                    finalRequestAdmission: assertAttemptAuthority,
-                    signal: c.req.raw.signal,
-                    deadline: execution.deadline,
-                    ...(execution.onProviderHandoff
-                      ? { onProviderHandoff: execution.onProviderHandoff }
-                      : {}),
-                  },
-                }
-              );
-            return c.json({ ...response, model: logicalModel.id });
-          },
-        });
-        if (!input.stream) {
-          await finishDurableLlmGatewayCall(durableCall, 'succeeded');
-          await durableCall?.assertAuthority?.();
+              const response: OpenAICompatibleResponsesResponse =
+                await llmGatewayDispatcher.createResponses(
+                  provider,
+                  { ...fittedRequest, model: providerModel },
+                  {
+                    capture: captureForCall(durableCall, corr, attempt),
+                    onUsage: async (usage) =>
+                      execution.addUsageRecordIds(
+                        await recordLlmGatewayUsage({
+                          durableCall,
+                          model: logicalModel.id,
+                          providerModel,
+                          provider,
+                          usage,
+                        })
+                      ),
+                    ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                    transport: {
+                      finalRequestAdmission: admitTransport,
+                      signal: c.req.raw.signal,
+                      deadline: execution.deadline,
+                      ...(execution.onProviderHandoff
+                        ? { onProviderHandoff: execution.onProviderHandoff }
+                        : {}),
+                    },
+                  }
+                );
+              return c.json({ ...response, model: logicalModel.id });
+            },
+          });
+          if (!input.stream) {
+            await finishDurableLlmGatewayCall(durableCall, 'succeeded');
+            await durableCall?.assertAuthority?.();
+          }
+          return result;
+        } catch (error) {
+          const cancelled = await finishDurableLlmGatewayFailure(
+            durableCall,
+            error,
+            c.req.raw.signal,
+            'llm_gateway_failed',
+            'llm_gateway_cancelled'
+          );
+          if (cancelled) throw new GatewayRequestCancelledError();
+          throw error;
         }
-        return result;
-      } catch (error) {
-        const cancelled = await finishDurableLlmGatewayFailure(
-          durableCall,
-          error,
-          c.req.raw.signal,
-          'llm_gateway_failed',
-          'llm_gateway_cancelled'
-        );
-        if (cancelled) throw new GatewayRequestCancelledError();
-        throw error;
-      }
+      });
     } catch (error) {
       return asOpenAIGatewayError(error);
     }

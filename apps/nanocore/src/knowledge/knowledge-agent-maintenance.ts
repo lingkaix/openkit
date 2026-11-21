@@ -38,6 +38,7 @@ import {
 } from '../storage/control-store-admission-codecs.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { serverWorkUnavailable } from '../storage/server-work-command.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { DEFAULT_NOTEBOOK_INDEX, NotebookError } from './notebook.js';
 import {
@@ -82,19 +83,17 @@ export async function admitControlMaintenance(
   workspaceId: string | undefined,
   input: ControlKnowledgeAdmissionInput
 ): Promise<ControlKnowledgeAdmissionResult> {
-  const scope = nativeProductScope(
-    dataRoot,
-    workspaceId === undefined ? { kind: 'server' } : { kind: 'workspace', workspaceId }
-  );
+  if (workspaceId === undefined) throw serverWorkUnavailable();
+  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
   const path = scope.path;
-  const database = workspaceId === undefined ? `core:${path}` : `workspace:${path}`;
+  const database = `workspace:${path}`;
   const client = getControlStoreWorkerClient();
   await client.open({
     database,
     path,
     dataRoot,
     create: false,
-    initialize: workspaceId === undefined ? 'core' : 'workspace',
+    initialize: 'workspace',
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });

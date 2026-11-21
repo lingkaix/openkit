@@ -14,7 +14,7 @@ import {
 import { basename, dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, parentPort } from 'node:worker_threads';
-import { PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
+import { isEntityId, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
 import {
   changeVerifiedFileMode,
   copyFileForCut,
@@ -149,6 +149,7 @@ import { applyAutomationScannerInDb } from './automation-scanner-native.js';
 import {
   inspectChannelInboundReceipt,
   inspectPairingAuditReceipt,
+  inspectServerWorkReceipt,
 } from './command-request-records.js';
 import { inspectPendingDecision } from './communication-inbound.js';
 import { readChannelInboundProof } from './communication-inbound-native.js';
@@ -166,6 +167,7 @@ import {
 import {
   applyControlAdmission,
   bindChannelInboundOriginInDb,
+  decideServerWorkInDb,
   relayPairingAuditInDb,
   reserveChannelInboundInDb,
   settleChannelInboundInDb,
@@ -238,6 +240,7 @@ import {
   prepareControlRecoveryHistory,
   prepareControlRecoverySafety,
 } from './control-store-recovery.js';
+import { verifyServerWorkDecision } from './control-store-server-work-authority.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
@@ -267,7 +270,13 @@ import {
   type NanoHostOwnerMutationResult,
   readControlSchemaApplicationInput,
   type ServerOwnerDescriptor,
+  type ServerWorkKernelReply,
 } from './control-store-worker-protocol.js';
+import { applyRepairWorkerCommand } from './control-store-worker-repair.js';
+import {
+  applyServerWorkOwnerMutation,
+  prepareServerWorkOwnerMutation,
+} from './control-store-worker-server-work.js';
 import { CoreJournalRefusal } from './core-journal-codecs.js';
 import { applyControlCoreJournal } from './core-journal-native.js';
 import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
@@ -324,6 +333,7 @@ import { applyControlRuntimeTarget } from './runtime-target-native.js';
 import { applyScopedNotebookSqlInDb } from './scoped-notebook-sql-native.js';
 import { SECURITY_TRIGGER_REFUSALS, SecurityTriggerRefusal } from './security-trigger-codecs.js';
 import { applySecurityTriggerInDb } from './security-trigger-native.js';
+import { readStagedServerWork } from './server-work-intents.js';
 import {
   type ControlStandaloneAuditInput,
   ControlStandaloneAuditInputSchema,
@@ -468,6 +478,9 @@ type WriteCommand = Extract<
       | 'communication-owner'
       | 'communication-kernel'
       | 'nanohost-owner'
+      | 'server-work-owner'
+      | 'repair-kernel'
+      | 'server-work-kernel'
       | 'nanohost-transport'
       | 'worker-control-evidence'
       | 'generative-presentation'
@@ -512,6 +525,7 @@ type WriteRequest = WriteCommand & {
   readonly appInput?: ControlAppInput;
   readonly preparedSchedulerAdmission?: CoreSchedulerInput;
   readonly preparedCommunication?: CommunicationWriterCommand;
+  readonly preparedServerWork?: Awaited<ReturnType<typeof prepareServerWorkOwnerMutation>>;
   readonly preparedCommandReceipt?: ControlCommandReceiptAdmission;
   readonly preparedStandaloneAudit?: ControlStandaloneAuditInput;
   readonly preparedThreadReadItemIds?: readonly string[];
@@ -574,6 +588,7 @@ interface OwnedDatabase {
       }
     | undefined;
   readonly contentMount: ControlProductContentMount | undefined;
+  readonly serverWorkDataRoot: string | undefined;
   readonly pending: WriteRequest[];
   readonly publications: ControlContentPreparation['publications'];
   /** Accepted native-local preparation shares this finite scope lifetime, before SQL. */
@@ -1433,6 +1448,84 @@ function apply(
   });
 }
 
+/** Uses the exact current Core opening for receipt inspection and authority. */
+function requireCurrentKernelOpening(owner: OwnedDatabase, openingRequestId: number): CoreDb {
+  const db = owner.scopeDb;
+  if (db?.scope !== 'core' || owner.openingRequestId !== openingRequestId)
+    throw new ControlProductPreconditionError();
+  const coreFile = lstatSync(owner.path, { throwIfNoEntry: false });
+  if (
+    !coreFile?.isFile() ||
+    coreFile.nlink !== 1 ||
+    `${coreFile.dev}:${coreFile.ino}` !== owner.identity ||
+    realpathSync(owner.path) !== owner.path
+  )
+    throw new ServerOwnerAdmissionError('recovery-required');
+  return db;
+}
+
+/** Reads a Server draft only from the physical file admitted by the owner worker. */
+function applyServerWorkKernel(
+  owner: OwnedDatabase,
+  request: Extract<WriteRequest, { operation: 'server-work-kernel' }>
+): ServerWorkKernelReply {
+  const db = requireCurrentKernelOpening(owner, request.openingRequestId);
+  const { input } = request;
+  if (input.kind === 'inspect') {
+    const currentDeployment = readDataRootLayoutMarker(db.dataRoot).deploymentId;
+    return {
+      kind: input.kind,
+      value:
+        input.intent.deploymentId === currentDeployment
+          ? inspectServerWorkReceipt(db, input.intent, true)
+          : { state: 'conflict' },
+    };
+  }
+
+  const path = serverStoragePath(db.dataRoot, 'server-work');
+  const assertCurrentOwner = () => {
+    const file = lstatSync(path, { throwIfNoEntry: false });
+    if (
+      !file?.isFile() ||
+      file.nlink !== 1 ||
+      `${file.dev}:${file.ino}` !== input.ownerIdentity ||
+      realpathSync(path) !== path
+    )
+      throw new ServerOwnerAdmissionError('recovery-required');
+  };
+  assertCurrentOwner();
+  const sqlite = new Database(path, { readonly: true, fileMustExist: true, timeout: 5 });
+  try {
+    sqlite.pragma('query_only = ON');
+    assertCurrentOwner();
+    let staged: ReturnType<typeof readStagedServerWork> | undefined;
+    return {
+      kind: input.kind,
+      value: decideServerWorkInDb(
+        db,
+        input.intent,
+        true,
+        (requestId) => {
+          staged = readStagedServerWork(sqlite, requestId);
+          return staged;
+        },
+        (intent) => {
+          if (!staged) return { state: 'unknown' };
+          return verifyServerWorkDecision(
+            db,
+            sqlite,
+            intent,
+            staged.payload,
+            owner.runtimePolicy?.state === 'active'
+          );
+        }
+      ),
+    };
+  } finally {
+    sqlite.close();
+  }
+}
+
 /** Resolves the original admitted Communication file while the Core transaction owns the receipt. */
 function applyCommunicationKernel(
   owner: OwnedDatabase,
@@ -1572,6 +1665,20 @@ function applyNanoHostOwnerMutation(
   }
 }
 
+/** Verifies the admitted native Server-work opening before preparing or applying mutations. */
+function assertCurrentServerWorkOwner(owner: OwnedDatabase, openingRequestId: number): void {
+  const file = lstatSync(owner.path, { throwIfNoEntry: false });
+  if (
+    owner.serverOwner !== 'server-work' ||
+    owner.openingRequestId !== openingRequestId ||
+    !file?.isFile() ||
+    file.nlink !== 1 ||
+    `${file.dev}:${file.ino}` !== owner.identity ||
+    realpathSync(owner.path) !== owner.path
+  )
+    throw new ServerOwnerAdmissionError('recovery-required');
+}
+
 /** Clears only this owner's scheduling handles; no other Workspace is paused. */
 function unschedule(owner: OwnedDatabase): void {
   if (owner.timer !== null) clearTimeout(owner.timer);
@@ -1682,6 +1789,22 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         lanes.add(readExecutionJournalRoot(owner.scopeDb, request.input.ref.execution).workId);
       } else lanes.add(decodeExecutionJournalIntent(request.input.intentJson).execution.workId);
       break;
+    case 'server-work-owner': {
+      const mutation = request.mutation;
+      if (mutation.kind === 'publish-containment' || mutation.kind === 'stage-knowledge') break;
+      const intent =
+        mutation.kind === 'stage'
+          ? mutation.intent
+          : mutation.kind === 'publish-turn-progress' || mutation.kind === 'append-observation'
+            ? mutation.admission
+            : mutation.receipt.intent;
+      if ('turnId' in intent.target && typeof intent.target.turnId === 'string')
+        lanes.add(intent.target.turnId);
+      if ('threadId' in intent.target && intent.target.threadId)
+        lanes.add(`thread:${intent.target.threadId}`);
+      if ('callId' in intent.target) lanes.add(`server-call:${intent.target.callId}`);
+      break;
+    }
     case 'worker-image':
       lanes.add('worker-image');
       break;
@@ -1865,15 +1988,21 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     case 'material':
       break;
   }
-  if (owner.productOwner) {
-    for (const turnId of [...lanes].filter((id) => !id.startsWith('session:'))) {
-      const sessionId = readProduct(owner.sqlite, owner.productOwner, 'turn', turnId)?.record
-        .agentSessionId;
-      if (typeof sessionId === 'string') lanes.add(`session:${sessionId}`);
-      else
-        for (const earlier of owner.pending.filter((request) => request.lanes.has(turnId)))
-          for (const lane of earlier.lanes) if (lane.startsWith('session:')) lanes.add(lane);
-    }
+  // Core orders its retained requests without querying another owner's product table.
+  const productOwner =
+    owner.serverOwner === 'server-work'
+      ? ({ kind: 'server' } as const)
+      : owner.productOwner?.kind === 'workspace'
+        ? owner.productOwner
+        : undefined;
+  for (const turnId of [...lanes].filter((id) => isEntityId('tu', id))) {
+    const sessionId = productOwner
+      ? readProduct(owner.sqlite, productOwner, 'turn', turnId)?.record.agentSessionId
+      : undefined;
+    if (typeof sessionId === 'string') lanes.add(`session:${sessionId}`);
+    else
+      for (const earlier of owner.pending.filter((request) => request.lanes.has(turnId)))
+        for (const lane of earlier.lanes) if (lane.startsWith('session:')) lanes.add(lane);
   }
   return lanes;
 }
@@ -3447,6 +3576,36 @@ function flush(owner: OwnedDatabase): void {
               operation: 'vault',
               result,
             };
+          } else if (request.operation === 'repair-kernel') {
+            const core = requireCurrentKernelOpening(owner, request.openingRequestId);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'repair-kernel',
+              result: applyRepairWorkerCommand(core, owner.runtimePolicy, request.input),
+            };
+          } else if (request.operation === 'server-work-kernel') {
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'server-work-kernel',
+              result: applyServerWorkKernel(owner, request),
+            };
+          } else if (request.operation === 'server-work-owner') {
+            assertCurrentServerWorkOwner(owner, request.openingRequestId);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'server-work-owner',
+              result: applyServerWorkOwnerMutation(
+                owner.sqlite,
+                request.mutation,
+                request.preparedServerWork
+              ),
+            };
           } else if (request.operation === 'nanohost-owner') {
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -4295,6 +4454,13 @@ async function openDatabase(request: OpenRequest): Promise<void> {
   let contentMount = request.contentMount;
   const dataRoot = request.dataRoot === undefined ? undefined : realpathSync(request.dataRoot);
   const split = request.serverOwner;
+  if (split?.owner === 'server-work') {
+    contentMount = {
+      root: join(dataRoot!, 'server', 'evidence', 'backend'),
+      mount: 'backend-evidence',
+      knowledgeBaseId: null,
+    };
+  }
   const path = split
     ? serverStoragePath(dataRoot!, split.owner)
     : request.create && !existsSync(request.path)
@@ -4432,8 +4598,10 @@ async function openDatabase(request: OpenRequest): Promise<void> {
         assertSavepointSafeSchema(sqlite);
       }
       if (contentMount) {
-        if (!request.productOwner) throw new ControlProductPreconditionError();
-        const scopeRoot = dirname(dirname(path));
+        if (!request.productOwner && split?.owner !== 'server-work')
+          throw new ControlProductPreconditionError();
+        const scopeRoot =
+          split?.owner === 'server-work' ? join(dataRoot!, 'server') : dirname(dirname(path));
         const canonical = join(scopeRoot, 'evidence', 'backend');
         if (
           dataRoot &&
@@ -4500,6 +4668,7 @@ async function openDatabase(request: OpenRequest): Promise<void> {
               }
             : undefined,
         contentMount,
+        serverWorkDataRoot: split?.owner === 'server-work' ? dataRoot : undefined,
         pending: [],
         publications: new Map(),
         preparations: new Set(),
@@ -4756,15 +4925,21 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       reply(failure(value.id, 'not-open'));
       return;
     }
-    if (
+    const splitMutation =
       value.operation === 'communication-owner'
-        ? owner.serverOwner !== 'communication'
-        : value.operation === 'nanohost-owner'
-          ? owner.serverOwner !== 'nanohost'
-          : owner.serverOwner &&
-            value.operation !== 'close' &&
-            value.operation !== 'checkpoint' &&
-            value.operation !== 'reclaim'
+        ? 'communication'
+        : value.operation === 'server-work-owner'
+          ? 'server-work'
+          : value.operation === 'nanohost-owner'
+            ? 'nanohost'
+            : undefined;
+    if (
+      splitMutation
+        ? owner.serverOwner !== splitMutation
+        : owner.serverOwner &&
+          value.operation !== 'close' &&
+          value.operation !== 'checkpoint' &&
+          value.operation !== 'reclaim'
     ) {
       reply(failure(value.id, 'precondition'));
       return;
@@ -4805,6 +4980,9 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'communication-owner' ||
       value.operation === 'communication-kernel' ||
       value.operation === 'nanohost-owner' ||
+      value.operation === 'server-work-owner' ||
+      value.operation === 'repair-kernel' ||
+      value.operation === 'server-work-kernel' ||
       value.operation === 'nanohost-transport' ||
       value.operation === 'worker-control-evidence' ||
       value.operation === 'generative-presentation' ||
@@ -4886,6 +5064,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           barrier:
             // A stopping/R8 intent needs its own FULL commit before a sibling can complete it.
             value.operation === 'security-trigger' ||
+            (value.operation === 'server-work-owner' &&
+              value.mutation.kind === 'stage-knowledge') ||
             value.operation === 'runtime-policy-publication' ||
             (value.operation === 'vault' && value.policyRead === true) ||
             value.operation === 'recovery-target-registration' ||
@@ -4918,6 +5098,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let appInput: ControlAppInput | undefined;
           let preparedSchedulerAdmission: CoreSchedulerInput | undefined;
           let preparedCommunication: CommunicationWriterCommand | undefined;
+          let preparedServerWork: WriteRequest['preparedServerWork'];
           let preparedCommandReceipt: ControlCommandReceiptAdmission | undefined;
           let preparedStandaloneAudit: ControlStandaloneAuditInput | undefined;
           let preparedThreadReadItemIds: readonly string[] | undefined;
@@ -4944,6 +5125,17 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedObservation: ControlWorkObservationInput | undefined;
           let preparedResolvedSetup: PreparedResolvedAgentSetup | undefined;
           try {
+            if (value.operation === 'server-work-owner') {
+              await prepareAfterPredecessors(owner, queued, earlier);
+              assertCurrentServerWorkOwner(owner, value.openingRequestId);
+              preparedServerWork = await prepareServerWorkOwnerMutation(
+                owner.sqlite,
+                value.mutation,
+                owner.contentMount,
+                owner.serverWorkDataRoot,
+                value.content
+              );
+            }
             if (value.operation === 'communication-owner') {
               preparedCommunication = CommunicationWriterCommandSchema.parse(
                 JSON.parse(readControlScalarText(value.input, value.content))
@@ -5387,6 +5579,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               appInput,
               preparedSchedulerAdmission,
               preparedCommunication,
+              preparedServerWork,
               preparedCommandReceipt,
               preparedStandaloneAudit,
               preparedThreadReadItemIds,

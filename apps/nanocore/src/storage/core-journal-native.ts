@@ -1,8 +1,18 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import {
+  type ServerEvidenceBundleRecord,
+  ServerEvidenceBundleRecordSchema,
+} from '@openkit/app-api-schemas';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
-import { compareCodeUnits } from '@openkit/protocol';
+import {
+  type ActorRef,
+  compareCodeUnits,
+  deriveEntityId,
+  type KernelAuditEvent,
+} from '@openkit/protocol';
 import { policyDigest } from '@openkit/protocol/digest';
+import { auditEventFromRow, recordServerAuditEvent } from '../audit-events.js';
 import { validatePolicyDocument } from '../policy/statements.js';
 import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
@@ -32,9 +42,99 @@ import {
   SECURITY_CONTAINMENT_LIMITS,
 } from './core-journal-codecs.js';
 import type { CoreDb } from './db.js';
-import { insertEvidenceBundle } from './evidence-bundle-records.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { recordContainmentGapInDb } from './security-canary-audit-native.js';
+
+const containmentEvidenceAction = 'security.containment-evidence';
+
+function containmentEvidenceAuditId(evidenceId: string): string {
+  return deriveEntityId('aud', [containmentEvidenceAction, evidenceId]);
+}
+
+/** Reads the exact redacted handoff for the independent Server work publisher. */
+export function readContainmentEvidenceHandoff(
+  db: CoreDb,
+  evidenceId: string
+): ServerEvidenceBundleRecord | null {
+  const row = db.sqlite
+    .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
+    .get(containmentEvidenceAuditId(evidenceId));
+  if (!row) return null;
+  const event = auditEventFromRow(row);
+  const evidence = event.kernelEvidence;
+  if (
+    event.action !== containmentEvidenceAction ||
+    event.workspaceId !== null ||
+    evidence?.kind !== containmentEvidenceAction ||
+    evidence.evidenceId !== evidenceId
+  )
+    throw new CoreJournalRefusal('Original containment evidence conflicts.');
+  return ServerEvidenceBundleRecordSchema.parse({
+    id: evidenceId,
+    owner: { kind: 'server' },
+    threadId: event.threadId,
+    turnId: event.turnId,
+    agentSessionId: event.agentSessionId,
+    goalId: null,
+    backendType: evidence.backendType,
+    sourceKind: evidence.sourceKind,
+    summary: event.summary,
+    rawEvidenceRefs: [],
+    redactedEvidenceRefs: evidence.redactedEvidenceRefs,
+    contentDigests: evidence.contentDigests,
+    retentionClass: 'workspace-audit',
+    sensitivityClass: 'restricted',
+    importStatus: 'collected',
+    requiredFeatures: [],
+    createdAt: event.createdAt,
+  });
+}
+
+type ContainmentAuditEvidence = Extract<
+  NonNullable<KernelAuditEvent['kernelEvidence']>,
+  { kind: 'security.containment-evidence' }
+>;
+type ContainmentEvidenceFacts = Pick<
+  ServerEvidenceBundleRecord,
+  'id' | 'threadId' | 'turnId' | 'agentSessionId' | 'summary' | 'createdAt'
+> &
+  Pick<
+    ContainmentAuditEvidence,
+    'backendType' | 'sourceKind' | 'redactedEvidenceRefs' | 'contentDigests'
+  >;
+
+/** Keeps the kernel decision independent of the destination EvidenceBundle publisher. */
+function appendContainmentEvidenceHandoff(
+  db: CoreDb,
+  actor: ActorRef,
+  facts: ContainmentEvidenceFacts
+): void {
+  const now = new Date(facts.createdAt);
+  recordServerAuditEvent({
+    coreDb: db,
+    auditEventId: containmentEvidenceAuditId(facts.id),
+    action: containmentEvidenceAction,
+    actor,
+    category: 'system',
+    outcome: 'succeeded',
+    workspaceId: null,
+    threadId: facts.threadId,
+    turnId: facts.turnId,
+    agentSessionId: facts.agentSessionId,
+    resource: `evidence:${facts.id}`,
+    summary: facts.summary,
+    now,
+    occurredAt: now,
+    kernelEvidence: {
+      kind: containmentEvidenceAction,
+      evidenceId: facts.id,
+      sourceKind: facts.sourceKind,
+      backendType: facts.backendType,
+      redactedEvidenceRefs: facts.redactedEvidenceRefs,
+      contentDigests: facts.contentDigests,
+    },
+  });
+}
 
 /** Decides one original Core journal tuple against current rows inside its savepoint and FULL commit. */
 export function applyControlCoreJournal(
@@ -400,9 +500,7 @@ function applyContainmentJournal(
       (original.control.deadlineUnixNano === null ||
         original.control.deadlineUnixNano <= BigInt(Date.now()) * 1_000_000n ||
         original.clock.processWitness !== executionJournalProcessWitness()) &&
-      !db.sqlite
-        .prepare('SELECT 1 FROM evidence_bundles WHERE evidence_bundle_id=?')
-        .get(actionGapId)
+      !readContainmentEvidenceHandoff(db, actionGapId)
     ) {
       const actor = original.control.actor;
       const auditId = recordContainmentGapInDb(
@@ -412,28 +510,21 @@ function applyContainmentJournal(
         original.control.workId,
         actor.kind === 'system' ? actor.responsibleUserId : null
       );
-      insertEvidenceBundle(db, {
+      appendContainmentEvidenceHandoff(db, actor, {
         id: actionGapId,
-        owner: { kind: 'server' },
         threadId: null,
         turnId: null,
         agentSessionId: null,
-        goalId: null,
         backendType: null,
         sourceKind: 'security-containment-gap',
         summary:
           'Original action authority elapsed or its clock is unavailable. Inspect original operation outcomes. Quarantine remains; this gap grants no new effect.',
-        rawEvidenceRefs: [],
         redactedEvidenceRefs: [
           { kind: 'audit', ref: original.control.workId },
           { kind: 'policy', ref: revision },
-          ...(auditId ? [{ kind: 'audit', ref: auditId }] : []),
+          ...(auditId ? [{ kind: 'audit' as const, ref: auditId }] : []),
         ],
         contentDigests: [],
-        retentionClass: 'workspace-audit',
-        sensitivityClass: 'restricted',
-        importStatus: 'collected',
-        requiredFeatures: [],
         createdAt: new Date().toISOString(),
       });
     }
@@ -443,10 +534,7 @@ function applyContainmentJournal(
     )
       return null;
     const evidenceId = `containment-review-${policyDigest(input.ref.execution)}`;
-    if (
-      db.sqlite.prepare('SELECT 1 FROM evidence_bundles WHERE evidence_bundle_id=?').get(evidenceId)
-    )
-      return null;
+    if (readContainmentEvidenceHandoff(db, evidenceId)) return null;
     const author = original.control.actor;
     const id = recordContainmentGapInDb(
       db,
@@ -455,28 +543,21 @@ function applyContainmentJournal(
       original.control.workId,
       author.kind === 'system' ? author.responsibleUserId : null
     );
-    insertEvidenceBundle(db, {
+    appendContainmentEvidenceHandoff(db, author, {
       id: evidenceId,
-      owner: { kind: 'server' },
       threadId: null,
       turnId: null,
       agentSessionId: null,
-      goalId: null,
       backendType: null,
       sourceKind: 'security-containment-review',
       summary:
         'The review deadline elapsed without recorded human review. Quarantine remains. Missing or saturated notice evidence is a gap.',
-      rawEvidenceRefs: [],
       redactedEvidenceRefs: [
         { kind: 'audit', ref: original.control.workId },
         { kind: 'policy', ref: revision },
-        ...(id ? [{ kind: 'audit', ref: id }] : []),
+        ...(id ? [{ kind: 'audit' as const, ref: id }] : []),
       ],
       contentDigests: [],
-      retentionClass: 'workspace-audit',
-      sensitivityClass: 'restricted',
-      importStatus: 'collected',
-      requiredFeatures: [],
       createdAt: new Date().toISOString(),
     });
     return id;

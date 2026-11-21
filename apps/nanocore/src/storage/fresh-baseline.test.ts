@@ -3,7 +3,10 @@ import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createTestStore, disposeTestStore } from '../test-support/store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { openTestServerWork } from '../test-support/server-work-store.js';
+import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
+import type { ControlStoreProductReadHandle } from './control-store-product-records.js';
 import { type CoreDb, openCoreReadDb, openWorkspaceReadDb, type WorkspaceDb } from './db.js';
 import { SECURITY_TRIGGER_OWNER } from './security-trigger-port.js';
 
@@ -37,10 +40,28 @@ describe('fresh Core and Workspace setup', () => {
   it('initializes complete fresh scopes and publishes through the original native owners', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-fresh-baseline-'));
     const databases: Array<CoreDb | WorkspaceDb> = [];
+    let serverReader: ControlStoreProductReadHandle | undefined;
     try {
-      const store = createTestStore({ dataRoot });
+      const setup = createTestCoreDb(dataRoot);
+      let serverOwner: Awaited<ReturnType<typeof openTestServerWork>>;
+      const userId = ensureLocalUser(setup);
+      try {
+        serverOwner = await openTestServerWork(setup);
+      } finally {
+        setup.sqlite.close();
+      }
+      serverReader = serverOwner.reader;
+      const { store } = serverOwner;
       const workspace = await store.createWorkspace('Fresh baseline Workspace');
-      const serverThread = await store.createServerThread('Fresh Core publication');
+      const serverThread = await store.createServerThread(
+        'Fresh Server publication',
+        undefined,
+        undefined,
+        {
+          actor: { kind: 'user', id: userId },
+          credentialRef: null,
+        }
+      );
       const workspaceThread = await store.createThread(workspace.id, 'Fresh Workspace publication');
       expect(store.getServerThread(serverThread.id)).toEqual(serverThread);
       expect(store.getThread(workspace.id, workspaceThread.id)).toEqual(workspaceThread);
@@ -54,12 +75,21 @@ describe('fresh Core and Workspace setup', () => {
       databases.push(core);
       const scoped = openWorkspaceReadDb(dataRoot, workspace.id);
       databases.push(scoped);
-      for (const db of databases) {
-        expect(db.sqlite.readonly).toBe(true);
-        expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
-        expect(db.sqlite.pragma('foreign_key_check')).toEqual([]);
-        expect(db.sqlite.pragma('integrity_check', { simple: true })).toBe('ok');
+      for (const sqlite of [core.sqlite, scoped.sqlite, serverReader.sqlite]) {
+        expect(sqlite.readonly).toBe(true);
+        expect(sqlite.pragma('query_only', { simple: true })).toBe(1);
+        expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+        expect(sqlite.pragma('integrity_check', { simple: true })).toBe('ok');
       }
+      expect(
+        core.sqlite.prepare("SELECT name FROM sqlite_schema WHERE name = 'control_threads'").get()
+      ).toBeUndefined();
+      expect(serverReader.sqlite.prepare('SELECT id FROM control_threads').all()).toEqual([
+        { id: serverThread.id },
+      ]);
+      expect(
+        serverReader.sqlite.prepare('SELECT COUNT(*) FROM __drizzle_migrations').pluck().get()
+      ).toBe(1);
 
       const triggerTables = SECURITY_TRIGGER_OWNER.requiredTables;
       expect(
@@ -117,6 +147,7 @@ describe('fresh Core and Workspace setup', () => {
       }
     } finally {
       // The shared fixture owner closes readers, drains the actual native writer, then removes only this private root.
+      serverReader?.close();
       await disposeTestStore(dataRoot, ...databases);
     }
   });

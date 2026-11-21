@@ -17,7 +17,11 @@ import {
 import { TimestampSchema } from '../common/timestamps.js';
 import { ActorRefSchema } from './actor.js';
 import { KnowledgeNotebookAdmissionSchema } from './knowledge-notebook.js';
-import { PolicyInvocationV1Schema, PolicyWriteOutcomeV1Schema } from './policy-v1.js';
+import {
+  PolicyDigestV1Schema,
+  PolicyInvocationV1Schema,
+  PolicyWriteOutcomeV1Schema,
+} from './policy-v1.js';
 
 /**
  * Stable audit event severity values.
@@ -115,6 +119,34 @@ export const KernelAuditEvidenceSchema = z.discriminatedUnion('kind', [
       deadlineForcedExit: z.boolean(),
     })
     .strict(),
+  z.strictObject({
+    kind: z.literal('security.containment-evidence'),
+    evidenceId: z.string().min(1).max(256),
+    sourceKind: z.enum([
+      'security-containment',
+      'security-containment-gap',
+      'security-containment-review',
+    ]),
+    backendType: z.string().min(1).max(128).nullable(),
+    redactedEvidenceRefs: z
+      .array(
+        z.strictObject({
+          kind: z.enum([
+            'audit',
+            'policy',
+            'grant',
+            'package',
+            'scheduler-attempt',
+            'vault-plan',
+            'vault-grant',
+            'vault-receipt',
+          ]),
+          ref: z.string().min(1).max(512),
+        })
+      )
+      .max(128),
+    contentDigests: z.array(PolicyDigestV1Schema).max(8),
+  }),
   z.object({ kind: z.literal('vault.admin'), backendKind: z.literal('encrypted-file') }).strict(),
 ]);
 

@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { Turn } from '@openkit/protocol';
-import { workspaceIdForOwner } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { FsStore } from '../lib/store.js';
@@ -11,19 +11,44 @@ import {
   type WorkspaceDb,
 } from '../storage/db.js';
 import {
+  type ServerWorkCommandBinding,
+  serverWorkUnavailable,
+  withServerWorkProducer,
+} from '../storage/server-work-command.js';
+import {
   type AdmittedWorkBody,
   type AssistantSkillAdmission,
   AssistantSkillAdmissionSchema,
   appendWorkObservation,
+  type ControlWorkObservationPreparation,
+  readControlWorkObservationTurnBinding,
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
 import type { ModelSemanticEvent } from './model-semantic-content.js';
 import { digestLlmSystemPrompt } from './system-prompt-digest.js';
 
+interface ServerCapture {
+  readonly binding: ServerWorkCommandBinding;
+  readonly admission: ReturnType<FsStore['getServerTurnAdmission']>;
+  readonly read: () => ReturnType<typeof readControlWorkObservationTurnBinding>;
+  readonly append: (input: ControlWorkObservationPreparation) => Promise<unknown>;
+}
+
+function appendCaptureObservation(
+  context: Pick<ModelCaptureContext, 'workspaceDb' | 'serverWork'>,
+  input: ControlWorkObservationPreparation
+) {
+  if (context.workspaceDb.scope === 'workspace')
+    return appendWorkObservation(context.workspaceDb, input);
+  if (!context.serverWork) throw serverWorkUnavailable();
+  return context.serverWork.append(input);
+}
+
 /** Exact trusted entry-owned Turn and logical call; never populated from provider metadata alone. */
 export interface ModelCaptureContext<D extends WorkspaceDb | CoreDb = WorkspaceDb | CoreDb> {
   readonly workspaceDb: D;
+  readonly serverWork?: ServerCapture;
   readonly threadId: string;
   readonly turnId: string;
   readonly corr: string;
@@ -103,42 +128,60 @@ export async function withTurnModelCapture<T>(
   const { store, turn } = input;
   const borrowedDb =
     'coreDb' in input ? input.coreDb : 'workspaceDb' in input ? input.workspaceDb : undefined;
-  const server = turn.owner.kind === 'server';
+  const owner = turn.owner;
+  let serverWork: ServerCapture | undefined;
+  if (owner.kind === 'server') {
+    const binding = store.getServerWorkBinding();
+    const write = binding?.owner.appendObservation;
+    if (!binding || !write) throw serverWorkUnavailable();
+    const admission = store.getServerTurnAdmission(turn.id);
+    if (admission.target.threadId !== turn.threadId) throw serverWorkUnavailable();
+    serverWork = {
+      binding,
+      admission,
+      read: () => {
+        const scope = store.getServerWorkReadScope();
+        return readControlWorkObservationTurnBinding(scope.sqlite, owner, {
+          threadId: turn.threadId,
+          turnId: turn.id,
+        });
+      },
+      append: async (draft) => {
+        const result = await write.call(binding.owner, admission, draft);
+        if (result.state !== 'ready') throw serverWorkUnavailable();
+        return result.value;
+      },
+    };
+  }
   const dataRoot = store.getDataRoot();
   if (
     !dataRoot ||
     (borrowedDb &&
       (borrowedDb.dataRoot !== dataRoot ||
-        (server
-          ? borrowedDb.scope !== 'core'
-          : borrowedDb.scope !== 'workspace' ||
-            borrowedDb.workspaceId !== workspaceIdForOwner(turn.owner))))
+        (owner.kind === 'workspace'
+          ? borrowedDb.scope !== 'workspace' || borrowedDb.workspaceId !== owner.workspaceId
+          : borrowedDb.scope !== 'core')))
   )
     throw new ModelCaptureError();
-  try {
-    // Keep the Store's acknowledgement fence. The native binding below verifies exact lineage
-    // and coverage without reconstructing any Item revisions on this Turn.
-    if (turn.owner.kind === 'workspace')
-      store.assertWorkspacePublicationAcknowledged(turn.owner.workspaceId);
-  } catch {
-    throw new ModelCaptureError();
-  }
   let captureDb: WorkspaceDb | CoreDb;
   try {
+    if (owner.kind === 'workspace') store.assertWorkspacePublicationAcknowledged(owner.workspaceId);
     captureDb =
       borrowedDb ??
-      (turn.owner.kind === 'server'
-        ? openCoreReadDb(dataRoot)
-        : openAdmittedWorkspaceReadDb(dataRoot, workspaceIdForOwner(turn.owner)));
+      (owner.kind === 'workspace'
+        ? openAdmittedWorkspaceReadDb(dataRoot, owner.workspaceId)
+        : openCoreReadDb(dataRoot));
   } catch {
     throw new ModelCaptureError();
   }
   try {
     try {
-      const binding = readWorkObservationTurnBinding(captureDb, {
-        threadId: turn.threadId,
-        turnId: turn.id,
-      });
+      const binding =
+        serverWork?.read() ??
+        readWorkObservationTurnBinding(captureDb, {
+          threadId: turn.threadId,
+          turnId: turn.id,
+        });
       if (!binding.coverage) {
         throw new ModelCaptureError();
       }
@@ -147,8 +190,10 @@ export async function withTurnModelCapture<T>(
         input.requireAssistantSkillAdmission || admission !== undefined
           ? AssistantSkillAdmissionSchema.parse(admission)
           : undefined;
-      if (input.environment) {
-        if (binding.turn.startedAt === null) throw new ModelCaptureError();
+      const environment = input.environment;
+      if (environment) {
+        const startedAt = binding.turn.startedAt;
+        if (startedAt === null) throw new ModelCaptureError();
         const { releaseTag, sourceCommit } = readReleaseIdentity();
         const version =
           sourceCommit === null
@@ -157,41 +202,43 @@ export async function withTurnModelCapture<T>(
               ? sourceCommit
               : `${releaseTag}@${sourceCommit}`;
         // Admission time and identity let the existing writer deduplicate exact re-entry and reject rebinding.
-        await appendWorkObservation(captureDb, {
-          threadId: turn.threadId,
-          turnId: turn.id,
-          observation: {
-            id: `env:${turn.id}`,
-            ts: binding.turn.startedAt,
-            type: 'env.bound',
-            obs: 'nanocore',
-            ret: 'turn-evidence',
-            payload: {
-              version,
-              ...(captureDb.scope === 'core'
-                ? { owner: { kind: 'server' } }
-                : { workspaceId: captureDb.workspaceId }),
-              ...(assistantSkillAdmission === undefined ? {} : { assistantSkillAdmission }),
-              systemPromptDigest: digestLlmSystemPrompt({
-                endpoint: 'responses',
-                request: { instructions: input.environment.systemPrompt },
-              }),
-              tools: input.environment.tools.map(({ name, inputSchema }) => ({
-                name,
-                inputSchemaDigest: createHash('sha256')
-                  .update(JSON.stringify(inputSchema))
-                  .digest('hex'),
-              })),
-            },
-          },
-          bodies: [],
-        });
+        await withServerWorkProducer(serverWork?.binding, () =>
+          appendCaptureObservation(
+            { workspaceDb: captureDb, ...(serverWork ? { serverWork } : {}) },
+            {
+              threadId: turn.threadId,
+              turnId: turn.id,
+              observation: {
+                id: `env:${turn.id}`,
+                ts: startedAt,
+                type: 'env.bound',
+                obs: 'nanocore',
+                ret: 'turn-evidence',
+                payload: {
+                  version,
+                  ...(owner.kind === 'workspace' ? { workspaceId: owner.workspaceId } : { owner }),
+                  ...(assistantSkillAdmission === undefined ? {} : { assistantSkillAdmission }),
+                  systemPromptDigest: digestLlmSystemPrompt({
+                    endpoint: 'responses',
+                    request: { instructions: environment.systemPrompt },
+                  }),
+                  tools: environment.tools.map(({ name, inputSchema }) => ({
+                    name,
+                    inputSchemaDigest: sha256Hex(JSON.stringify(inputSchema)),
+                  })),
+                },
+              },
+              bodies: [],
+            }
+          )
+        );
       }
     } catch {
       throw new ModelCaptureError();
     }
     return await (run as (capture: Omit<ModelCaptureContext, 'corr'>) => Promise<T>)({
       workspaceDb: captureDb,
+      ...(serverWork ? { serverWork } : {}),
       threadId: turn.threadId,
       turnId: turn.id,
     });
@@ -217,8 +264,10 @@ export class ModelCapture {
     private readonly secrets: readonly string[],
     private readonly providerRef: string
   ) {
+    if (context.workspaceDb.scope === 'core' && !context.serverWork) throw serverWorkUnavailable();
     try {
-      const binding = readWorkObservationTurnBinding(context.workspaceDb, context);
+      const binding =
+        context.serverWork?.read() ?? readWorkObservationTurnBinding(context.workspaceDb, context);
       if (!binding.coverage) throw new ModelCaptureError();
       this.enabled = binding.coverage.value === 'on';
     } catch {
@@ -263,7 +312,7 @@ export class ModelCapture {
     // The configured identity is required even when originals are disabled or the Provider fails.
     // It precedes adapter conversion and never asserts delivery or a Provider-reported snapshot.
     try {
-      await appendWorkObservation(this.context.workspaceDb, {
+      await appendCaptureObservation(this.context, {
         threadId: this.context.threadId,
         turnId: this.context.turnId,
         observation: {
@@ -442,7 +491,7 @@ export class ModelCapture {
     defer = false
   ): Promise<void> {
     try {
-      await appendWorkObservation(this.context.workspaceDb, {
+      await appendCaptureObservation(this.context, {
         threadId: this.context.threadId,
         turnId: this.context.turnId,
         observation,
@@ -460,7 +509,7 @@ export class ModelCapture {
     reason: 'credential-excluded' | 'limit-exceeded' | 'capture-failed'
   ): Promise<void> {
     try {
-      await appendWorkObservation(this.context.workspaceDb, {
+      await appendCaptureObservation(this.context, {
         threadId: this.context.threadId,
         turnId: this.context.turnId,
         observation: {

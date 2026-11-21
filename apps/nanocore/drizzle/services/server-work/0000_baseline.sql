@@ -176,9 +176,26 @@ CREATE TABLE server_work_intents (
   schema_version INTEGER NOT NULL CHECK (schema_version = 1),
   intent_json TEXT NOT NULL CHECK (json_valid(intent_json) AND json_type(intent_json) = 'object'),
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-  receipt_json TEXT CHECK (receipt_json IS NULL OR (json_valid(receipt_json) AND json_type(receipt_json) = 'object'))
+  receipt_json TEXT CHECK (receipt_json IS NULL OR (json_valid(receipt_json) AND json_type(receipt_json) = 'object')),
+  contact_claimed INTEGER NOT NULL DEFAULT 0 CHECK (
+    contact_claimed = 0 OR (
+      contact_claimed = 1 AND
+      receipt_json IS NOT NULL AND
+      json_extract(receipt_json, '$.disposition') IS 'applied' AND
+      json_extract(intent_json, '$.verb') IS 'admit-call'
+    )
+  )
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX server_work_pending_product_thread_idx
   ON server_work_intents (json_extract(intent_json, '$.target.threadId'))
   WHERE receipt_json IS NULL AND json_extract(intent_json, '$.verb') IN ('admit-thread', 'admit-turn');
+--> statement-breakpoint
+CREATE UNIQUE INDEX server_work_call_admission_idx
+  ON server_work_intents (json_extract(intent_json, '$.target.callId'))
+  WHERE json_extract(intent_json, '$.verb') = 'admit-call';
+--> statement-breakpoint
+CREATE UNIQUE INDEX server_work_call_finish_idx
+  ON server_work_intents (json_extract(intent_json, '$.target.callId'))
+  WHERE json_extract(intent_json, '$.verb') = 'settle-call'
+    AND (receipt_json IS NULL OR json_extract(receipt_json, '$.disposition') = 'applied');

@@ -37,7 +37,8 @@ const CORE_TABLES = [
   'agent_session_runtime_binding_image_digests',
   'agent_session_runtime_bindings',
   'audit_events',
-  'control_work_observations',
+  'control_execution_steps',
+  'control_executions',
   'harness_instance_records',
   'idempotency_requests',
   'nanohost_integration_identities',
@@ -47,6 +48,7 @@ const CORE_TABLES = [
   'permission_decisions',
   'sandbox_runtime_records',
   'scheduler_admission_entries',
+  'scheduler_execution_attempts',
   'recurring_schedules',
   'recurring_occurrences',
   'recurring_expired_ranges',
@@ -310,25 +312,24 @@ describe('database setup', () => {
         });
       }
       expect(listColumnNames(coreDb, 'sandbox_runtime_records')).not.toContain('pinned_goal_id');
-      expect(coreDb.sqlite.pragma('table_info(usage_records)')).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ name: 'provider_model', notnull: 0, dflt_value: null }),
-        ])
-      );
       expect(listTableNames(coreDb)).toEqual(beforeTables);
-      for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
-        expect(listColumnNames(coreDb, table)).toContain('workspace_id');
-      }
       for (const moved of [
+        'capability_calls',
+        'control_product_entries',
+        'control_threads',
+        'control_turns',
+        'control_work_observations',
         'discord_account_bindings',
         'discord_pairing_challenges',
         'discord_disclosures',
+        'evidence_bundles',
         'notification_attention',
         'notification_delivery_attempts',
+        'usage_records',
       ]) {
         expect(beforeTables).not.toContain(moved);
       }
-      expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));
+      expect(beforeTables).toEqual([...CORE_TABLES].sort());
       for (const retired of [
         'scheduler_capacity_records',
         'scheduler_placement_plans',

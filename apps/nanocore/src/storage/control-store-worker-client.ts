@@ -1,4 +1,8 @@
-import type { WorkspaceBlocker, WorkspaceReconciliationRecord } from '@openkit/app-api-schemas';
+import type {
+  ServerEvidenceBundleRecord,
+  WorkspaceBlocker,
+  WorkspaceReconciliationRecord,
+} from '@openkit/app-api-schemas';
 import type Database from 'better-sqlite3';
 import {
   type ControlAccessTokenLifecycle,
@@ -285,6 +289,9 @@ import {
   type NanoHostOwnerMutation,
   type NanoHostOwnerMutationResult,
   type ServerOwnerDescriptor,
+  type ServerWorkKernelInput,
+  type ServerWorkOwnerMutation,
+  type ServerWorkOwnerMutationResult,
 } from './control-store-worker-protocol.js';
 import { type ControlCoreJournalInput, readCoreJournalLineage } from './core-journal-codecs.js';
 import {
@@ -319,13 +326,31 @@ import type {
 import type { NanoHostStore } from './nanohost-port.js';
 import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 import type { ControlRemoteMcpAudit } from './remote-mcp-audit-codecs.js';
+import type { RepairWorkerInput, RepairWorkerReply } from './repair-kernel-codecs.js';
 import type {
   ControlRuntimeTargetInput,
   ControlRuntimeTargetResult,
 } from './runtime-target-codecs.js';
 import type { ControlServerAdminTokenDefault } from './server-admin-token-default-codecs.js';
+import type { readServerCallUsageIds } from './server-work-call.js';
+import type { ServerWorkCommandBinding } from './server-work-command.js';
 import type {
+  inspectServerWorkContainmentEvidence,
+  publishContainmentEvidenceHandoff,
+} from './server-work-evidence.js';
+import type {
+  isServerWorkPublished,
+  readServerWorkIntent,
+  readServerWorkLocalReceipt,
+  readStagedServerWork,
+  StagedServerWork,
+} from './server-work-intents.js';
+import type { ServerWorkIntent, ServerWorkReceipt } from './server-work-port.js';
+import { serverWorkStorageDescriptor } from './server-work-schema.js';
+import type {
+  StorageDecision,
   StorageOwner,
+  StorageReceiptLookup,
   StorageResult,
   StorageStatus,
   StorageUnavailable,
@@ -548,6 +573,41 @@ interface NanoHostOwnerBinding
   readPendingEpochRetirement(): Promise<StorageResult<'nanohost', NanoHostEpochPlacement | null>>;
   listTransportTokens(): Promise<StorageResult<'nanohost', NanoHostTransportTokenRecord[]>>;
 }
+
+/** Server work composition supplies retained owner reads and its closed activation predicate. */
+interface ServerWorkOwnerReaders {
+  readonly inspectServerWorkContainmentEvidence: typeof inspectServerWorkContainmentEvidence;
+  readonly publishContainmentEvidenceHandoff: typeof publishContainmentEvidenceHandoff;
+  readonly readServerWorkIntent: typeof readServerWorkIntent;
+  readonly readServerWorkLocalReceipt: typeof readServerWorkLocalReceipt;
+  readonly readServerCallUsageIds: typeof readServerCallUsageIds;
+  readonly readStagedServerWork: typeof readStagedServerWork;
+  readonly isServerWorkPublished: typeof isServerWorkPublished;
+}
+
+type RepairReplyValues = {
+  [Kind in RepairWorkerReply['kind']]: Extract<RepairWorkerReply, { kind: Kind }>['value'];
+};
+
+export type ServerWorkKernel = Pick<
+  ControlKernelStore,
+  'status' | 'decideServerWork' | 'inspectServerWork'
+>;
+
+/** Exact retained Core reads supplied by the separately admitted kernel composition. */
+interface ServerWorkCoreReaders {
+  readonly inspectServerWork?: ControlKernelStore['inspectServerWork'];
+  readonly readContainmentEvidenceHandoff?: (
+    core: CoreDb,
+    evidenceId: string
+  ) => ServerEvidenceBundleRecord | null;
+}
+
+export type ServerWorkOwnerBinding = ServerWorkCommandBinding['owner'] & {
+  readStaged(requestId: string): Promise<StorageResult<'server-work', StagedServerWork | null>>;
+  publishContainment(evidenceId: string): ReturnType<typeof publishContainmentEvidenceHandoff>;
+  withProducer<Value>(effect: () => Promise<Value>): Promise<StorageResult<'server-work', Value>>;
+};
 
 /** Projects owner-local failures through the existing storage admission outcomes. */
 function serverOwnerUnavailable<Owner extends StorageOwner>(
@@ -997,6 +1057,7 @@ class ControlStoreWorkerClient {
   private readonly databaseHolds = new Map<string, PostingHold>();
   private communicationProducerHold = false;
   private readonly communicationProducers = new Set<Promise<unknown>>();
+  private readonly serverWorkProducers = new Set<Promise<unknown>>();
   private readonly communicationLease = new AsyncLocalStorage<{
     readonly database: string;
     readonly retention: boolean;
@@ -3487,6 +3548,456 @@ class ControlStoreWorkerClient {
     } finally {
       if (claimedOpening) delete claimedOpening.communicationBindingPending;
       if (!bound && readConnection?.open) readConnection.close();
+    }
+  }
+
+  /** Runs the original kernel-only repair protocol on the acknowledged Core opening. */
+  async repairKernelCommand<Kind extends RepairWorkerInput['kind']>(
+    db: CoreDb,
+    input: RepairWorkerInput & { kind: Kind }
+  ): Promise<StorageResult<'control-kernel', RepairReplyValues[Kind]>> {
+    const path = serverStoragePath(db.dataRoot, 'control-kernel');
+    const database = `core:${path}`;
+    const opening = this.openings.get(database);
+    const held = {
+      state: 'unavailable',
+      owner: 'control-kernel',
+      reason: 'recovery-required',
+    } as const;
+    if (
+      !opening?.acknowledged ||
+      opening.path !== db.sqlite.name ||
+      opening.openingRequestId === undefined ||
+      opening.command.initialize !== 'core' ||
+      opening.host.failed ||
+      opening.retirement
+    )
+      return held;
+
+    const reply = await this.request({
+      operation: 'repair-kernel',
+      database,
+      openingRequestId: opening.openingRequestId,
+      input: structuredClone(input),
+    });
+    if (reply.operation !== 'repair-kernel' || reply.result.kind !== input.kind)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return {
+      state: 'ready',
+      value: reply.result.value as RepairReplyValues[Kind],
+    };
+  }
+
+  /** Sends original Server-work decisions to the admitted Core writer and permits exact inspection. */
+  serverWorkKernel(db: CoreDb): ServerWorkKernel {
+    const corePath = serverStoragePath(db.dataRoot, 'control-kernel');
+    const database = `core:${corePath}`;
+    const ownerKey = `server-owner:${serverStoragePath(db.dataRoot, 'server-work')}`;
+    const unavailable = {
+      state: 'unavailable',
+      owner: 'control-kernel',
+      reason: 'recovery-required',
+    } as const;
+    const currentCore = () => {
+      const core = this.openings.get(database);
+      return core?.acknowledged &&
+        core.path === db.sqlite.name &&
+        core.openingRequestId !== undefined &&
+        core.command.initialize === 'core' &&
+        !core.host.failed &&
+        !core.retirement
+        ? { openingRequestId: core.openingRequestId }
+        : undefined;
+    };
+    const post = async (
+      input: ServerWorkKernelInput
+    ): Promise<StorageResult<'control-kernel', StorageReceiptLookup<ServerWorkReceipt>>> => {
+      const core = currentCore();
+      if (!core) return unavailable;
+      try {
+        const reply = await this.request({
+          operation: 'server-work-kernel',
+          database,
+          openingRequestId: core.openingRequestId,
+          input,
+        });
+        if (
+          reply.operation !== 'server-work-kernel' ||
+          reply.result.kind !== input.kind ||
+          (reply.result.value.state === 'settled' &&
+            !isDeepStrictEqual(reply.result.value.receipt.intent, input.intent))
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return {
+          state: 'ready',
+          value: reply.result.value,
+        };
+      } catch (error) {
+        if (error instanceof ControlStoreWorkerError && error.commit === 'unknown') throw error;
+        return serverOwnerUnavailable('control-kernel', error);
+      }
+    };
+    return {
+      status: () => (currentCore() ? { state: 'ready', owner: 'control-kernel' } : unavailable),
+      decideServerWork: async <Intent extends ServerWorkIntent>(intent: Intent) => {
+        const producer = this.operationContext.getStore();
+        const owner = this.openings.get(ownerKey);
+        if (
+          !producer?.active ||
+          producer.reservation !== ownerKey ||
+          !owner?.acknowledged ||
+          owner.command.serverOwner?.owner !== 'server-work' ||
+          owner.host.failed ||
+          owner.retirement ||
+          !owner.identity
+        )
+          return unavailable;
+        const result = await post({
+          kind: 'decide',
+          intent,
+          ownerIdentity: owner.identity,
+        });
+        // The private wire reply above compares the complete original intent before narrowing.
+        return result as StorageResult<
+          'control-kernel',
+          StorageDecision<ServerWorkReceipt<Intent>>
+        >;
+      },
+      inspectServerWork: async <Intent extends ServerWorkIntent>(intent: Intent) =>
+        (await post({ kind: 'inspect', intent })) as StorageResult<
+          'control-kernel',
+          StorageReceiptLookup<ServerWorkReceipt<Intent>>
+        >,
+    };
+  }
+
+  /** Binds Server-work methods to the existing-only acknowledged owner and optional Core authority. */
+  async bindServerWorkOwner(
+    dataRoot: string,
+    readers?: ServerWorkOwnerReaders,
+    core?: ServerWorkCoreReaders
+  ): Promise<StorageResult<'server-work', ServerWorkOwnerBinding>> {
+    const { owner } = serverWorkStorageDescriptor;
+    const disabled = { state: 'unavailable', owner, reason: 'disabled' } as const;
+    try {
+      const root = await realpath(dataRoot);
+      const status = await this.openServerOwner(root, serverWorkStorageDescriptor);
+      if (status.state !== 'ready') return status;
+      const database = `server-owner:${serverStoragePath(root, owner)}`;
+      const opening = this.openings.get(database);
+      const openingRequestId = opening?.openingRequestId;
+      if (
+        !opening?.acknowledged ||
+        opening.command.serverOwner?.owner !== owner ||
+        openingRequestId === undefined
+      )
+        throw new ServerOwnerAdmissionError('recovery-required');
+
+      const assertCurrent = () => {
+        if (this.stopping || opening.host.failed || this.openings.get(database) !== opening)
+          throw new ServerOwnerAdmissionError('recovery-required');
+        this.assertScopeProducerAdmission(database);
+      };
+      assertCurrent();
+
+      const corePath = serverStoragePath(root, 'control-kernel');
+      const coreKey = `core:${corePath}`;
+      const coreOpening = this.openings.get(coreKey);
+      const assertCore = async () => {
+        if (
+          !coreOpening?.acknowledged ||
+          !coreOpening.identity ||
+          coreOpening.command.initialize !== 'core' ||
+          coreOpening.command.dataRoot !== root ||
+          coreOpening.retirement ||
+          coreOpening.host.failed ||
+          this.stopping ||
+          this.openings.get(coreKey) !== coreOpening
+        )
+          throw new ServerOwnerAdmissionError('recovery-required');
+        const [file, path] = await Promise.all([stat(corePath), realpath(corePath)]);
+        if (
+          !file.isFile() ||
+          file.nlink !== 1 ||
+          path !== corePath ||
+          `${file.dev}:${file.ino}` !== coreOpening.identity ||
+          coreOpening.retirement ||
+          coreOpening.host.failed ||
+          this.stopping ||
+          this.openings.get(coreKey) !== coreOpening
+        )
+          throw new ServerOwnerAdmissionError('recovery-required');
+      };
+      const result = async <Value>(
+        operation: () => Promise<Value>
+      ): Promise<StorageResult<'server-work', Value>> => {
+        try {
+          return { state: 'ready', value: await operation() };
+        } catch (error) {
+          return serverOwnerUnavailable(owner, error);
+        }
+      };
+      const read = <Value>(
+        query: (sqlite: Database.Database, readers: ServerWorkOwnerReaders) => Value
+      ) =>
+        readers
+          ? result(async () => {
+              assertCurrent();
+              const sqlite = await this.openAcknowledgedServerOwnerReadDb(database, owner, opening);
+              try {
+                assertCurrent();
+                return query(sqlite, readers);
+              } finally {
+                sqlite.close();
+              }
+            })
+          : Promise.resolve(disabled);
+      const write = async <Kind extends ServerWorkOwnerMutation['kind']>(
+        mutation: ServerWorkOwnerMutation & { kind: Kind },
+        bodies?: readonly Uint8Array[]
+      ): Promise<Extract<ServerWorkOwnerMutationResult, { kind: Kind }>> => {
+        assertCurrent();
+        try {
+          const reply = (await this.request(
+            {
+              operation: 'server-work-owner',
+              database,
+              openingRequestId,
+              mutation,
+            },
+            bodies
+          )) as Extract<Success, { operation: 'server-work-owner' }>;
+          return reply.result as Extract<ServerWorkOwnerMutationResult, { kind: Kind }>;
+        } catch (error) {
+          if (
+            error instanceof ControlStoreWorkerError &&
+            (error.commit === 'unknown' || error.code === 'integrity')
+          )
+            this.fail(opening.host);
+          throw error;
+        }
+      };
+
+      const inspectOriginal = async <Intent extends ServerWorkIntent>(intent: Intent) => {
+        if (!core?.inspectServerWork) throw new ServerOwnerAdmissionError('recovery-required');
+        assertCurrent();
+        await assertCore();
+        const inspected = structuredClone(await core.inspectServerWork(structuredClone(intent)));
+        await assertCore();
+        if (inspected.state === 'unavailable')
+          throw new ServerOwnerAdmissionError(
+            inspected.reason === 'disabled' ? 'recovery-required' : inspected.reason
+          );
+        if (
+          inspected.value.state !== 'settled' ||
+          !isDeepStrictEqual(inspected.value.receipt.intent, intent)
+        )
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        return inspected.value.receipt;
+      };
+
+      const requireOriginal = async (receipt: ServerWorkReceipt) => {
+        if (!isDeepStrictEqual(await inspectOriginal(receipt.intent), receipt))
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+      };
+
+      const readOriginalContainment = async (
+        evidenceId: string
+      ): Promise<StorageResult<'control-kernel', ServerEvidenceBundleRecord | null>> => {
+        if (!core?.readContainmentEvidenceHandoff)
+          return { state: 'unavailable', owner: 'control-kernel', reason: 'disabled' };
+        try {
+          await assertCore();
+          const reader = openCoreReadDb(root);
+          try {
+            if (reader.sqlite.name !== corePath)
+              throw new ServerOwnerAdmissionError('recovery-required');
+            const value = structuredClone(core.readContainmentEvidenceHandoff(reader, evidenceId));
+            await assertCore();
+            return { state: 'ready', value };
+          } finally {
+            reader.sqlite.close();
+          }
+        } catch (error) {
+          return {
+            state: 'unavailable',
+            owner: 'control-kernel',
+            reason: error instanceof ServerOwnerAdmissionError ? error.reason : 'recovery-required',
+          };
+        }
+      };
+
+      return {
+        state: 'ready',
+        value: {
+          status: () => {
+            try {
+              assertCurrent();
+              return { state: 'ready', owner };
+            } catch (error) {
+              return serverOwnerUnavailable(owner, error);
+            }
+          },
+          stage: async (intent, payload) => {
+            const mutation = { kind: 'stage', intent: structuredClone(intent), payload } as const;
+            if (!core?.inspectServerWork || !readers) return disabled;
+            return result(async () => {
+              await assertCore();
+              await write(mutation);
+              return mutation.intent;
+            });
+          },
+          settle: async (receipt) => {
+            const mutation = { kind: 'settle', receipt: structuredClone(receipt) } as const;
+            if (!core?.inspectServerWork || !readers) return disabled;
+            return result(async () => {
+              await requireOriginal(mutation.receipt);
+              await write(mutation);
+            });
+          },
+          claimCallContact: async (receipt) => {
+            const mutation = { kind: 'claim-contact', receipt: structuredClone(receipt) } as const;
+            if (!core?.inspectServerWork || !readers) return disabled;
+            return result(async () => {
+              await requireOriginal(mutation.receipt);
+              try {
+                return (await write(mutation)).value;
+              } catch (error) {
+                if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+                  return { state: 'inspect-original' as const };
+                throw error;
+              }
+            });
+          },
+          stageKnowledge: (input) => {
+            const mutation = { kind: 'stage-knowledge', input: structuredClone(input) } as const;
+            if (!core?.inspectServerWork || !readers) return Promise.resolve(disabled);
+            return result(async () => {
+              await assertCore();
+              return (await write(mutation)).value;
+            });
+          },
+          readUsageIds: (receipt) => {
+            const original = structuredClone(receipt);
+            return read((sqlite, readers) => readers.readServerCallUsageIds(sqlite, original));
+          },
+          writeRouteLineage: (receipt, { logicalModelId, entry, entryIndex }) => {
+            const mutation = {
+              kind: 'write-route-lineage',
+              receipt: structuredClone(receipt),
+              input: structuredClone({
+                logicalModelId,
+                entry,
+                ...(entryIndex === undefined ? {} : { entryIndex }),
+              }),
+            } as const;
+            if (!core?.inspectServerWork || !readers) return Promise.resolve(disabled);
+            return result(async () => {
+              await requireOriginal(mutation.receipt);
+              return (await write(mutation)).value;
+            });
+          },
+          publishTurnProgress: (admission, input) => {
+            const mutation = {
+              kind: 'publish-turn-progress',
+              admission: structuredClone(admission),
+              input: structuredClone(input),
+            } as const;
+            if (!core?.inspectServerWork || !readers) return Promise.resolve(disabled);
+            return result(async () => {
+              const receipt = await inspectOriginal(mutation.admission);
+              if (receipt.disposition !== 'applied')
+                throw new ControlStoreWorkerError('precondition', 'not-committed');
+              await write(mutation);
+            });
+          },
+          appendObservation: (admission, input) => {
+            const { bodies, ...metadata } = input;
+            const mutation = {
+              kind: 'append-observation',
+              admission: structuredClone(admission),
+              input: structuredClone({
+                ...metadata,
+                observation: { ...metadata.observation },
+                bodies: bodies.map(({ bytes, ...body }) => ({
+                  ...body,
+                  byteLength: bytes.byteLength,
+                })),
+              }),
+            } as const;
+            if (!core?.inspectServerWork || !readers) return Promise.resolve(disabled);
+            return result(async () => {
+              const receipt = await inspectOriginal(mutation.admission);
+              if (receipt.disposition !== 'applied')
+                throw new ControlStoreWorkerError('precondition', 'not-committed');
+              return (
+                await write(
+                  mutation,
+                  bodies.map((body) => body.bytes)
+                )
+              ).value;
+            });
+          },
+          readIntent: (requestId) =>
+            read((sqlite, readers) => readers.readServerWorkIntent(sqlite, requestId)),
+          readStaged: (requestId) =>
+            read((sqlite, readers) => readers.readStagedServerWork(sqlite, requestId)),
+          readLocalReceipt: (requestId) =>
+            read((sqlite, readers) => readers.readServerWorkLocalReceipt(sqlite, requestId)),
+          isPublished: (receipt) => {
+            const original = structuredClone(receipt);
+            return read((sqlite, readers) => readers.isServerWorkPublished(sqlite, original));
+          },
+          withProducer: (effect) =>
+            result(async () => {
+              assertCurrent();
+              if (this.backupHold) throw new ServerOwnerAdmissionError('recovery-required');
+              const accepted = this.runOperation(effect, undefined, database);
+              this.serverWorkProducers.add(accepted);
+              try {
+                return await accepted;
+              } finally {
+                this.serverWorkProducers.delete(accepted);
+              }
+            }),
+          publishContainment: async (evidenceId) => {
+            if (!readers) return disabled;
+            return readers.publishContainmentEvidenceHandoff({
+              evidenceId,
+              readHandoff: readOriginalContainment,
+              store: {
+                publish: async (record) => {
+                  try {
+                    await write({ kind: 'publish-containment', record });
+                    return { state: 'ready', value: undefined };
+                  } catch (error) {
+                    if (
+                      error instanceof ServerOwnerAdmissionError ||
+                      (error instanceof ControlStoreWorkerError &&
+                        [
+                          'owner-missing',
+                          'owner-unsupported',
+                          'owner-recovery-required',
+                          'not-open',
+                          'no-space',
+                          'integrity',
+                        ].includes(error.code))
+                    )
+                      return serverOwnerUnavailable(owner, error);
+                    throw error;
+                  }
+                },
+                inspect: (record) =>
+                  read((sqlite, readers) =>
+                    readers.inspectServerWorkContainmentEvidence(sqlite, record)
+                  ),
+              },
+            });
+          },
+        },
+      };
+    } catch (error) {
+      return serverOwnerUnavailable(owner, error);
     }
   }
 
@@ -6930,6 +7441,10 @@ class ControlStoreWorkerClient {
         throw new ControlStoreWorkerError('unavailable', 'not-committed');
       }
     }
+    if (database === undefined && this.serverWorkProducers.size !== 0) {
+      resumeCommunication?.();
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    }
     const previous = database === undefined ? undefined : this.databaseHolds.get(database);
     const dependencies =
       database === undefined
@@ -7180,6 +7695,8 @@ class ControlStoreWorkerClient {
         command.operation === 'app-kernel' ||
         command.operation === 'schema-application' ||
         command.operation === 'communication-owner' ||
+        (command.operation === 'server-work-owner' &&
+          command.mutation.kind === 'append-observation') ||
         (command.operation === 'transition' &&
           'kind' in command.transition &&
           (command.transition.kind === 'command-receipt' ||
@@ -7221,12 +7738,21 @@ class ControlStoreWorkerClient {
                         byteLength: controlWorkObservationTransferSize(command.input),
                         replyByteLength: 0,
                       }
-                    : command.operation === 'capability'
+                    : command.operation === 'server-work-owner' &&
+                        command.mutation.kind === 'append-observation'
                       ? {
-                          byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
+                          byteLength: command.mutation.input.bodies.reduce(
+                            (total, body) => total + body.byteLength,
+                            0
+                          ),
                           replyByteLength: 0,
                         }
-                      : undefined;
+                      : command.operation === 'capability'
+                        ? {
+                            byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
+                            replyByteLength: 0,
+                          }
+                        : undefined;
         if (!size || size.byteLength === undefined)
           return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
         materialBytes = size.byteLength + size.replyByteLength;
@@ -8138,6 +8664,10 @@ class ControlStoreWorkerClient {
       entry.host !== host ||
       !entry.posted ||
       (value.status === 'ok' && value.operation !== entry.command.operation) ||
+      (value.status === 'ok' &&
+        value.operation === 'server-work-owner' &&
+        entry.command.operation === 'server-work-owner' &&
+        value.result.kind !== entry.command.mutation.kind) ||
       (value.status === 'ok' &&
         value.operation === 'nanohost-owner' &&
         entry.command.operation === 'nanohost-owner' &&
