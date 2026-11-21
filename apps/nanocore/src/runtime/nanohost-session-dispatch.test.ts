@@ -68,6 +68,41 @@ describe('authoritative NanoHost session dispatch', () => {
     expect(readiness).not.toHaveBeenCalled();
   });
 
+  it('refuses native Harness carriage until the mixed deciding adapter is attached', async () => {
+    const app = new Hono<{ Variables: AuthVariables }>();
+    const dispatch = createNanoHostSessionDispatch({
+      sessionAuthority: createNanoHostTransportSessionAuthority(),
+    });
+    const route = vi.spyOn(dispatch, 'route');
+    const owner = {
+      read: vi.fn(),
+      transport: vi.fn(),
+      harnessLifecycle: vi.fn(),
+      transitionRuntimeTarget: vi.fn(),
+    };
+    const kernel = {
+      reserveHolderIntent: vi.fn(),
+      fenceNanoHostEpoch: vi.fn(),
+      inspectNanoHostEpochFence: vi.fn(),
+    };
+    registerNanoHostSessionSemanticRoutes({
+      app,
+      dispatch,
+      nativeStorage: { state: 'ready', value: { owner, kernel } },
+    });
+    for (const path of ['/worker-control/harness/poll', '/worker-control/harness/result']) {
+      const result = await app.request(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(result.status).toBe(503);
+    }
+    expect(route).not.toHaveBeenCalled();
+    expect(owner.read).not.toHaveBeenCalled();
+    expect(owner.harnessLifecycle).not.toHaveBeenCalled();
+  });
+
   it.each(['enabled', 'disabled', 'refused'] as const)(
     'carries initiating context over native H2 independently of poll and export: %s',
     async (mode) => {
