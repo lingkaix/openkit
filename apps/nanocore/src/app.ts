@@ -187,6 +187,7 @@ import {
   revokeVaultProviderCredential,
 } from './providers/vault-credential-resolver.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
+import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import {
   evaluateCapturedPendingCall,
   executeCapturedPendingCall,
@@ -299,6 +300,7 @@ import {
 } from './storage/server-work-intents.js';
 import type { StorageResult, StorageUnavailable } from './storage/storage-owner.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
+import { requireCompleteBackendWorkspaceHandleHandoff } from './storage/workspace-handoff-read.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
@@ -695,7 +697,34 @@ export async function prepareNanoHostOwner(
       readNanoHostEpochInvalidation,
       readPendingNanoHostEpochRetirement,
     },
-    gate
+    {
+      verifyWorkspaceHandoff(session) {
+        let workspace: WorkspaceDb | undefined;
+        try {
+          workspace = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
+          const record = findNamedAgentEnvironmentPackageSnapshot(
+            workspace,
+            session.workspaceId,
+            session.agentSessionId,
+            session.packageSnapshotId
+          );
+          const pkg = record?.snapshot;
+          if (pkg?.scope.turnId !== session.turnId || pkg.scope.threadId !== session.threadId)
+            return false;
+          requireCompleteBackendWorkspaceHandleHandoff(workspace, pkg, {
+            backendKind: session.backendKind,
+            backendVersion: session.backendVersion,
+            workerSessionId: session.backendSessionId,
+          });
+          return true;
+        } catch {
+          return false;
+        } finally {
+          workspace?.sqlite.close();
+        }
+      },
+      ...gate,
+    }
   );
   return owner.state === 'ready'
     ? {

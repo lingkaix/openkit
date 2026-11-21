@@ -1590,7 +1590,11 @@ describe('admitted NanoHost owner worker', () => {
       const selfCheck = path === 'self-check final replay';
       vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', selfCheck ? '1' : '0');
       try {
-        const f = await nanoHostWorkerFixture();
+        let workspaceHandoff = false;
+        const f = await nanoHostWorkerFixture({
+          enabled: () => true,
+          verifyWorkspaceHandoff: () => workspaceHandoff,
+        });
         const core = openCoreDb(f.root);
         nativeHandles.push(core);
         const workspaceId = DEMO_WORKSPACE_ID;
@@ -1687,6 +1691,21 @@ describe('admitted NanoHost owner worker', () => {
               ...backend,
             })
           ).rejects.toMatchObject({ code: 'owner-recovery-required', commit: 'not-committed' });
+          await expect(
+            f.writer.backendSession(f.coreKey, {
+              kind: 'transition',
+              fromState: 'materializing',
+              toState: 'materialized',
+              ...backend,
+            })
+          ).resolves.toMatchObject({ state: 'materialized', workspaceHandoffState: 'pending' });
+          await expect(
+            f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend })
+          ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+          workspaceHandoff = true;
+          await expect(
+            f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend })
+          ).resolves.toMatchObject({ state: 'materialized', workspaceHandoffState: 'complete' });
           expectNanoHostTablesAbsent(f.corePath, 'worker_backend_sessions');
           return;
         }
