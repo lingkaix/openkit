@@ -561,6 +561,7 @@ const bootResult = await runBootPhases({
               ? {
                   admitSubmission: nanoHostStorage.value.owner.firstSubmission,
                   harnessTurnLifecycle: nanoHostStorage.value.owner.harnessTurnLifecycle,
+                  readWorkerCompletion: nanoHostStorage.value.owner.readWorkerCompletion,
                   writeStorageAttachment: nanoHostStorage.value.owner.writeStorageAttachment,
                   commitCloseout: nanoHostStorage.value.owner.classifyRecovery,
                 }
