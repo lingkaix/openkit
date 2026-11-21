@@ -10,22 +10,21 @@ import {
   type NanoHostEpochPlacement,
   vaultEpochFenceOccurrence,
 } from './nanohost-epoch-invalidation.js';
+import {
+  NanoHostEpochPlacementSchema as epochPlacement,
+  type NanoHostRuntimeTargetTransition,
+  NanoHostRuntimeTargetTransitionSchema,
+} from './nanohost-epoch-invalidation-codecs.js';
 import type { NanoHostEpochInvalidation, NanoHostEpochReceipt } from './nanohost-port.js';
 import {
   type ControlRuntimeTargetInput,
-  ControlRuntimeTargetInputSchema,
   type ControlRuntimeTargetResult,
   ControlRuntimeTargetResultSchema,
   RuntimeTargetRefusal,
 } from './runtime-target-codecs.js';
 import { type StorageResult, storageRequestId } from './storage-owner.js';
 
-const epochPlacement = z.object({
-  deploymentId: z.string().min(1),
-  runtimeTargetId: z.string().min(1),
-  physicalEpoch: z.string().regex(/^[a-f0-9]{64}$/),
-  generation: z.string().regex(/^[1-9][0-9]*$/),
-});
+export type { NanoHostRuntimeTargetTransition } from './nanohost-epoch-invalidation-codecs.js';
 
 const epochIntent = z.object({
   deploymentId: epochPlacement.shape.deploymentId,
@@ -51,26 +50,6 @@ const epochReceipt = z.intersection(
   ])
 );
 
-const predecessorSchema = z.object({
-  targetId: z.string().min(1),
-  generation: z.number().int().nonnegative().safe(),
-  fence: epochPlacement.nullable(),
-});
-
-const transitionOccurrenceId = z.string().min(1).max(128);
-
-/** Private Worker tuple. A logical transition retains this entire tuple on retry. */
-export const NanoHostRuntimeTargetTransitionSchema = z
-  .object({
-    occurrenceId: transitionOccurrenceId,
-    input: ControlRuntimeTargetInputSchema,
-    predecessor: predecessorSchema.nullable(),
-    retirement: epochPlacement.nullable(),
-  })
-  .strict();
-
-export type NanoHostRuntimeTargetTransition = z.infer<typeof NanoHostRuntimeTargetTransitionSchema>;
-
 const retainedTargetState = z.object({
   schemaVersion: z.literal(1),
   placement: epochPlacement.nullable(),
@@ -78,7 +57,7 @@ const retainedTargetState = z.object({
   receipt: epochReceipt.nullable(),
   lastTransition: z
     .object({
-      occurrenceId: transitionOccurrenceId,
+      occurrenceId: NanoHostRuntimeTargetTransitionSchema.shape.occurrenceId,
       originalDigest: z.string().regex(/^[a-f0-9]{64}$/),
       result: ControlRuntimeTargetResultSchema.unwrap(),
     })
