@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { canonicalIdentifierName } from '@openkit/protocol';
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -15,6 +14,7 @@ import type { ControlKernelStore } from './control-kernel-port.js';
 import {
   fenceNanoHostEpochBeforeSuccessor,
   prepareNanoHostEpochInvalidation,
+  vaultEpochFenceOccurrence,
 } from './nanohost-epoch-invalidation.js';
 import type {
   NanoHostEpochInvalidation,
@@ -29,28 +29,19 @@ const target = {
   holderReceiptIds: ['holder-a', 'holder-b'],
 };
 const generation = '8';
-const occurrence = {
+const placement = {
   deploymentId: 'fixture-deployment',
-  sourceOwner: 'nanohost',
-  verb: 'fence-vault-epoch',
-  occurrenceKey: canonicalIdentifierName([
-    target.runtimeTargetId,
-    target.physicalEpoch,
-    generation,
-  ]),
-} as const;
+  runtimeTargetId: target.runtimeTargetId,
+  physicalEpoch: target.physicalEpoch,
+  generation,
+};
+const occurrence = vaultEpochFenceOccurrence(placement);
 const intent: NanoHostEpochInvalidation = {
   ...occurrence,
   requestId: storageRequestId(occurrence),
   expectedGeneration: generation,
   inputDigest: sha256CanonicalJson(target),
   target,
-};
-const placement = {
-  deploymentId: occurrence.deploymentId,
-  runtimeTargetId: target.runtimeTargetId,
-  physicalEpoch: target.physicalEpoch,
-  generation,
 };
 const receipt: NanoHostEpochReceipt = {
   intent,
@@ -196,7 +187,13 @@ describe('NanoHost original epoch invalidation relay', () => {
 });
 
 describe('native no-Turn epoch fence', () => {
-  it('holds successor allocation through both local phases and consumes the exact holder receipt', async () => {
+  it.each([
+    ['sequential', 'replays the exact applied fence before successor readiness'],
+    ['paused-generation', 'rejects a paused allocation after another generation is fenced'],
+    ['paused-no-fence', 'rejects a paused allocation when its original absent fence changes'],
+    ['core-ack-loss', 'keeps the intervening successor ready after the original Core ACK is lost'],
+    ['native-ack-loss', 'returns the exact committed allocation after the native ACK is lost'],
+  ])('%s: %s', async (scenario) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-nanohost-epoch-fence-'));
     const databasePath = join(root, 'state.sqlite');
     const sqlite = new Database(databasePath);
@@ -226,22 +223,257 @@ describe('native no-Turn epoch fence', () => {
           const Database = require(workerData.sqlite);
           const {
             applyNanoHostRuntimeTargetMutation, beginNanoHostEpochRetirement, readNanoHostEpochInvalidation,
-            readPendingNanoHostEpochRetirement, settleNanoHostEpochInvalidation,
-            stageNanoHostEpochInvalidation,
+            inspectNanoHostRuntimeTargetTransition, prepareNanoHostRuntimeTargetTransition,
+            readPendingNanoHostEpochRetirement,
+            settleNanoHostEpochInvalidation, stageNanoHostEpochInvalidation,
+            verifyNanoHostRetiringPlacement, verifyNanoHostStagedEpochInvalidation,
           } = await import(workerData.fenceModule);
-          const { placement, intent, receipt, databasePath } = workerData;
+          const { sha256CanonicalJson } = await import(workerData.digestModule);
+          const { transitionNanoHostRuntimeTarget, vaultEpochFenceOccurrence } = await import(workerData.relayModule);
+          const { storageRequestId } = await import(workerData.ownerModule);
+          const { placement, intent, receipt, databasePath, scenario } = workerData;
           const allocation = {
             kind: 'allocate', targetId: intent.target.runtimeTargetId,
             deploymentId: intent.deploymentId, identityId: 'fixture-identity',
             observedAt: '2026-11-20T00:00:01.000Z',
           };
           let db = new Database(databasePath, { fileMustExist: true });
-          const mutate = input => db.transaction(() => applyNanoHostRuntimeTargetMutation(db, input))();
-          const begin = () => db.transaction(() => beginNanoHostEpochRetirement(db, placement))();
-          const stage = () => db.transaction(() => stageNanoHostEpochInvalidation(db, intent))();
-          const settle = value => db.transaction(() => settleNanoHostEpochInvalidation(db, value))();
+          const observe = read => {
+            const reader = new Database(databasePath, { fileMustExist: true, readonly: true });
+            try { return read(reader); } finally { reader.close(); }
+          };
+          const write = (callback, writer = db) => writer.transaction(callback).immediate();
+          let occurrence = 0;
+          const capture = (input, id = 'fixture-' + (++occurrence)) =>
+            observe(reader => prepareNanoHostRuntimeTargetTransition(reader, input, id));
+          const mutate = (original, writer = db) =>
+            write(() => applyNanoHostRuntimeTargetMutation(writer, original), writer);
+          const begin = (value = placement, writer = db) =>
+            write(() => beginNanoHostEpochRetirement(writer, value), writer);
+          const stage = (value = intent, writer = db) =>
+            write(() => stageNanoHostEpochInvalidation(writer, value), writer);
+          const settle = (value, writer = db) =>
+            write(() => settleNanoHostEpochInvalidation(writer, value), writer);
+          const ready = value => ({ state: 'ready', value });
+          const unavailable = { state: 'unavailable', owner: 'control-kernel', reason: 'recovery-required' };
+          const storeFor = (writer = () => db) => ({
+            inspectRuntimeTargetTransition: async original => observe(
+              reader => inspectNanoHostRuntimeTargetTransition(reader, original),
+            ),
+            readEpochInvalidation: async id => ready(observe(
+              reader => readNanoHostEpochInvalidation(reader, id),
+            )),
+            beginEpochRetirement: async value => ready(begin(value, writer())),
+            stageEpochInvalidation: async value => ready(stage(value, writer())),
+            settleEpochInvalidation: async value => ready(settle(value, writer())),
+            mutateRuntimeTarget: async original => mutate(original, writer()),
+          });
+          const store = storeFor();
+          const withIndependentWriter = async callback => {
+            const competingDb = new Database(databasePath, { fileMustExist: true });
+            try {
+              return await callback(storeFor(() => competingDb));
+            } finally {
+              competingDb.close();
+            }
+          };
+          let reserved = false;
+          let originalReceipt = null;
+          let reservations = 0;
+          let decisions = 0;
+          const kernel = {
+            reserveHolderIntent: async value => {
+              reservations++;
+              assert.deepEqual(value, placement);
+              assert.equal(observe(reader => verifyNanoHostRetiringPlacement(reader, value)), true);
+              assert.equal(observe(reader => verifyNanoHostStagedEpochInvalidation(reader, intent)), false);
+              reserved = true;
+              return ready(intent);
+            },
+            inspectNanoHostEpochFence: async value => {
+              assert.deepEqual(value, intent);
+              return ready(originalReceipt
+                ? { state: 'settled', receipt: originalReceipt }
+                : { state: 'absent' });
+            },
+            fenceNanoHostEpoch: async value => {
+              assert.deepEqual(value, intent);
+              if (!reserved) return ready({ state: 'unknown' });
+              assert.equal(observe(reader => verifyNanoHostStagedEpochInvalidation(reader, value)), true);
+              decisions++;
+              originalReceipt = receipt;
+              throw new Error('Core fence acknowledgement lost');
+            },
+          };
+          const transition = original => transitionNanoHostRuntimeTarget(store, kernel, original);
+          const makeReady = generation => ({
+            ...allocation, kind: 'ready', connectionGeneration: generation, predecessorFenced: true,
+            ready: true, freshEmpty: true, physicalEpoch: 'e'.repeat(64),
+          });
+          const reopen = () => {
+            db.close();
+            db = new Database(databasePath, { fileMustExist: true });
+          };
+          const row = () => observe(reader => reader.prepare(
+            'SELECT * FROM nanohost_runtime_targets',
+          ).get());
+          const recoveryRequired = { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+          const exerciseRace = async () => {
+            const receipts = new Map();
+            const coreDecisions = [];
+            const coreInspections = [];
+            let loseCoreAck = scenario === 'core-ack-loss';
+            const decidingCore = {
+              reserveHolderIntent: async retiring => {
+                assert.equal(observe(reader => verifyNanoHostRetiringPlacement(reader, retiring)), true);
+                if (retiring.generation === placement.generation &&
+                    retiring.physicalEpoch === placement.physicalEpoch) return ready(intent);
+                const occurrence = vaultEpochFenceOccurrence(retiring);
+                const target = {
+                  runtimeTargetId: retiring.runtimeTargetId,
+                  physicalEpoch: retiring.physicalEpoch,
+                  holderReceiptIds: [],
+                };
+                return ready({
+                  ...occurrence, requestId: storageRequestId(occurrence),
+                  expectedGeneration: retiring.generation, inputDigest: sha256CanonicalJson(target), target,
+                });
+              },
+              inspectNanoHostEpochFence: async value => {
+                coreInspections.push(value.requestId);
+                const receipt = receipts.get(value.requestId);
+                return ready(receipt ? { state: 'settled', receipt } : { state: 'absent' });
+              },
+              fenceNanoHostEpoch: async value => {
+                assert.equal(observe(reader => verifyNanoHostStagedEpochInvalidation(reader, value)), true);
+                coreDecisions.push(value.requestId);
+                const committed = {
+                  intent: value, receiptDigest: receipt.receiptDigest, disposition: 'applied',
+                  result: { fencedHolderReceiptIds: value.target.holderReceiptIds },
+                };
+                receipts.set(value.requestId, committed);
+                if (loseCoreAck) {
+                  loseCoreAck = false;
+                  throw new Error('Core fence acknowledgement lost');
+                }
+                return ready({ state: 'settled', receipt: committed });
+              },
+            };
+            const run = (original, owner = store) =>
+              transitionNanoHostRuntimeTarget(owner, decidingCore, original);
+            const close = generation => ({
+              kind: 'close', targetId: allocation.targetId, closedGeneration: generation,
+              authoritativeGeneration: null, observedAt: allocation.observedAt,
+            });
+
+            if (scenario === 'paused-generation' || scenario === 'paused-no-fence') {
+              if (scenario === 'paused-no-fence') {
+                db.prepare('UPDATE nanohost_runtime_targets SET ready = 0, fresh_empty = 0, physical_epoch = NULL').run();
+              }
+              const delayedOriginal = capture(allocation);
+              assert.equal(delayedOriginal.predecessor.generation, 8);
+              assert.equal(delayedOriginal.predecessor.fence, null);
+              const delay = Promise.withResolvers();
+              const entered = Promise.withResolvers();
+              const delayed = run(delayedOriginal, {
+                ...store,
+                mutateRuntimeTarget: async original => {
+                  entered.resolve();
+                  await delay.promise;
+                  return mutate(original);
+                },
+              });
+              await Promise.race([entered.promise, delayed.then(
+                () => { throw new Error('Allocation settled before entering the paused writer'); },
+              )]);
+              try {
+                const successor = scenario === 'paused-generation' ? 9 : 8;
+                await withIndependentWriter(async competingStore => {
+                  if (successor === 9) {
+                    assert.equal((await run(capture(allocation), competingStore)).value.connectionGeneration, 9);
+                  }
+                  assert.equal((await run(capture(makeReady(successor)), competingStore)).value.ready, true);
+                  assert.equal((await run(capture(close(successor)), competingStore)).value.ready, false);
+                });
+                reopen();
+                const before = row();
+                const latestFence = JSON.parse(before.vault_epoch_fence_json);
+                assert.equal(latestFence.placement.generation, String(successor));
+                assert.equal(latestFence.receipt.disposition, 'applied');
+                delay.resolve();
+                const result = await delayed;
+                assert.equal(row().connection_generation, successor, 'paused writer advanced the generation');
+                assert.deepEqual(result, recoveryRequired);
+                assert.deepEqual(row(), before);
+              } finally {
+                delay.resolve();
+                await delayed.catch(() => undefined);
+              }
+              return;
+            }
+
+            const original = capture(allocation);
+            if (scenario === 'core-ack-loss') {
+              await assert.rejects(run(original), /Core fence acknowledgement lost/);
+              reopen();
+              // The replacement has identical allocation bytes and a different occurrence.
+              await withIndependentWriter(async competingStore => {
+                assert.equal((await run(capture(allocation), competingStore)).value.connectionGeneration, 9);
+                assert.equal((await run(capture(makeReady(9)), competingStore)).value.ready, true);
+              });
+              const before = row();
+              const observed = coreInspections.slice();
+              assert.deepEqual(await run(original), recoveryRequired);
+              assert.deepEqual(coreDecisions, [intent.requestId]);
+              assert.deepEqual(coreInspections, observed);
+              assert.equal(row().connection_generation, 9);
+              assert.equal(row().ready, 1);
+              assert.deepEqual(row(), before);
+              return;
+            }
+
+            let committed;
+            await assert.rejects(run(original, {
+              ...store,
+              mutateRuntimeTarget: async value => {
+                committed = mutate(value);
+                assert.equal(committed.state, 'ready');
+                assert.equal(committed.value.connectionGeneration, 9);
+                throw new Error('Native allocation acknowledgement lost');
+              },
+            }), /Native allocation acknowledgement lost/);
+            reopen();
+            const before = row();
+            const observed = coreInspections.slice();
+            assert.deepEqual(await run(original), committed);
+            assert.deepEqual(coreDecisions, [intent.requestId]);
+            assert.deepEqual(coreInspections, observed);
+            assert.equal(row().connection_generation, 9);
+            assert.deepEqual(row(), before);
+            assert.deepEqual(await run({
+              ...original, input: { ...original.input, observedAt: '2026-11-21T00:00:00.000Z' },
+            }), recoveryRequired);
+            assert.deepEqual(row(), before);
+          };
           try {
-            assert.throws(() => mutate(allocation), /must be fenced/);
+            if (scenario !== 'sequential') {
+              await exerciseRace();
+              return;
+            }
+            const original = capture(allocation);
+            assert.deepEqual(original.retirement, placement);
+            assert.equal(verifyNanoHostRetiringPlacement(db, placement), false);
+            assert.throws(() => capture({
+              ...allocation, identityId: 'wrong-identity',
+            }), /identity or deployment conflicts/);
+            assert.equal(capture({
+              kind: 'close', targetId: allocation.targetId, closedGeneration: 7,
+              authoritativeGeneration: 8, observedAt: allocation.observedAt,
+            }).retirement, null);
+            assert.deepEqual(capture({
+              kind: 'restart', observedAt: allocation.observedAt,
+            }).retirement, placement);
+            assert.deepEqual(mutate(original), recoveryRequired);
             assert.throws(stage, /no exact retiring placement/);
             begin();
             assert.equal(db.prepare('SELECT ready FROM nanohost_runtime_targets').pluck().get(), 0);
@@ -253,31 +485,40 @@ describe('native no-Turn epoch fence', () => {
             db.prepare('UPDATE nanohost_runtime_targets SET ready = 0').run();
             assert.deepEqual(readPendingNanoHostEpochRetirement(db), placement);
             assert.equal(readNanoHostEpochInvalidation(db, intent.requestId), null);
-            assert.throws(() => mutate(allocation), /no applied Vault receipt/);
+            assert.equal(verifyNanoHostRetiringPlacement(db, { ...placement, generation: '9' }), false);
+            assert.throws(() => mutate(original), /no applied Vault receipt/);
             begin();
-            stage();
+            await assert.rejects(transition(original), /Core fence acknowledgement lost/);
             db.close();
             db = new Database(databasePath, { fileMustExist: true });
             assert.deepEqual(readPendingNanoHostEpochRetirement(db), placement);
             assert.deepEqual(readNanoHostEpochInvalidation(db, intent.requestId), intent);
+            assert.equal(verifyNanoHostStagedEpochInvalidation(db, {
+              ...intent, target: { ...intent.target, holderReceiptIds: ['holder-a'] },
+            }), false);
             stage();
-            assert.throws(() => mutate(allocation), /no applied Vault receipt/);
+            assert.throws(() => mutate(original), /no applied Vault receipt/);
             assert.throws(() => settle({
               ...receipt, result: { fencedHolderReceiptIds: ['holder-a'] },
             }), /no exact original intent/);
-            assert.throws(() => mutate(allocation), /no applied Vault receipt/);
-            settle(receipt);
-            settle(receipt);
+            assert.throws(() => mutate(original), /no applied Vault receipt/);
+            assert.throws(() => capture(makeReady(8)), /generation cannot become ready/);
+            assert.equal((await transition(original)).value.connectionGeneration, 9);
+            assert.equal(reservations, 1);
+            assert.equal(decisions, 1);
             assert.equal(readPendingNanoHostEpochRetirement(db), null);
-            assert.throws(() => mutate({
-              ...allocation, kind: 'ready', connectionGeneration: 8, predecessorFenced: true,
-              ready: true, freshEmpty: true, physicalEpoch: intent.target.physicalEpoch,
-            }), /invalidated NanoHost generation/);
-            assert.equal(mutate(allocation).connectionGeneration, 9);
-            assert.equal(mutate({
-              ...allocation, kind: 'ready', connectionGeneration: 9, predecessorFenced: true,
-              ready: true, freshEmpty: true, physicalEpoch: 'e'.repeat(64),
-            }).ready, true);
+            settle(receipt);
+            const successorReadiness = capture(makeReady(9));
+            db.close();
+            db = new Database(databasePath, { fileMustExist: true });
+            reserved = false;
+            originalReceipt = null;
+            assert.deepEqual(await transition(successorReadiness), unavailable);
+            assert.equal(db.prepare('SELECT ready FROM nanohost_runtime_targets').pluck().get(), 0);
+            originalReceipt = receipt;
+            assert.equal((await transition(successorReadiness)).value.ready, true);
+            assert.equal(reservations, 1);
+            assert.equal(decisions, 1);
           } finally {
             db.close();
           }
@@ -287,12 +528,19 @@ describe('native no-Turn epoch fence', () => {
           eval: true,
           workerData: {
             databasePath,
+            scenario,
             placement,
             intent,
             receipt,
             sqlite: require.resolve('better-sqlite3'),
             fenceModule: new URL(
               '../../dist/storage/nanohost-epoch-invalidation-native.js',
+              import.meta.url
+            ).href,
+            digestModule: import.meta.resolve('@openkit/protocol/digest'),
+            ownerModule: new URL('../../dist/storage/storage-owner.js', import.meta.url).href,
+            relayModule: new URL(
+              '../../dist/storage/nanohost-epoch-invalidation.js',
               import.meta.url
             ).href,
           },
