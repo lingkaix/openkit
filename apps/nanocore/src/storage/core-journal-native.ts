@@ -15,16 +15,22 @@ import {
 } from '@openkit/protocol';
 import { policyDigest, sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
-import { auditEventFromRow, recordServerAuditEvent } from '../audit-events.js';
+import {
+  auditEventFromRow,
+  prepareServerAuditEvent,
+  recordServerAuditEvent,
+} from '../audit-events.js';
 import { validatePolicyDocument } from '../policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
 import {
   acceptSchedulerExecutionObservation,
+  closeSchedulerExecutionAttemptWithoutEffects,
   EXECUTION_ATTEMPT_BUDGET_MS,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionGrantInDb,
   requireSchedulerExecutionAttempt,
+  type SchedulerExecutionAttemptRecord,
 } from '../runtime/execution-attempt-records.js';
 import {
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
@@ -70,6 +76,7 @@ import {
   type ControlNanoHostFirstSubmissionInput,
   type ControlNanoHostFirstSubmissionResult,
   ControlNanoHostFirstSubmissionResultSchema,
+  type ControlNanoHostOrphanRetirementInput,
   CoreJournalRefusal,
   CoreNanoHostFinalIntakeSchema,
   readCoreJournalLineage,
@@ -462,6 +469,169 @@ export function admitNanoHostFirstSubmissionInDb(
       attempt: requireSchedulerExecutionAttempt(coreDb, attemptId),
     });
   })();
+}
+
+type FailedStartCoordinates = Pick<
+  SchedulerExecutionAttemptRecord,
+  'attemptId' | 'queueEntryId' | 'agentSessionId' | 'inputRef' | 'bindingRef'
+>;
+
+/** Closes the exact never-submitted attempt only after its pinned peer evidence agrees. */
+export function closeNanoHostFailedStartInDb(
+  db: CoreDb,
+  input: FailedStartCoordinates & { readonly observedAt?: string },
+  verifyNoEffects: (original: SchedulerExecutionAttemptRecord) => boolean
+): SchedulerExecutionAttemptRecord {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Failed-start closure requires the Core writer transaction.');
+  return db.sqlite.transaction(() => {
+    const attempt = requireSchedulerExecutionAttempt(db, input.attemptId);
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);
+    if (
+      attempt.backendId !== 'nanohost' ||
+      admission.status !== 'admitted' ||
+      attempt.queueEntryId !== input.queueEntryId ||
+      attempt.agentSessionId !== input.agentSessionId ||
+      attempt.inputRef !== input.inputRef ||
+      attempt.bindingRef !== input.bindingRef ||
+      attempt.disposition !== 'not_accepted' ||
+      attempt.operationId !== null ||
+      attempt.deadline !== null ||
+      attempt.outcomeRef !== null ||
+      attempt.fenceRef !== null ||
+      (attempt.terminalCause !== null && attempt.terminalCause !== 'turn-start-failed') ||
+      (attempt.phase === 'closed' && attempt.terminalCause !== 'turn-start-failed')
+    )
+      throw new ExecutionAttemptRefusal(
+        'Failed-start closure conflicts with the original attempt.'
+      );
+    const successor = db.sqlite
+      .prepare(`SELECT 1 FROM scheduler_execution_attempts AS other
+        JOIN scheduler_execution_attempts AS original ON original.attempt_id = ?
+        WHERE other.attempt_id <> original.attempt_id AND (
+          (other.turn_id = original.turn_id AND other.rowid > original.rowid) OR
+          (other.agent_session_id = original.agent_session_id AND other.phase <> 'closed')
+        ) LIMIT 1`)
+      .get(attempt.attemptId);
+    const grantRoot = db.sqlite
+      .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+      .get(attempt.attemptId);
+    if (successor || grantRoot)
+      throw new ExecutionAttemptRefusal('Failed-start closure has competing execution authority.');
+
+    // Unused-anchor inspection reads the closed phase. Refusal rolls back this uncommitted CAS.
+    const closed = closeSchedulerExecutionAttemptWithoutEffects(db, {
+      attemptId: attempt.attemptId,
+      noOutstandingEffects: true,
+      cause: 'turn-start-failed',
+      ...(input.observedAt === undefined ? {} : { now: () => input.observedAt! }),
+    });
+    if (!verifyNoEffects(closed))
+      throw new ExecutionAttemptRefusal('Failed-start closure has no positive peer proof.');
+    return closed;
+  })();
+}
+
+const orphanRetirementAction = 'scheduler.orphan-backend-retired';
+
+type OrphanCleanup = Omit<ControlNanoHostOrphanRetirementInput, 'observedAt'>;
+
+function originalOrphanAudit(db: CoreDb, cleanup: OrphanCleanup) {
+  const attempt = requireSchedulerExecutionAttempt(db, cleanup.attemptId);
+  if (
+    attempt.backendId !== 'nanohost' ||
+    attempt.phase !== 'closed' ||
+    !attempt.agentSessionId ||
+    attempt.inputRef !== cleanup.inputRef ||
+    attempt.bindingRef !== cleanup.bindingRef
+  )
+    throw new ExecutionAttemptRefusal('Orphan Audit has no exact closed attempt.');
+  const { workspaceId, threadId, turnId, agentSessionId } = attempt;
+  const auditEventId = deriveEntityId('aud', [orphanRetirementAction, attempt.attemptId]);
+  const requestId = storageRequestId({
+    deploymentId: cleanup.target.deploymentId,
+    sourceOwner: 'nanohost',
+    verb: orphanRetirementAction,
+    occurrenceKey: commandInputHash({
+      cleanup,
+      workspaceId,
+      threadId,
+      turnId,
+      agentSessionId,
+      operationId: attempt.operationId,
+    }),
+  });
+  const fields = {
+    auditEventId,
+    requestId,
+    action: orphanRetirementAction,
+    category: 'system',
+    outcome: 'succeeded',
+    resource: `server:worker-backend-session:${attempt.attemptId}`,
+    severity: 'warning',
+    summary: 'Unowned worker backend session physically cleaned and retired.',
+    workspaceId,
+    threadId,
+    turnId,
+    agentSessionId,
+  } as const;
+  return { attempt, fields };
+}
+
+function inspectOrphanAudit(db: CoreDb, fields: ReturnType<typeof originalOrphanAudit>['fields']) {
+  const row = db.sqlite
+    .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
+    .get(fields.auditEventId);
+  if (!row) return null;
+  const prior = auditEventFromRow(row);
+  if (!prior.createdAt)
+    throw new ExecutionAttemptRefusal('Orphan Audit has no original acknowledgement clock.');
+  const expected = prepareServerAuditEvent({
+    ...fields,
+    coreDb: db,
+    now: new Date(prior.createdAt),
+  });
+  if (canonicalJsonText(prior) !== canonicalJsonText(expected))
+    throw new ExecutionAttemptRefusal('Orphan Audit conflicts with the original cleanup.');
+  return {
+    auditEventId: fields.auditEventId,
+    requestId: fields.requestId,
+    acceptedAt: prior.createdAt,
+  };
+}
+
+/** Reads the original acknowledgement on a pinned Core reader for the dependent Native CAS. */
+export function inspectCoreNanoHostOrphanAudit(db: CoreDb, cleanup: OrphanCleanup) {
+  return inspectOrphanAudit(db, originalOrphanAudit(db, cleanup).fields);
+}
+
+/** Retains the original redacted Audit before the Native owner may retire the physical anchor. */
+export function commitCoreNanoHostOrphanAuditInDb(
+  db: CoreDb,
+  input: ControlNanoHostOrphanRetirementInput,
+  verifyCleanup: (original: SchedulerExecutionAttemptRecord, cleanup: OrphanCleanup) => boolean
+): {
+  readonly state: 'applied' | 'inspect-original';
+  readonly receipt: NonNullable<ReturnType<typeof inspectCoreNanoHostOrphanAudit>>;
+} {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Orphan Audit requires the Core writer transaction.');
+  const { observedAt, ...cleanup } = input;
+  const { attempt, fields } = originalOrphanAudit(db, cleanup);
+  const prior = inspectOrphanAudit(db, fields);
+  if (prior) return { state: 'inspect-original', receipt: prior };
+  const now = observedAt === undefined ? new Date() : new Date(observedAt);
+  if (!(now.getTime() >= Date.parse(cleanup.physicalCleanedAt)) || !verifyCleanup(attempt, cleanup))
+    throw new ExecutionAttemptRefusal('Orphan Audit has no exact physical and Workspace proof.');
+  recordServerAuditEvent({ ...fields, coreDb: db, now });
+  return {
+    state: 'applied',
+    receipt: {
+      auditEventId: fields.auditEventId,
+      requestId: fields.requestId,
+      acceptedAt: now.toISOString(),
+    },
+  };
 }
 
 type FinalCommand = ControlWorkerFinalStatusCommand;

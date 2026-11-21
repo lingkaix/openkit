@@ -32,11 +32,15 @@ import {
   ControlCoreNanoHostFinalDecisionSchema,
   ControlCoreNanoHostFinalInputSchema,
   ControlNanoHostFirstSubmissionInputSchema,
+  ControlNanoHostOrphanRetirementInputSchema,
 } from '../storage/core-journal-codecs.js';
 import {
   admitNanoHostFirstSubmissionInDb,
   admitNanoHostWorkerFinalInDb,
   applyControlCoreImageResult,
+  closeNanoHostFailedStartInDb,
+  commitCoreNanoHostOrphanAuditInDb,
+  inspectCoreNanoHostOrphanAudit,
   observeAcceptedNanoHostFinalInDb,
   readCoreImageAcquisitionRef,
 } from '../storage/core-journal-native.js';
@@ -70,6 +74,7 @@ import {
 import {
   acceptSchedulerExecutionObservation,
   bindSchedulerExecutionAttemptSession,
+  closeSchedulerExecutionAttemptWithFence,
   createSchedulerExecutionAttempt,
   EXECUTION_ATTEMPT_BUDGET_MS,
   finalizeSchedulerExecutionAttemptInput,
@@ -110,6 +115,7 @@ import type {
   ExecutionJournalSettlement,
   ExecutionJournalSpan,
 } from './execution-step-journal.js';
+import { hasNanoHostAttemptPreEffectProof } from './nanohost-attempt-recovery.js';
 import {
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
@@ -1203,6 +1209,166 @@ describe('persisted execution journal contracts', () => {
     });
     return { f, attempt, execution, operationId, proposal, reserve, next };
   }
+
+  it('closes only the original failed start with positive retained no-effect proof', () => {
+    const { f, attempt } = schedulerGrantFixture();
+    const native = openNanoHostTestOwner();
+    const agentSessionId = testEntityId('as', 'failed-start-claim');
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId: attempt.attemptId, agentSessionId });
+    const original = requireSchedulerExecutionAttempt(f.db, attempt.attemptId);
+    const input = {
+      attemptId: original.attemptId,
+      queueEntryId: original.queueEntryId,
+      inputRef: original.inputRef,
+      bindingRef: original.bindingRef,
+      agentSessionId,
+    };
+    const close = (readNative: boolean) =>
+      f.db.sqlite
+        .transaction(() =>
+          closeNanoHostFailedStartInDb(f.db, input, (closed) =>
+            hasNanoHostAttemptPreEffectProof(
+              f.db,
+              closed.attemptId,
+              readNative ? native : undefined
+            )
+          )
+        )
+        .immediate();
+    expect(() => close(false)).toThrow('Failed-start closure has no positive peer proof.');
+    expect(requireSchedulerExecutionAttempt(f.db, original.attemptId)).toEqual(original);
+    const closed = close(true);
+    expect(closed).toMatchObject({
+      phase: 'closed',
+      disposition: 'not_accepted',
+      terminalCause: 'turn-start-failed',
+      operationId: null,
+      deadline: null,
+    });
+    f.reopen();
+    expect(close(true)).toEqual(closed);
+    const turnId = testEntityId('tu', 'failed-start-successor');
+    const next = createSchedulerAdmissionEntry(f.db, {
+      backendId: 'nanohost',
+      queueEntryId: 'failed-start-successor-queue',
+      workspaceId: original.workspaceId,
+      threadId: original.threadId,
+      turnId,
+      inputRef: schedulerFixtureInput(original.workspaceId, turnId, 'Successor request'),
+      triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+      requestedAgentId: 'agent_worker',
+    });
+    const successor = createSchedulerExecutionAttempt(f.db, { entry: next, preparationInput: {} });
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId: successor.attemptId, agentSessionId });
+    expect(() => close(true)).toThrow('Failed-start closure has competing execution authority.');
+    expect(requireSchedulerExecutionAttempt(f.db, successor.attemptId).phase).toBe('open');
+  });
+
+  it('holds orphan retirement on a failed Audit and inspects the exact first receipt and clock', () => {
+    const { f, attempt, proposal: draft, reserve } = schedulerGrantFixture();
+    const agentSessionId = testEntityId('as', 'orphan-audit');
+    const inputRef = 'original-orphan-package';
+    const bindingRef = 'original-orphan-binding';
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId: attempt.attemptId, agentSessionId });
+    finalizeSchedulerExecutionAttemptInput(f.db, {
+      attemptId: attempt.attemptId,
+      inputRef,
+      bindingRef,
+    });
+    const operationId = commandInputHash({
+      attemptId: attempt.attemptId,
+      inputRef,
+      operation: 'submit',
+    });
+    const scope = `workspace:${attempt.workspaceId}`;
+    const proposal = {
+      ...draft,
+      execution: { ...draft.execution, exclusionRefs: [scope] },
+      carriage: { operation: 'submit', requestId: operationId, sequence: null, bindingRef },
+      control: { ...draft.control, operationId, invocationId: operationId, inputRefs: [inputRef] },
+    };
+    reserve(true, '1', proposal, { submission: true });
+    const closing = markSchedulerExecutionAttemptClosing(f.db, {
+      attemptId: attempt.attemptId,
+      cause: 'turn-failed',
+    });
+    closeSchedulerExecutionAttemptWithFence(f.db, {
+      correlation: schedulerExecutionCorrelation(closing),
+      fenceRef: 'original-orphan-fence',
+      proof: {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      },
+    });
+    const input = ControlNanoHostOrphanRetirementInputSchema.parse({
+      attemptId: attempt.attemptId,
+      inputRef,
+      bindingRef,
+      backendSessionId: 'original-orphan-backend',
+      target: {
+        targetId: 'original-orphan-target',
+        identityId: 'original-orphan-identity',
+        deploymentId: 'fixture-deployment',
+        physicalEpoch: 'b'.repeat(64),
+        connectionGeneration: 1,
+      },
+      observationHash: `sha256:${'d'.repeat(64)}`,
+      physicalCleanedAt: '2026-11-20T08:00:01.000Z',
+      observedAt: '2026-11-20T08:00:02.000Z',
+    });
+    const verify = vi.fn(() => false);
+    const decide = (command = input) =>
+      f.db.sqlite
+        .transaction(() => commitCoreNanoHostOrphanAuditInDb(f.db, command, verify))
+        .immediate();
+    const readAudit = () =>
+      listServerAuditEvents(f.db).filter(
+        (event) => event.action === 'scheduler.orphan-backend-retired'
+      );
+    expect(() => decide()).toThrow('Orphan Audit has no exact physical and Workspace proof.');
+    expect(readAudit()).toEqual([]);
+    verify.mockReturnValue(true);
+    f.db.sqlite.exec(`CREATE TRIGGER reject_orphan_audit BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'scheduler.orphan-backend-retired'
+      BEGIN SELECT RAISE(ABORT, 'orphan retirement Audit fault'); END`);
+    expect(() => decide()).toThrow('orphan retirement Audit fault');
+    expect(readAudit()).toEqual([]);
+    const { observedAt: _observedAt, ...cleanup } = input;
+    expect(inspectCoreNanoHostOrphanAudit(f.db, cleanup)).toBeNull();
+    expect(kernelSchedulerScopeIsHeld(f.db, [scope])).toBe(true);
+    f.db.sqlite.exec('DROP TRIGGER reject_orphan_audit');
+    const applied = decide();
+    expect(applied).toMatchObject({ state: 'applied', receipt: { acceptedAt: input.observedAt } });
+    expect(readAudit()).toEqual([
+      expect.objectContaining({
+        id: applied.receipt.auditEventId,
+        requestId: applied.receipt.requestId,
+        workspaceId: attempt.workspaceId,
+        agentSessionId,
+      }),
+    ]);
+    f.reopen();
+    expect(inspectCoreNanoHostOrphanAudit(f.db, cleanup)).toEqual(applied.receipt);
+    verify.mockClear();
+    verify.mockReturnValue(false);
+    expect(decide({ ...input, observedAt: '2026-11-20T08:00:03.000Z' })).toEqual({
+      state: 'inspect-original',
+      receipt: applied.receipt,
+    });
+    expect(verify).not.toHaveBeenCalled();
+    expect(() => decide({ ...input, observationHash: `sha256:${'e'.repeat(64)}` })).toThrow(
+      'Orphan Audit conflicts with the original cleanup.'
+    );
+    expect(() =>
+      decide({ ...input, target: { ...input.target, connectionGeneration: 2 } })
+    ).toThrow('Orphan Audit conflicts with the original cleanup.');
+    expect(kernelSchedulerScopeIsHeld(f.db, [scope])).toBe(true);
+    expect(readAudit()).toHaveLength(1);
+  });
 
   it('decides the original operation and retained grant atomically and inspects lost acknowledgement', () => {
     const { f, attempt, execution, operationId, proposal, reserve } = schedulerGrantFixture();

@@ -137,6 +137,22 @@ export type ControlNanoHostFirstSubmissionResult = z.infer<
   typeof ControlNanoHostFirstSubmissionResultSchema
 >;
 
+/** Core consumes the exact physical retirement decision under the admitted peer openings. */
+export const ControlNanoHostOrphanRetirementInputSchema = z.strictObject({
+  attemptId: ExecutionAttemptIdSchema,
+  inputRef: text,
+  bindingRef: text,
+  backendSessionId: text,
+  target: imageTarget,
+  observationHash: finalFingerprint,
+  physicalCleanedAt: z.iso.datetime(),
+  observedAt: z.iso.datetime().optional(),
+});
+
+export type ControlNanoHostOrphanRetirementInput = z.infer<
+  typeof ControlNanoHostOrphanRetirementInputSchema
+>;
+
 /** Release-authored bounds are part of the fixed reviewed template, never operator configuration. */
 export const SECURITY_CONTAINMENT_LIMITS = Object.freeze({
   version: 'containment/v1',
