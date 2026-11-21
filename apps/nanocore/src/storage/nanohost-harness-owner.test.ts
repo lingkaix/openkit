@@ -13,9 +13,12 @@ import {
   acknowledgeNanoHostHarnessResult,
   copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
+  dispatchNanoHostHarnessOperation,
+  hasQueuedNanoHostHarnessOperation,
   listNanoHostMeasuredHarnessIdentities,
   openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
+  queueNanoHostHarnessOperation,
   readNanoHostMeasuredHarnessIdentity,
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeForHarness,
@@ -376,4 +379,91 @@ it('settles the original session-open result on Native and consumes it only on C
     core.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+function withQueuedHarness(
+  exercise: (
+    core: ReturnType<typeof openCoreDb>,
+    owner: { readonly sqlite: Database.Database },
+    reopenReadOnly: () => void
+  ) => void
+) {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-harness-queue-probe-'));
+  const core = openCoreDb(root);
+  try {
+    applyMigrations(core);
+    withHarnessOwner((owner, reopenReadOnly) => {
+      const queued = runtimeFacts('queued');
+      owner.sqlite
+        .transaction(() => {
+          createNanoHostHarnessRuntime(owner, queued);
+          const request = {
+            harnessInstanceId: queued.harnessInstanceId,
+            operation: 'harness.drain' as const,
+            timestamp,
+            body: {},
+          };
+          const prepared = prepareNanoHostHarnessOperation(core, request, owner);
+          queueNanoHostHarnessOperation(core, { ...request, prepared }, owner);
+        })
+        .immediate();
+      exercise(core, owner, reopenReadOnly);
+    });
+  } finally {
+    core.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+it('observes an exact empty Harness queue even when a sibling Integration has a command', () => {
+  withQueuedHarness((_core, owner, reopenReadOnly) => {
+    const idle = runtimeFacts('idle');
+    owner.sqlite.transaction(() => createNanoHostHarnessRuntime(owner, idle)).immediate();
+    reopenReadOnly();
+
+    expect(hasQueuedNanoHostHarnessOperation(owner, idle.sandboxIntegrationBindingRef)).toBe(false);
+  });
+});
+
+it('observes a queued Harness command read-only and leaves it for deciding dispatch', () => {
+  withQueuedHarness((core, owner, reopenReadOnly) => {
+    const queued = runtimeFacts('queued');
+    const sandboxIntegrationBindingRef = queued.sandboxIntegrationBindingRef;
+    const before = owner.sqlite.serialize();
+
+    expect(hasQueuedNanoHostHarnessOperation(owner, sandboxIntegrationBindingRef)).toBe(true);
+    expect(owner.sqlite.serialize()).toEqual(before);
+    expect(
+      owner.sqlite
+        .transaction(() =>
+          dispatchNanoHostHarnessOperation(
+            core,
+            { sandboxIntegrationBindingRef, now: () => timestamp },
+            { owner }
+          )
+        )
+        .immediate()
+    ).toMatchObject({ harnessInstanceId: queued.harnessInstanceId, operation: 'harness.drain' });
+    reopenReadOnly();
+    expect(hasQueuedNanoHostHarnessOperation(owner, sandboxIntegrationBindingRef)).toBe(false);
+  });
+});
+
+it('refuses foreign and retired Integration bindings when observing the Harness queue', () => {
+  withQueuedHarness((_core, owner, reopenReadOnly) => {
+    const retired = runtimeFacts('retired');
+    owner.sqlite
+      .transaction(() => {
+        createNanoHostHarnessRuntime(owner, retired);
+        removeNanoHostSandboxRuntimeForHarness(owner, retired.harnessInstanceId);
+      })
+      .immediate();
+    reopenReadOnly();
+
+    for (const binding of ['integration-binding-foreign', retired.sandboxIntegrationBindingRef]) {
+      expect(() => hasQueuedNanoHostHarnessOperation(owner, binding)).toThrow(
+        'NanoHost Sandbox Integration binding is missing or stale.'
+      );
+    }
+  });
 });
