@@ -8,8 +8,7 @@ import type { BetterAuthServer } from './auth/middleware.js';
 import { isScopeAdmitted, refuseScope } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { openCoreDb } from './storage/db.js';
-import { recordDataRootDeploymentMove } from './storage/fs-layout.js';
+import { openCoreDb, recordDataRootDeploymentMove } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
@@ -687,7 +686,7 @@ describe('workspace membership foundation', () => {
         ...operationRequest('workspace.export', { workspaceId: source.id }, { method: 'POST' })
       );
       const exported = (await exportedResponse.json()) as { exportId: string };
-      recordDataRootDeploymentMove(dataRoot, 'dep_00000000-0000-717e-ba4e-06034b3d4ea9');
+      await recordDataRootDeploymentMove(dataRoot, 'dep_00000000-0000-717e-ba4e-06034b3d4ea9');
       const getWorkspace = vi.spyOn(store, 'getWorkspace');
 
       expect(exportedResponse.status).toBe(200);

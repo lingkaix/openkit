@@ -1,11 +1,22 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { lstat } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
+import { lstat, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { isEntityId } from '@openkit/protocol';
+import {
+  assertCanonicalDirectory,
+  copyFileForCut,
+  createPrivateTree,
+  readLayoutDirectory,
+  removePrivateTree,
+  replaceExistingFileText,
+} from '@openkit/storage';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js';
 import { resolveDataRoot } from '../config/data-root.js';
+import { BootConfigError } from '../config/mode.js';
 import { configureOwnedSqlite } from './control-store.js';
 import {
   openControlStoreProductReadHandle,
@@ -13,6 +24,7 @@ import {
 } from './control-store-product-records.js';
 import {
   coreDbPath,
+  type DataRootLayoutMarker,
   ensureLayout,
   ensureLayoutDirectories,
   ensureUserLayout,
@@ -24,6 +36,7 @@ import {
   workspaceDbPath,
 } from './fs-layout.js';
 import {
+  assertCurrentCoreBaseline,
   assertCurrentServerOwnerSchema,
   assertSupportedNativeLedger,
   ServerOwnerAdmissionError,
@@ -43,8 +56,11 @@ export function serverStoragePath(
     : resolveDataRootPath(dataRoot, 'server', SPLIT_STORAGE_JOURNALS[owner], 'state.sqlite');
 }
 
-/** Inspects a split owner path without creating it or following owner-directory/file aliases. */
-export async function inspectServerOwnerFile(dataRoot: string, owner: SplitStorageOwner) {
+/** Inspects a Server owner path without creating it or following owner-directory/file aliases. */
+export async function inspectServerOwnerFile(
+  dataRoot: string,
+  owner: 'control-kernel' | SplitStorageOwner
+) {
   const path = serverStoragePath(dataRoot, owner);
   let directory = dataRoot;
   for (const part of relative(dataRoot, dirname(path)).split(sep)) {
@@ -260,6 +276,114 @@ export function verifyServerOwnerRestoreCopy(path: string, owner: SplitStorageOw
   } finally {
     sqlite.close();
   }
+}
+
+/** Checks the Core authority on an admitted read-only copy before it can enter service. */
+export function assertCoreBaseline(sqlite: Database.Database): void {
+  assertCurrentCoreBaseline(sqlite, () => openSqliteConnection(':memory:', {}));
+}
+
+/** Inspects Core and its committed WAL without touching canonical SQLite sidecars. */
+export async function verifyExistingCoreBaseline(dataRoot: string): Promise<void> {
+  const path = serverStoragePath(dataRoot, 'control-kernel');
+  let present: Awaited<ReturnType<typeof inspectServerOwnerFile>>;
+  try {
+    present = await inspectServerOwnerFile(dataRoot, 'control-kernel');
+  } catch (error) {
+    if (!(error instanceof ServerOwnerAdmissionError)) throw error;
+    throw new BootConfigError(
+      'migration_unsupported_core',
+      'Unsupported Core database. A fresh v0.2.0 installation is required.'
+    );
+  }
+  if (!present)
+    throw new BootConfigError(
+      'migration_unsupported_core',
+      'Core database is missing from an existing deployment. A fresh v0.2.0 installation is required.'
+    );
+
+  const [root, scratch] = await Promise.all([realpath(dataRoot), realpath(tmpdir())]);
+  const relativeScratch = relative(root, scratch);
+  if (
+    relativeScratch === '' ||
+    (!isAbsolute(relativeScratch) &&
+      relativeScratch !== '..' &&
+      !relativeScratch.startsWith(`..${sep}`))
+  )
+    throw new BootConfigError(
+      'migration_core_inspection_unsafe',
+      'Core inspection requires a temporary directory outside DATA_ROOT.'
+    );
+
+  const inspectionRoot = await createPrivateTree(scratch, 'openkit-core-admission-');
+  const inspectionPath = join(inspectionRoot, 'core.sqlite');
+  try {
+    for (const suffix of ['', '-wal', '-journal']) {
+      const sourcePath = `${path}${suffix}`;
+      const metadata = suffix ? await serverOwnerMetadata(sourcePath) : present;
+      if (!metadata) continue;
+      await copyFileForCut({
+        sourcePath,
+        destinationPath: `${inspectionPath}${suffix}`,
+        maxBytes: metadata.size,
+        mode: 0o600,
+      });
+    }
+    const sqlite = openSqliteConnection(inspectionPath, { fileMustExist: true, readonly: true });
+    try {
+      assertCoreBaseline(sqlite);
+    } finally {
+      sqlite.close();
+    }
+  } finally {
+    await removePrivateTree(inspectionRoot);
+  }
+}
+
+/** Checks whether this root can be seeded or booted before either caller may write. */
+export async function admitDataRootForBoot(dataRoot: string): Promise<boolean> {
+  try {
+    if (isFreshCoreInitializationScope(dataRoot)) return true;
+    await verifyExistingCoreBaseline(dataRoot);
+    assertCanonicalDirectory(resolveDataRootPath(dataRoot, 'server'));
+    readDataRootLayoutMarker(dataRoot);
+    return false;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${message} Follow the v0.2.0 Storage Reinstall procedure in docs/cookbooks/persistent-live-acceptance.md#v020-storage-reinstall.`,
+      { cause: error }
+    );
+  }
+}
+
+/** Records deployment lineage only on an admitted existing Core and marker. */
+export async function recordDataRootDeploymentMove(
+  root: string,
+  deploymentId: string
+): Promise<DataRootLayoutMarker> {
+  if (!isEntityId('dep', deploymentId)) {
+    throw new Error('DATA_ROOT deployment id must not be empty.');
+  }
+
+  await verifyExistingCoreBaseline(root);
+  const current = readDataRootLayoutMarker(root);
+  const predecessorDeploymentId =
+    current.deploymentId === deploymentId ? current.predecessorDeploymentId : current.deploymentId;
+
+  if (predecessorDeploymentId === deploymentId) {
+    throw new Error('DATA_ROOT predecessor deployment id must differ from deployment id.');
+  }
+
+  const marker: DataRootLayoutMarker = {
+    schemaVersion: 1,
+    layoutVersion: current.layoutVersion,
+    deploymentId,
+    ...(predecessorDeploymentId ? { predecessorDeploymentId } : {}),
+  };
+  const markerPath = resolveDataRootPath(root, 'server', 'layout.json');
+  await replaceExistingFileText(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+  return marker;
 }
 
 /** Opens an existing Core reader without layout creation or migration; the caller owns its lifetime. */
@@ -539,8 +663,12 @@ function checkSqliteIntegrity(path: string): { ok: true } | { ok: false; detail:
 export function isFreshCoreInitializationScope(dataRoot: string): boolean {
   if (existsSync(coreDbPath(dataRoot)) || existsSync(join(dataRoot, 'server', 'layout.json')))
     return false;
-  return ['server', 'users', 'workspaces', 'local', 'logs'].every((name) => {
+  const emptyOwnedDirectories = ['server', 'users', 'workspaces', 'local', 'logs'].every((name) => {
     const path = join(dataRoot, name);
     return !existsSync(path) || readdirSync(path).length === 0;
   });
+  return (
+    emptyOwnedDirectories &&
+    !readLayoutDirectory(dataRoot).some((entry) => entry.name === 'core.sqlite')
+  );
 }

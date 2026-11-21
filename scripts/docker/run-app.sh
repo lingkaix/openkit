@@ -274,29 +274,60 @@ wait_for_health() {
   return 1
 }
 
+if [[ "${SEED_ONLY}" != "1" ]]; then
+  # Server bootstrap still requires the existing deployment signing secret.
+  if ! node -e 'if ((process.env.BETTER_AUTH_SECRET ?? "").trim().length < 32) process.exit(1)'; then
+    echo "BETTER_AUTH_SECRET must contain at least 32 characters in server mode." >&2
+    exit 1
+  fi
+  export BETTER_AUTH_SECRET
+
+  require_command docker
+  require_command curl
+
+  if [[ "${REBUILD}" == "1" ]]; then
+    scripts/docker/build-image.sh app "${IMAGE}"
+  elif ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+    echo "Image ${IMAGE} was not found; building it now."
+    scripts/docker/build-image.sh app "${IMAGE}"
+  fi
+fi
+
+if [[ -e "${DATA_ROOT}" || -L "${DATA_ROOT}" ]]; then
+  admission='
+import { pathToFileURL } from "node:url";
+try {
+  const { admitDataRootForBoot } = await import(pathToFileURL(process.argv[1]));
+  await admitDataRootForBoot(process.argv[2]);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
+'
+  if [[ "${SEED_ONLY}" == "1" ]]; then
+    # Seed-only remains a local developer path with no Docker dependency.
+    admission_root="${DATA_ROOT}"
+    [[ "${admission_root}" == /* ]] || admission_root="${PWD}/${admission_root}"
+    (
+      cd "${REPO_ROOT}/apps/nanocore"
+      TSX_DISABLE_CACHE=1 node --import tsx --input-type=module -e "${admission}" \
+        "${REPO_ROOT}/apps/nanocore/src/storage/db.ts" "${admission_root}"
+    )
+  else
+    admitted_root="$(cd -- "${DATA_ROOT}" && pwd -P)"
+    docker run --rm --network none \
+      --mount "type=bind,source=${admitted_root},target=/data/openkit,readonly" \
+      --entrypoint node "${IMAGE}" --input-type=module -e "${admission}" \
+      /app/nanocore/dist/storage/db.js /data/openkit
+  fi
+fi
+
 seed_data_root
 PROVIDER_SECRET_ENV_NAMES="$(resolve_provider_secret_env_names)"
 
 if [[ "${SEED_ONLY}" == "1" ]]; then
   echo "Seed-only mode complete."
   exit 0
-fi
-
-# Server bootstrap still requires the existing deployment signing secret.
-if ! node -e 'if ((process.env.BETTER_AUTH_SECRET ?? "").trim().length < 32) process.exit(1)'; then
-  echo "BETTER_AUTH_SECRET must contain at least 32 characters in server mode." >&2
-  exit 1
-fi
-export BETTER_AUTH_SECRET
-
-require_command docker
-require_command curl
-
-if [[ "${REBUILD}" == "1" ]]; then
-  scripts/docker/build-image.sh app "${IMAGE}"
-elif ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
-  echo "Image ${IMAGE} was not found; building it now."
-  scripts/docker/build-image.sh app "${IMAGE}"
 fi
 
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true

@@ -1089,6 +1089,13 @@ export async function writePrivateMetadataText(path: string, content: string): P
   await writeFile(path, content, { flag: 'wx', mode: 0o600 });
 }
 
+/** Replaces the text of an admitted existing file, preserving its permissions. */
+export async function replaceExistingFileText(path: string, text: string): Promise<void> {
+  await writeFile(path, text, {
+    flag: constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW,
+  });
+}
+
 /** @internal Moves a complete caller-owned tree; its publication owner orders directory syncs. */
 export async function movePrivateTree(source: string, destination: string): Promise<void> {
   await rename(source, destination);

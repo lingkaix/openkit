@@ -5,7 +5,7 @@ import {
   createSecureServer as createSecureHttp2Server,
 } from 'node:http2';
 import { createServer as createHttpsServer } from 'node:https';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { ensureCanonicalDirectory } from '@openkit/storage';
@@ -30,7 +30,7 @@ import {
   recordBootStartAuditEvent,
   recordShutdownAuditEvent,
 } from './bootstrap/audit.js';
-import { acquireDataRootLock, type DataRootLock } from './bootstrap/lock.js';
+import { acquireDataRootLock, type DataRootLock, dataRootLockPath } from './bootstrap/lock.js';
 import { formatBootFailureMessage, runBootPhases } from './bootstrap/phases.js';
 import { loadBootPolicyKernel } from './bootstrap/policy.js';
 import {
@@ -134,12 +134,13 @@ import {
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
 import {
+  admitDataRootForBoot,
   type CoreDb,
-  isFreshCoreInitializationScope,
   listExistingWorkspaceDatabaseScopes,
   openAdmittedWorkspaceReadDb,
   openCoreDbWithIntegrityCheck,
   openCoreReadDb,
+  verifyExistingCoreBaseline,
 } from './storage/db.js';
 import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import {
@@ -223,6 +224,26 @@ const bootResult = await runBootPhases({
   signal: processShutdownAbort.signal,
   phases: [
     {
+      name: 'data-root-admission',
+      subsystem: 'storage',
+      critical: true,
+      run: async () => {
+        try {
+          freshCoreInitialization = await admitDataRootForBoot(dataRoot);
+        } catch (error) {
+          return {
+            status: 'failed',
+            reason: {
+              code: 'data_root_admission_failed',
+              message: error instanceof Error ? error.message : String(error),
+              blocks: ['product_work'],
+            },
+          };
+        }
+        return { status: 'ok' };
+      },
+    },
+    {
       name: 'config',
       subsystem: 'config',
       critical: true,
@@ -282,8 +303,14 @@ const bootResult = await runBootPhases({
       subsystem: 'storage',
       critical: true,
       run: () => {
-        freshCoreInitialization = isFreshCoreInitializationScope(dataRoot);
-        ensureLayout(dataRoot);
+        if (freshCoreInitialization) {
+          ensureLayout(dataRoot);
+        } else {
+          // Stopped restore can omit an empty runtime directory. Core has already been
+          // checked without creating files and will be checked again under the lock.
+          const runtimePath = dirname(dataRootLockPath(dataRoot));
+          ensureCanonicalDirectory(runtimePath, 0o777, 'retry-creation');
+        }
         return { status: 'ok' };
       },
     },
@@ -301,6 +328,7 @@ const bootResult = await runBootPhases({
       subsystem: 'storage',
       critical: true,
       run: async () => {
+        if (!freshCoreInitialization) await verifyExistingCoreBaseline(dataRoot);
         coreDb = openCoreDbWithIntegrityCheck(dataRoot, {
           freshInitialization: freshCoreInitialization,
         });

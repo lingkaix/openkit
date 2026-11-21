@@ -34,7 +34,7 @@ function createPhysicalEpochFixture(
   mkdirSync(join(dataRoot, 'server', 'migrations'), { recursive: true });
   writeFileSync(
     join(dataRoot, 'server', 'layout.json'),
-    `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: 'dep_00000000-0000-734c-ad49-cfb96bb3bbb2' })}\n`
+    `${JSON.stringify({ schemaVersion: 1, layoutVersion: 1, deploymentId: 'dep_00000000-0000-734c-ad49-cfb96bb3bbb2' })}\n`
   );
   writeFileSync(join(dataRoot, 'preserved.txt'), 'preserved predecessor bytes\n');
 

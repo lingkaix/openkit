@@ -74,6 +74,7 @@ JOURNAL_CONTAINER_ID = "f" * 64
 APP_UPDATE_IDENTITY_DEST = "/run/openkit/app-update/id_ed25519"
 APP_UPDATE_KNOWN_HOSTS_DEST = "/run/openkit/app-update/known_hosts"
 IMAGE_ENTRYPOINT = ["tini", "--", "/usr/local/bin/openkit-app-entrypoint"]
+RELEASE_IDENTITY_FILE = "/usr/local/lib/openkit/release-identity.json"
 RELEASE_SOURCE = {
     "appDigest": DIGEST,
     "sourceCommit": COMMIT,
@@ -239,6 +240,20 @@ class RecordingEffects:
         # Set only by cases that serve a deliberately malformed inventory.
         self.tokens_contract_invalid = False
         self.log_config: Optional[dict] = None
+        # Image id -> release-identity.json object. None means the file is absent.
+        # An id that is omitted gets the default v0.1.0 identity so same-series updates stay proved.
+        self.release_identities: Dict[str, Optional[dict]] = {}
+        self.absent_images: Set[str] = set()
+        self.transient_target_inspect_failures = 0
+        # The next N digest-pinned image inspects publish a different RepoDigest.
+        self.target_repo_digest_misses = 0
+        self.pulled_images: Set[str] = set()
+        self.created_images: Dict[str, str] = {}
+        self.inspect_by_reference: Dict[str, dict] = {}
+        self.repo_tags: List[str] = []
+        self.image_env: Optional[List[str]] = None
+        self.container_env_extra: List[str] = []
+        self._inspect_reference: Optional[str] = None
 
     def bind(self, root: Path) -> None:
         self.root = root
@@ -270,6 +285,7 @@ class RecordingEffects:
                     "OPENKIT_DATA_ROOT=/data/openkit",
                     "CADDY_HTTP_PORT=7080",
                     "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:14318",
+                    *self.container_env_extra,
                 ],
                 "Healthcheck": {
                     "Test": [
@@ -343,10 +359,45 @@ class RecordingEffects:
         return payload
 
     def _image_payload(self) -> dict:
-        return {
+        image_id = self.image_id
+        repo_digests = list(self.repo_digests)
+        repo_tags = list(self.repo_tags)
+        env = None if self.image_env is None else list(self.image_env)
+        reference = self._inspect_reference
+        if reference and reference in self.inspect_by_reference:
+            spec = self.inspect_by_reference[reference]
+            image_id = spec.get("id", image_id)
+            if "repo_digests" in spec:
+                repo_digests = list(spec["repo_digests"])
+            if "repo_tags" in spec:
+                repo_tags = list(spec["repo_tags"])
+            if "env" in spec:
+                env = list(spec["env"])
+        elif reference:
+            digest = reference.split("@", 1)[1] if "@" in reference else reference
+            if digest in self.release_identities and digest != self.image_id:
+                image_id = digest
+                repo_digests = ["ghcr.io/example/openkit-app@" + digest]
+        payload = {
             "Config": {"Cmd": [], "Entrypoint": IMAGE_ENTRYPOINT},
-            "Id": self.image_id,
-            "RepoDigests": list(self.repo_digests),
+            "Id": image_id,
+            "RepoDigests": repo_digests,
+        }
+        if repo_tags:
+            payload["RepoTags"] = repo_tags
+        if env is not None:
+            payload["Config"]["Env"] = env
+        return payload
+
+    def _release_identity_document(self, image: str) -> Optional[dict]:
+        key = image.split("@", 1)[1] if "@" in image else image
+        if key in self.release_identities:
+            return self.release_identities[key]
+        if image in self.release_identities:
+            return self.release_identities[image]
+        return {
+            "releaseTag": RELEASE_SOURCE["tag"],
+            "sourceCommit": RELEASE_SOURCE["sourceCommit"],
         }
 
     def run(self, argv: List[str], timeout: Optional[float] = None) -> Tuple[int, str, str]:
@@ -365,6 +416,26 @@ class RecordingEffects:
             unit = argv[-1]
             return (0, self.active_units.get(unit, "inactive") + "\n", "")
         if argv[:3] == ["docker", "image", "inspect"]:
+            reference = argv[-1]
+            digest = reference.split("@", 1)[1] if "@" in reference else reference
+            if digest in self.absent_images and digest not in self.pulled_images:
+                return 1, "", "No such image"
+            if self.transient_target_inspect_failures > 0 and "@" in reference:
+                self.transient_target_inspect_failures -= 1
+                return 1, "", "transient image inspect failure"
+            if self.target_repo_digest_misses > 0 and "@" in reference:
+                self.target_repo_digest_misses -= 1
+                requested = reference.split("@", 1)[1]
+                foreign = "sha256:" + ("c" * 64)
+                if foreign == requested:
+                    foreign = "sha256:" + ("d" * 64)
+                payload = {
+                    "Config": {"Cmd": [], "Entrypoint": list(IMAGE_ENTRYPOINT)},
+                    "Id": requested,
+                    "RepoDigests": ["ghcr.io/example/openkit-app@" + foreign],
+                }
+                return 0, json.dumps(payload), ""
+            self._inspect_reference = reference
             return 0, json.dumps(self._image_payload()), ""
         if argv[:3] == ["docker", "buildx", "imagetools"]:
             reference = argv[4] if len(argv) > 4 else ""
@@ -386,13 +457,25 @@ class RecordingEffects:
         if argv[:2] == ["docker", "pull"]:
             if self.pull_error:
                 return 1, "", self.pull_error
+            ref = argv[-1]
+            if "@" in ref:
+                self.pulled_images.add(ref.split("@", 1)[1])
             return 0, self.pull_digest, ""
         if argv[:2] == ["docker", "create"]:
             if "--pull" in argv:
+                self.created_images[JOURNAL_CONTAINER_ID] = argv[-1]
                 return 0, JOURNAL_CONTAINER_ID + "\n", ""
             return 0, "extract-ctr\n", ""
         if argv[:2] == ["docker", "cp"]:
             dest = Path(argv[-1])
+            remote = argv[2]
+            if remote.endswith(RELEASE_IDENTITY_FILE):
+                container = remote.split(":", 1)[0]
+                document = self._release_identity_document(self.created_images.get(container, ""))
+                if document is None:
+                    return 1, "", "No such file"
+                dest.write_text(json.dumps(document) + "\n", encoding="utf-8")
+                return 0, "", ""
             if argv[2].endswith("/meta/_journal.json"):
                 container, journal = argv[2].split(":", 1)
                 scope = Path(journal).parents[1].name
@@ -748,19 +831,73 @@ class StageTargetTests(unittest.TestCase):
         module = load_helper()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source = dict(RELEASE_SOURCE, tag="v0.2.0")
+            effects = RecordingEffects()
+            effects.bind(root)
+            source = pin_series(effects, "v0.1.0", "v0.2.0")
             path = write_config(root, compatibility={
                 "appliedMigrations": ["core_0000_setup"],
                 "candidate": source,
                 "currentImageId": DIGEST,
             })
-            effects = RecordingEffects()
-            effects.bind(root)
             code, result = self.stage_target(module, path, effects)
             self.assertNotEqual(code, 0)
-            self.assertEqual(result["error"]["code"], "app_update_invalid_request", result)
-            self.assertIn("fresh Data Root", result["error"]["message"])
-            self.assertEqual(effects.calls, [])
+            assert_fresh_root(self, result)
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            assert_no_replacement(self, effects)
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+
+    def test_absent_prerelease_tag_refuses_staging_before_pull(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.bind(root)
+            effects.release_identities[DIGEST] = release_identity("v0.1.2")
+            effects.absent_images.add(OTHER_DIGEST)
+            source = {
+                "appDigest": OTHER_DIGEST,
+                "sourceCommit": OTHER_COMMIT,
+                "tag": "v0.2.0-rc.1",
+            }
+            path = write_config(root, compatibility={
+                "appliedMigrations": ["core_0000_setup"],
+                "candidate": source,
+                "currentImageId": DIGEST,
+            })
+            code, result = self.stage_target(module, path, effects)
+            self.assertNotEqual(code, 0)
+            assert_fresh_root(self, result)
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            assert_no_replacement(self, effects)
+
+    def test_pulled_image_identity_overrides_a_lower_tag(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.bind(root)
+            effects.release_identities[DIGEST] = release_identity("v0.1.0", COMMIT)
+            effects.release_identities[OTHER_DIGEST] = release_identity("v0.2.0", OTHER_COMMIT)
+            effects.absent_images.add(OTHER_DIGEST)
+            effects.release_tag_digest = OTHER_DIGEST
+            effects.release_version_digest = OTHER_DIGEST
+            effects.release_sha_digest = OTHER_DIGEST
+            effects.ls_remote_commit = OTHER_COMMIT
+            source = {
+                "appDigest": OTHER_DIGEST,
+                "sourceCommit": OTHER_COMMIT,
+                "tag": "v0.1.0",
+            }
+            path = write_config(root, compatibility={
+                "appliedMigrations": ["core_0000_setup"],
+                "candidate": source,
+                "currentImageId": DIGEST,
+            })
+            code, result = self.stage_target(module, path, effects)
+            self.assertNotEqual(code, 0)
+            assert_fresh_root(self, result)
+            self.assertTrue(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            assert_no_replacement(self, effects)
             self.assertEqual(list((root / "receipts").glob("*.json")), [])
 
     def test_each_filesystem_shortage_refuses_before_the_first_pull(self) -> None:
@@ -819,7 +956,12 @@ class StageTargetTests(unittest.TestCase):
             self.assertEqual([call for call in effects.calls if call[:2] == ["docker", "pull"]], [
                 ["docker", "pull", "ghcr.io/example/openkit-app@" + DIGEST],
             ])
-            self.assertFalse(any(call[:2] in (["docker", "create"], ["docker", "run"], ["docker", "stop"]) for call in effects.calls))
+            self.assertFalse(any(call[:2] in (["docker", "run"], ["docker", "stop"]) for call in effects.calls))
+            self.assertTrue(all(
+                "--pull" in call and "never" in call
+                for call in effects.calls
+                if call[:2] == ["docker", "create"]
+            ))
             self.assertFalse(list((root / "receipts").iterdir()))
             self.assertEqual(effects.running, {CONTAINER})
 
@@ -1414,38 +1556,93 @@ class DoctorReadinessTests(unittest.TestCase):
             server.server_close()
 
 
+def release_identity(tag: str, commit: str = COMMIT) -> dict:
+    return {"releaseTag": tag, "sourceCommit": commit}
+
+
+def pin_series(
+    effects: RecordingEffects,
+    running_tag: str,
+    target_tag: str,
+    running_commit: str = COMMIT,
+    target_commit: str = OTHER_COMMIT,
+) -> dict:
+    """Install verified image identities and return the digest-pinned target release."""
+    effects.release_identities[DIGEST] = release_identity(running_tag, running_commit)
+    effects.release_identities[OTHER_DIGEST] = release_identity(target_tag, target_commit)
+    return {
+        "appDigest": OTHER_DIGEST,
+        "sourceCommit": target_commit,
+        "tag": target_tag,
+    }
+
+
+def assert_fresh_root(test: unittest.TestCase, result: dict) -> None:
+    error = result.get("error") or {}
+    test.assertEqual(error.get("code"), "app_update_invalid_request", result)
+    test.assertIn("fresh Data Root", error.get("message", ""))
+    test.assertIn("paired predecessor recovery", error.get("message", ""))
+
+
+def assert_digest_refusal(test: unittest.TestCase, result: dict) -> None:
+    error = result.get("error") or {}
+    test.assertEqual(error.get("code"), "app_update_invalid_request", result)
+    test.assertIn("RepoDigest", error.get("message", ""))
+
+
+def assert_no_replacement(test: unittest.TestCase, effects: RecordingEffects) -> None:
+    test.assertFalse(any(call[:1] == ["systemd-run"] for call in effects.calls))
+    test.assertFalse(
+        any(call[:2] in (["docker", "stop"], ["docker", "rename"], ["docker", "run"]) for call in effects.calls)
+    )
+    test.assertEqual(effects.running, {CONTAINER})
+    test.assertEqual(effects.containers, {CONTAINER})
+
+
+def journal_scopes(effects: RecordingEffects) -> List[str]:
+    scopes = []
+    for call in effects.calls:
+        if call[:2] == ["docker", "cp"] and "/drizzle/" in call[2] and call[2].endswith("/meta/_journal.json"):
+            scopes.append(call[2].split("/drizzle/")[1].split("/")[0])
+    return scopes
+
+
 class MigrationJournalTests(unittest.TestCase):
     def test_v020_fresh_root_refuses_equal_journals_before_receipt_or_effect(self) -> None:
         module = load_helper()
-        source = dict(RELEASE_SOURCE, tag="v0.2.0")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            path, effects, _, result = _prepare(module, root, source=source)
-            self.assertEqual(result["error"]["code"], "app_update_invalid_request", result)
-            self.assertIn("fresh Data Root", result["error"]["message"])
+            effects = RecordingEffects()
+            source = pin_series(effects, "v0.1.0", "v0.2.0")
+            _path, effects, _, result = _prepare(module, root, source=source, effects=effects)
+            assert_fresh_root(self, result)
             self.assertEqual(list((root / "receipts").glob("*.json")), [])
-            self.assertEqual(effects.calls, [])
+            assert_no_replacement(self, effects)
+            self.assertIn(DIGEST, [call[-1] for call in effects.calls if call[:2] == ["docker", "create"]])
+            self.assertIn(OTHER_DIGEST, [call[-1] for call in effects.calls if call[:2] == ["docker", "create"]])
+            self.assertTrue(any(call[:2] == ["docker", "cp"] and call[2].endswith(RELEASE_IDENTITY_FILE) for call in effects.calls))
+            self.assertIn(["docker", "rm", "-v", JOURNAL_CONTAINER_ID], effects.calls)
 
-            with patch.object(module.AppUpdateHelper, "_refuse_fresh_root_release"):
-                path, effects, _, prepared = _prepare(module, root, source=source)
+            with patch.object(module.AppUpdateHelper, "_refuse_fresh_root_release", return_value=OTHER_DIGEST):
+                path, effects, _, prepared = _prepare(module, root, source=source, effects=effects)
             request_id = prepared["requestId"]
             receipt = root / "receipts" / (request_id + ".json")
             original = receipt.read_bytes()
             effects.calls.clear()
             _, result = invoke(module, {"op": "start", "requestId": request_id, "maintenanceConsent": True}, path, effects)
-            self.assertEqual(result["error"]["code"], "app_update_invalid_request", result)
-            self.assertIn("fresh Data Root", result["error"]["message"])
+            assert_fresh_root(self, result)
             self.assertEqual(receipt.read_bytes(), original)
-            self.assertEqual(effects.calls, [])
+            assert_no_replacement(self, effects)
 
     def test_queued_apply_refuses_fresh_root_before_receipt_change_or_effect(self) -> None:
         module = load_helper()
-        source = dict(RELEASE_SOURCE, tag="v0.2.0")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            effects = RecordingEffects()
+            source = pin_series(effects, "v0.1.0", "v0.2.0")
             # Create the queued receipt using the historical behavior.
-            with patch.object(module.AppUpdateHelper, "_refuse_fresh_root_release"):
-                path, effects, _, prepared = _prepare(module, root, source=source)
+            with patch.object(module.AppUpdateHelper, "_refuse_fresh_root_release", return_value=OTHER_DIGEST):
+                path, effects, _, prepared = _prepare(module, root, source=source, effects=effects)
                 request_id = prepared["requestId"]
                 _, started = invoke(module, {"op": "start", "requestId": request_id, "maintenanceConsent": True}, path, effects)
             self.assertEqual(started["stage"], "launching")
@@ -1453,10 +1650,279 @@ class MigrationJournalTests(unittest.TestCase):
             original = receipt.read_bytes()
             effects.calls.clear()
             _, result = invoke(module, {}, path, effects, extra_argv=["--apply", request_id], stdin_bytes=b"")
-            self.assertEqual(result["error"]["code"], "app_update_invalid_request", result)
-            self.assertIn("fresh Data Root", result["error"]["message"])
+            assert_fresh_root(self, result)
             self.assertEqual(receipt.read_bytes(), original)
-            self.assertEqual(effects.calls, [])
+            assert_no_replacement(self, effects)
+
+    def test_lower_tag_cannot_clear_an_unproved_target_before_effects(self) -> None:
+        """A v0.1.x tag does not make an unread digest-pinned image safe."""
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.release_identities[DIGEST] = release_identity("v0.1.0", COMMIT)
+            effects.release_identities[OTHER_DIGEST] = release_identity("v0.2.0", OTHER_COMMIT)
+            effects.transient_target_inspect_failures = 1
+            source = {"appDigest": OTHER_DIGEST, "sourceCommit": OTHER_COMMIT, "tag": "v0.1.0"}
+            _path, effects, _, result = _prepare(module, root, source=source, effects=effects)
+            assert_fresh_root(self, result)
+            self.assertEqual(effects.transient_target_inspect_failures, 0)
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            assert_no_replacement(self, effects)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.release_identities[DIGEST] = release_identity("v0.1.0", COMMIT)
+            effects.release_identities[OTHER_DIGEST] = release_identity("v0.2.0", OTHER_COMMIT)
+            source = {"appDigest": OTHER_DIGEST, "sourceCommit": OTHER_COMMIT, "tag": "v0.1.0"}
+            with patch.object(module.AppUpdateHelper, "_refuse_fresh_root_release", return_value=OTHER_DIGEST):
+                path, effects, _, prepared = _prepare(module, root, source=source, effects=effects)
+            request_id = prepared["requestId"]
+            receipt = root / "receipts" / (request_id + ".json")
+            original = receipt.read_bytes()
+            effects.calls.clear()
+            effects.transient_target_inspect_failures = 1
+            _, result = invoke(
+                module,
+                {"op": "start", "requestId": request_id, "maintenanceConsent": True},
+                path,
+                effects,
+            )
+            assert_fresh_root(self, result)
+            self.assertEqual(effects.transient_target_inspect_failures, 0)
+            self.assertEqual(receipt.read_bytes(), original)
+            assert_no_replacement(self, effects)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.release_identities[DIGEST] = release_identity("v0.1.0", COMMIT)
+            effects.release_identities[OTHER_DIGEST] = release_identity("v0.2.0", OTHER_COMMIT)
+            source = {"appDigest": OTHER_DIGEST, "sourceCommit": OTHER_COMMIT, "tag": "v0.1.0"}
+            with patch.object(module.AppUpdateHelper, "_refuse_fresh_root_release", return_value=OTHER_DIGEST):
+                path, effects, _, prepared = _prepare(module, root, source=source, effects=effects)
+                request_id = prepared["requestId"]
+                _, started = invoke(
+                    module,
+                    {"op": "start", "requestId": request_id, "maintenanceConsent": True},
+                    path,
+                    effects,
+                )
+            self.assertEqual(started["stage"], "launching")
+            receipt = root / "receipts" / (request_id + ".json")
+            original = receipt.read_bytes()
+            effects.calls.clear()
+            effects.absent_images.add(OTHER_DIGEST)
+            _, result = invoke(module, {}, path, effects, extra_argv=["--apply", request_id], stdin_bytes=b"")
+            assert_fresh_root(self, result)
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            assert_no_replacement(self, effects)
+
+    def test_first_lookup_digest_mismatch_refuses_before_effects(self) -> None:
+        """A first RepoDigest miss refuses, and the next admission still proves the series."""
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.release_identities[DIGEST] = release_identity("v0.1.0", COMMIT)
+            effects.release_identities[OTHER_DIGEST] = release_identity("v0.2.0", OTHER_COMMIT)
+            effects.target_repo_digest_misses = 1
+            source = {"appDigest": OTHER_DIGEST, "sourceCommit": OTHER_COMMIT, "tag": "v0.2.0"}
+            _path, effects, _, result = _prepare(module, root, source=source, effects=effects)
+            assert_digest_refusal(self, result)
+            self.assertEqual(effects.target_repo_digest_misses, 0)
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertEqual(journal_scopes(effects), [])
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            assert_no_replacement(self, effects)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            source = pin_series(effects, "v0.1.0", "v0.2.0")
+            _path, effects, _, result = _prepare(module, root, source=source, effects=effects)
+            assert_fresh_root(self, result)
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertEqual(journal_scopes(effects), [])
+            self.assertTrue(
+                any(call[:2] == ["docker", "cp"] and str(call[2]).endswith(RELEASE_IDENTITY_FILE) for call in effects.calls)
+            )
+            assert_no_replacement(self, effects)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.release_identities[DIGEST] = release_identity("v0.1.0", COMMIT)
+            effects.release_identities[OTHER_DIGEST] = release_identity("v0.2.0", OTHER_COMMIT)
+            source = {"appDigest": OTHER_DIGEST, "sourceCommit": OTHER_COMMIT, "tag": "v0.2.0"}
+            with patch.object(module.AppUpdateHelper, "_refuse_fresh_root_release", return_value=OTHER_DIGEST):
+                path, effects, _, prepared = _prepare(module, root, source=source, effects=effects)
+            request_id = prepared["requestId"]
+            receipt = root / "receipts" / (request_id + ".json")
+            original = receipt.read_bytes()
+            effects.calls.clear()
+            effects.target_repo_digest_misses = 1
+            _, result = invoke(
+                module,
+                {"op": "start", "requestId": request_id, "maintenanceConsent": True},
+                path,
+                effects,
+            )
+            assert_digest_refusal(self, result)
+            self.assertEqual(effects.target_repo_digest_misses, 0)
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertEqual(journal_scopes(effects), [])
+            assert_no_replacement(self, effects)
+
+    def test_persistent_digest_mismatch_refuses_before_effects(self) -> None:
+        """A RepoDigest that never matches refuses before a receipt write, pull, or launch."""
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.repo_digests = ["ghcr.io/example/openkit-app@" + OTHER_DIGEST]
+            _path, effects, _, result = _prepare(module, root, effects=effects)
+            assert_digest_refusal(self, result)
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            self.assertEqual(journal_scopes(effects), [])
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            assert_no_replacement(self, effects)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            path, effects, _, prepared = _prepare(module, root, effects=effects)
+            request_id = prepared["requestId"]
+            _, started = invoke(
+                module,
+                {"op": "start", "requestId": request_id, "maintenanceConsent": True},
+                path,
+                effects,
+            )
+            self.assertEqual(started["stage"], "launching", started)
+            receipt = root / "receipts" / (request_id + ".json")
+            original = receipt.read_bytes()
+            effects.calls.clear()
+            effects.repo_digests = ["ghcr.io/example/openkit-app@" + OTHER_DIGEST]
+            _, result = invoke(module, {}, path, effects, extra_argv=["--apply", request_id], stdin_bytes=b"")
+            assert_digest_refusal(self, result)
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects.calls))
+            self.assertEqual(journal_scopes(effects), [])
+            assert_no_replacement(self, effects)
+
+    def test_prerelease_crossing_refuses_before_prepare_effects(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            source = pin_series(effects, "v0.1.2", "v0.2.0-rc.1")
+            _path, effects, _, result = _prepare(module, root, source=source, effects=effects)
+            assert_fresh_root(self, result)
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            assert_no_replacement(self, effects)
+            self.assertEqual(os.readlink(root / "web" / "current"), PREV_COMMIT)
+
+    def test_unprovable_identity_holds_before_effects(self) -> None:
+        module = load_helper()
+        cases = (
+            {"running": None, "target": release_identity("v0.2.0", OTHER_COMMIT)},
+            {"running": release_identity("v0.1.0"), "target": None},
+            {"running": {"releaseTag": None, "sourceCommit": COMMIT}, "target": release_identity("v0.2.0", OTHER_COMMIT)},
+        )
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                effects = RecordingEffects()
+                effects.release_identities[DIGEST] = case["running"]
+                effects.release_identities[OTHER_DIGEST] = case["target"]
+                source = {
+                    "appDigest": OTHER_DIGEST,
+                    "sourceCommit": OTHER_COMMIT,
+                    "tag": "v0.2.0",
+                }
+                _path, effects, _, result = _prepare(module, root, source=source, effects=effects)
+                assert_fresh_root(self, result)
+                self.assertEqual(list((root / "receipts").glob("*.json")), [])
+                assert_no_replacement(self, effects)
+
+    def test_env_alias_and_receipt_tag_cannot_hide_a_crossing(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.inspect_image = "ghcr.io/example/openkit-app:v0.2.0"
+            effects.repo_tags = ["ghcr.io/example/openkit-app:v0.2.0"]
+            effects.image_env = ["OPENKIT_RELEASE_TAG=v0.2.0"]
+            effects.container_env_extra = ["OPENKIT_RELEASE_TAG=v0.2.0"]
+            effects.release_identities[DIGEST] = release_identity("v0.1.0", COMMIT)
+            effects.release_identities[OTHER_DIGEST] = release_identity("v0.2.0", OTHER_COMMIT)
+            source = {
+                "appDigest": OTHER_DIGEST,
+                "sourceCommit": OTHER_COMMIT,
+                "tag": "v0.1.0",
+            }
+            _path, effects, _, result = _prepare(module, root, source=source, effects=effects)
+            assert_fresh_root(self, result)
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            assert_no_replacement(self, effects)
+            self.assertIn(DIGEST, [call[-1] for call in effects.calls if call[:2] == ["docker", "create"]])
+
+    def test_env_alias_and_receipt_tag_cannot_invent_a_crossing(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.inspect_image = "ghcr.io/example/openkit-app:v0.1.0"
+            effects.repo_tags = ["ghcr.io/example/openkit-app:v0.1.0"]
+            effects.image_env = ["OPENKIT_RELEASE_TAG=v0.1.0"]
+            effects.container_env_extra = ["OPENKIT_RELEASE_TAG=v0.1.0"]
+            effects.candidate_journal_entries["workspace"] = ["0000_setup", "0001_append"]
+            source = pin_series(effects, "v0.2.0", "v0.2.1")
+            source["tag"] = "v0.1.0"
+            _path, effects, _, result = _prepare(module, root, source=source, effects=effects)
+            error = result.get("error") or {}
+            self.assertEqual(error.get("code"), "app_update_invalid_request", result)
+            self.assertIn("workspace migration journal", error.get("message", ""))
+            self.assertIn("stopped-App", error.get("message", ""))
+            self.assertNotIn("fresh Data Root", error.get("message", ""))
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            assert_no_replacement(self, effects)
+
+    def test_same_series_reaches_four_journal_check_and_stopped_operator_path(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.candidate_journal_entries["core"] = ["0000_setup", "0001_append"]
+            source = pin_series(effects, "v0.2.0", "v0.2.1")
+            _path, effects, _, result = _prepare(module, root, source=source, effects=effects)
+            error = result.get("error") or {}
+            self.assertEqual(error.get("code"), "app_update_invalid_request", result)
+            self.assertIn("core migration journal", error.get("message", ""))
+            self.assertIn("stopped-App", error.get("message", ""))
+            self.assertIn("verified cold", error.get("message", ""))
+            self.assertNotIn("fresh Data Root", error.get("message", ""))
+            # The check refuses at the first differing scope, after comparing app and core.
+            self.assertGreaterEqual(journal_scopes(effects).count("app"), 2)
+            self.assertGreaterEqual(journal_scopes(effects).count("core"), 2)
+            self.assertEqual(list((root / "receipts").glob("*.json")), [])
+            assert_no_replacement(self, effects)
+            self.assertEqual(os.readlink(root / "web" / "current"), PREV_COMMIT)
+
+    def test_same_series_prerelease_prepares_after_four_journal_check(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            source = pin_series(effects, "v0.2.0-rc.1", "v0.2.0")
+            _path, effects, _, prepared = _prepare(module, root, source=source, effects=effects)
+            self.assertEqual(prepared.get("stage"), "prepared", prepared)
+            self.assertCountEqual(set(journal_scopes(effects)), {"app", "core", "user", "workspace"})
+            self.assertNotIn("fresh Data Root", json.dumps(prepared))
 
     def test_prepare_refuses_configured_forward_migration_without_app_effect(self) -> None:
         module = load_helper()
@@ -1524,7 +1990,11 @@ class MigrationJournalTests(unittest.TestCase):
 
             def reformat_target_journal(argv, timeout=None):
                 result = run(argv, timeout)
-                if argv[:2] == ["docker", "cp"] and argv[2].startswith(JOURNAL_CONTAINER_ID + ":"):
+                if (
+                    argv[:2] == ["docker", "cp"]
+                    and argv[2].startswith(JOURNAL_CONTAINER_ID + ":")
+                    and argv[2].endswith("/meta/_journal.json")
+                ):
                     path = Path(argv[-1])
                     journal = json.loads(path.read_text(encoding="utf-8"))
                     entry = dict(reversed(list(journal["entries"][0].items())))
@@ -1701,6 +2171,8 @@ class ReceiptLifecycleTests(unittest.TestCase):
             clock = {"t": 1_000_000.0}
             config_path, effects, _code, prepared = _prepare(module, root, now=lambda: clock["t"])
             clock["t"] += 601
+            receipt = root / "receipts" / (prepared["requestId"] + ".json")
+            original = receipt.read_bytes()
             effects.calls.clear()
             _code, body = invoke(
                 module,
@@ -1714,8 +2186,8 @@ class ReceiptLifecycleTests(unittest.TestCase):
                 now=lambda: clock["t"],
             )
             self.assertEqual(body["error"]["code"], "app_update_expired")
-            self.assertEqual(effects.calls, [])
-            self.assertTrue((root / "receipts" / (prepared["requestId"] + ".json")).is_file())
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertFalse(any(call[:1] == ["systemd-run"] for call in effects.calls))
 
     def test_prepare_expiring_during_start_journal_reads_cannot_launch(self) -> None:
         module = load_helper()
@@ -1730,7 +2202,11 @@ class ReceiptLifecycleTests(unittest.TestCase):
             run = effects.run
 
             def slow_journal_reads(argv, timeout=None):
-                if argv[:2] == ["docker", "cp"] and argv[2].startswith(JOURNAL_CONTAINER_ID + ":"):
+                if (
+                    argv[:2] == ["docker", "cp"]
+                    and argv[2].startswith(JOURNAL_CONTAINER_ID + ":")
+                    and argv[2].endswith("/meta/_journal.json")
+                ):
                     clock["t"] += 1
                 return run(argv, timeout)
 
@@ -1764,7 +2240,8 @@ class ReceiptLifecycleTests(unittest.TestCase):
             self.assertTrue(first["jobId"].startswith("openkit-app-update-"))
             self.assertTrue(any(call[:1] == ["systemd-run"] for call in effects.calls))
             self.assertTrue(any("--apply" in call for call in effects.calls))
-            before = list(effects.calls)
+            receipt = root / "receipts" / (prepared["requestId"] + ".json")
+            original = receipt.read_bytes()
             second = invoke(
                 module,
                 {
@@ -1777,7 +2254,8 @@ class ReceiptLifecycleTests(unittest.TestCase):
             )[1]
             self.assertEqual(second["requestId"], first["requestId"])
             self.assertEqual(second["stage"], "launching")
-            self.assertEqual(effects.calls, before)
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertEqual(sum(1 for call in effects.calls if call[:1] == ["systemd-run"]), 1)
 
     def test_launch_intent_without_a_live_job_becomes_terminal_unknown(self) -> None:
         module = load_helper()
@@ -1820,6 +2298,40 @@ class ReceiptLifecycleTests(unittest.TestCase):
             )[1]
             self.assertEqual(resume["stage"], "unknown")
             self.assertEqual(sum(1 for call in effects.calls if call[:1] == ["systemd-run"]), 1)
+
+    def test_stale_launch_retry_with_digest_mismatch_keeps_the_receipt(self) -> None:
+        """A Start retry proves the target before it can mark a stale launch unknown."""
+        module = load_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clock = {"t": 1_000_000.0}
+            effects = RecordingEffects()
+            path, effects, _, prepared = _prepare(module, root, effects=effects, now=lambda: clock["t"])
+            request_id = prepared["requestId"]
+            _, started = invoke(
+                module,
+                {"op": "start", "requestId": request_id, "maintenanceConsent": True},
+                path,
+                effects,
+                now=lambda: clock["t"],
+            )
+            self.assertEqual(started["stage"], "launching", started)
+            receipt = root / "receipts" / (request_id + ".json")
+            original = receipt.read_bytes()
+            effects.active_units.clear()
+            effects.calls.clear()
+            effects.repo_digests = ["ghcr.io/example/openkit-app@" + OTHER_DIGEST]
+            clock["t"] += 31
+            _, result = invoke(
+                module,
+                {"op": "start", "requestId": request_id, "maintenanceConsent": True},
+                path,
+                effects,
+                now=lambda: clock["t"],
+            )
+            assert_digest_refusal(self, result)
+            self.assertEqual(receipt.read_bytes(), original)
+            assert_no_replacement(self, effects)
 
     def test_symlink_corrupt_and_contradictory_receipts_require_recovery(self) -> None:
         module = load_helper()
@@ -2716,6 +3228,9 @@ class ApplyJobTests(unittest.TestCase):
                 config_path,
                 effects=effects,
             )
+            receipt = root / "receipts" / (prepared["requestId"] + ".json")
+            original = receipt.read_bytes()
+            effects.calls.clear()
             effects.repo_digests = ["ghcr.io/example/openkit-app@" + OTHER_DIGEST]
             body = invoke(
                 module,
@@ -2725,8 +3240,10 @@ class ApplyJobTests(unittest.TestCase):
                 extra_argv=["--apply", prepared["requestId"]],
                 stdin_bytes=b"",
             )[1]
-            self.assertEqual(body["stage"], "failed")
-            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+            assert_digest_refusal(self, body)
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertFalse(any(call[:2] in (["docker", "pull"], ["docker", "stop"]) for call in effects.calls))
+            self.assertEqual(effects.running, {CONTAINER})
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
@@ -2744,6 +3261,9 @@ class ApplyJobTests(unittest.TestCase):
                 config_path,
                 effects=effects,
             )
+            receipt = root / "receipts" / (prepared["requestId"] + ".json")
+            original = receipt.read_bytes()
+            effects.calls.clear()
             effects.repo_digests = ["ghcr.io/example/openkit-app@" + OTHER_DIGEST]
             body = invoke(
                 module,
@@ -2753,8 +3273,10 @@ class ApplyJobTests(unittest.TestCase):
                 extra_argv=["--apply", prepared["requestId"]],
                 stdin_bytes=b"",
             )[1]
-            self.assertEqual(body["stage"], "failed")
-            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+            assert_digest_refusal(self, body)
+            self.assertEqual(receipt.read_bytes(), original)
+            self.assertFalse(any(call[:2] in (["docker", "pull"], ["docker", "stop"]) for call in effects.calls))
+            self.assertEqual(effects.running, {CONTAINER})
 
     def test_redacts_secret_shaped_command_errors_in_receipts(self) -> None:
         module = load_helper()

@@ -14,7 +14,7 @@ Owns:
 - The physical `DATA_ROOT` ownership hierarchy for `config/`, `server/`, `users/<userId>/`, and `workspaces/<workspaceId>/`, and the rule that local and server modes share one storage layout.
 - Physical family placement and source-of-truth boundaries across `server/db/core.sqlite`, `users/<userId>/db/user.sqlite`, `workspaces/<workspaceId>/db/workspace.sqlite`, per-App `workspaces/<workspaceId>/light-apps/<appId>/data.sqlite`, file-backed canonical artifacts/configurations/snapshots/mounts, and disposable derived indexes and caches.
 - Local SQLite transaction boundaries for product records, Light Apps, Materials, version-keyed Artifact Reviews, evaluation candidate sets, Workspace Notebook heads, and Core-homed recurring schedules/occurrences/expired ranges and external-trigger joins.
-- Release-scoped SQLite migration ledger validation, per-scope integrity failure containment, explicit one-way physical layout migration, and lineage requirements for promoting runtime outputs into canonical product history.
+- Release-scoped SQLite migration ledger validation, per-scope integrity failure containment, and lineage requirements for promoting runtime outputs into canonical product history.
 
 Does not own:
 - Scope-local control-store worker batching, execution-journal state machines, reservation commit gaps, and deadline propagation ([Durable Execution And Control Store](20261019-durable_execution_and_control_store.md)); superseded file-first live product/observation layouts create no fallback authority.

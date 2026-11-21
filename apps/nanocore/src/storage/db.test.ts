@@ -43,6 +43,7 @@ import {
   openWorkspaceReadDb,
   serverStoragePath,
   type UserDb,
+  verifyExistingCoreBaseline,
   type WorkspaceDb,
 } from './db.js';
 import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from './fs-layout.js';
@@ -79,7 +80,128 @@ function initializeUnmigratedScopedDb(scopedDb: UserDb | WorkspaceDb): void {
   expect(listMigrationIds(sqlite, scope)).toEqual([]);
 }
 
+describe('AD1 Core baseline admission', () => {
+  it.each([false, true])('refuses missing or empty established Core (empty=%s)', async (empty) => {
+    const root = createDataRoot();
+    const path = coreDbPath(root);
+    try {
+      ensureLayout(root);
+      if (empty) writeFileSync(path, '');
+      const originalFiles = readdirSync(dirname(path));
+      await expect(verifyExistingCoreBaseline(root)).rejects.toMatchObject({
+        code: 'migration_unsupported_core',
+        message: expect.stringContaining('A fresh v0.2.0 installation is required.'),
+      });
+      expect(readdirSync(dirname(path))).toEqual(originalFiles);
+      if (empty) expect(statSync(path).size).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      name: 'missing ledger',
+      change: 'DROP TABLE __drizzle_migrations',
+    },
+    {
+      name: 'predecessor hash at the same journal time',
+      change: "UPDATE __drizzle_migrations SET hash = 'predecessor-sql'",
+    },
+    {
+      name: 'duplicate baseline',
+      change: `INSERT INTO __drizzle_migrations (hash, created_at)
+               SELECT hash, created_at FROM __drizzle_migrations`,
+    },
+    {
+      name: 'required index missing under the original ledger',
+      change: 'DROP INDEX audit_events_request_idx',
+    },
+  ])('refuses $name without changing canonical SQLite files', async ({ change }) => {
+    const root = createDataRoot();
+    const path = coreDbPath(root);
+    const core = openCoreDb(root);
+    try {
+      applyMigrations(core);
+      core.sqlite.exec(change);
+    } finally {
+      core.sqlite.close();
+    }
+
+    try {
+      const original = readFileSync(path);
+      const originalFiles = readdirSync(dirname(path));
+      await expect(verifyExistingCoreBaseline(root)).rejects.toMatchObject({
+        code: 'migration_unsupported_core',
+        message: expect.stringContaining('A fresh v0.2.0 installation is required.'),
+      });
+      expect(readFileSync(path)).toEqual(original);
+      expect(readdirSync(dirname(path))).toEqual(originalFiles);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('verifies a released Core baseline committed only in WAL', async () => {
+    const root = createDataRoot();
+    const path = coreDbPath(root);
+    const core = openCoreDb(root);
+    try {
+      core.sqlite.pragma('wal_autocheckpoint = 0');
+      const beforeDDL = readFileSync(path);
+      applyMigrations(core);
+      const committedWal = readFileSync(`${path}-wal`);
+      expect(readFileSync(path)).toEqual(beforeDDL);
+      await expect(verifyExistingCoreBaseline(root)).resolves.toBeUndefined();
+      expect(readFileSync(path)).toEqual(beforeDDL);
+      expect(readFileSync(`${path}-wal`)).toEqual(committedWal);
+    } finally {
+      core.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('scoped storage databases', () => {
+  it('refuses a mixed Workspace layout at the current marker and preserves both trees', async () => {
+    const root = createDataRoot();
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+    const userId = 'usr_00000000-0000-700b-b58e-9990ce93a2d2';
+    const nestedPath = join(
+      root,
+      'users',
+      userId,
+      'workspaces',
+      workspaceId,
+      'db',
+      'workspace.sqlite'
+    );
+    const markerPath = join(root, 'server', 'layout.json');
+    try {
+      ensureLayout(root);
+      const workspace = openWorkspaceDb(root, workspaceId);
+      try {
+        applyScopedMigrations(workspace);
+      } finally {
+        workspace.sqlite.close();
+      }
+      mkdirSync(dirname(nestedPath), { recursive: true });
+      writeFileSync(nestedPath, 'retained predecessor bytes');
+      const currentPath = workspaceDbPath(root, workspaceId);
+      const currentBytes = readFileSync(currentPath);
+      const markerBytes = readFileSync(markerPath);
+
+      await expect(verifyAndMigrateExistingScopedDatabases(root)).rejects.toThrow(
+        /Unsupported owner-nested Workspace tree/
+      );
+      expect(readFileSync(markerPath)).toEqual(markerBytes);
+      expect(readFileSync(currentPath)).toEqual(currentBytes);
+      expect(readFileSync(nestedPath, 'utf8')).toBe('retained predecessor bytes');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('opens only the canonical physical User reader scope', () => {
     const root = createDataRoot();
     const linkedFileRoot = createDataRoot();
@@ -446,6 +568,7 @@ describe('scoped storage databases', () => {
 
         'workspace_snapshot_collections',
         'workspace_snapshot_cursors',
+        'workspace_work_inputs',
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_baseline',
@@ -893,6 +1016,8 @@ describe('scoped storage databases', () => {
     'keeps corrupt $scope authority closed at its owning scope',
     async ({ scope, path, quarantine, verify }) => {
       const dataRoot = createDataRoot();
+      // Publish the current layout and marker before the corrupt placeholder exists.
+      ensureLayout(dataRoot);
       const dbPath = path(dataRoot);
       const originalBytes = Buffer.from(`not sqlite: ${dbPath}`);
       mkdirSync(dirname(dbPath), { recursive: true });

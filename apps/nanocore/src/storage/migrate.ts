@@ -155,6 +155,35 @@ export function assertNativeBaseline(
     );
 }
 
+/** Requires the shipped Core baseline and its required schema before boot or restore can admit it. */
+export function assertCurrentCoreBaseline(
+  sqlite: Database.Database,
+  openReference: () => Database.Database
+): void {
+  const folder = findMigrationsFolder('core');
+  assertSupportedNativeLedger(sqlite, 'core', folder);
+  assertNativeBaseline(sqlite, 'core');
+  try {
+    assertNativeSchemaMatches(
+      sqlite,
+      readMigrationFiles({ migrationsFolder: folder }),
+      folder,
+      openReference
+    );
+  } catch (error) {
+    if (!(error instanceof ServerOwnerAdmissionError)) throw error;
+    if (error.reason === 'migration-failed')
+      throw new BootConfigError(
+        'migration_failed',
+        'Cannot verify the shipped Core baseline schema.'
+      );
+    throw new BootConfigError(
+      'migration_unsupported_core',
+      'Unsupported Core schema. A fresh v0.2.0 installation is required.'
+    );
+  }
+}
+
 /** Reads the existing App journal before its recovery copy and native DDL are prepared. */
 export function hasPendingAppMigrations(sqlite: SetupDb['sqlite']): boolean {
   const migrationsFolder = findMigrationsFolder('app');
@@ -394,12 +423,12 @@ export function readServerOwnerJournal(
     )
   )
     throw new ServerOwnerAdmissionError('unsupported');
-  assertServerOwnerSchemaMatches(sqlite, expected.slice(0, applied.length), folder, openReference);
+  assertNativeSchemaMatches(sqlite, expected.slice(0, applied.length), folder, openReference);
   return { current: applied.length === expected.length, rows: applied };
 }
 
 /** The ledger proves reported history. The shipped owner's DDL proves the current schema. */
-function assertServerOwnerSchemaMatches(
+function assertNativeSchemaMatches(
   sqlite: Database.Database,
   migrations: ReturnType<typeof readMigrationFiles>,
   migrationsFolder: string,

@@ -32,7 +32,7 @@ import {
   setOwnerOnlyDefaultAcl,
 } from '../test-support/sync-publication.js';
 
-import { openCoreDb, openWorkspaceDb } from './db.js';
+import { openCoreDb, openWorkspaceDb, recordDataRootDeploymentMove } from './db.js';
 import {
   coreDbPath,
   ensureConfigTemplateSurface,
@@ -40,9 +40,10 @@ import {
   ensureUserLayout,
   ensureWorkspaceLayout,
   readDataRootLayoutMarker,
-  recordDataRootDeploymentMove,
   resolveDataRootPath,
 } from './fs-layout.js';
+
+import { applyMigrations } from './migrate.js';
 
 const DEPLOYMENT_ID_PATTERN =
   /^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -155,26 +156,37 @@ describe('ensureLayout', () => {
         }
       });
 
-      it('honors write access to a 0444 legacy marker and preserves replacement mode bits', async () => {
-        const { root, server, markerPath } = await markerPublicationFixture();
-        const legacyBytes = '{"schemaVersion":1,"layoutVersion":2}\n';
-        mkdirSync(server, { recursive: true });
-        writeFileSync(markerPath, legacyBytes);
+      it('honors write access to a 0444 marker and preserves explicit replacement mode bits', async () => {
+        const { root, markerPath } = await markerPublicationFixture();
+        const core = openCoreDb(root);
+        try {
+          applyMigrations(core);
+        } finally {
+          core.sqlite.close();
+        }
+        const originalBytes = readFileSync(markerPath, 'utf8');
+        const firstMove = 'dep_00000000-0000-7198-9759-a2c549718546';
         chmodSync(markerPath, 0o444);
 
         if (process.getuid?.() === 0) {
           accessSync(markerPath, constants.W_OK);
-          ensureLayout(root);
+          await recordDataRootDeploymentMove(root, firstMove);
           expect(statSync(markerPath).mode & 0o777).toBe(0o444);
         } else {
-          expect(() => ensureLayout(root)).toThrow(expect.objectContaining({ code: 'EACCES' }));
-          expect(readFileSync(markerPath, 'utf8')).toBe(legacyBytes);
+          await expect(recordDataRootDeploymentMove(root, firstMove)).rejects.toThrow(
+            expect.objectContaining({ code: 'EACCES' })
+          );
+          expect(readFileSync(markerPath, 'utf8')).toBe(originalBytes);
         }
 
         chmodSync(markerPath, 0o640);
-        writeFileSync(markerPath, legacyBytes);
-        ensureLayout(root);
-        expect(readDataRootLayoutMarker(root).deploymentId).toMatch(DEPLOYMENT_ID_PATTERN);
+        const priorId = readDataRootLayoutMarker(root).deploymentId;
+        const requestedId = 'dep_00000000-0000-7198-9759-a2c549718547';
+        await recordDataRootDeploymentMove(root, requestedId);
+        expect(readDataRootLayoutMarker(root)).toMatchObject({
+          deploymentId: requestedId,
+          predecessorDeploymentId: priorId,
+        });
         expect(statSync(markerPath).mode & 0o777).toBe(0o640);
       });
 
@@ -218,24 +230,15 @@ describe('ensureLayout', () => {
       expect(readFileSync(markerPath, 'utf8')).toBe(`${JSON.stringify(marker, null, 2)}\n`);
     });
 
-    it.each(['fresh', 'legacy'] as const)(
-      'refuses boot when the %s marker file sync fails',
-      async (markerKind) => {
-        const { root, server, markerPath } = await markerPublicationFixture();
-        const legacyBytes = '{"schemaVersion":1,"layoutVersion":2}\n';
-        if (markerKind === 'legacy') {
-          mkdirSync(server, { recursive: true });
-          writeFileSync(markerPath, legacyBytes);
-        }
-        observeSyncPublication((path) => path.startsWith(join(server, '.layout.json.')));
+    it('refuses boot when the fresh marker file sync fails', async () => {
+      const { root, server, markerPath } = await markerPublicationFixture();
+      observeSyncPublication((path) => path.startsWith(join(server, '.layout.json.')));
 
-        expect(() => ensureLayout(root)).toThrow(publicationSyncFailure);
+      expect(() => ensureLayout(root)).toThrow(publicationSyncFailure);
 
-        if (markerKind === 'legacy') expect(readFileSync(markerPath, 'utf8')).toBe(legacyBytes);
-        else expect(existsSync(markerPath)).toBe(false);
-        expect(existsSync(join(root, 'workspaces'))).toBe(false);
-      }
-    );
+      expect(existsSync(markerPath)).toBe(false);
+      expect(existsSync(join(root, 'workspaces'))).toBe(false);
+    });
 
     it('withholds boot success and retains the published identity until parent sync succeeds', async () => {
       const { root, server, markerPath } = await markerPublicationFixture();
@@ -306,7 +309,7 @@ describe('ensureLayout', () => {
     }
   });
 
-  it('creates the v2 owner-independent workspace root without an owner-nested workspace tree', async () => {
+  it('creates the owner-independent workspace root without an owner-nested workspace tree', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
     ensureLayout(root);
@@ -391,42 +394,57 @@ describe('ensureLayout', () => {
     ensureLayout(firstRoot);
     expect(readDataRootLayoutMarker(firstRoot)).toEqual(firstMarker);
     expect(readFileSync(join(firstRoot, 'server', 'layout.json'), 'utf8')).toContain(
-      '"layoutVersion": 2'
+      '"layoutVersion": 1'
     );
   });
 
   it('records deployment id changes with predecessor lineage', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
-    ensureLayout(root);
+    const core = openCoreDb(root);
+    try {
+      applyMigrations(core);
+    } finally {
+      core.sqlite.close();
+    }
     const originalDeploymentId = readDataRootLayoutMarker(root).deploymentId;
-    const marker = recordDataRootDeploymentMove(root, 'dep_00000000-0000-7198-9759-a2c549718546');
+    const marker = await recordDataRootDeploymentMove(
+      root,
+      'dep_00000000-0000-7198-9759-a2c549718546'
+    );
 
     expect(marker).toEqual({
       schemaVersion: 1,
-      layoutVersion: 2,
+      layoutVersion: 1,
       deploymentId: 'dep_00000000-0000-7198-9759-a2c549718546',
       predecessorDeploymentId: originalDeploymentId,
     });
     expect(readDataRootLayoutMarker(root)).toEqual(marker);
   });
 
-  it('normalizes layout markers that predate deployment lineage', async () => {
+  it.each([
+    { schemaVersion: 1, layoutVersion: 1 },
+    {
+      schemaVersion: 1,
+      layoutVersion: 2,
+      deploymentId: 'dep_00000000-0000-7198-9759-a2c549718546',
+    },
+  ])('refuses incompatible layouts without rewriting the marker', async (marker) => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
     mkdirSync(join(root, 'server'), { recursive: true });
-    writeFileSync(
-      join(root, 'server', 'layout.json'),
-      `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2 }, null, 2)}\n`
+    const markerPath = join(root, 'server', 'layout.json');
+    const originalBytes = `${JSON.stringify(marker, null, 2)}\n`;
+    writeFileSync(markerPath, originalBytes);
+
+    expect(() => ensureLayout(root)).toThrow(
+      expect.objectContaining({
+        code: 'data_root_layout_unsupported',
+        message: expect.stringContaining('A fresh v0.2.0 installation is required.'),
+      })
     );
-
-    ensureLayout(root);
-
-    const marker = readDataRootLayoutMarker(root);
-
-    expect(marker.deploymentId).toMatch(DEPLOYMENT_ID_PATTERN);
-    ensureLayout(root);
-    expect(readDataRootLayoutMarker(root)).toEqual(marker);
+    expect(readFileSync(markerPath, 'utf8')).toBe(originalBytes);
+    expect(existsSync(join(root, 'workspaces'))).toBe(false);
   });
 
   it('fails closed on an incompatible data-root layout marker', async () => {
@@ -441,7 +459,7 @@ describe('ensureLayout', () => {
     expect(() => ensureLayout(root)).toThrow(/Unsupported DATA_ROOT layout version/);
   });
 
-  it('rejects a v1 marker before creating the v2 Workspace root', async () => {
+  it('rejects a predecessor marker before creating the Workspace root', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
     mkdirSync(join(root, 'server'), { recursive: true });
@@ -449,7 +467,7 @@ describe('ensureLayout', () => {
       join(root, 'server', 'layout.json'),
       `${JSON.stringify({
         schemaVersion: 1,
-        layoutVersion: 1,
+        layoutVersion: 2,
         deploymentId: 'dep_00000000-0000-703d-a440-69be2389c753',
       })}\n`
     );
@@ -464,6 +482,7 @@ describe('ensureLayout', () => {
     writeFileSync(join(root, 'core.sqlite'), '');
 
     expect(() => ensureLayout(root)).toThrow(/legacy root core database/);
+    expect(existsSync(join(root, 'server', 'layout.json'))).toBe(false);
   });
 
   it('fails closed when a legacy workspace memory directory exists', async () => {
@@ -530,6 +549,8 @@ describe('ensureLayout', () => {
 
   it('allows canonical database filenames under their owning scopes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+    // The marker is published while the root is empty. The owned filenames come after it.
+    ensureLayout(root);
 
     mkdirSync(join(root, 'server', 'db'), { recursive: true });
     mkdirSync(join(root, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'db'), {

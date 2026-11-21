@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
@@ -19,6 +20,12 @@ import {
   ProviderProfileSchema,
 } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
+import { coreDbPath } from '../storage/fs-layout.js';
+import {
+  dataRootInventory,
+  retainedV010CoreBytes,
+} from '../storage/test-support/data-root-admission.js';
+import { initializeTestCore } from '../test-support/store.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const appRunScript = join(repoRoot, 'scripts', 'docker', 'run-app.sh');
@@ -121,6 +128,7 @@ describe('app run script', () => {
 
   it('does not copy a process-env provider secret into workspace-owned state', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
+    initializeTestCore(dataRoot);
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const storePath = join(workspaceRoot, 'store.json');
     const secret = 'fake-provider-secret-from-process-env';
@@ -180,6 +188,7 @@ describe('app run script', () => {
 
   it('does not copy a secrets-file provider secret into workspace-owned state', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
+    initializeTestCore(dataRoot);
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const secretsPath = join(dataRoot, 'secrets', 'openkit.env');
     const storePath = join(workspaceRoot, 'store.json');
@@ -264,6 +273,69 @@ describe('app run script', () => {
     expect(output).toContain('secretRef');
   });
 
+  it('refuses package launch on a markerless v0.1.0 ledger before changing the root', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'openkit-launch-admission-'));
+    try {
+      const dataRoot = join(fixture, 'data');
+      const bin = join(fixture, 'bin');
+      mkdirSync(join(dataRoot, 'server', 'db'), { recursive: true });
+      writeFileSync(coreDbPath(dataRoot), retainedV010CoreBytes());
+      writeFileSync(join(dataRoot, 'original.txt'), 'retained predecessor\n');
+      mkdirSync(bin);
+      const effects = join(fixture, 'docker-effects');
+      writeFileSync(
+        join(bin, 'docker'),
+        `#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  image) exit 0 ;;
+  run)
+    if [[ "\${2:-}" == --rm && " $* " == *"target=/data/openkit,readonly "* ]]; then
+      while [[ "$1" != --entrypoint ]]; do shift; done
+      shift 3
+      printf 'admission\n' >> "$LAUNCH_EFFECTS"
+      [[ "$4" == /app/nanocore/dist/storage/db.js && "$5" == /data/openkit ]]
+      cd "$LAUNCH_NANOCORE"
+      exec "$LAUNCH_NODE" --import tsx "$1" "$2" "$3" src/storage/db.ts "$LAUNCH_DATA_ROOT"
+    fi
+    printf 'app-run\n' >> "$LAUNCH_EFFECTS"
+    exit 88
+    ;;
+  *) printf 'unexpected-docker-effect\n' >> "$LAUNCH_EFFECTS"; exit 88 ;;
+esac
+`,
+        { mode: 0o755 }
+      );
+      writeFileSync(join(bin, 'curl'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+      const before = dataRootInventory(dataRoot);
+      const result = spawnSync('pnpm', ['run', 'app:run'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        timeout: 20_000,
+        env: {
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+          TMPDIR: tmpdir(),
+          BETTER_AUTH_SECRET: 'fixture-signing-secret-for-root-admission-only',
+          OPENKIT_APP_DATA_ROOT: dataRoot,
+          OPENKIT_APP_ENV_FILE: join(fixture, 'absent-fixture-env'),
+          OPENKIT_APP_IMAGE: 'openkit/app:fixture',
+          LAUNCH_EFFECTS: effects,
+          LAUNCH_NODE: process.execPath,
+          LAUNCH_NANOCORE: join(repoRoot, 'apps/nanocore'),
+          LAUNCH_DATA_ROOT: dataRoot,
+        },
+      });
+      expect(dataRootInventory(dataRoot)).toEqual(before);
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Unsupported core baseline');
+      expect(result.stderr).toContain('v0.2.0 Storage Reinstall');
+      expect(readFileSync(effects, 'utf8')).toBe('admission\n');
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     {
       label: 'valid process secret',
@@ -306,6 +378,10 @@ if [[ "\${1:-}" == image && "\${2:-}" == inspect ]]; then
   exit 0
 fi
 if [[ "\${1:-}" == rm ]]; then
+  exit 0
+fi
+if [[ "\${1:-}" == run && "\${2:-}" == --rm ]]; then
+  [[ " $* " == *"target=/data/openkit,readonly "* ]] || exit 97
   exit 0
 fi
 if [[ "\${1:-}" == run ]]; then

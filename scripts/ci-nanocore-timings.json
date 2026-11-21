@@ -670,8 +670,6 @@
     "src/storage/workspace-source-raw-portability.test.ts": 17347,
     "src/storage/workspace-source-recovery.test.ts": 21068,
     "src/storage/workspace-stage-review-native.test.ts": 6650,
-    "src/storage/workspace-storage-migration-cli.test.ts": 5,
-    "src/storage/workspace-storage-migration.test.ts": 7445,
     "src/storage/workspace-transfer-operation-projections.test.ts": 25850,
     "src/task-pending-operation-projections.test.ts": 51982,
     "src/telemetry-local-exporter.test.ts": 581,

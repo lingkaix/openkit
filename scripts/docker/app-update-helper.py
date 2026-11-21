@@ -36,6 +36,18 @@ RELEASE_MIN_FREE_BYTES = 3 * 1024 ** 3
 # Match the four shipped journals checked by release preflight.
 MIGRATION_SCOPES = ("app", "core", "user", "workspace")
 MIGRATION_JOURNAL_LIMIT_BYTES = 64 * 1024
+# Shipped App images embed this file. It is not an image ENV or a mutable tag.
+RELEASE_IDENTITY_PATH = "/usr/local/lib/openkit/release-identity.json"
+RELEASE_IDENTITY_LIMIT_BYTES = 4096
+# AD1: 0.2 is a fresh baseline. An in-platform update cannot cross into it from 0.1.
+AD1_RUNNING_SERIES = (0, 1)
+AD1_TARGET_SERIES = (0, 2)
+FRESH_ROOT_RELEASE_MESSAGE = (
+    "A 0.1.x to 0.2.x App update requires a fresh Data Root installation and paired predecessor recovery."
+)
+LOCAL_DIGEST_MISMATCH_MESSAGE = (
+    "Local image RepoDigests do not contain the published release digest."
+)
 PREPARE_TTL_SECONDS = 600
 LAUNCH_UNKNOWN_AFTER_SECONDS = 30
 JOB_TIMEOUT_SECONDS = 1800
@@ -68,6 +80,9 @@ TAG_RE = re.compile(
 BOOT_ID_RE = re.compile(
     r"^boot_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
+)
+_RELEASE_SERIES_RE = re.compile(
+    r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$"
 )
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -550,6 +565,56 @@ def _read_stdin(stdin: Any, now: Callable[[], float]) -> Tuple[bytes, Optional[s
     return b"".join(chunks), None
 
 
+def _release_series(tag: Any) -> Optional[Tuple[int, int]]:
+    """Return the major.minor series of an immutable release tag, including prereleases."""
+    if not isinstance(tag, str):
+        return None
+    match = _RELEASE_SERIES_RE.fullmatch(tag)
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def _crossing_held(
+    running: Optional[Tuple[int, int]], target: Optional[Tuple[int, int]]
+) -> bool:
+    """Hold when a 0.1.x to 0.2.x crossing is proved or the evidence still allows it."""
+    if target is not None and target != AD1_TARGET_SERIES:
+        return False
+    if running is not None and running != AD1_RUNNING_SERIES:
+        return False
+    return True
+
+
+def _series_from_identity_file(path: str) -> Optional[Tuple[int, int]]:
+    """Return the series embedded in one image, or None when the file does not prove it."""
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return None
+    if not 0 < metadata.st_size <= RELEASE_IDENTITY_LIMIT_BYTES:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(RELEASE_IDENTITY_LIMIT_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > RELEASE_IDENTITY_LIMIT_BYTES:
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    commit = data.get("sourceCommit")
+    if not isinstance(commit, str) or COMMIT_RE.match(commit) is None:
+        return None
+    return _release_series(data.get("releaseTag"))
+
+
 def _require_digest(value: Any) -> str:
     if not isinstance(value, str) or not DIGEST_RE.match(value):
         raise HelperError("app_update_invalid_request", "Image digest must be a sha256 identity.")
@@ -788,7 +853,8 @@ class AppUpdateHelper:
             prepared_at=prepared_at,
         )
         preflight = self._idle_preflight()
-        self._assert_migration_free(inspect, self._local_candidate_image_id(command["source"]))
+        # The journal read is a second admission. Prove the digest and the series again.
+        self._assert_migration_free(inspect, self._proved_candidate_image_id(command["source"]))
         receipt["preparedHelperSha256"] = HELPER_SHA256
         receipt["approvalSummary"] = {
             "targetRelease": dict(command["source"]),
@@ -807,14 +873,116 @@ class AppUpdateHelper:
         self._write_receipt(receipt, exclusive=True)
         return project_status(receipt)
 
-    @staticmethod
-    def _refuse_fresh_root_release(source: Mapping[str, Any]) -> None:
-        """The exact storage cutover is an operator reinstall with paired host recovery."""
-        if source["tag"] == "v0.2.0":
-            raise HelperError("app_update_invalid_request", "Release v0.2.0 requires a fresh Data Root installation and paired predecessor recovery.")
+    def _refuse_fresh_root_release(
+        self, source: Mapping[str, Any], *, require_image: bool = True
+    ) -> Optional[str]:
+        """Prove the target digest association and the release series, or refuse.
+
+        Prepare, Start, and Apply call this before any receipt write, job launch,
+        pull-then-amend, or replacement. A retry or staging admission calls it again.
+        Success is the local image id whose RepoDigests contain the requested digest
+        and whose release-identity.json series has been read. A mismatch, an unknown
+        image, or an unproved series raises the typed fresh-root or digest refusal.
+        The running series is releaseTag in the inspected image id. Receipt text,
+        RepoTags, and Config.Env do not establish it. A v0.1.x request tag can only
+        refuse a pull early. require_image is false only for the pre-pull check: a
+        missing image may then be fetched, and the caller proves this again before
+        using the fetched image.
+        """
+        running_id = self._running_image_id()
+        reference = "%s@%s" % (self.config["imageRepository"], source["appDigest"])
+        try:
+            identity = self._image_identity(reference)
+        except HelperError:
+            running_series = None if running_id is None else self._read_release_identity(running_id)
+            self._hold_absent_target(
+                running_series,
+                _release_series(source.get("tag")),
+                require_image=require_image,
+            )
+            return None
+        if source["appDigest"] not in (identity.get("repo_digest_ids") or []):
+            raise HelperError("app_update_invalid_request", LOCAL_DIGEST_MISMATCH_MESSAGE)
+        image_id = str(identity.get("id") or "")
+        running_series = None if running_id is None else self._read_release_identity(running_id)
+        target_series = self._read_release_identity(image_id) if DIGEST_RE.match(image_id) else None
+        if _crossing_held(running_series, target_series):
+            raise HelperError("app_update_invalid_request", FRESH_ROOT_RELEASE_MESSAGE)
+        if DIGEST_RE.match(image_id) is None:
+            raise HelperError("app_update_invalid_request", FRESH_ROOT_RELEASE_MESSAGE)
+        return image_id
+
+    def _proved_candidate_image_id(self, source: Mapping[str, Any]) -> str:
+        """Admit journal and replacement work only from the proved image id."""
+        proved = self._refuse_fresh_root_release(source)
+        if isinstance(proved, str) and DIGEST_RE.match(proved):
+            return proved
+        raise HelperError("app_update_invalid_request", LOCAL_DIGEST_MISMATCH_MESSAGE)
+
+    def _hold_absent_target(
+        self,
+        running_series: Optional[Tuple[int, int]],
+        tag_series: Optional[Tuple[int, int]],
+        *,
+        require_image: bool,
+    ) -> None:
+        """Hold an image that has not been read. The request tag cannot clear that hold."""
+        if _crossing_held(running_series, tag_series):
+            raise HelperError("app_update_invalid_request", FRESH_ROOT_RELEASE_MESSAGE)
+        if not require_image:
+            return
+        if _crossing_held(running_series, None):
+            raise HelperError("app_update_invalid_request", FRESH_ROOT_RELEASE_MESSAGE)
+        raise HelperError(
+            "app_update_unavailable",
+            "Target image is unavailable locally. Ask the host operator to run the installed App-update helper with --stage-target before preparing or starting.",
+        )
+
+    def _running_image_id(self) -> Optional[str]:
+        """Resolve the running App to its immutable image id, never to an alias or env value."""
+        try:
+            inspect = self._inspect_container(self.config["containerName"])
+            identity = self._image_identity(str(inspect.get("Image") or ""))
+        except HelperError:
+            return None
+        image_id = str(identity.get("id") or "")
+        if DIGEST_RE.match(image_id) is None:
+            return None
+        return image_id
+
+    def _read_release_identity(self, image_id: str) -> Optional[Tuple[int, int]]:
+        """Read one stopped image's embedded release series. Unreadable means unproved."""
+        if DIGEST_RE.match(image_id) is None:
+            return None
+        code, output, _ = self.effects.run(
+            ["docker", "create", "--pull", "never", "--network", "none", image_id],
+            timeout=15,
+        )
+        container_id = (output or "").strip()
+        if code != 0 or CONTAINER_ID_RE.fullmatch(container_id) is None:
+            return None
+        series = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="openkit-release-identity-") as directory:
+                path = os.path.join(directory, "release-identity.json")
+                copy_code, _, _ = self.effects.run(
+                    ["docker", "cp", "%s:%s" % (container_id, RELEASE_IDENTITY_PATH), path],
+                    timeout=15,
+                )
+                if copy_code == 0:
+                    series = _series_from_identity_file(path)
+        finally:
+            remove_code, _, _ = self.effects.run(["docker", "rm", "-v", container_id], timeout=15)
+        if remove_code != 0:
+            raise HelperError(
+                "app_update_unavailable",
+                "Could not remove the release identity inspection container.",
+            )
+        return series
 
     def start(self, request_id: str) -> Dict[str, Any]:
         receipt = self._load_receipt(request_id, missing_code="app_update_recovery_required")
+        # Prove the target before Start can record a stale launch as unknown.
         self._refuse_fresh_root_release(receipt["source"])
         receipt = self._maybe_mark_unknown(receipt)
         if receipt["stage"] != "prepared":
@@ -822,9 +990,9 @@ class AppUpdateHelper:
         self._assert_unexpired_prepare(receipt, self.now())
         if self._busy_with_other(request_id):
             raise HelperError("app_update_busy", "An App update is already running for this target.")
-        # A receipt prepared by an older helper does not prove the target journals were checked.
+        # A later journal read is a new admission and proves the digest and the series again.
         inspect = self._inspect_container(self.config["containerName"])
-        self._assert_migration_free(inspect, self._local_candidate_image_id(receipt["source"]))
+        self._assert_migration_free(inspect, self._proved_candidate_image_id(receipt["source"]))
         # Docker reads can take time. Observe any launch that happened during the check.
         receipt = self._maybe_mark_unknown(self._load_receipt(request_id, missing_code="app_update_recovery_required"))
         if receipt["stage"] != "prepared":
@@ -1054,7 +1222,7 @@ class AppUpdateHelper:
                 "Target image is unavailable locally. Ask the host operator to run the installed App-update helper with --stage-target before preparing or starting.",
             ) from error
         if source["appDigest"] not in identity["repo_digest_ids"]:
-            raise HelperError("app_update_invalid_request", "Local image RepoDigests do not contain the published release digest.")
+            raise HelperError("app_update_invalid_request", LOCAL_DIGEST_MISMATCH_MESSAGE)
         return identity["id"]
 
     def _assert_migration_free(self, current: Mapping[str, Any], candidate_image_id: str) -> None:
@@ -1113,7 +1281,8 @@ class AppUpdateHelper:
 
     def _acquire_candidate(self, source: Mapping[str, Any]) -> Dict[str, Any]:
         """Pull the verified published digest only after checking host capacity."""
-        self._refuse_fresh_root_release(source)
+        # Staging may pull a missing image. A mismatch or unproved series still refuses first.
+        self._refuse_fresh_root_release(source, require_image=False)
         verified_commit = self._verify_release_attribution(source)
         self._assert_pull_capacity()
         ref = "%s@%s" % (self.config["imageRepository"], source["appDigest"])
@@ -1126,6 +1295,9 @@ class AppUpdateHelper:
                 "app_update_invalid_request",
                 "Pulled image RepoDigests do not contain the published release digest.",
             )
+        # The bytes are local now. Prove the digest association and the series again
+        # before the caller records the candidate or replaces the App.
+        self._refuse_fresh_root_release(source)
         return {
             "image_id": identity["id"],
             "published_digest": source["appDigest"],

@@ -209,6 +209,7 @@ function evaluateEntrypointShutdown(effects: {
     dataRoot: '/unused-shutdown-test-root',
     freshCoreInitialization: false,
     coreMigrationsComplete: effects.coreMigrationsComplete,
+    verifyExistingCoreBaseline: vi.fn(async () => {}),
     openCoreDbWithIntegrityCheck,
     applyMigrations,
     AttentionNotifications: class {
@@ -325,6 +326,7 @@ describe('NanoCore boot phase order', () => {
       return result;
     });
 
+    await Promise.resolve();
     // Core Storage requires the covering FULL ACK before startup admission.
     expect(lifecycle.events).toEqual(['core.migrated', 'attention.started']);
     expect(lifecycle.reconcileIncompleteAttempts).toHaveBeenCalledTimes(1);
@@ -541,6 +543,10 @@ describe('NanoCore boot phase order', () => {
   it('fails authoritative storage integrity before bootstrap credentials or listener binding', () => {
     const source = readEntrypointSource();
     const migrationsPhase = source.indexOf("name: 'migrations'");
+    const baselineAdmission = source.indexOf(
+      'await verifyExistingCoreBaseline(dataRoot)',
+      migrationsPhase
+    );
     const coreIntegrityCheck = source.indexOf(
       'coreDb = openCoreDbWithIntegrityCheck(dataRoot,',
       migrationsPhase
@@ -560,7 +566,8 @@ describe('NanoCore boot phase order', () => {
     );
     const listenerBind = source.indexOf('appServer = appTlsListen', criticalFailureGate);
 
-    expect(coreIntegrityCheck).toBeGreaterThan(migrationsPhase);
+    expect(baselineAdmission).toBeGreaterThan(migrationsPhase);
+    expect(coreIntegrityCheck).toBeGreaterThan(baselineAdmission);
     expect(scopedIntegrityCheck).toBeGreaterThan(coreIntegrityCheck);
     expect(coreMigrations).toBeGreaterThan(coreIntegrityCheck);
     expect(scopedIntegrityCheck).toBeGreaterThan(coreMigrations);

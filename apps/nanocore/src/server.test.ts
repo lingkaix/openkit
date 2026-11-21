@@ -199,9 +199,10 @@ import {
   openCoreDb,
   openWorkspaceDb,
   openWorkspaceDbAtRoot,
+  recordDataRootDeploymentMove,
   type WorkspaceDb,
 } from './storage/db.js';
-import { coreDbPath, recordDataRootDeploymentMove } from './storage/fs-layout.js';
+import { coreDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
@@ -2238,7 +2239,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    recordDataRootDeploymentMove(dataRoot, 'dep_00000000-0000-7198-9759-a2c549718546');
+    await recordDataRootDeploymentMove(dataRoot, 'dep_00000000-0000-7198-9759-a2c549718546');
     const store = await createDemoStore({ dataRoot });
     const app = await createApp({ coreDb, dataRoot, store });
 

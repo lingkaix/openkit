@@ -32,6 +32,7 @@ import {
 } from '@openkit/storage';
 
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
+import { BootConfigError } from '../config/mode.js';
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
 import { writeFileAtomic } from './canonical-write-capacity.js';
 
@@ -73,7 +74,7 @@ const EXAMPLE_PROVIDER_TEMPLATE_FILES = new Set([
   'openai-flagship.provider.jsonc',
   'openai-codex-subscription.provider.jsonc',
 ]);
-const DATA_ROOT_LAYOUT_VERSION = 2;
+const DATA_ROOT_LAYOUT_VERSION = 1;
 const DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES = new Set([
   'data-root-backup',
   'source',
@@ -137,7 +138,7 @@ export interface DataRootLayoutMarker {
   /** Marker schema version. */
   schemaVersion: 1;
   /** DATA_ROOT layout version supported by this build. */
-  layoutVersion: 2;
+  layoutVersion: typeof DATA_ROOT_LAYOUT_VERSION;
   /** Deployment id used for export and backup lineage. */
   deploymentId: string;
   /** Previous deployment id when this data root was moved to a new deployment. */
@@ -273,7 +274,6 @@ export function ensureLayoutDirectories(root: string): FsLayoutPaths {
     logs: resolveDataRootPath(root, 'logs'),
   };
 
-  ensureCanonicalDirectory(paths.server, 0o777, 'retry-creation');
   ensureDataRootLayoutMarker(root);
 
   for (const path of Object.values(paths).filter(
@@ -334,42 +334,10 @@ export function readDataRootLayoutMarker(root: string): DataRootLayoutMarker {
     return marker as DataRootLayoutMarker;
   }
 
-  throw new Error(`Unsupported DATA_ROOT layout version in ${markerPath}.`);
-}
-
-/**
- * Records a data-root move to a new deployment id.
- *
- * @param root Data root directory.
- * @param deploymentId New deployment id.
- * @returns Updated layout marker.
- * @throws Error when the deployment id is empty or matches the predecessor.
- */
-export function recordDataRootDeploymentMove(
-  root: string,
-  deploymentId: string
-): DataRootLayoutMarker {
-  if (!isEntityId('dep', deploymentId)) {
-    throw new Error('DATA_ROOT deployment id must not be empty.');
-  }
-
-  const current = readDataRootLayoutMarker(root);
-  const predecessorDeploymentId =
-    current.deploymentId === deploymentId ? current.predecessorDeploymentId : current.deploymentId;
-
-  if (predecessorDeploymentId === deploymentId) {
-    throw new Error('DATA_ROOT predecessor deployment id must differ from deployment id.');
-  }
-
-  const marker: DataRootLayoutMarker = {
-    schemaVersion: 1,
-    layoutVersion: DATA_ROOT_LAYOUT_VERSION,
-    deploymentId,
-    ...(predecessorDeploymentId ? { predecessorDeploymentId } : {}),
-  };
-
-  writeJson(dataRootLayoutMarkerPath(root), marker);
-  return marker;
+  throw new BootConfigError(
+    'data_root_layout_unsupported',
+    `Unsupported DATA_ROOT layout version in ${markerPath}. A fresh v0.2.0 installation is required.`
+  );
 }
 
 /**
@@ -519,30 +487,24 @@ function dataRootLayoutMarkerPath(root: string): string {
 function ensureDataRootLayoutMarker(root: string): void {
   const markerPath = dataRootLayoutMarkerPath(root);
 
-  if (!existsSync(markerPath)) {
-    writeBootLayoutMarker(markerPath);
-    return;
+  const markerExists = existsSync(markerPath);
+  if (!markerExists) {
+    verifyNoLegacyRootCore(root);
+    const ownerDbDirectory = dirname(coreDbPath(root));
+    if (readLayoutDirectory(ownerDbDirectory).some((entry) => entry.name === 'core.sqlite')) {
+      throw new BootConfigError(
+        'data_root_layout_unsupported',
+        'A deployment with an existing Core database must have a valid DATA_ROOT layout marker.'
+      );
+    }
   }
 
-  const rawMarker = JSON.parse(readFileSync(markerPath, 'utf8')) as unknown;
-
-  if (
-    typeof rawMarker === 'object' &&
-    rawMarker !== null &&
-    'schemaVersion' in rawMarker &&
-    rawMarker.schemaVersion === 1 &&
-    'layoutVersion' in rawMarker &&
-    rawMarker.layoutVersion === DATA_ROOT_LAYOUT_VERSION &&
-    !('deploymentId' in rawMarker)
-  ) {
-    writeBootLayoutMarker(markerPath);
-    return;
-  }
-
-  readDataRootLayoutMarker(root);
+  ensureCanonicalDirectory(dirname(markerPath), 0o777, 'retry-creation');
+  if (markerExists) readDataRootLayoutMarker(root);
+  else writeBootLayoutMarker(markerPath);
 }
 
-/** Commits the new deployment marker with native create or replacement permissions. */
+/** Commits the fresh deployment marker with native create permissions. */
 function writeBootLayoutMarker(markerPath: string): void {
   const marker: DataRootLayoutMarker = {
     schemaVersion: 1,
@@ -561,14 +523,12 @@ function createDataRootDeploymentId(): string {
   return allocateEntityId('dep');
 }
 
-/**
- * Writes one JSON file with a trailing newline.
- *
- * @param path Target file path.
- * @param value JSON-serializable value.
- */
-function writeJson(path: string, value: unknown): void {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+/** Refuses the retired unscoped Core placement before marker publication or ordinary layout use. */
+function verifyNoLegacyRootCore(root: string): void {
+  const rootCoreDb = resolveDataRootPath(root, 'core.sqlite');
+  if (existsSync(rootCoreDb)) {
+    throw new Error(`Unsupported legacy root core database: ${rootCoreDb}`);
+  }
 }
 
 /**
@@ -578,11 +538,7 @@ function writeJson(path: string, value: unknown): void {
  * @throws Error when a known legacy ownership path is present.
  */
 function verifyNoLegacyOwnershipViolations(root: string): void {
-  const rootCoreDb = resolveDataRootPath(root, 'core.sqlite');
-
-  if (existsSync(rootCoreDb)) {
-    throw new Error(`Unsupported legacy root core database: ${rootCoreDb}`);
-  }
+  verifyNoLegacyRootCore(root);
 
   const usersRoot = resolveDataRootPath(root, 'users');
   if (!existsSync(usersRoot)) {

@@ -35,6 +35,7 @@ import Database from 'better-sqlite3';
 import { writeFileAtomic } from './canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
+  assertCoreBaseline,
   inspectServerOwnerFile,
   openSupportedScopeReadOnlySqlite,
   verifyServerOwnerRestoreCopy,
@@ -789,7 +790,8 @@ async function assertSupportedRestoreDatabases(
         continue;
       }
       sqlite = openSupportedScopeReadOnlySqlite(dbPath, binding.scope);
-      assertNativeBaseline(sqlite, binding.scope);
+      if (binding.scope === 'core') assertCoreBaseline(sqlite);
+      else assertNativeBaseline(sqlite, binding.scope);
       if (binding.scope !== 'app' || !path.endsWith('/data.sqlite')) continue;
       const appPath = dirname(path);
       const row = sqlite
