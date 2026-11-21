@@ -21,9 +21,11 @@ import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
 import { postWhenCaptureAllows } from './capture-fence.js';
+import { readFixtureNanoHost } from './demo-data.js';
 import { startIsolatedWebStack } from './servers.js';
 
 const SYNTHETIC_LOCAL_EPOCH = 'a'.repeat(64);
+const SYNTHETIC_RESTARTED_EPOCH = '2'.padStart(64, '0');
 
 /**
  * Retains actual startup children when a marker or assertion fails before PID observation.
@@ -528,40 +530,34 @@ test('preserves Material delivery and delivers a durable simulator answer on the
 
 /** Resolves the authored fixture Agent through production digest-bound image admission. */
 async function readFixtureNativeEnvironment(dataRoot: string) {
-  const [{ openCoreDb }, { AuthoredAgentConfigSchema }, { resolvePublicNativeEnvironment }] =
-    await Promise.all([
-      import('../../../nanocore/dist/storage/db.js'),
-      import('../../../nanocore/dist/agents/manifest.js'),
-      import('../../../nanocore/dist/runtime/native-environment.js'),
-    ]);
+  const [{ AuthoredAgentConfigSchema }, { resolvePublicNativeEnvironment }] = await Promise.all([
+    import('../../../nanocore/dist/agents/manifest.js'),
+    import('../../../nanocore/dist/runtime/native-environment.js'),
+  ]);
   const manifest = AuthoredAgentConfigSchema.parse(
     JSON.parse(readFileSync(join(dataRoot, 'config', 'agents', 'codex.agent.jsonc'), 'utf8'))
   );
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    return resolvePublicNativeEnvironment(coreDb, manifest);
-  } finally {
-    coreDb.sqlite.close();
-  }
+  return readFixtureNanoHost(dataRoot, (read) =>
+    resolvePublicNativeEnvironment(undefined, manifest, read)
+  );
 }
 
 /**
- * Reads isolated fixture `target_local` and closes the Core handle before stack cleanup.
+ * Reads isolated fixture `target_local` from the acknowledged NanoHost owner.
  *
  * @param dataRoot Stack-owned NanoCore data root.
  * @returns Durable target projection, or null when the row is absent.
  */
 async function readFixtureLocalRuntimeTarget(dataRoot: string) {
-  const [{ openCoreDb }, { getNanoHostRuntimeTarget }] = await Promise.all([
-    import('../../../nanocore/dist/storage/db.js'),
-    import('../../../nanocore/dist/runtime/nanohost-runtime-target.js'),
-  ]);
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    return getNanoHostRuntimeTarget(coreDb, 'target_local');
-  } finally {
-    coreDb.sqlite.close();
-  }
+  const { getNanoHostRuntimeTarget } = await import(
+    '../../../nanocore/dist/runtime/nanohost-runtime-target.js'
+  );
+  return readFixtureNanoHost(dataRoot, (read) => {
+    const target = read((sqlite) => getNanoHostRuntimeTarget({ sqlite }, 'target_local'));
+    if (target.state !== 'ready')
+      throw new Error(`Web e2e NanoHost RuntimeTarget read: ${target.reason}.`);
+    return target.value;
+  });
 }
 
 test('restarts Core on the same port and data root before final cleanup', async () => {
@@ -616,7 +612,7 @@ test('restarts Core on the same port and data root before final cleanup', async 
     await expect(fetch(`${coreUrl}/api/health`)).resolves.toMatchObject({ ok: true });
     expect(afterTarget).toMatchObject({
       freshEmpty: true,
-      physicalEpoch: SYNTHETIC_LOCAL_EPOCH,
+      physicalEpoch: SYNTHETIC_RESTARTED_EPOCH,
       predecessorFenced: true,
       ready: true,
       targetId: 'target_local',
