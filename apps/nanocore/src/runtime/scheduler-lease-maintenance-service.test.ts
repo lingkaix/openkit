@@ -19,6 +19,10 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import {
+  seedTestNanoHostHeartbeat,
+  seedTestWorkerControlReceipt,
+} from '../test-support/nanohost-worker-lease.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -26,11 +30,9 @@ import {
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionOperation,
 } from './execution-attempt-records.js';
-import { acceptNanoHostAttemptHeartbeat } from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessions';
 import { getWorkerBackendSession, listWorkerBackendSessions } from './worker-backend-sessions.js';
-import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -337,14 +339,14 @@ describe('scheduler lease maintenance service', () => {
     try {
       applyScopedMigrations(workspaceDb);
       await dispatchLease(coreDb, 'heartbeat');
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_heartbeat'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_heartbeat'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -380,14 +382,14 @@ describe('scheduler lease maintenance service', () => {
     try {
       applyScopedMigrations(workspaceDb);
       await dispatchLease(coreDb, 'server_user', triggerActor);
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_server_user'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_server_user'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -424,14 +426,14 @@ describe('scheduler lease maintenance service', () => {
         id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
         responsibleUserId: 'usr_00000000-0000-7c6a-be9d-0973844c8526',
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_actor_mismatch'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_actor_mismatch'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -511,14 +513,14 @@ describe('scheduler lease maintenance service', () => {
     try {
       applyScopedMigrations(workspaceDb);
       await dispatchLease(coreDb, 'zero_input');
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_zero_input'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_zero_input'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -555,14 +557,14 @@ describe('scheduler lease maintenance service', () => {
     try {
       applyScopedMigrations(workspaceDb);
       await dispatchLease(coreDb, 'partial_handoff');
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_partial_handoff'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_partial_handoff'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -647,14 +649,14 @@ describe('scheduler lease maintenance service', () => {
         'retained',
         '2026-07-05T00:00:20.000Z'
       );
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_stale_retained'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_stale_retained'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -692,14 +694,14 @@ describe('scheduler lease maintenance service', () => {
         workspaceInputIds: ['repo'],
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_release_timeout'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_release_timeout'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -711,7 +713,7 @@ describe('scheduler lease maintenance service', () => {
         cause: 'worker-final-status',
       });
 
-      recordWorkerControlAcceptedRecord(coreDb, {
+      seedTestWorkerControlReceipt(coreDb, {
         acceptedAt: '2026-07-05T00:00:11.000Z',
         lineage: {
           ...environmentPackage.scope,

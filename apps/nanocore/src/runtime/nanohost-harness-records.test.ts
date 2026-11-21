@@ -25,20 +25,26 @@ import {
   seedAdmittedTestNanoHost,
 } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import {
   acknowledgeTestExternalWorkspaceConsumer,
-  queueTestPreparedHarnessOperation as queueNanoHostHarnessOperation,
-  recordTestExecutionAttempt,
-} from '../test-support/execution-attempt.js';
+  dispatchNanoHostHarnessOperation as dispatchFixtureHarnessOperation,
+  queueNanoHostHarnessOperation,
+  settleNanoHostHarnessOperation,
+} from '../test-support/nanohost-harness.js';
+import {
+  readTestNativeAttemptEvidence,
+  retainPreparedTestNanoHostSubmission,
+  seedTestNanoHostCompletedWorkspaceHandoff,
+} from '../test-support/nanohost-worker-lease.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { recordSchedulerExecutionOperation } from './execution-attempt-records.js';
+import { EXECUTION_ATTEMPT_BUDGET_MS } from './execution-attempt-records.js';
 import {
   copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
-  dispatchNanoHostHarnessOperation,
   drainNanoHostHarnessAdmission,
   drainNanoHostSandboxAdmission,
   expireNanoHostHarnessQueuedOperation,
@@ -54,13 +60,21 @@ import {
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeByBinding,
   removeNanoHostSandboxRuntimeForHarness,
-  settleNanoHostHarnessOperation,
 } from './nanohost-harness.js';
 import { requireNanoHostLoginRemoval } from './nanohost-harness-records.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessions.js';
 import { writeWorkerControlAcceptedRecord } from './worker-control-records.js';
 
 const now = '2098-08-21T00:00:00.000Z';
+const submissionDeadline = new Date(Date.parse(now) + EXECUTION_ATTEMPT_BUDGET_MS).toISOString();
+
+function dispatchNanoHostHarnessOperation(
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof dispatchFixtureHarnessOperation>[1]
+) {
+  return dispatchFixtureHarnessOperation(coreDb, { now: () => now, ...input });
+}
 const physicalEpoch = 'e'.repeat(64);
 afterEach(shutdownControlStoreWorkerClient);
 
@@ -626,11 +640,16 @@ describe('private NanoHost Harness records', () => {
           typeof reply === 'object' &&
           reply !== null &&
           'operation' in reply &&
-          reply.operation === 'harness-lifecycle' &&
+          reply.operation === 'nanohost-owner' &&
           'status' in reply &&
           reply.status === 'ok' &&
           'result' in reply &&
-          reply.result === 'settled'
+          typeof reply.result === 'object' &&
+          reply.result !== null &&
+          'kind' in reply.result &&
+          reply.result.kind === 'harness-turn-lifecycle' &&
+          'value' in reply.result &&
+          reply.result.value === 'settled'
         ) {
           termination = this.terminate();
           return true;
@@ -651,6 +670,8 @@ describe('private NanoHost Harness records', () => {
         replies.mockRestore();
       }
 
+      await shutdownControlStoreWorkerClient();
+      await reopenAdmittedTestNanoHost(coreDb);
       const retained = readAdmittedTestNanoHost(coreDb, (sqlite) =>
         sqlite
           .prepare(
@@ -666,8 +687,6 @@ describe('private NanoHost Harness records', () => {
         sequence: command.sequence,
       });
 
-      await shutdownControlStoreWorkerClient();
-      await reopenAdmittedTestNanoHost(coreDb);
       expect(
         await settleNanoHostHarnessOperation(coreDb, {
           result,
@@ -1916,7 +1935,7 @@ describe('private NanoHost Harness records', () => {
             agentSessionRuntimeBindingId: 'agent-session-binding-1',
             contextPackageId: 'context-package-1',
             contextRef: 'sandbox://context/1',
-            deadline: '2099-01-01T00:00:00.000Z',
+            deadline: submissionDeadline,
             leaseId: testEntityId('attempt', 'lease-1'),
             packageSnapshotId: 'package-snapshot-1',
             threadId: testEntityId('th', 'thread-1'),
@@ -2100,7 +2119,7 @@ describe('private NanoHost Harness records', () => {
             agentSessionRuntimeBindingId: 'agent-session-binding-1',
             contextPackageId: 'context-package-1',
             contextRef: 'sandbox://context/1',
-            deadline: '2099-01-01T00:00:00.000Z',
+            deadline: submissionDeadline,
             leaseId: testEntityId('attempt', 'lease-1'),
             packageSnapshotId: 'package-snapshot-1',
             threadId: testEntityId('th', 'thread-1'),
@@ -2134,9 +2153,13 @@ describe('private NanoHost Harness records', () => {
           sequence: 0,
         });
         expect(command?.operationId).toMatch(/^[0-9a-f]{64}$/);
-        const attempt = observeExecutionAttempts(coreDb).find(
-          (row) => row.turn_id === testEntityId('tu', 'turn-1')
-        );
+        const evidence = readTestNativeAttemptEvidence(coreDb, testEntityId('attempt', 'lease-1'));
+        const attempt = {
+          ...evidence,
+          worker_control_token_hash: evidence.workerControlTokenHash,
+          worker_inference_token_hash: evidence.workerInferenceTokenHash,
+          worker_capability_token_hash: evidence.workerCapabilityTokenHash,
+        };
         expect(attempt).toMatchObject({
           worker_control_token_hash: createHash('sha256')
             .update(Buffer.from(workerControlToken, 'base64url'))
@@ -3490,7 +3513,7 @@ describe('private NanoHost Harness records', () => {
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         contextPackageId: 'context-package-1',
         contextRef: 'sandbox://context/1',
-        deadline: '2099-01-01T00:00:00.000Z',
+        deadline: submissionDeadline,
         leaseId: testEntityId('attempt', 'lease-1'),
         packageSnapshotId: 'package-snapshot-1',
         threadId: testEntityId('th', 'thread-1'),
@@ -4119,7 +4142,7 @@ function concurrentTurnStartBody(index: number): Readonly<Record<string, unknown
     agentSessionId: testEntityId('as', `agent-session-${index}`),
     agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
     contextPackageId: `context-package-${index}`,
-    deadline: '2099-01-01T00:00:00.000Z',
+    deadline: submissionDeadline,
     leaseId: testEntityId('attempt', `lease-${index}`),
     packageSnapshotId: `package-snapshot-${index}`,
     threadId: testEntityId('th', `thread-${index}`),
@@ -4283,7 +4306,7 @@ async function openActiveTurnDb(
       agentSessionRuntimeBindingId: 'agent-session-binding-1',
       contextPackageId: 'context-package-1',
       contextRef: 'sandbox://context/1',
-      deadline: '2099-01-01T00:00:00.000Z',
+      deadline: submissionDeadline,
       leaseId: testEntityId('attempt', 'lease-1'),
       packageSnapshotId: 'package-snapshot-1',
       threadId: testEntityId('th', 'thread-1'),
@@ -4360,7 +4383,7 @@ async function seedSubmittedAttempt(
   await recordWorkerBackendSessionMaterializing(coreDb, {
     identity: {
       agentSessionId: testEntityId('as', `agent-session-${index}`),
-      backendKind: 'nanohost',
+      backendKind: 'openshell',
       backendSessionId: `nanohost-sandbox-fixture-${index}`,
       deploymentId: 'deployment-a1',
       packageSnapshotId: `package-snapshot-${index}`,
@@ -4381,11 +4404,26 @@ async function seedSubmittedAttempt(
     now: () => now,
     sandboxBindingRef: testEntityId('tu', `turn-route-binding-${index}`),
   });
-  recordSchedulerExecutionOperation(coreDb, {
+  const owner = await fixtureHarnessWriter(coreDb);
+  await owner.backendSession({
+    kind: 'transition',
     attemptId: attempt.attemptId,
-    operationId: `submit:turn-${index}`,
-    submission: true,
-    now: () => now,
+    fromState: 'materializing',
+    toState: 'materialized',
+    observedAt: now,
+  });
+  seedTestNanoHostCompletedWorkspaceHandoff(coreDb, attempt.attemptId);
+  const target = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    getNanoHostRuntimeTarget({ sqlite }, 'nanohost-a1')
+  );
+  if (!target) throw new Error('Submitted fixture requires its exact Native RuntimeTarget.');
+  retainPreparedTestNanoHostSubmission(coreDb, {
+    admission: entry,
+    attemptId: attempt.attemptId,
+    targetId: target.targetId,
+    generation: String(target.connectionGeneration),
+    observedAt: now,
+    exclusionRefs: [`thread:${entry.threadId}`, `turn:${entry.turnId}`],
   });
 }
 

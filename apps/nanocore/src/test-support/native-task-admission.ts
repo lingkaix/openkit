@@ -17,10 +17,6 @@ import { createExecutionStepJournalReader } from '../runtime/execution-journal.j
 import type { ExecutionJournalRef } from '../runtime/execution-step-journal.js';
 import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import * as harnessOwner from '../runtime/nanohost-harness.js';
-import {
-  dispatchNanoHostHarnessOperation,
-  settleNanoHostHarnessOperation,
-} from '../runtime/nanohost-harness.js';
 import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
@@ -29,12 +25,13 @@ import { runSchedulerDispatchLoop } from '../runtime/scheduler-dispatch-loop.js'
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import type { TurnExecutor } from '../runtime/types.js';
 import { getWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
-import { getWorkerControlAcceptedFinalStatus as readFinal } from '../runtime/worker-control-records.js';
+import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
 import { WorkerGovernanceCapacityUnavailableError } from '../runtime/worker-governance-backend.js';
 import type { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { configuredFileStorageAdmission } from '../storage/configured-file-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { readAdmittedTestNanoHost, reopenAdmittedTestNanoHost } from './admitted-nanohost.js';
 import { recordTestNativeRuntimeTarget } from './native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from './release-identity.js';
 
@@ -87,7 +84,11 @@ export async function createNativeTaskAdmissionFixture(
     integrationBindingRef: undefined as string | undefined,
     transcripts: new Map<
       string,
-      { input: string; events: unknown[]; lineage: Parameters<typeof readFinal>[1] }
+      {
+        input: string;
+        events: unknown[];
+        lineage: Parameters<typeof getWorkerControlAcceptedFinalStatus>[1];
+      }
     >(),
     effects: [] as NanoHostSessionEffectRequest[],
     peerFaults: {
@@ -104,7 +105,14 @@ export async function createNativeTaskAdmissionFixture(
     getControlStoreWorkerClient().getFileStorageAdmission(coreDb.dataRoot) ??
     configuredFileStorageAdmission(coreDb.dataRoot);
   const startup = observeNativeTaskStartup(store);
-  const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
+  const admitted = await reopenAdmittedTestNanoHost(coreDb);
+  const { owner } = admitted.value;
+  const harnessWriter = owner.harnessTurnLifecycle;
+  const workerControlGateway = createDefaultWorkerControlGateway(coreDb, undefined, admitted);
+  const readFinal = (lineage: Parameters<typeof getWorkerControlAcceptedFinalStatus>[1]) =>
+    readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
+    );
   const steerCalls: import('../runtime/nanohost-harness.js').NanoHostHarnessCommand[] = [];
   const completion = Promise.withResolvers<void>();
   const launched = Promise.withResolvers<void>();
@@ -260,7 +268,7 @@ export async function createNativeTaskAdmissionFixture(
         );
         if (!transcript) throw new Error('Native trial has no submitted Turn.');
         const { lineage: nativeLineage, events: nativeEvents, input: nativeInput } = transcript;
-        if (peerFaults.failFileExport && readFinal(coreDb, nativeLineage)?.status === 'failed') {
+        if (peerFaults.failFileExport && readFinal(nativeLineage)?.status === 'failed') {
           peerFaults.failedExportPaths.push(String(request.input.relativePath));
           throw new Error('Controlled required native export loss.');
         }
@@ -326,6 +334,13 @@ export async function createNativeTaskAdmissionFixture(
           workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
         })),
     nanoHostSessionDispatch: sessionDispatch,
+    nanoHostRecovery: {
+      owner: { state: 'ready', value: owner },
+      admitSubmission: owner.firstSubmission,
+      harnessTurnLifecycle: harnessWriter,
+      writeStorageAttachment: owner.writeStorageAttachment,
+      commitCloseout: owner.classifyRecovery,
+    },
   });
   const executionBackend = runtime.turnExecutor.executionBackend;
   if (!executionBackend) throw new Error('Native admission fixture requires its actual backend.');
@@ -392,13 +407,7 @@ export async function createNativeTaskAdmissionFixture(
   const failTurn = (turn: ReturnType<typeof executionFor>, error: unknown) => {
     turn.failure ??= error;
     turn.launched.reject(turn.failure);
-    if (
-      !stopped &&
-      !turn.settled &&
-      turn.acceptedStart &&
-      turn.lineage &&
-      !readFinal(coreDb, turn.lineage)
-    )
+    if (!stopped && !turn.settled && turn.acceptedStart && turn.lineage && !readFinal(turn.lineage))
       turn.interrupt ??= executor
         .interruptTurn(turn.ownerStore!, turn.lineage.turnId)
         .catch(() => undefined);
@@ -458,7 +467,7 @@ export async function createNativeTaskAdmissionFixture(
         ? [outside.integrationBindingRef]
         : []) {
         while (!stopped) {
-          const command = await dispatchNanoHostHarnessOperation(coreDb, {
+          const command = await harnessWriter.dispatch({
             sandboxIntegrationBindingRef: integrationRef,
           });
           if (!command) break;
@@ -477,7 +486,7 @@ export async function createNativeTaskAdmissionFixture(
               turn = executions.get(String(command.body.turnId));
               const result = await options.actualWorker.handle(wire, integrationRef);
               const completedAt = new Date().toISOString();
-              const settlement = await settleNanoHostHarnessOperation(coreDb, {
+              const settlement = await harnessWriter.settle({
                 result,
                 sandboxIntegrationBindingRef: integrationRef,
                 timestamp: completedAt,
@@ -674,7 +683,7 @@ export async function createNativeTaskAdmissionFixture(
               body: refusal ? { reasonCode: refusal } : body,
             };
             const completedAt = new Date().toISOString();
-            const settlement = await settleNanoHostHarnessOperation(coreDb, {
+            const settlement = await harnessWriter.settle({
               result,
               sandboxIntegrationBindingRef: integrationRef,
               timestamp: completedAt,
@@ -710,7 +719,7 @@ export async function createNativeTaskAdmissionFixture(
             if (stopped) return;
             if (turn) failTurn(turn, error);
             if (!commandSettled) {
-              await settleNanoHostHarnessOperation(coreDb, {
+              await harnessWriter.settle({
                 sandboxIntegrationBindingRef: integrationRef,
                 result: {
                   schemaVersion: 2,

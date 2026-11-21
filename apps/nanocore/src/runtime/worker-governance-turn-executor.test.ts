@@ -222,6 +222,12 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
 import {
+  readTestNanoHostWorkerLease,
+  seedTestNanoHostWorkerLaunch,
+  seedTestPreSubmitNativeWorkerEvidence,
+  seedTestWorkerControlReceipt,
+} from '../test-support/nanohost-worker-lease.js';
+import {
   admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
@@ -281,11 +287,6 @@ import { executeGoalOperation, readGoalView, requireNativeCoordinatorGoal } from
 import { readGoalTaskPolicyContext, requiredTaskTurn } from './goal-task-policy-context.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
 import { nanoHostStartupDeadline } from './nanohost-attempt-clocks.js';
-import {
-  acceptNanoHostAttemptHeartbeat,
-  bindNanoHostAttemptRouteTokenHashes,
-  requireNanoHostExecutionAttempt,
-} from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
 import {
@@ -1537,19 +1538,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
       capabilityToken: Buffer.alloc(32, 51).toString('base64url'),
     };
     const materialize = backend.materialize.bind(backend);
+    let registration: ReturnType<typeof gateway.registerSession> | undefined;
     backend.materialize = async (pkg, context) => {
-      const registration = gateway.registerSession(pkg, {
+      registration = gateway.registerSession(pkg, {
         sandboxBindingRef: context!.sandboxBindingRef!,
         workerControlToken: tokens.controlToken,
         workerInferenceToken: tokens.inferenceToken,
         workerCapabilityToken: tokens.capabilityToken,
-      });
-      bindNanoHostAttemptRouteTokenHashes(coreDb, {
-        attemptId: attempts.listSchedulerExecutionAttemptsForTurn(coreDb, pkg.scope)[0]!.attemptId,
-        sandboxBindingRef: context!.sandboxBindingRef!,
-        workerControlTokenHash: registration.workerControlTokenHash,
-        workerInferenceTokenHash: registration.workerInferenceTokenHash,
-        workerCapabilityTokenHash: registration.workerCapabilityTokenHash,
       });
       return materialize(pkg, context);
     };
@@ -1568,6 +1563,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
+      commitNanoHostCloseout: nanoHostStorage.value.owner.classifyRecovery,
+      admitNanoHostSubmission: async (input) => {
+        if (!registration) throw new Error('Fixture Worker registration is missing.');
+        const decision = await nanoHostStorage.value.owner.firstSubmission(input);
+        if (decision.state === 'admitted-now')
+          seedTestNanoHostWorkerLaunch(
+            coreDb,
+            input.attemptId,
+            registration,
+            input.observedAt ?? new Date().toISOString()
+          );
+        return decision;
+      },
       awaitWorkerCompletion: async (pkg) => {
         const root = join(dataRoot, 'shim');
         mkdirSync(root, { recursive: true });
@@ -2093,6 +2101,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
+      readNanoHostEnvironment: await readCommitFixtureEnvironment(coreDb),
     });
     const plannedInput = 'Prepare planned successor';
     const entry = await createTestQueueEntry(coreDb, {
@@ -2245,11 +2254,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
             attemptId
           );
       } else if (proof === 'native-evidence') {
-        coreDb.sqlite
-          .prepare(
-            'UPDATE scheduler_execution_attempts SET last_worker_sequence = 1 WHERE attempt_id = ?'
-          )
-          .run(attemptId);
+        const target = await recordTestNativeRuntimeTarget(coreDb);
+        seedTestPreSubmitNativeWorkerEvidence(coreDb, attemptId, target);
       } else if (proof === 'lineage-conflict') {
         coreDb.sqlite
           .prepare(
@@ -2861,6 +2867,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
+        readNanoHostEnvironment: await readCommitFixtureEnvironment(coreDb),
         now: () => '2026-08-21T00:00:05.000Z',
       });
       Object.assign(executor, {
@@ -3020,6 +3027,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
+      readNanoHostEnvironment: await readCommitFixtureEnvironment(coreDb),
       now: () => '2026-09-06T00:00:01.000Z',
     });
     Object.assign(executor, {
@@ -3158,6 +3166,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
+        readNanoHostEnvironment: await readCommitFixtureEnvironment(coreDb),
         now: () => '2026-09-17T00:00:01.000Z',
       });
       Object.assign(executor, {
@@ -3368,6 +3377,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
+        readNanoHostEnvironment: await readCommitFixtureEnvironment(coreDb),
       });
       Object.assign(executor, {
         previewAgentSessionCompatibilityKey: () => `sha256:${'d'.repeat(64)}`,
@@ -3682,21 +3692,29 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const f = await launchFinalReviewWorker(`active-${deadlineKind}`);
       try {
         if (deadlineKind === 'heartbeat') {
-          await acceptNanoHostAttemptHeartbeat(f.coreDb, {
-            attemptId: f.attemptId,
-            heartbeatTimeoutMs: 30_000,
-            workerSequence: 0,
-            workerProcessKeyHash: createHash('sha256')
-              .update('owned-worker-process')
-              .digest('base64url'),
+          const heartbeat = {
+            authorization: `Bearer ${f.token}`,
+            lineage: f.lineage,
+            operation: 'heartbeat' as const,
+            schemaVersion: 2 as const,
+          };
+          await f.gateway.recordHeartbeat({
+            ...heartbeat,
+            sequence: 0,
+            body: {
+              status: 'running',
+              processKeyHash: createHash('sha256')
+                .update('owned-worker-process')
+                .digest('base64url'),
+            },
           });
-          await acceptNanoHostAttemptHeartbeat(f.coreDb, {
-            attemptId: f.attemptId,
-            heartbeatTimeoutMs: 30_000,
-            workerSequence: 1,
+          await f.gateway.recordHeartbeat({
+            ...heartbeat,
+            sequence: 1,
+            body: { status: 'running' },
           });
         }
-        const live = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId);
+        const live = readTestNanoHostWorkerLease(f.coreDb, f.attemptId);
         const timeoutAt =
           deadlineKind === 'heartbeat' ? live.heartbeatDeadline : live.startupDeadline;
         expect(Date.parse(timeoutAt)).toBeLessThan(Date.parse(live.deadline!) - 60_000);
@@ -3717,7 +3735,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             throw new Error('The active executor owns product closeout.');
           },
         });
-        expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
+        expect(readTestNanoHostWorkerLease(f.coreDb, f.attemptId)).toMatchObject({
           phase: 'closing',
           terminalCause: 'native-liveness-expired',
         });
@@ -4095,7 +4113,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
                   event: { data: { status: 'different' }, type: 'worker.heartbeat' },
                 })
               : transcriptRecord;
-          await recordWorkerControlAcceptedRecord(coreDb, {
+          seedTestWorkerControlReceipt(coreDb, {
             acceptedAt: '2026-07-15T00:00:00.000Z',
             lineage,
             operation: 'event_append',
@@ -7137,7 +7155,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       if (!awaitedEnvironmentPackage || !session) {
         throw new Error('Restart fixture did not reach the durable launch boundary.');
       }
-      await recordWorkerControlAcceptedRecord(coreDb, {
+      seedTestWorkerControlReceipt(coreDb, {
         acceptedAt: '2026-07-15T00:00:04.000Z',
         lineage: {
           agentSessionId,
@@ -13078,7 +13096,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => {
-        await recordWorkerControlAcceptedRecord(coreDb, {
+        seedTestWorkerControlReceipt(coreDb, {
           acceptedAt: '2026-07-15T00:00:04.000Z',
           lineage,
           operation: 'final_status',
@@ -13526,14 +13544,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const materialize = backend.materialize.bind(backend);
       const materializeSpy = vi
         .spyOn(backend, 'materialize')
-        .mockImplementation(async (...args) => {
-          // This modeled Native producer records its actual operation before the controlled effect.
-          // Without that fact, the generic no-effect closeout would truthfully release this fixture.
-          attempts.recordSchedulerExecutionOperation(coreDb, {
-            attemptId: testEntityId('attempt', `lease_${turn.id}`),
-            operationId: `materialize:${turn.id}`,
+        .mockImplementation(async (environment, context) => {
+          await materialize(environment, {
+            ...context,
+            async beforeMaterialization() {
+              // Retain the admitted anchor first, then record the modeled operation before its effect.
+              await context?.beforeMaterialization?.();
+              attempts.recordSchedulerExecutionOperation(coreDb, {
+                attemptId: testEntityId('attempt', `lease_${turn.id}`),
+                operationId: `materialize:${turn.id}`,
+              });
+            },
           });
-          await materialize(...args);
           throw new Error('materialize failed after external effect');
         });
       const executor = new WorkerGovernanceTurnExecutor({
@@ -17200,6 +17222,15 @@ function openCommitFixtureCore(): CoreDb {
   return db;
 }
 
+/** Opens the same measured image reader used by the ordinary Worker runtime. */
+async function readCommitFixtureEnvironment(coreDb: CoreDb) {
+  const { value } = await admitTestNativeEnvironmentForRoot(
+    coreDb,
+    createTestAgentSetup().manifest
+  );
+  return value.owner.read;
+}
+
 /** Acquires Core exclusion before the production commit binds its exact Native preparation. */
 function acquireCommitFixtureAttempt(
   db: CoreDb,
@@ -17919,21 +17950,13 @@ async function launchFinalReviewWorker(
   const gateway = createDefaultWorkerControlGateway(coreDb, undefined, nanoHostStorage);
   const backend = interruptibleBackend();
   const materialize = backend.materialize.bind(backend);
-  let token = '';
+  let registration: ReturnType<typeof gateway.registerSession> | undefined;
   backend.materialize = async (pkg, context) => {
-    const registration = gateway.registerSession(pkg, {
+    registration = gateway.registerSession(pkg, {
       sandboxBindingRef,
       workerControlToken: Buffer.alloc(32, 17).toString('base64url'),
       workerInferenceToken: Buffer.alloc(32, 34).toString('base64url'),
       workerCapabilityToken: Buffer.alloc(32, 51).toString('base64url'),
-    });
-    token = registration.token;
-    bindNanoHostAttemptRouteTokenHashes(coreDb, {
-      attemptId,
-      sandboxBindingRef,
-      workerControlTokenHash: registration.workerControlTokenHash,
-      workerInferenceTokenHash: registration.workerInferenceTokenHash,
-      workerCapabilityTokenHash: registration.workerCapabilityTokenHash,
     });
     return materialize(pkg, context);
   };
@@ -17951,11 +17974,28 @@ async function launchFinalReviewWorker(
     ...(prepared?.vaultBackend ? { vaultBackend: prepared.vaultBackend } : {}),
     ...(prepared?.policyInterception ? { policyInterception: prepared.policyInterception } : {}),
     workerControlGateway: gateway,
+    commitNanoHostCloseout: nanoHostStorage.value.owner.classifyRecovery,
+    admitNanoHostSubmission: async (input) => {
+      if (!registration) throw new Error('Fixture Worker registration is missing.');
+      const decision = await nanoHostStorage.value.owner.firstSubmission(input);
+      if (decision.state === 'admitted-now')
+        seedTestNanoHostWorkerLaunch(
+          coreDb,
+          input.attemptId,
+          registration,
+          input.observedAt ?? new Date().toISOString()
+        );
+      return decision;
+    },
     awaitWorkerCompletion: (_pkg, exactAttemptId) => {
-      const result = waitForWorkerControlFinalStatus(coreDb, {
-        attemptId: exactAttemptId,
-        lineage,
-      });
+      const result = waitForWorkerControlFinalStatus(
+        coreDb,
+        {
+          attemptId: exactAttemptId,
+          lineage,
+        },
+        nanoHostStorage.value.owner.read
+      );
       notifyWaiting();
       return result;
     },
@@ -17990,6 +18030,7 @@ async function launchFinalReviewWorker(
       if (error) throw error;
     }),
   ]);
+  if (!registration) throw new Error('Fixture Worker did not reach its registered launch.');
   return {
     coreDb,
     store,
@@ -18000,7 +18041,7 @@ async function launchFinalReviewWorker(
     gateway,
     backend,
     executor,
-    token,
+    token: registration.token,
     execution,
     settled: () => settled,
     async dispose() {
@@ -18009,7 +18050,7 @@ async function launchFinalReviewWorker(
           attemptId,
           cause: 'test-disposal',
         });
-        vi.setSystemTime(requireNanoHostExecutionAttempt(coreDb, attemptId).deadline!);
+        vi.setSystemTime(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).deadline!);
         await execution;
       }
       coreDb.sqlite.close();

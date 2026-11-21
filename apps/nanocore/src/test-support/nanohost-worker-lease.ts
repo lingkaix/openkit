@@ -14,42 +14,41 @@ import {
   NANO_HOST_HEARTBEAT_BUDGET_MS,
   nanoHostStartupDeadline,
 } from '../runtime/nanohost-attempt-clocks.js';
+import type { NanoHostRuntimeTargetRecord } from '../runtime/nanohost-runtime-target-records.js';
 import type { WorkerControlRegistration } from '../runtime/worker-control-gateway.js';
+import { writeWorkerControlAcceptedRecord } from '../runtime/worker-control-records.js';
 import type { CoreSchedulerQueueEntry } from '../scheduler-records.js';
 import { type CoreDb, serverStoragePath } from '../storage/db.js';
+import {
+  NanoHostWorkerRecoveryState,
+  readNanoHostRecoveryLease,
+} from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
+import { mutateAdmittedTestNanoHost, readAdmittedTestNanoHost } from './admitted-nanohost.js';
 import { testEntityId } from './entity-ids.js';
 
-/** Gives a route fixture its original Core submission and the matching admitted Native lease. */
-export function submitTestNanoHostWorkerLease(
+/**
+ * Retains an already-decided submission for fixtures that start after Core policy admission.
+ * Callers own the established preparation and the exact admitted Native RuntimeTarget.
+ */
+export function retainPreparedTestNanoHostSubmission(
   coreDb: CoreDb,
-  admission: CoreSchedulerQueueEntry,
-  bindingRef: string,
-  registration: Pick<
-    WorkerControlRegistration,
-    | 'agentSessionId'
-    | 'packageSnapshotId'
-    | 'workerControlTokenHash'
-    | 'workerInferenceTokenHash'
-    | 'workerCapabilityTokenHash'
-  >,
-  fixture: { readonly attemptId?: string; readonly nativePath?: string } = {}
+  input: {
+    admission: CoreSchedulerQueueEntry;
+    attemptId: string;
+    targetId: string;
+    generation: string;
+    observedAt: string;
+    exclusionRefs?: readonly string[];
+  }
 ) {
-  const createdAt = new Date().toISOString();
-  const now = () => createdAt;
+  const { admission, attemptId, targetId, generation, observedAt: createdAt } = input;
   const { workspaceId, threadId, turnId } = admission;
-  const { agentSessionId, packageSnapshotId: inputRef } = registration;
-  const attemptId = fixture.attemptId ?? testEntityId('attempt', `worker-lease-${turnId}`);
-  const targetId = `test-target-${turnId}`;
+  const { inputRef, bindingRef } = requireSchedulerExecutionAttempt(coreDb, attemptId);
+  if (!inputRef || !bindingRef)
+    throw new Error('Fixture submission requires both original coordinates.');
   const operationId = commandInputHash({ attemptId, inputRef, operation: 'submit' });
-  createSchedulerExecutionAttempt(coreDb, {
-    entry: admission,
-    attemptId,
-    preparationInput: {},
-    now,
-  });
-  bindSchedulerExecutionAttemptSession(coreDb, { attemptId, agentSessionId, now });
-  finalizeSchedulerExecutionAttemptInput(coreDb, { attemptId, inputRef, bindingRef, now });
-
+  const now = () => createdAt;
   const span = {
     traceId: '1'.repeat(32),
     spanId: '1'.repeat(16),
@@ -74,7 +73,11 @@ export function submitTestNanoHostWorkerLease(
       definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
       workId: turnId,
       fingerprint: admission.inputHash,
-      exclusionRefs: [`workspace:${workspaceId}`, `thread:${threadId}`, `turn:${turnId}`],
+      exclusionRefs: input.exclusionRefs ?? [
+        `workspace:${workspaceId}`,
+        `thread:${threadId}`,
+        `turn:${turnId}`,
+      ],
       span,
     },
     stepId: 'worker-route-fixture-submit',
@@ -103,13 +106,52 @@ export function submitTestNanoHostWorkerLease(
     },
     span: { ...span, spanId: '2'.repeat(16), parentSpanId: span.spanId },
   };
-  const { grant } = coreDb.sqlite.transaction(() =>
+  return coreDb.sqlite.transaction(() =>
     recordSchedulerExecutionGrantInDb(
       coreDb,
-      { proposal, attemptId, operationId, generation: '1', submission: true, now },
+      { proposal, attemptId, operationId, generation, submission: true, now },
       () => true
     )
   )();
+}
+
+/** Gives a route fixture its original Core submission and the matching admitted Native lease. */
+export function submitTestNanoHostWorkerLease(
+  coreDb: CoreDb,
+  admission: CoreSchedulerQueueEntry,
+  bindingRef: string,
+  registration: Pick<
+    WorkerControlRegistration,
+    | 'agentSessionId'
+    | 'packageSnapshotId'
+    | 'workerControlTokenHash'
+    | 'workerInferenceTokenHash'
+    | 'workerCapabilityTokenHash'
+  >,
+  fixture: { readonly attemptId?: string; readonly nativePath?: string } = {}
+) {
+  const createdAt = new Date().toISOString();
+  const now = () => createdAt;
+  const { workspaceId, threadId, turnId } = admission;
+  const { agentSessionId, packageSnapshotId: inputRef } = registration;
+  const attemptId = fixture.attemptId ?? testEntityId('attempt', `worker-lease-${turnId}`);
+  const targetId = `test-target-${turnId}`;
+  createSchedulerExecutionAttempt(coreDb, {
+    entry: admission,
+    attemptId,
+    preparationInput: {},
+    now,
+  });
+  bindSchedulerExecutionAttemptSession(coreDb, { attemptId, agentSessionId, now });
+  finalizeSchedulerExecutionAttemptInput(coreDb, { attemptId, inputRef, bindingRef, now });
+
+  const { grant } = retainPreparedTestNanoHostSubmission(coreDb, {
+    admission,
+    attemptId,
+    targetId,
+    generation: '1',
+    observedAt: createdAt,
+  });
   if (!grant.deadline) throw new Error('Worker route fixture has no submitted grant.');
 
   const deploymentId = 'test-worker-deployment';
@@ -196,4 +238,224 @@ export function submitTestNanoHostWorkerLease(
     sqlite.close();
   }
   return requireSchedulerExecutionAttempt(coreDb, attemptId);
+}
+
+/** Plants contradictory Worker activity on a failed-start fixture with no submitted operation. */
+export function seedTestPreSubmitNativeWorkerEvidence(
+  coreDb: CoreDb,
+  attemptId: string,
+  target: NanoHostRuntimeTargetRecord
+): void {
+  const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
+  if (!attempt.inputRef || !attempt.agentSessionId || !attempt.bindingRef || !target.physicalEpoch)
+    throw new Error('Worker evidence fixture requires its exact attempt and target lineage.');
+  const startupDeadline = nanoHostStartupDeadline(attempt);
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    sqlite
+      .prepare(`INSERT INTO worker_backend_sessions (
+        attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+        backend_kind, deployment_id, backend_session_id, staging_directory_ref,
+        workspace_handoff_state, state, created_at, updated_at, runtime_target_id,
+        origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, worker_recovery_json
+      ) VALUES (?, ?, ?, ?, ?, ?, 'openshell', ?, ?, ?, 'pending', 'materializing',
+        ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        attemptId,
+        attempt.workspaceId,
+        attempt.threadId,
+        attempt.turnId,
+        attempt.agentSessionId,
+        attempt.inputRef,
+        target.deploymentId,
+        `fixture-backend-${attemptId}`,
+        `fixture-staging-${attemptId}`,
+        attempt.createdAt,
+        attempt.createdAt,
+        target.targetId,
+        target.physicalEpoch,
+        '{"imageRef":"registry.example/worker"}',
+        attempt.bindingRef,
+        canonicalJsonText({
+          version: 1,
+          sessionCompatibilityKey: null,
+          startupDeadline,
+          heartbeatTimeoutMs: NANO_HOST_HEARTBEAT_BUDGET_MS,
+          heartbeatDeadline: startupDeadline,
+          lastAcceptedHeartbeatAt: null,
+          lastWorkerSequence: 1,
+          workerProcessKeyHash: null,
+          recoveryState: null,
+          recoveryDeadline: null,
+        })
+      );
+  });
+}
+
+/** Retains the handoff already completed by the fixture's modeled backend. */
+export function seedTestNanoHostCompletedWorkspaceHandoff(coreDb: CoreDb, attemptId: string): void {
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    const { changes } = sqlite
+      .prepare(
+        `UPDATE worker_backend_sessions SET workspace_handoff_state = 'complete'
+         WHERE attempt_id = ? AND state = 'materialized' AND workspace_handoff_state = 'pending'`
+      )
+      .run(attemptId);
+    if (changes !== 1) throw new Error('Handoff fixture requires its exact materialized session.');
+  });
+}
+
+/** Records the modeled launch on its existing Native anchor after the original Core decision. */
+export function seedTestNanoHostWorkerLaunch(
+  coreDb: CoreDb,
+  attemptId: string,
+  registration: WorkerControlRegistration,
+  observedAt: string
+): void {
+  const original = readRetainedNanoHostSubmission(coreDb, attemptId);
+  if (
+    !original ||
+    original.lease.attempt.agentSessionId !== registration.agentSessionId ||
+    original.lease.attempt.inputRef !== registration.packageSnapshotId
+  )
+    throw new Error('Modeled Worker launch requires its original submitted grant.');
+  const { attempt, grant } = original.lease;
+  const startupDeadline = nanoHostStartupDeadline(attempt);
+  const routes = canonicalJsonText({
+    version: 1,
+    operationId: grant.operationId,
+    generation: grant.generation,
+    deadline: grant.deadline,
+    control: registration.workerControlTokenHash,
+    inference: registration.workerInferenceTokenHash,
+    capability: registration.workerCapabilityTokenHash,
+    harnessInstanceId: 'fixture-harness',
+    harnessOperationId: 'd'.repeat(64),
+    harnessSequence: 1,
+  });
+  const recovery = canonicalJsonText({
+    version: 1,
+    sessionCompatibilityKey: null,
+    startupDeadline,
+    heartbeatTimeoutMs: NANO_HOST_HEARTBEAT_BUDGET_MS,
+    heartbeatDeadline: startupDeadline,
+    lastAcceptedHeartbeatAt: null,
+    lastWorkerSequence: null,
+    workerProcessKeyHash: null,
+    recoveryState: null,
+    recoveryDeadline: null,
+  });
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    const written = sqlite
+      .prepare(`UPDATE worker_backend_sessions
+      SET state = 'launching', updated_at = ?, worker_route_binding_json = ?, worker_recovery_json = ?
+      WHERE attempt_id = ? AND agent_session_id = ? AND package_snapshot_id = ?
+        AND sandbox_binding_ref = ? AND state = 'materialized'
+        AND workspace_handoff_state = 'complete' AND physical_cleaned_at IS NULL
+        AND worker_route_binding_json IS NULL AND worker_recovery_json IS NULL`)
+      .run(
+        observedAt,
+        routes,
+        recovery,
+        attemptId,
+        attempt.agentSessionId,
+        attempt.inputRef,
+        attempt.bindingRef
+      );
+    if (written.changes !== 1)
+      throw new Error('Modeled Worker launch requires its exact Native anchor.');
+  });
+}
+
+/** Reads the native liveness facts by their acknowledged Core submission. */
+export function readTestNanoHostWorkerLease(coreDb: CoreDb, attemptId: string) {
+  const original = readRetainedNanoHostSubmission(coreDb, attemptId);
+  if (!original) throw new Error('Fixture has no original submitted Worker grant.');
+  return readAdmittedTestNanoHost(
+    coreDb,
+    (sqlite) => readNanoHostRecoveryLease(sqlite, original.lease).attempt
+  );
+}
+
+/** Reads the exact attempt and retained proofs for failed-start inspection in tests. */
+export function readTestNativeAttemptEvidence(coreDb: CoreDb, attemptId: string) {
+  const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
+  return readAdmittedTestNanoHost(coreDb, (sqlite) => {
+    const session = sqlite
+      .prepare(
+        `SELECT worker_recovery_json AS recovery, worker_route_binding_json AS route
+         FROM worker_backend_sessions WHERE attempt_id = ?`
+      )
+      .get(attemptId) as { recovery: string | null; route: string | null } | undefined;
+    const recovery = session?.recovery
+      ? NanoHostWorkerRecoveryState.parse(JSON.parse(session.recovery))
+      : null;
+    const route: { control: string; inference: string; capability: string } | null = session?.route
+      ? JSON.parse(session.route)
+      : null;
+    return {
+      ...attempt,
+      sessionCompatibilityKey: recovery?.sessionCompatibilityKey ?? null,
+      startupDeadline: recovery?.startupDeadline ?? null,
+      heartbeatTimeoutMs: recovery?.heartbeatTimeoutMs ?? null,
+      heartbeatDeadline: recovery?.heartbeatDeadline ?? null,
+      lastAcceptedHeartbeatAt: recovery?.lastAcceptedHeartbeatAt ?? null,
+      lastWorkerSequence: recovery?.lastWorkerSequence ?? null,
+      workerProcessKeyHash: recovery?.workerProcessKeyHash ?? null,
+      recoveryState: recovery?.recoveryState ?? null,
+      recoveryDeadline: recovery?.recoveryDeadline ?? null,
+      workerControlTokenHash: route?.control ?? null,
+      workerInferenceTokenHash: route?.inference ?? null,
+      workerCapabilityTokenHash: route?.capability ?? null,
+    };
+  });
+}
+
+/** Seeds a prior accepted heartbeat for tests whose subject starts at recovery. */
+export function seedTestNanoHostHeartbeat(
+  coreDb: CoreDb,
+  input: {
+    attemptId: string;
+    heartbeatTimeoutMs: number;
+    workerSequence: number;
+    workerProcessKeyHash?: string;
+    now?: () => string;
+  }
+): void {
+  const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+  const observedAt = input.now?.() ?? new Date().toISOString();
+  const startupDeadline = nanoHostStartupDeadline(attempt);
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    const row = sqlite
+      .prepare(
+        'SELECT worker_recovery_json AS proof FROM worker_backend_sessions WHERE attempt_id = ?'
+      )
+      .get(input.attemptId) as { proof: string | null } | undefined;
+    if (!row) throw new Error('A fixture heartbeat requires its existing Native anchor.');
+    const previous = row.proof ? NanoHostWorkerRecoveryState.parse(JSON.parse(row.proof)) : null;
+    const proof = NanoHostWorkerRecoveryState.parse({
+      version: 1,
+      sessionCompatibilityKey: previous?.sessionCompatibilityKey ?? null,
+      startupDeadline,
+      heartbeatTimeoutMs: input.heartbeatTimeoutMs,
+      heartbeatDeadline: new Date(Date.parse(observedAt) + input.heartbeatTimeoutMs).toISOString(),
+      lastAcceptedHeartbeatAt: observedAt,
+      lastWorkerSequence: input.workerSequence,
+      workerProcessKeyHash: input.workerProcessKeyHash ?? previous?.workerProcessKeyHash ?? null,
+      recoveryState: previous?.recoveryState ?? null,
+      recoveryDeadline: previous?.recoveryDeadline ?? null,
+    });
+    sqlite
+      .prepare('UPDATE worker_backend_sessions SET worker_recovery_json = ? WHERE attempt_id = ?')
+      .run(canonicalJsonText(proof), input.attemptId);
+  });
+}
+
+/** Seeds a retained response for fixtures whose first subject is the consumer of that response. */
+export function seedTestWorkerControlReceipt(
+  coreDb: CoreDb,
+  input: Parameters<typeof writeWorkerControlAcceptedRecord>[1]
+): void {
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+    writeWorkerControlAcceptedRecord({ sqlite }, input)
+  );
 }

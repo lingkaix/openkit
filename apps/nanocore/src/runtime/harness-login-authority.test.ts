@@ -17,6 +17,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { resolveAdmittedNanoHostWorkerBinding } from '../storage/nanohost-worker-binding.js';
 import { agentSessionsRoot, nativeProductScope } from '../storage/workspace-file-records.js';
 import { readAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
@@ -25,6 +26,14 @@ import {
 } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  dispatchNanoHostHarnessOperation,
+  queueNanoHostHarnessOperation,
+} from '../test-support/nanohost-harness.js';
+import {
+  retainPreparedTestNanoHostSubmission,
+  seedTestNanoHostCompletedWorkspaceHandoff,
+} from '../test-support/nanohost-worker-lease.js';
 import {
   admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
@@ -45,7 +54,6 @@ import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
-import { recordSchedulerExecutionOperation } from './execution-attempt-records.js';
 import {
   closeSchedulerExecutionAttemptWithoutEffects,
   requireSchedulerExecutionAttempt,
@@ -55,14 +63,11 @@ import {
   type HarnessLoginContext,
   requireHarnessLoginBinding,
 } from './harness-login-authority.js';
-import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
 import {
   createNanoHostHarnessRuntime,
-  dispatchNanoHostHarnessOperation,
   fenceNanoHostSandboxRuntime,
   openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
-  queueNanoHostHarnessOperation,
 } from './nanohost-harness.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 import type { NanoHostHarnessLoginPhysical } from './nanohost-session-dispatch.js';
@@ -280,28 +285,40 @@ async function fixture(
     readyAt: timestamp,
     physicalEpoch,
   });
-  if (placement === 'shared-resident') {
-    // Pure plan and actual pre-effect anchor. This module fixture does not launch the backend.
-    const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
-    const executor = runtime.turnExecutor;
-    const planner =
-      executor instanceof WorkerGovernanceTurnExecutor ? executor.executionBackend : undefined;
-    if (!planner || !('planSession' in planner) || typeof planner.planSession !== 'function')
-      throw new Error('Auth fixture lacks the actual NanoHost session planner.');
-    await recordWorkerBackendSessionMaterializing(coreDb, {
-      identity: planner.planSession(environmentPackage),
-      backendVersion: null,
-      backendLineage: workerBackendLineageFromRuntimeImage(environmentPackage.runtime.image),
-      lineage: environmentPackage.scope,
-      sandboxBindingRef: attemptBindingRef,
-      now: () => timestamp,
-    });
-  }
-  const attempt = recordSchedulerExecutionOperation(coreDb, {
-    attemptId: preparedAttempt.attemptId,
-    operationId: `submit:${turn.id}`,
-    submission: true,
+  // This fixture begins after preparation and presents the original committed placement to the Harness.
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    coreDb,
+    store,
+    env: {},
+    nanoHostRecovery: { owner: { state: 'ready', value: nativeStorage.owner } },
+  });
+  const executor = runtime.turnExecutor;
+  const planner =
+    executor instanceof WorkerGovernanceTurnExecutor ? executor.executionBackend : undefined;
+  if (!planner || !('planSession' in planner) || typeof planner.planSession !== 'function')
+    throw new Error('Auth fixture lacks its NanoHost session planner.');
+  await recordWorkerBackendSessionMaterializing(coreDb, {
+    identity: planner.planSession(environmentPackage),
+    backendVersion: null,
+    backendLineage: workerBackendLineageFromRuntimeImage(environmentPackage.runtime.image),
+    lineage: environmentPackage.scope,
+    sandboxBindingRef: attemptBindingRef,
     now: () => timestamp,
+  });
+  await nativeStorage.owner.backendSession({
+    kind: 'transition',
+    attemptId: preparedAttempt.attemptId,
+    fromState: 'materializing',
+    toState: 'materialized',
+    observedAt: timestamp,
+  });
+  seedTestNanoHostCompletedWorkspaceHandoff(coreDb, preparedAttempt.attemptId);
+  const { grant: attempt } = retainPreparedTestNanoHostSubmission(coreDb, {
+    admission: entry,
+    attemptId: preparedAttempt.attemptId,
+    targetId: target.targetId,
+    generation: String(target.connectionGeneration),
+    observedAt: timestamp,
   });
   const harnessInstanceId = `harness:${randomUUID()}`;
   const bindingId = `session-binding:${randomUUID()}`;
@@ -372,7 +389,10 @@ async function fixture(
     if (typeof value !== 'string') throw new Error('Auth fixture lacks an owner-produced token.');
     return value;
   };
-  const gateway = createDefaultWorkerControlGateway(coreDb);
+  const gateway = createDefaultWorkerControlGateway(coreDb, undefined, {
+    state: 'ready',
+    value: nativeStorage,
+  });
   const registration = gateway.registerSession(environmentPackage, {
     sandboxBindingRef: attemptBindingRef,
     workerControlToken: token('workerControlToken'),
@@ -501,13 +521,19 @@ describe('private Harness Login request authentication', () => {
     const f = await fixture('harness', 'shared-resident');
     if (!f.predecessorAttemptId) throw new Error('Auth fixture lacks the closed predecessor.');
     const previous = requireSchedulerExecutionAttempt(f.coreDb, f.predecessorAttemptId);
-    const current = resolveNanoHostAttemptTokenBinding(f.coreDb, {
-      sandboxBindingRef: f.attemptBindingRef,
-      lineage: f.context,
-      tokenFamily: 'worker-control',
-      token: f.registration.token,
-      now: f.now,
-    });
+    const current = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      resolveAdmittedNanoHostWorkerBinding(
+        f.coreDb,
+        sqlite,
+        {
+          sandboxBindingRef: f.attemptBindingRef,
+          lineage: { ...f.context, requestId: f.environmentPackage.scope.requestId ?? null },
+          tokenFamily: 'worker-control',
+          token: f.registration.token,
+        },
+        f.now()
+      )
+    );
     const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
       getWorkerBackendSession({ sqlite }, f.context.leaseId)
     );
