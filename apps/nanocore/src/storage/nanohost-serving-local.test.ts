@@ -15,10 +15,7 @@ import {
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target-records.js';
 import { readWorkerImageSettlement } from '../runtime/worker-image-settlements-records.js';
-import {
-  ControlHarnessLifecycleInputSchema,
-  NanoHostLocalHarnessLifecycleInputSchema,
-} from './harness-lifecycle-codecs.js';
+import { ControlHarnessLifecycleInputSchema } from './harness-lifecycle-codecs.js';
 import { createNanoHostCoreReads } from './nanohost-core-reads.js';
 import { ControlWorkerImageInputSchema } from './worker-image-codecs.js';
 
@@ -57,10 +54,10 @@ it('commits local Harness and image tuples without admitting mixed Core operatio
       timestamp,
       workspaceId: 'workspace-native',
     },
-  ].map((input) => NanoHostLocalHarnessLifecycleInputSchema.parse(input));
+  ].map((input) => ControlHarnessLifecycleInputSchema.nanoHostLocal.parse(input));
   const restore = { kind: 'sandbox.restore-admission', sandboxRuntimeId: 'sandbox-runtime' };
   expect(ControlHarnessLifecycleInputSchema.safeParse(restore).success).toBe(true);
-  expect(NanoHostLocalHarnessLifecycleInputSchema.safeParse(restore).success).toBe(false);
+  expect(ControlHarnessLifecycleInputSchema.nanoHostLocal.safeParse(restore).success).toBe(false);
   const image = {
     authoredArtifactId: 'ar_00000000-0000-7ce7-b2d8-9d02176fb5b5',
     authoredArtifactVersion: 1,
@@ -118,15 +115,15 @@ it('commits local Harness and image tuples without admitting mixed Core operatio
         try {
           sqlite.pragma('foreign_keys = ON');
           sqlite.pragma('synchronous = FULL');
-          const owner = { scope: 'nanohost', sqlite };
+          const owner = { sqlite };
           const applyHarness = input => sqlite.transaction(() =>
             applyControlHarnessLifecycle(owner, input)
           ).immediate();
           for (const input of workerData.inputs) assert.equal(applyHarness(input), null);
-          assert.throws(() => applyHarness(workerData.restore), /requires deciding Core authority/);
+          assert.throws(() => applyHarness(workerData.restore), /transition precondition failed/);
           assert.throws(() => sqlite.transaction(() => applyControlBackendSession(owner, {
             kind: 'transition', attemptId: 'fixture-attempt', fromState: 'materializing', toState: 'launching',
-          })).immediate(), /launch requires deciding Core authority/);
+          })).immediate(), /transition precondition failed/);
           const setup = workerData.inputs[0];
           for (const suffix of ['-later', '-accepting']) {
             assert.equal(applyHarness({

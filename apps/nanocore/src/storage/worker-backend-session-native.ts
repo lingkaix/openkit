@@ -1,41 +1,27 @@
 import type Database from 'better-sqlite3';
 import * as records from '../runtime/worker-backend-session-records.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
-import {
-  BackendSessionRefusal,
-  type ControlBackendSessionInput,
-} from './worker-backend-session-codecs.js';
+import type { ControlBackendSessionInput } from './worker-backend-session-codecs.js';
 
-/** Applies the original native state CAS or a previously committed Workspace handoff. */
-function applyNanoHostLocalBackendSession(
-  owner: { readonly sqlite: Database.Database },
-  input: Extract<ControlBackendSessionInput, { kind: 'transition' | 'handoff' }>
-) {
-  assertControlProductWriter(owner.sqlite);
-  const { observedAt } = input;
-  const clock = observedAt === undefined ? {} : { now: () => observedAt };
-  return input.kind === 'transition'
-    ? records.transitionWorkerBackendSessionState(owner, { ...input, ...clock })
-    : records.markWorkerBackendWorkspaceHandoffComplete(owner, { ...input, ...clock });
-}
-
-/** Applies one complete existing backend tuple within the Core savepoint and covering FULL commit. */
+/** Applies the original session tuple on the admitted owner and reserves launch decisions for Core. */
 export function applyControlBackendSession(
-  db: CoreDb | { readonly scope: 'nanohost'; readonly sqlite: Database.Database },
+  db: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
   input: ControlBackendSessionInput
 ) {
-  if (input.kind === 'transition' || input.kind === 'handoff') {
-    if (db.scope !== 'core' && input.kind === 'transition' && input.toState === 'launching')
-      throw new BackendSessionRefusal('Backend session launch requires deciding Core authority.');
-    return applyNanoHostLocalBackendSession(db, input);
-  }
   assertControlProductWriter(db.sqlite);
-  if (db.scope !== 'core')
-    throw new BackendSessionRefusal('Backend session tuple requires deciding Core authority.');
   const { kind, observedAt } = input;
   // An absent caller override stays absent: current wall time is sampled inside the deciding section.
   const clock = observedAt === undefined ? {} : { now: () => observedAt };
+  if (kind === 'transition') {
+    if (db.scope !== 'core' && input.toState === 'launching')
+      throw new ControlProductPreconditionError();
+    return records.transitionWorkerBackendSessionState(db, { ...input, ...clock });
+  }
+  if (kind === 'handoff')
+    return records.markWorkerBackendWorkspaceHandoffComplete(db, { ...input, ...clock });
+  if (db.scope !== 'core') throw new ControlProductPreconditionError();
   switch (kind) {
     case 'materializing':
       return records.recordWorkerBackendSessionMaterializing(db, { ...input, ...clock });

@@ -9,29 +9,19 @@ import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import type { ControlWorkerImageInput } from './worker-image-codecs.js';
 
-/** Runs an image tuple that can complete in the NanoHost file alone. */
-function applyNanoHostLocalWorkerImage(
-  owner: { readonly sqlite: Database.Database },
+/** Applies the original image tuple, with acquisition journal settlement confined to Core. */
+export function applyControlWorkerImage(
+  owner: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
   input: ControlWorkerImageInput
 ): null {
   assertControlProductWriter(owner.sqlite);
   if (input.kind === 'environment') {
     admitWorkerImageEnvironment(owner, input.candidate, input.environment);
+  } else if (owner.scope === 'core') {
+    writeWorkerImageSettlementInTransaction(owner, input.value, owner.sqlite);
   } else {
     if (input.value.operation !== 'image.build') throw new ControlProductPreconditionError();
     insertWorkerImageSettlementInTransaction(owner, input.value);
   }
-  return null;
-}
-
-/** The current Core path also settles the original image-acquisition journal step. */
-export function applyControlWorkerImage(
-  db: CoreDb | { readonly scope: 'nanohost'; readonly sqlite: Database.Database },
-  input: ControlWorkerImageInput
-): null {
-  if (db.scope === 'nanohost' || input.kind === 'environment')
-    return applyNanoHostLocalWorkerImage(db, input);
-  assertControlProductWriter(db.sqlite);
-  writeWorkerImageSettlementInTransaction(db, input.value, db.sqlite);
   return null;
 }

@@ -37,9 +37,11 @@ export const ControlWorkerFinalStatusResultSchema = z
 
 /** Bounded peer metadata for one complete original Core tuple. */
 export type ControlWorkerFinalStatusInput = z.infer<typeof ControlWorkerFinalStatusInputSchema>;
+/** Exact terminal bytes admitted through existing binary accounting. */
+export type ControlWorkerFinalStatusPayload = z.infer<typeof ControlWorkerFinalStatusPayloadSchema>;
 /** Caller-owned exact tuple before existing binary admission. */
 export type ControlWorkerFinalStatusCommand = Omit<ControlWorkerFinalStatusInput, 'byteLength'> & {
-  readonly payload: z.infer<typeof ControlWorkerFinalStatusPayloadSchema>;
+  readonly payload: ControlWorkerFinalStatusPayload;
 };
 /** Complete durable sequence acknowledgement. */
 export type ControlWorkerFinalStatusResult = z.infer<typeof ControlWorkerFinalStatusResultSchema>;
