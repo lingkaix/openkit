@@ -319,15 +319,15 @@ describe('database setup', () => {
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
         expect(listColumnNames(coreDb, table)).toContain('workspace_id');
       }
-      expect(listTableNames(coreDb)).toEqual(
-        expect.arrayContaining([
-          'notification_attention',
-          'notification_delivery_attempts',
-          'discord_account_bindings',
-          'discord_pairing_challenges',
-          'discord_disclosures',
-        ])
-      );
+      for (const moved of [
+        'discord_account_bindings',
+        'discord_pairing_challenges',
+        'discord_disclosures',
+        'notification_attention',
+        'notification_delivery_attempts',
+      ]) {
+        expect(beforeTables).not.toContain(moved);
+      }
       expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));
       for (const retired of [
         'scheduler_capacity_records',

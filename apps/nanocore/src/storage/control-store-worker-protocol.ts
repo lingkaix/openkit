@@ -74,12 +74,6 @@ import {
 } from '../auth/nanohost-transport-codecs.js';
 import type { ScopeAdmissionFailure } from '../bootstrap/readiness.js';
 import {
-  type ControlDiscordChannelInput,
-  ControlDiscordChannelInputSchema,
-  type ControlDiscordChannelResult,
-  ControlDiscordChannelResultSchema,
-} from '../channels/discord-codecs.js';
-import {
   ControlAppRefusalSchema,
   type ControlAppResult,
   ControlAppResultSchema,
@@ -93,14 +87,6 @@ import {
   ControlGenerativePresentationWireSchema,
 } from '../generative-ui/native-publication-codecs.js';
 import { ITEM_DELTA_PROTOCOL_MESSAGE } from '../lib/item-delta-validation.js';
-import {
-  type AttentionEnqueueResult,
-  AttentionEnqueueResultSchema,
-  type AttentionReconciliation,
-  type AttentionReconciliationResult,
-  AttentionReconciliationResultSchema,
-  AttentionReconciliationSchema,
-} from '../notifications/attention-codecs.js';
 import {
   type ControlExecutionJournalInput,
   ControlExecutionJournalInputSchema,
@@ -139,24 +125,21 @@ import {
   ControlAccessTokenVerificationSchema,
 } from './access-token-verification-codecs.js';
 import {
-  type ControlAttentionAttemptClaim,
-  type ControlAttentionAttemptClaimResult,
-  ControlAttentionAttemptClaimResultSchema,
-  ControlAttentionAttemptClaimSchema,
-} from './attention-attempt-claim-codecs.js';
-import {
-  type ControlAttentionAttemptCompletion,
-  type ControlAttentionAttemptCompletionResult,
-  ControlAttentionAttemptCompletionResultSchema,
-  ControlAttentionAttemptCompletionSchema,
-} from './attention-attempt-completion-codecs.js';
-import {
   type ControlAutomationScanner,
   type ControlAutomationScannerResult,
   ControlAutomationScannerResultSchema,
   ControlAutomationScannerSchema,
 } from './automation-scanner-codecs.js';
+import type {
+  CommunicationWriterCommand,
+  CommunicationWriterReply,
+} from './communication-writer.js';
+import type { ControlKernelStore } from './control-kernel-port.js';
 import {
+  ChannelInboundEnvelopeSchema,
+  ChannelInboundKeySchema,
+  ChannelInboundOriginSchema,
+  ChannelInboundOutcomeSchema,
   type ControlAdmissionInput,
   ControlAdmissionInputSchema,
   type ControlAdmissionResult,
@@ -168,6 +151,7 @@ import {
   CoreSchedulerResultSchema,
   type CoreSchedulerWire,
   CoreSchedulerWireSchema,
+  PairingAuditIntentSchema,
   WorkspaceQueueInputWriteSchema,
 } from './control-store-admission-codecs.js';
 import {
@@ -852,6 +836,94 @@ const nanoHostOwnerRefusalSchema = ControlRuntimeTargetRefusalSchema.extend({
   operation: z.literal('nanohost-owner'),
 });
 
+const communicationKernelInputSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('reserve'), envelope: ChannelInboundEnvelopeSchema }),
+  z.strictObject({ kind: z.literal('bind'), origin: ChannelInboundOriginSchema }),
+  z.strictObject({
+    kind: z.literal('settle'),
+    envelope: ChannelInboundEnvelopeSchema,
+    outcome: ChannelInboundOutcomeSchema,
+  }),
+  z.strictObject({ kind: z.literal('inspect'), key: ChannelInboundKeySchema }),
+  z.strictObject({
+    kind: z.literal('relay-audit'),
+    intent: PairingAuditIntentSchema,
+    event: AuditEventSchema,
+  }),
+  z.strictObject({ kind: z.literal('inspect-audit'), intent: PairingAuditIntentSchema }),
+]);
+
+export type CommunicationKernelInput = z.infer<typeof communicationKernelInputSchema>;
+
+type KernelValue<Result> =
+  Extract<Awaited<Result>, { state: 'ready' }> extends {
+    value: infer Value;
+  }
+    ? Value
+    : never;
+
+export type CommunicationKernelReply =
+  | { kind: 'reserve'; value: KernelValue<ReturnType<ControlKernelStore['reserveChannelInbound']>> }
+  | { kind: 'bind'; value: KernelValue<ReturnType<ControlKernelStore['bindChannelInboundOrigin']>> }
+  | { kind: 'settle'; value: KernelValue<ReturnType<ControlKernelStore['settleChannelInbound']>> }
+  | { kind: 'inspect'; value: KernelValue<ReturnType<ControlKernelStore['inspectChannelInbound']>> }
+  | { kind: 'relay-audit'; value: KernelValue<ReturnType<ControlKernelStore['relayPairingAudit']>> }
+  | {
+      kind: 'inspect-audit';
+      value: KernelValue<ReturnType<ControlKernelStore['inspectPairingAudit']>>;
+    };
+
+const communicationReceiptDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const channelReceipt = z.strictObject({
+  intent: ChannelInboundEnvelopeSchema,
+  disposition: z.literal('applied'),
+  receiptDigest: communicationReceiptDigest,
+  result: ChannelInboundOutcomeSchema,
+});
+const pairingReceipt = z.strictObject({
+  intent: PairingAuditIntentSchema,
+  disposition: z.literal('applied'),
+  receiptDigest: communicationReceiptDigest,
+  result: z.strictObject({ eventId: AuditEventSchema.shape.id }),
+});
+const receiptHold = z.strictObject({ state: z.enum(['conflict', 'unknown']) });
+const receiptAbsent = z.strictObject({ state: z.literal('absent') });
+const settledChannel = z.strictObject({ state: z.literal('settled'), receipt: channelReceipt });
+const settledPairing = z.strictObject({ state: z.literal('settled'), receipt: pairingReceipt });
+const communicationKernelReplySchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('reserve'),
+    value: z.strictObject({
+      state: z.enum(['reserved-now', 'inspect-original', 'conflict', 'unknown']),
+    }),
+  }),
+  z.strictObject({
+    kind: z.literal('bind'),
+    value: z.strictObject({
+      state: z.enum(['bound-now', 'inspect-original', 'conflict', 'unknown']),
+    }),
+  }),
+  z.strictObject({
+    kind: z.literal('settle'),
+    value: z.union([settledChannel, receiptHold]),
+  }),
+  z.strictObject({
+    kind: z.literal('inspect'),
+    value: z.union([
+      z.strictObject({ state: z.literal('unknown') }),
+      receiptAbsent,
+      z.strictObject({ state: z.literal('reserved'), envelope: ChannelInboundEnvelopeSchema }),
+      z.strictObject({ state: z.literal('origin-bound'), origin: ChannelInboundOriginSchema }),
+      settledChannel.extend({ origin: ChannelInboundOriginSchema.nullable() }),
+    ]),
+  }),
+  z.strictObject({ kind: z.literal('relay-audit'), value: z.union([settledPairing, receiptHold]) }),
+  z.strictObject({
+    kind: z.literal('inspect-audit'),
+    value: z.union([settledPairing, receiptHold, receiptAbsent]),
+  }),
+]);
+
 /**
  * Trusted internal database-worker requests.
  *
@@ -876,6 +948,8 @@ export type ControlWorkerCommand =
           readonly serverOwner?: ServerOwnerDescriptor;
           /** Trusted existing-owner migration under writer exclusion, with a verified pre-DDL copy. */
           readonly migrateServerOwner?: true;
+          /** One trusted live policy cell captured by the Communication owner OPEN. */
+          readonly communicationExpiryPolicy?: SharedArrayBuffer;
           /** Exact admitted root for same-connection scoped domain bodies; never inferred from a caller-selected database key. */
           readonly dataRoot?: string;
           /** Admitted private Storage binding; never derived from an incoming content locator. */
@@ -958,6 +1032,19 @@ export type ControlWorkerCommand =
           readonly openingRequestId: number;
           readonly mutation: NanoHostOwnerMutation;
         }
+      | {
+          readonly operation: 'communication-kernel';
+          readonly openingRequestId: number;
+          readonly communicationIdentity: string;
+          readonly input: CommunicationKernelInput;
+        }
+      | {
+          readonly operation: 'communication-owner';
+          readonly openingRequestId: number;
+          readonly stage: CommunicationWriterCommand['stage'];
+          readonly input: ControlScalarText;
+          readonly content: ArrayBuffer;
+        }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
       | {
@@ -1016,27 +1103,6 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'workspace-review-decision';
           readonly input: ControlWorkspaceReviewDecision;
-        }
-      | {
-          readonly operation: 'discord-channel';
-          readonly input: ControlDiscordChannelInput;
-        }
-      | {
-          readonly operation: 'attention-enqueue';
-          readonly input: ControlScalarText;
-          readonly content: ArrayBuffer;
-        }
-      | {
-          readonly operation: 'attention-reconcile-incomplete-attempts';
-          readonly input: AttentionReconciliation;
-        }
-      | {
-          readonly operation: 'attention-attempt-claim';
-          readonly input: ControlAttentionAttemptClaim;
-        }
-      | {
-          readonly operation: 'attention-attempt-completion';
-          readonly input: ControlAttentionAttemptCompletion;
         }
       | {
           readonly operation: 'local-identity';
@@ -1136,7 +1202,7 @@ export function controlWorkerInputBytes(
               command.operation === 'generative-presentation' ||
               command.operation === 'app-kernel' ||
               command.operation === 'schema-application' ||
-              command.operation === 'attention-enqueue' ||
+              command.operation === 'communication-owner' ||
               (command.operation === 'transition' &&
                 'kind' in command.transition &&
                 (command.transition.kind === 'command-receipt' ||
@@ -1269,7 +1335,16 @@ interface OrdinaryControlWorkerDomainRefusal {
 }
 
 /** Existing native refusals plus the sharing family's exact current-record projection. */
+const communicationOwnerRefusalSchema = z.strictObject({
+  operation: z.literal('communication-owner'),
+  kind: z.enum(['attention', 'operation']),
+  code: z.string().min(1).max(96),
+  message: z.string().min(1).max(512),
+  status: z.union([z.literal(400), z.literal(403), z.literal(404), z.literal(409), z.literal(503)]),
+});
+
 export type ControlWorkerDomainRefusal =
+  | z.infer<typeof communicationOwnerRefusalSchema>
   | z.infer<typeof ControlSecurityTriggerRefusalSchema>
   | z.infer<typeof ControlPrivateWorkspaceRefusalSchema>
   | OrdinaryControlWorkerDomainRefusal
@@ -1372,6 +1447,16 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'nanohost-owner';
       readonly result: NanoHostOwnerMutationResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'communication-kernel';
+      readonly result: CommunicationKernelReply;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'communication-owner';
+      readonly result: CommunicationWriterReply;
     }
   | {
       readonly status: 'ok';
@@ -1507,31 +1592,6 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
   | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
-  | {
-      readonly status: 'ok';
-      readonly operation: 'discord-channel';
-      readonly result: ControlDiscordChannelResult;
-    }
-  | {
-      readonly status: 'ok';
-      readonly operation: 'attention-enqueue';
-      readonly result: AttentionEnqueueResult;
-    }
-  | {
-      readonly status: 'ok';
-      readonly operation: 'attention-reconcile-incomplete-attempts';
-      readonly result: AttentionReconciliationResult;
-    }
-  | {
-      readonly status: 'ok';
-      readonly operation: 'attention-attempt-claim';
-      readonly result: ControlAttentionAttemptClaimResult;
-    }
-  | {
-      readonly status: 'ok';
-      readonly operation: 'attention-attempt-completion';
-      readonly result: ControlAttentionAttemptCompletionResult;
-    }
   | {
       readonly status: 'ok';
       readonly operation: 'local-identity';
@@ -1789,6 +1849,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlWorkerImageRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'nanohost-owner')
     return nanoHostOwnerRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'communication-owner')
+    return communicationOwnerRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'runtime-target')
     return ControlRuntimeTargetRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'backend-session')
@@ -1952,6 +2014,17 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
       exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
       nanoHostOwnerResultSchema.safeParse(reply.result).success
     );
+  if (reply.operation === 'communication-kernel')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      communicationKernelReplySchema.safeParse(reply.result).success
+    );
+  if (reply.operation === 'communication-owner')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      isRecord(reply.result) &&
+      typeof reply.result.stage === 'string'
+    );
   if (reply.operation === 'nanohost-transport')
     return ControlNanoHostTransportResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'better-auth')
@@ -2061,16 +2134,6 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return reply.result === null || typeof reply.result === 'string';
   if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
     return reply.result === null;
-  if (reply.operation === 'discord-channel')
-    return ControlDiscordChannelResultSchema.safeParse(reply.result).success;
-  if (reply.operation === 'attention-enqueue')
-    return AttentionEnqueueResultSchema.safeParse(reply.result).success;
-  if (reply.operation === 'attention-reconcile-incomplete-attempts')
-    return AttentionReconciliationResultSchema.safeParse(reply.result).success;
-  if (reply.operation === 'attention-attempt-claim')
-    return ControlAttentionAttemptClaimResultSchema.safeParse(reply.result).success;
-  if (reply.operation === 'attention-attempt-completion')
-    return ControlAttentionAttemptCompletionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'local-identity')
     return ControlLocalIdentityResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'bootstrap-consume')
@@ -2419,6 +2482,7 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
           'contentMount',
           'serverOwner',
           'migrateServerOwner',
+          'communicationExpiryPolicy',
         ]
       ) &&
       typeof value.path === 'string' &&
@@ -2428,6 +2492,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
         (typeof value.dataRoot === 'string' && isAbsolute(value.dataRoot))) &&
       (value.migrateServerOwner === undefined ||
         (value.migrateServerOwner === true && value.serverOwner !== undefined && !value.create)) &&
+      (value.communicationExpiryPolicy === undefined ||
+        (isRecord(value.serverOwner) &&
+          value.serverOwner.owner === 'communication' &&
+          value.communicationExpiryPolicy instanceof SharedArrayBuffer &&
+          value.communicationExpiryPolicy.byteLength === BigInt64Array.BYTES_PER_ELEMENT)) &&
       (value.serverOwner === undefined ||
         (isRecord(value.serverOwner) &&
           exactFields(value.serverOwner, ['owner']) &&
@@ -2572,6 +2641,29 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       (value.openingRequestId as number) >= 0 &&
       nanoHostOwnerMutationSchema.safeParse(value.mutation).success
     );
+  if (value.operation === 'communication-kernel')
+    return (
+      exactFields(value, [...scoped, 'openingRequestId', 'communicationIdentity', 'input']) &&
+      Number.isSafeInteger(value.openingRequestId) &&
+      (value.openingRequestId as number) >= 0 &&
+      typeof value.communicationIdentity === 'string' &&
+      /^\d+:\d+$/.test(value.communicationIdentity) &&
+      communicationKernelInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'communication-owner') {
+    const parsed = ControlScalarTextSchema.safeParse(value.input);
+    return (
+      exactFields(value, [...scoped, 'openingRequestId', 'stage', 'input', 'content']) &&
+      Number.isSafeInteger(value.openingRequestId) &&
+      (value.openingRequestId as number) >= 0 &&
+      typeof value.stage === 'string' &&
+      value.stage.length <= 64 &&
+      parsed.success &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
   if (value.operation === 'nanohost-transport')
     return (
       exactFields(value, [...scoped, 'input']) &&
@@ -2665,38 +2757,6 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkerImageInputSchema.safeParse(value.input).success &&
-      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
-    );
-  if (value.operation === 'discord-channel')
-    return (
-      exactFields(value, [...scoped, 'input']) &&
-      ControlDiscordChannelInputSchema.safeParse(value.input).success &&
-      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
-    );
-  if (value.operation === 'attention-enqueue') {
-    const parsed = ControlScalarTextSchema.safeParse(value.input);
-    return (
-      parsed.success &&
-      exactFields(value, [...scoped, 'input', 'content']) &&
-      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
-      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
-    );
-  }
-  if (value.operation === 'attention-reconcile-incomplete-attempts')
-    return (
-      exactFields(value, [...scoped, 'input']) &&
-      AttentionReconciliationSchema.safeParse(value.input).success
-    );
-  if (value.operation === 'attention-attempt-claim')
-    return (
-      exactFields(value, [...scoped, 'input']) &&
-      ControlAttentionAttemptClaimSchema.safeParse(value.input).success &&
-      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
-    );
-  if (value.operation === 'attention-attempt-completion')
-    return (
-      exactFields(value, [...scoped, 'input']) &&
-      ControlAttentionAttemptCompletionSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'local-identity')

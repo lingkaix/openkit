@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import type { z } from 'zod';
 import type { createDiscordRestTransport } from '../channels/discord-rest.js';
 import {
@@ -28,6 +29,19 @@ interface CommunicationAttentionWriters {
   settle: CommunicationStore['settleAttentionSend'];
 }
 
+/** Admitted reader and covering writer acknowledgements supplied by App composition. */
+export interface CommunicationAttentionOwner extends CommunicationAttentionWriters {
+  readonly read: <T>(read: (sqlite: Database.Database) => T) => StorageResult<'communication', T>;
+  readonly enqueue: (
+    input: z.infer<typeof AttentionEnqueueSchema>
+  ) => Promise<StorageResult<'communication', AttentionDelivery>>;
+  readonly reconcile: () => Promise<StorageResult<'communication', number>>;
+  readonly withWorkspace: <T>(
+    workspaceId: string,
+    effect: () => Promise<T>
+  ) => Promise<StorageResult<'communication', T>>;
+}
+
 type PublishedPending = Pick<
   PendingRequestRecord,
   | 'workspaceId'
@@ -44,9 +58,7 @@ export async function observePublishedCommunicationAttention(
   record: PublishedPending,
   dependencies: {
     readonly isCurrent: (record: PublishedPending) => boolean;
-    readonly enqueue: (
-      input: z.infer<typeof AttentionEnqueueSchema>
-    ) => Promise<StorageResult<'communication', AttentionDelivery>>;
+    readonly enqueue: CommunicationAttentionOwner['enqueue'];
   }
 ): Promise<StorageResult<'communication', AttentionDelivery | null>> {
   if (

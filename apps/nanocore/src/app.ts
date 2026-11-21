@@ -49,7 +49,7 @@ import { prepareWorkspaceAuditEvent } from './audit-events.js';
 import { resolveSessionDeploymentAdminTokenId } from './auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from './auth/access-token-verification.js';
 import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
-import { type Actor, getLocalUserId } from './auth/identity.js';
+import { type Actor, getLocalUserId, isDeploymentAdminActor } from './auth/identity.js';
 import { isLoopbackHost } from './auth/loopback-host.js';
 // Actor type used by mode worker turn request credential threading
 import {
@@ -67,6 +67,10 @@ import {
   authorizeWorkspace,
   currentWorkspaceAuthority,
   DeploymentAdminRequiredError,
+  evaluateOwnedUserOperation,
+  evaluateProductAuthorization,
+  isCurrentServerPolicyAuthor,
+  isUsablePresentedCredential,
   isWorkspaceOperationAuthorized,
   readCurrentWorkspacePolicy,
   requireAdministratorOperation,
@@ -77,7 +81,7 @@ import { restoreWorkspaceRetirementAdmission } from './bootstrap/workspace-recov
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import {
   type ChannelServices,
-  createChannelServices,
+  createCommunicationChannelServices,
   type DiscordAttentionTransport,
 } from './channel-services.js';
 import { createDiscordRestTransport } from './channels/discord-rest.js';
@@ -140,7 +144,10 @@ import {
   type WorkerCoordinatorCandidateRequest,
 } from './mode-entry-routes.js';
 import { createAppOpenApiDocument, registerAppApiRoute } from './openapi.js';
-import type { OperationInvocationDependencies } from './operation-composition.js';
+import type {
+  CommunicationCredentialBinding,
+  OperationInvocationDependencies,
+} from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import {
@@ -253,10 +260,22 @@ import {
 } from './scheduler-records.js';
 import { registerServiceRoutes } from './service-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { createCommunicationDiscord } from './storage/communication-discord.js';
+import { requireChannelStorage } from './storage/communication-inbound.js';
+import { readPendingPairingAuditInDb } from './storage/communication-pairing-native.js';
+import { relayNextPairingAudit } from './storage/communication-pairing-relay.js';
+import {
+  CommunicationWriterCommandSchema,
+  CommunicationWriterReplySchema,
+} from './storage/communication-writer.js';
+import {
+  type CommunicationOwnerBinding,
+  getControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
 import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
+import type { StorageResult, StorageUnavailable } from './storage/storage-owner.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { findWorkspaceQueueInputRef } from './storage/workspace-queue-inputs.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
@@ -475,6 +494,15 @@ export interface CreateAppOptions {
   policyInterception?: PolicyInterception;
   /** Optional private Discord send boundary; deterministic tests supply a fake. */
   discordAttentionTransport?: DiscordAttentionTransport;
+  /** Only the qualified startup composition selects this gated destination. */
+  communicationStorage?: {
+    readonly binding:
+      | StorageResult<'communication', CommunicationOwnerBinding>
+      | StorageUnavailable<'control-kernel'>;
+    readonly listNanoHostTransportTokens?: NonNullable<
+      CommunicationCredentialBinding['listNanoHostTransportTokens']
+    >;
+  };
   /** Boot joins this finite preparation callback to the existing recurring scanner. */
   onKnowledgeMaintenanceReady?: (scan: (instant: string) => Promise<void>) => void;
   /** Explicit canonical identity for an embedded fixture without Core storage; production resolves the recorded local User. */
@@ -633,6 +661,49 @@ export function createDefaultVaultUnlockState(
   return createVaultUnlockState({
     backendKind: 'encrypted-file',
     storeDir: join(input.dataRoot, 'server', 'vault'),
+  });
+}
+
+type PrepareCommunicationOwner = Omit<
+  Parameters<ReturnType<typeof getControlStoreWorkerClient>['bindCommunicationOwner']>[0],
+  'dependencies'
+> & { readonly mode: CoreMode };
+
+/** Supplies current App authority and destination codecs without making the shared worker client import its callers. */
+export function prepareCommunicationOwner(input: PrepareCommunicationOwner) {
+  const { coreDb, mode, kernel } = input;
+  return getControlStoreWorkerClient().bindCommunicationOwner({
+    coreDb,
+    ...(kernel ? { kernel } : {}),
+    dependencies: {
+      observeAuthority: ({ userId, actor }) => {
+        if (
+          !isCanonicalUserActive(coreDb, userId) ||
+          (mode === 'local' && getLocalUserId(coreDb) !== userId) ||
+          (actor &&
+            (actor.userId !== userId ||
+              !isUsablePresentedCredential(coreDb, actor) ||
+              evaluateOwnedUserOperation(coreDb, actor, userId, 'api.call', true).effect !==
+                'allow'))
+        )
+          throw new OperationError(
+            'channel_authority_unavailable',
+            'Current authority unavailable.',
+            403
+          );
+        const administratorAtEvent =
+          actor && isDeploymentAdminActor(actor)
+            ? evaluateProductAuthorization(coreDb, actor, { kind: 'server' }, 'api.call', true)
+                .effect === 'allow'
+            : isCurrentServerPolicyAuthor(coreDb, userId);
+        return { userId, administratorAtEvent };
+      },
+      createCommunicationDiscord,
+      readPendingPairingAuditInDb,
+      relayNextPairingAudit,
+      CommunicationWriterCommandSchema,
+      CommunicationWriterReplySchema,
+    },
   });
 }
 
@@ -2076,6 +2147,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   let channelServices: ChannelServices | undefined;
+  const communicationStorage = options.communicationStorage;
+  let communicationCredentialBinding: CommunicationCredentialBinding | undefined =
+    communicationStorage
+      ? communicationStorage.listNanoHostTransportTokens
+        ? { listNanoHostTransportTokens: communicationStorage.listNanoHostTransportTokens }
+        : {}
+      : undefined;
   registerDiscordInteractionRoutes({
     app,
     config: startupOpenKitConfig.channels?.discord,
@@ -2750,7 +2828,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             resolveBotToken: async () => resolveEnvSecretRef(botTokenRef),
           })
         : undefined);
-    channelServices = createChannelServices({
+    const channelInputs: Parameters<typeof createCommunicationChannelServices>[0] = {
       coreDb: options.coreDb,
       store: sharedStore,
       mode,
@@ -2768,9 +2846,52 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           fileAdmission,
           mode,
         })(id, value, { kind: 'public', actor, delivery: 'human' }),
-    });
-    setPendingRequestAttentionObserver(sharedStore, channelServices.attentionRaised);
-    void channelServices.recoverAttention().catch(() => undefined);
+    };
+    if (communicationStorage?.binding.state === 'ready') {
+      const binding = communicationStorage.binding.value;
+      const selected = createCommunicationChannelServices({
+        ...channelInputs,
+        discordOwners: binding.owners,
+      });
+      if (selected.state === 'ready') {
+        const owned = selected.value;
+        const run = async <Value>(effect: () => Promise<Value>): Promise<Value> =>
+          requireChannelStorage(await binding.withProducer(effect));
+        const discord = owned.discord;
+        channelServices = {
+          ...owned,
+          discord: discord
+            ? {
+                beginPairing: (actor) => run(() => discord.beginPairing(actor)),
+                // The signed route races a response deadline after this producer starts.
+                handleVerified: (interaction) => run(() => discord.handleVerified(interaction)),
+              }
+            : null,
+          recoverAttention: () => run(owned.recoverAttention),
+        };
+        communicationCredentialBinding = {
+          ...communicationCredentialBinding,
+          communicationCredentials: {
+            readBinding: owned.credentials.readBinding,
+            unbind: async (input) => {
+              if (input.actor.kind === 'token' && input.actor.tokenScope !== 'server-admin')
+                throw new OperationError(
+                  'channel_authority_unavailable',
+                  'Current authority unavailable.',
+                  403
+                );
+              const admitted = await binding.withProducer(() => owned.credentials.unbind(input));
+              return admitted.state === 'ready' ? admitted.value : admitted;
+            },
+          },
+        };
+        binding.wakePairingAudit();
+      }
+    }
+    if (channelServices) {
+      setPendingRequestAttentionObserver(sharedStore, channelServices.attentionRaised);
+      void channelServices.recoverAttention().catch(() => undefined);
+    }
   }
 
   registerKnowledgePackageRoutes({
@@ -2844,6 +2965,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     taskStart,
     pendingRequestServices,
     ...(channelServices ? { channelServices } : {}),
+    ...(communicationCredentialBinding ? { communicationCredentialBinding } : {}),
     startModeWorkerTurn,
     coreDb: options.coreDb,
     inflightCommands,
@@ -2913,6 +3035,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     taskStart,
     pendingRequestServices,
     ...(channelServices ? { channelServices } : {}),
+    ...(communicationCredentialBinding ? { communicationCredentialBinding } : {}),
     runtimeConfigManager,
     runtimeConfigOperations,
     providerSubscriptionOperations,

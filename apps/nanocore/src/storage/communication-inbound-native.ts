@@ -215,10 +215,11 @@ export function settleChannelRefusalInDb(
       const original = readChannelOriginInDb(sqlite, requestId);
       if (
         !matchesOrigin(original, envelope, origin) ||
-        original.receiptDigest !== null ||
+        // A target-free handled receipt can precede the final disclosure check.
+        (original.receiptDigest !== null && (origin !== null || original.inputHash !== null)) ||
         (original.refusalCode !== null && original.refusalCode !== refusalCode)
       ) {
-        throw new Error('The refusal does not match the original unsettled response.');
+        throw new Error('The refusal does not match the original response.');
       }
       sqlite
         .prepare(

@@ -6,28 +6,32 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { isRecord } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { ZodError } from 'zod';
+import type { z } from 'zod';
 import {
   AttentionNotifications,
   type AttentionSource,
   enqueueAttentionInDb,
 } from '../notifications/attention.js';
-import { AttentionError } from '../notifications/attention-error.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestCoreDb } from '../test-support/store.js';
+import { sendCommunicationAttention } from './communication-attention.js';
 import {
-  type ControlAttentionAttemptClaim,
-  ControlAttentionAttemptClaimSchema,
-} from './attention-attempt-claim-codecs.js';
-import { applyControlAttentionAttemptClaim } from './attention-attempt-claim-native.js';
+  CommunicationAttentionClaimSchema,
+  claimCommunicationAttentionInDb,
+} from './communication-attention-native.js';
+import { requireChannelStorage } from './communication-inbound.js';
+import {
+  communicationKernelFixture,
+  openCommunicationFixture,
+} from './communication-worker.test-support.js';
+import { CommunicationWriterCommandSchema } from './communication-writer.js';
 import { CONTROL_PRODUCT_LIMITS } from './control-store-product-records.js';
 import {
-  ControlStoreWorkerError,
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import { isControlWorkerRequest } from './control-store-worker-protocol.js';
-import { type CoreDb, openCoreDb } from './db.js';
-import { applyNativeScopeMigrations } from './migrate.js';
+import { serverStoragePath } from './db.js';
 
 // Real Worker/SQLite throughout: only hold or corrupt its genuine committed claim ACK.
 const fault = vi.hoisted(() => ({
@@ -39,6 +43,7 @@ const fault = vi.hoisted(() => ({
   posts: [] as string[],
   requests: [] as number[],
   acknowledgements: 0,
+  refusals: [] as unknown[],
 }));
 vi.mock('node:worker_threads', async (load) => {
   const actual = await load<typeof import('node:worker_threads')>();
@@ -49,7 +54,7 @@ vi.mock('node:worker_threads', async (load) => {
         const message: unknown = args[0];
         if (isControlWorkerRequest(message)) {
           fault.posts.push(message.operation);
-          if (message.operation === 'attention-attempt-claim') {
+          if (message.operation === 'communication-owner' && message.stage === 'claim-attention') {
             fault.requests.push(message.id);
             fault.worker = this;
           }
@@ -61,11 +66,18 @@ vi.mock('node:worker_threads', async (load) => {
         if (
           event === 'message' &&
           isRecord(reply) &&
+          reply.status === 'error' &&
+          fault.requests.includes(reply.id as number)
+        )
+          fault.refusals.push(reply);
+        if (
+          event === 'message' &&
+          isRecord(reply) &&
           reply.status === 'ok' &&
-          reply.operation === 'attention-attempt-claim' &&
+          reply.operation === 'communication-owner' &&
           fault.requests.includes(reply.id as number) &&
           isRecord(reply.result) &&
-          reply.result.status === 'claimed'
+          reply.result.stage === 'claim-attention'
         ) {
           if (fault.replyId && isRecord(reply.result.delivery)) {
             args[0] = {
@@ -105,41 +117,114 @@ function track<T>(promise: Promise<T>): Promise<T> {
   );
   return promise;
 }
-function fixture(requestId = 'apr_claim_owner') {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-attention-claim-'));
+async function fixture(requestId = 'apr_claim_owner') {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-communication-claim-'));
   roots.push(dataRoot);
-  const coreDb: CoreDb = openCoreDb(dataRoot);
+  const coreDb = createTestCoreDb(dataRoot);
   databases.push(coreDb.sqlite);
-  applyNativeScopeMigrations(coreDb.sqlite, 'core');
+  const kernel = communicationKernelFixture(
+    coreDb,
+    () => null,
+    () => {
+      throw new Error('Attention cannot submit a Core receipt.');
+    }
+  );
+  const open = () => openCommunicationFixture(coreDb, 'local', kernel);
+  let binding = await open();
+  const path = serverStoragePath(dataRoot, 'communication');
+  const sqlite = new Database(path, { fileMustExist: true });
+  databases.push(sqlite);
+  const reader = new Database(path, { readonly: true, fileMustExist: true });
+  databases.push(reader);
+  const projection = new AttentionNotifications(reader);
+  const bindingRevision = crypto.randomUUID();
+  sqlite
+    .prepare(`INSERT INTO channel_account_bindings
+    (revision, channel_kind, external_account_id, user_id, paired_at)
+    VALUES (?, 'discord', '302', ?, ?)`)
+    .run(bindingRevision, recipientUserId, Date.now());
   const counters = { routes: 0, eligible: 0, sends: 0 };
   const options = {
-    nativeCoreDb: coreDb,
     now: () => startedAt,
     buildAppPath: (_source: AttentionSource) => {
       counters.routes += 1;
       return '/tasks/claim?requestId=apr_claim_owner';
     },
   };
-  const notifications = new AttentionNotifications(coreDb.sqlite, options);
-  // Isolated pre-open fixture setup retains the original owner; the subject starts its native scope.
   const delivery = enqueueAttentionInDb(
-    coreDb.sqlite,
+    sqlite,
     {
       source: {
         workspaceId: testEntityId('ws', 'claim-owner'),
         threadId: testEntityId('th', 'claim-owner'),
         kind: 'approval-request',
-        requestId,
+        requestId: requestId,
       },
       recipientUserId,
     },
     () => startedAt
   );
-  return { coreDb, notifications, delivery, options, counters };
+  fault.posts.length = 0;
+  const notifications = {
+    get: (id: string) => projection.get(id),
+    deliver: async (
+      { channel: _channel, ...selection }: Parameters<AttentionNotifications['deliver']>[0],
+      dependencies: Parameters<AttentionNotifications['deliver']>[1]
+    ) => {
+      const { attention, communication } = binding.owners;
+      return requireChannelStorage(
+        await attention.withWorkspace(delivery.source.workspaceId, () =>
+          sendCommunicationAttention({
+            selection: { ...selection, retry: selection.retry ?? false },
+            withBinding: communication.withBinding,
+            readBinding: communication.storage.readBinding,
+            writer: attention,
+            isEligible: dependencies.isEligible,
+            buildAppPath: options.buildAppPath,
+            now: options.now,
+            send: async ({ appPath }) => {
+              const { status } = await dependencies.transport({
+                kind: 'attention-link',
+                deliveryId: selection.deliveryId,
+                appPath,
+              });
+              return status === 'sent'
+                ? { status, externalMessageId: '523456789012345678' }
+                : { status, code: 'fixture-outcome' };
+            },
+          })
+        )
+      );
+    },
+    enqueue: async (input: Parameters<typeof binding.owners.attention.enqueue>[0]) => {
+      const { attention } = binding.owners;
+      return requireChannelStorage(
+        requireChannelStorage(
+          await attention.withWorkspace(delivery.source.workspaceId, () => attention.enqueue(input))
+        )
+      );
+    },
+    reconcileIncompleteAttempts: async () =>
+      requireChannelStorage(await binding.owners.attention.reconcile()),
+  };
+  return {
+    dataRoot,
+    sqlite,
+    path,
+    notifications,
+    delivery,
+    options,
+    bindingRevision,
+    current: () => binding,
+    reopen: async () => {
+      binding = await open();
+    },
+    counters,
+  };
 }
-type Fixture = ReturnType<typeof fixture>;
+type Fixture = Awaited<ReturnType<typeof fixture>>;
 function cold(f: Fixture) {
-  const reader = new Database(f.coreDb.sqlite.name, { readonly: true });
+  const reader = new Database(f.path, { readonly: true, fileMustExist: true });
   databases.push(reader);
   return reader;
 }
@@ -158,7 +243,7 @@ function expectUnclaimed(f: Fixture) {
     cold(f)
       .prepare('SELECT channel, created_at AS createdAt FROM notification_attention WHERE id = ?')
       .get(f.delivery.id)
-  ).toEqual({ channel: null, createdAt: startedAt });
+  ).toEqual({ channel: null, createdAt: f.delivery.createdAt });
   expect(f.counters).toEqual({ routes: 0, eligible: 0, sends: 0 });
 }
 function send(
@@ -205,6 +290,7 @@ beforeEach(async () => {
   fault.posts.length = 0;
   fault.requests.length = 0;
   fault.acknowledgements = 0;
+  fault.refusals.length = 0;
 });
 afterEach(async () => {
   fault.hold = false;
@@ -223,10 +309,10 @@ afterEach(async () => {
 it.each(['notification_attention', 'notification_delivery_attempts'] as const)(
   'F3 stores a future channel in migrated %s and preserves it on cold reopen',
   async (table) => {
-    const f = fixture();
+    const f = await fixture();
     await expect(send(f)).resolves.toMatchObject({ status: 'sent', channel: 'discord' });
     await shutdownControlStoreWorkerClient();
-    const sqlite = f.coreDb.sqlite;
+    const sqlite = f.sqlite;
     expect(sqlite.prepare(`UPDATE ${table} SET channel = ?`).run('future-connector').changes).toBe(
       1
     );
@@ -250,8 +336,8 @@ it.each(['notification_attention', 'notification_delivery_attempts'] as const)(
 );
 
 it('F3 preserves Attention nullability, source and attempt checks, indices and cascading ownership', async () => {
-  const f = fixture();
-  const sqlite = f.coreDb.sqlite;
+  const f = await fixture();
+  const sqlite = f.sqlite;
   const reject = (operation: () => unknown, code: string) => {
     expect(operation).toThrowError(expect.objectContaining({ code }));
   };
@@ -322,29 +408,30 @@ it('F3 preserves Attention nullability, source and attempt checks, indices and c
   ).toEqual({ count: 0 });
 });
 
-it('F3 refuses a future channel through Attention and native claim admission before any write or contact', async () => {
-  const f = fixture();
-  const channel = 'future-connector' as Parameters<AttentionNotifications['deliver']>[0]['channel'];
-  const refused = send(f, { channel });
-  await expect(refused).rejects.toBeInstanceOf(AttentionError);
-  await expect(refused).rejects.toMatchObject({ code: 'invalid_attention_input' });
+it('F3 refuses a future channel at the admitted worker boundary before posting or contact', async () => {
+  const f = await fixture();
+  const input = {
+    deliveryId: f.delivery.id,
+    recipientUserId,
+    channel: 'future-connector',
+    retry: false,
+    expectedAttemptId: null,
+    bindingRevision: f.bindingRevision,
+  };
+  expect(CommunicationAttentionClaimSchema.safeParse(input).success).toBe(false);
+  const binding = f.current();
   await expect(
-    getControlStoreWorkerClient().attentionAttemptClaim(f.coreDb, {
-      deliveryId: f.delivery.id,
-      recipientUserId,
-      channel,
-      retry: false,
-      expectedAttemptId: null,
-      startedAt,
-    })
-  ).rejects.toBeInstanceOf(ZodError);
+    binding.withProducer(() =>
+      binding.owners.attention.claim(input as z.infer<typeof CommunicationAttentionClaimSchema>)
+    )
+  ).resolves.toMatchObject({ state: 'ready', value: { state: 'unavailable' } });
   expect(fault.posts).toEqual([]);
   expectUnclaimed(f);
 });
 
 it('commits the original sending claim with Main readonly before fresh eligibility and transport', async () => {
-  const f = fixture();
-  f.coreDb.sqlite.pragma('query_only = ON');
+  const f = await fixture();
+  f.sqlite.pragma('query_only = ON');
   let sends = 0;
   let admissions = 0;
   const result = f.notifications
@@ -405,7 +492,7 @@ it('commits the original sending claim with Main readonly before fresh eligibili
   });
   expect(admissions).toBe(1);
   expect(sends).toBe(1);
-  const reader = new Database(f.coreDb.sqlite.name, { readonly: true });
+  const reader = new Database(f.path, { readonly: true, fileMustExist: true });
   databases.push(reader);
   expect(
     reader
@@ -420,7 +507,7 @@ it('commits the original sending claim with Main readonly before fresh eligibili
 });
 
 it('withholds routing, eligibility, transport and publication until the genuine FULL claim ACK', async () => {
-  const f = fixture();
+  const f = await fixture();
   const arrived = holdAcknowledgement();
   let published = false;
   const result = send(f);
@@ -436,12 +523,25 @@ it('withholds routing, eligibility, transport and publication until the genuine 
   ).toEqual({ channel: 'discord' });
   expect(f.notifications.get(f.delivery.id)).toMatchObject({
     status: 'sending',
-    attempt: { startedAt },
+    attempt: { startedAt: expect.any(String) },
   });
   expect(count(f)).toBe(1);
   expect(f.counters).toEqual({ routes: 0, eligible: 0, sends: 0 });
   expect(published).toBe(false);
-  await expect(send(f)).rejects.toMatchObject({ code: 'attention_attempt_conflict' });
+  await expect(send(f)).rejects.toMatchObject({ code: 'channel_storage_busy' });
+  const binding = f.current();
+  await expect(
+    binding.withProducer(() =>
+      binding.owners.attention.claim({
+        deliveryId: f.delivery.id,
+        recipientUserId,
+        channel: 'discord',
+        expectedAttemptId: null,
+        retry: false,
+        bindingRevision: f.bindingRevision,
+      })
+    )
+  ).rejects.toMatchObject({ code: 'attention_attempt_conflict' });
   expect(count(f)).toBe(1);
   fault.hold = false;
   fault.release?.();
@@ -452,7 +552,7 @@ it('withholds routing, eligibility, transport and publication until the genuine 
 });
 
 it('rechecks the original eligibility callback after held claim ACK and makes no contact after revocation', async () => {
-  const f = fixture();
+  const f = await fixture();
   const arrived = holdAcknowledgement();
   let allowed = true;
   const result = send(
@@ -486,8 +586,8 @@ it('rechecks the original eligibility callback after held claim ACK and makes no
 });
 
 it('makes no route, eligibility, contact, fallback or repost after a genuine committed claim ACK is lost', async () => {
-  const f = fixture();
-  f.coreDb.sqlite.pragma('query_only = ON');
+  const f = await fixture();
+  f.sqlite.pragma('query_only = ON');
   const arrived = holdAcknowledgement();
   const result = send(f);
   await arrived;
@@ -496,7 +596,7 @@ it('makes no route, eligibility, contact, fallback or repost after a genuine com
   fault.release = undefined;
   if (!fault.worker) throw new Error('The actual claim Worker must exist.');
   await fault.worker.terminate();
-  await expect(result).rejects.toMatchObject({ commit: 'unknown' });
+  await expect(result).rejects.toMatchObject({ code: 'channel_storage_unavailable' });
   expect(fault.requests).toHaveLength(1);
   expect(fault.acknowledgements).toBe(0);
   expect(f.counters).toEqual({ routes: 0, eligible: 0, sends: 0 });
@@ -504,19 +604,19 @@ it('makes no route, eligibility, contact, fallback or repost after a genuine com
   const postsBefore = fault.posts.slice();
   await expect(
     send(f, { retry: true, expectedAttemptId: f.notifications.get(f.delivery.id)!.attempt!.id })
-  ).rejects.toBeInstanceOf(ControlStoreWorkerError);
+  ).rejects.toMatchObject({ code: 'channel_storage_unavailable' });
   expect(fault.posts).toEqual(postsBefore);
   // Explicitly recreate the native owner to inspect the durable no-resend fence;
   // the production path neither replaces the failed Worker nor retries a claim.
   await shutdownControlStoreWorkerClient();
+  await f.reopen();
   await expect(
     send(f, { retry: true, expectedAttemptId: f.notifications.get(f.delivery.id)!.attempt!.id })
   ).rejects.toMatchObject({ code: 'attention_not_sendable' });
   expect(count(f)).toBe(1);
   expect(f.counters.sends).toBe(0);
-  // Startup reconciliation remains the separate original Main owner, not a fallback.
-  f.coreDb.sqlite.pragma('query_only = OFF');
-  expect(await f.notifications.reconcileIncompleteAttempts()).toBe(1);
+  // Admission has already reconciled the original unresolved send through the worker.
+  expect(await f.notifications.reconcileIncompleteAttempts()).toBe(0);
   expect(f.notifications.get(f.delivery.id)).toMatchObject({
     status: 'delivery-unknown',
     attempt: { failureCode: 'restart' },
@@ -524,66 +624,106 @@ it('makes no route, eligibility, contact, fallback or repost after a genuine com
 });
 
 it('rolls back the original channel freeze and attempt on a real native INSERT failure', async () => {
-  const f = fixture();
-  f.coreDb.sqlite.exec(
+  const f = await fixture();
+  f.sqlite.exec(
     "CREATE TRIGGER reject_attention_claim BEFORE INSERT ON notification_delivery_attempts BEGIN SELECT RAISE(ABORT, 'claim-rejected'); END"
   );
-  f.coreDb.sqlite.pragma('query_only = ON');
-  await expect(send(f)).rejects.toMatchObject({ commit: 'not-committed' });
+  f.sqlite.pragma('query_only = ON');
+  await expect(send(f)).rejects.toMatchObject({ code: 'channel_storage_unavailable' });
   expectUnclaimed(f);
   expect(fault.requests).toHaveLength(1);
   expect(fault.acknowledgements).toBe(0);
+  expect(fault.refusals).toEqual([expect.objectContaining({ commit: 'not-committed' })]);
 });
 
 it('rolls back both writes when the original in-transaction get encounters real corrupt data', async () => {
-  const f = fixture();
-  f.coreDb.sqlite.exec(
+  const f = await fixture();
+  f.sqlite.exec(
     "CREATE TRIGGER corrupt_attention_claim AFTER INSERT ON notification_delivery_attempts BEGIN UPDATE notification_attention SET created_at = 'not-a-date' WHERE id = NEW.attention_id; END"
   );
-  f.coreDb.sqlite.pragma('query_only = ON');
+  f.sqlite.pragma('query_only = ON');
   await expect(send(f)).rejects.toMatchObject({ code: 'attention_recovery_required' });
   expectUnclaimed(f);
+  expect(fault.refusals).toEqual([
+    expect.objectContaining({
+      commit: 'not-committed',
+      domain: expect.objectContaining({ code: 'attention_recovery_required' }),
+    }),
+  ]);
 });
 
-it.each(['queued', 'missing', 'stale-attempt'] as const)(
-  'preserves the original guard/invalid-clock precedence and rollback: %s',
+it.each(['missing', 'stale-attempt'] as const)(
+  'keeps the original claim guard and rollback for %s',
   async (mode) => {
-    const f = fixture();
-    f.options.now = () => 'not-a-date';
-    f.coreDb.sqlite.pragma('query_only = ON');
+    const f = await fixture();
+    f.sqlite.pragma('query_only = ON');
     await expect(
-      send(
-        f,
-        mode === 'missing'
-          ? { deliveryId: randomUUID() }
-          : mode === 'stale-attempt'
-            ? { expectedAttemptId: 1 }
-            : {}
-      )
+      send(f, mode === 'missing' ? { deliveryId: randomUUID() } : { expectedAttemptId: 1 })
     ).rejects.toMatchObject({
-      code:
-        mode === 'missing'
-          ? 'attention_not_found'
-          : mode === 'stale-attempt'
-            ? 'attention_attempt_conflict'
-            : 'invalid_attention_input',
+      code: mode === 'missing' ? 'attention_not_found' : 'attention_attempt_conflict',
     });
+    expect(fault.requests).toHaveLength(1);
     expectUnclaimed(f);
   }
 );
 
-it('preserves a local clock exception without serializing its details or leaving a frozen channel', async () => {
-  const f = fixture();
+it.each(['queued', 'missing', 'stale-attempt'] as const)(
+  'keeps the native handler guard and invalid-clock precedence for %s',
+  async (mode) => {
+    const f = await fixture();
+    // The worker now owns the clock. Inject this fault at its native transaction entry.
+    expect(() =>
+      claimCommunicationAttentionInDb(
+        f.sqlite,
+        {
+          deliveryId: mode === 'missing' ? randomUUID() : f.delivery.id,
+          recipientUserId,
+          channel: 'discord',
+          expectedAttemptId: mode === 'stale-attempt' ? 1 : null,
+          bindingRevision: f.bindingRevision,
+          retry: false,
+        },
+        () => 'not-a-date'
+      )
+    ).toThrow(
+      expect.objectContaining({
+        code:
+          mode === 'missing'
+            ? 'attention_not_found'
+            : mode === 'stale-attempt'
+              ? 'attention_attempt_conflict'
+              : 'attention_recovery_required',
+      })
+    );
+    expectUnclaimed(f);
+  }
+);
+
+it('keeps a private clock exception inside the native transaction and leaves no frozen channel', async () => {
+  const f = await fixture();
   const error = new Error('test-clock-refusal');
-  f.options.now = () => {
-    throw error;
-  };
-  await expect(send(f)).rejects.toBe(error);
+  expect(() =>
+    claimCommunicationAttentionInDb(
+      f.sqlite,
+      {
+        deliveryId: f.delivery.id,
+        recipientUserId,
+        channel: 'discord',
+        expectedAttemptId: null,
+        bindingRevision: f.bindingRevision,
+        retry: false,
+      },
+      () => {
+        throw error;
+      }
+    )
+  ).toThrow(error);
+  expect(fault.posts).toEqual([]);
   expectUnclaimed(f);
 });
 
 it('uses the original in-transaction snapshot, not a post-ACK Main source re-read', async () => {
-  const f = fixture();
+  const f = await fixture();
   let routed = '';
   let admitted = '';
   f.options.buildAppPath = (source) => {
@@ -607,7 +747,7 @@ it('uses the original in-transaction snapshot, not a post-ACK Main source re-rea
   );
   await arrived;
   // A deliberate after-commit observation fault, not authority to retarget a source.
-  f.coreDb.sqlite
+  f.sqlite
     .prepare('UPDATE notification_attention SET request_id = ? WHERE id = ?')
     .run('apr_after_claim_commit', f.delivery.id);
   fault.hold = false;
@@ -615,7 +755,7 @@ it('uses the original in-transaction snapshot, not a post-ACK Main source re-rea
   fault.release = undefined;
   await expect(result).resolves.toMatchObject({
     status: 'sent',
-    source: { requestId: 'apr_after_claim_commit' },
+    source: { requestId: 'apr_claim_owner' },
   });
   expect(routed).toBe('apr_claim_owner');
   expect(admitted).toBe('apr_claim_owner');
@@ -625,7 +765,7 @@ it('uses the original in-transaction snapshot, not a post-ACK Main source re-rea
 it('preserves a legal opaque request identity larger than the native command payload budget', async () => {
   const requestId = `apr_${'x'.repeat(CONTROL_PRODUCT_LIMITS.payloadBytes + 1)}`;
   const expectedDigest = createHash('sha256').update(requestId).digest('hex');
-  const f = fixture(requestId);
+  const f = await fixture(requestId);
   let selectedLength = 0;
   let selectedDigest = '';
   f.options.buildAppPath = (source) => {
@@ -633,7 +773,7 @@ it('preserves a legal opaque request identity larger than the native command pay
     selectedDigest = createHash('sha256').update(source.requestId).digest('hex');
     return '/tasks/claim';
   };
-  f.coreDb.sqlite.pragma('query_only = ON');
+  f.sqlite.pragma('query_only = ON');
   const result = await send(f);
   expect(result.status).toBe('sent');
   expect(selectedLength).toBe(requestId.length);
@@ -644,7 +784,7 @@ it('preserves a legal opaque request identity larger than the native command pay
 });
 
 it('keeps exact prior-attempt CAS, channel freeze and explicit same-channel retry with concurrent callers', async () => {
-  const f = fixture();
+  const f = await fixture();
   const noSend = {
     isEligible: () => {
       f.counters.eligible += 1;
@@ -660,9 +800,16 @@ it('keeps exact prior-attempt CAS, channel freeze and explicit same-channel retr
   await expect(send(f, { expectedAttemptId })).rejects.toMatchObject({
     code: 'attention_not_sendable',
   });
-  await expect(send(f, { retry: true, channel: 'email', expectedAttemptId })).rejects.toMatchObject(
-    { code: 'attention_channel_conflict' }
-  );
+  expect(
+    CommunicationAttentionClaimSchema.safeParse({
+      deliveryId: f.delivery.id,
+      recipientUserId,
+      channel: 'email',
+      retry: true,
+      expectedAttemptId,
+      bindingRevision: f.bindingRevision,
+    }).success
+  ).toBe(false);
   await expect(send(f, { retry: true })).rejects.toMatchObject({
     code: 'attention_attempt_conflict',
   });
@@ -676,7 +823,10 @@ it('keeps exact prior-attempt CAS, channel freeze and explicit same-channel retr
   const rejected = results.find((r) => r.status === 'rejected');
   expect(rejected).toMatchObject({
     status: 'rejected',
-    reason: { code: 'attention_attempt_conflict' },
+    reason: { code: 'channel_storage_busy' },
+  });
+  await expect(send(f, { retry: true, expectedAttemptId }, noSend)).rejects.toMatchObject({
+    code: 'attention_attempt_conflict',
   });
   expect(count(f)).toBe(2);
   expect(f.counters.sends).toBe(2);
@@ -687,7 +837,7 @@ it('keeps exact prior-attempt CAS, channel freeze and explicit same-channel retr
 it.each(['sent', 'delivery-unknown'] as const)(
   'never retries an original terminal %s delivery',
   async (status) => {
-    const f = fixture();
+    const f = await fixture();
     const first = await send(
       f,
       {},
@@ -707,29 +857,17 @@ it.each(['sent', 'delivery-unknown'] as const)(
   }
 );
 
-it.each(['connection', 'path', 'scope'] as const)(
-  'refuses the wrong physical Core %s before any native frame, route or contact',
-  async (mode) => {
-    const f = fixture();
-    const other = fixture();
-    f.options.nativeCoreDb =
-      mode === 'connection'
-        ? other.coreDb
-        : mode === 'path'
-          ? { ...f.coreDb, dataRoot: other.coreDb.dataRoot }
-          : ({ ...f.coreDb, scope: 'workspace' } as unknown as CoreDb);
-    await expect(send(f)).rejects.toMatchObject({
-      code: 'invalid-request',
-      commit: 'not-committed',
-    });
-    expect(fault.posts).toHaveLength(0);
-    expectUnclaimed(f);
-    expectUnclaimed(other);
-  }
-);
+it('refuses a retired Communication opening before any frame, route or contact', async () => {
+  const f = await fixture();
+  await getControlStoreWorkerClient().closeServerOwner(f.dataRoot, 'communication');
+  const postsBefore = fault.posts.slice();
+  await expect(send(f)).rejects.toMatchObject({ code: 'channel_storage_unavailable' });
+  expect(fault.posts).toEqual(postsBefore);
+  expectUnclaimed(f);
+});
 
 it('checks the genuine cached opening binding before posting another claim', async () => {
-  const f = fixture();
+  const f = await fixture();
   await send(f);
   const queued = await f.notifications.enqueue({
     source: { ...f.delivery.source, requestId: 'apr_claim_cached' },
@@ -743,18 +881,18 @@ it('checks the genuine cached opening binding before posting another claim', asy
   const openings = (
     client as unknown as { openings: Map<string, { command: { dataRoot: string } }> }
   ).openings;
-  const key = `core:${f.coreDb.sqlite.name}`;
+  const key = `server-owner:${f.path}`;
   const original = openings.get(key);
-  if (!original) throw new Error('The genuine completed command must admit its physical Core.');
+  if (!original)
+    throw new Error('The genuine completed command must admit its Communication file.');
   const postsBefore = fault.posts.slice();
   openings.set(key, {
     ...original,
-    command: { ...original.command, dataRoot: join(f.coreDb.dataRoot, 'wrong-root') },
+    command: { ...original.command, dataRoot: join(f.dataRoot, 'wrong-root') },
   });
   try {
     await expect(send(target)).rejects.toMatchObject({
-      code: 'invalid-request',
-      commit: 'not-committed',
+      code: 'channel_storage_unavailable',
     });
     expect(fault.posts).toEqual(postsBefore);
     expectUnclaimed(target);
@@ -763,39 +901,42 @@ it('checks the genuine cached opening binding before posting another claim', asy
   }
 });
 
-it('rejects closed malformed claim fields before posting and refuses a real Main writer role before SQL', async () => {
-  const f = fixture();
-  const input: ControlAttentionAttemptClaim = {
+it('rejects a malformed claim and an unadmitted producer before any native frame', async () => {
+  const f = await fixture();
+  const input = {
     deliveryId: f.delivery.id,
     recipientUserId,
-    channel: 'discord',
+    channel: 'discord' as const,
     retry: false,
     expectedAttemptId: null,
-    startedAt,
+    bindingRevision: f.bindingRevision,
   };
-  expect(
-    ControlAttentionAttemptClaimSchema.safeParse({ ...input, startedAt: 'not-a-date' }).success
-  ).toBe(false);
-  expect(
-    ControlAttentionAttemptClaimSchema.safeParse({ ...input, callback: 'not-a-program' }).success
-  ).toBe(false);
-  await expect(
-    getControlStoreWorkerClient().attentionAttemptClaim(f.coreDb, {
-      ...input,
-      sql: 'not-a-program',
-    } as ControlAttentionAttemptClaim)
-  ).rejects.toThrow();
+  for (const extra of [{ startedAt: 'not-a-date' }, { callback: 'not-a-program' }]) {
+    expect(
+      CommunicationWriterCommandSchema.safeParse({
+        stage: 'claim-attention',
+        input: { ...input, ...extra },
+      }).success
+    ).toBe(false);
+  }
+  await expect(f.current().owners.attention.claim(input)).resolves.toMatchObject({
+    state: 'unavailable',
+  });
   expect(() =>
-    f.coreDb.sqlite.transaction(() => applyControlAttentionAttemptClaim(f.coreDb, input))()
-  ).toThrow();
+    f
+      .current()
+      .owners.attention.read((sqlite) =>
+        claimCommunicationAttentionInDb(sqlite, input, () => startedAt)
+      )
+  ).toThrow(expect.objectContaining({ code: 'SQLITE_READONLY' }));
   expect(fault.posts).toHaveLength(0);
   expectUnclaimed(f);
 });
 
 it('rejects a mismatched genuine committed snapshot without routing, admission or transport', async () => {
-  const f = fixture();
+  const f = await fixture();
   fault.replyId = randomUUID();
-  await expect(send(f)).rejects.toMatchObject({ code: 'invalid-request', commit: 'unknown' });
+  await expect(send(f)).rejects.toMatchObject({ code: 'attention_attempt_conflict' });
   expect(f.counters).toEqual({ routes: 0, eligible: 0, sends: 0 });
   expect(count(f)).toBe(1);
   expect(f.notifications.get(f.delivery.id)?.status).toBe('sending');

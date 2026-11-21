@@ -13,6 +13,7 @@ import {
   createApp,
   createDefaultVaultUnlockState,
   createDefaultWorkerControlGateway,
+  prepareCommunicationOwner,
   restoreWorkspaceDeletionMutationAdmission,
 } from './app.js';
 import { createBetterAuth, resolveBetterAuthSecret } from './auth/better-auth.js';
@@ -48,7 +49,6 @@ import {
   restoreWorkspaceRetirementAdmission,
 } from './bootstrap/workspace-recovery.js';
 import { recoverRunningCapabilityCalls } from './capability/usage-ledger.js';
-import { reconcileIncompleteDiscordInteractions } from './channels/discord.js';
 import { resolveBindHost, resolveBindPort } from './config/bind-host.js';
 import { resolveDataRoot } from './config/data-root.js';
 import { BootConfigError, resolveMode } from './config/mode.js';
@@ -80,7 +80,6 @@ import {
   type NativeTlsListenOptions,
   readNativeTlsSource,
 } from './native-listener-tls.js';
-import { AttentionNotifications } from './notifications/attention.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
 import { resolveEnvSecretRef } from './providers/registry.js';
 import {
@@ -129,6 +128,7 @@ import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-re
 import { drainSecurityNotices } from './security/publication.js';
 import { SecurityTriggerStore } from './security/trigger.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { communicationOwner } from './storage/communication-owner.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -194,6 +194,11 @@ let nanoHostTlsListen: NativeTlsListenOptions | null | undefined;
 let coreDb: CoreDb | undefined;
 // Audit may use the existing native lifetime only after Core migrations succeed.
 let coreMigrationsComplete = false;
+let communicationBinding: Awaited<ReturnType<typeof prepareCommunicationOwner>> = {
+  state: 'unavailable',
+  owner: 'communication',
+  reason: 'missing',
+};
 let freshCoreInitialization = false;
 let vaultUnlockState: VaultUnlockState | undefined;
 let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
@@ -334,10 +339,6 @@ const bootResult = await runBootPhases({
         });
         applyMigrations(coreDb);
         coreMigrationsComplete = true;
-        // Classify interrupted sends durably before any recovery enumeration or channel admission.
-        await new AttentionNotifications(coreDb.sqlite, {
-          nativeCoreDb: coreDb,
-        }).reconcileIncompleteAttempts();
         restoreWorkspaceRetirementAdmission({ coreDb });
         restoreWorkspaceRecoveryAdmission(coreDb);
         await recoverRunningCapabilityCalls({ workspaceDb: coreDb });
@@ -443,6 +444,37 @@ const bootResult = await runBootPhases({
         }
 
         return { status: 'ok' };
+      },
+    },
+    {
+      name: 'communication-admission',
+      subsystem: 'storage',
+      critical: false,
+      run: async () => {
+        const db = requireBootValue(coreDb, 'Core database was not initialized.');
+        const writer = getControlStoreWorkerClient();
+        const kernel = writer.communicationKernel(db);
+        const provisioned =
+          freshCoreInitialization && kernel.status().state === 'ready'
+            ? await writer.provisionServerOwner(dataRoot, communicationOwner)
+            : undefined;
+        communicationBinding =
+          provisioned?.state === 'unavailable'
+            ? provisioned
+            : await prepareCommunicationOwner({
+                coreDb: db,
+                mode: requireBootValue(mode, 'Core mode was not resolved.'),
+                kernel,
+              });
+        if (communicationBinding.state === 'ready') return { status: 'ok' };
+        return {
+          status: 'degraded',
+          reason: {
+            code: 'storage.communication_unavailable',
+            message: 'Communication storage is unavailable.',
+            blocks: [],
+          },
+        };
       },
     },
     {
@@ -767,9 +799,8 @@ readFileReserveBytes = () =>
   runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ??
   DEFAULT_FILE_RESERVE_BYTES;
 let prepareKnowledgeMaintenance: ((instant: string) => Promise<void>) | undefined;
-if (runtimeConfigSnapshot.openKitConfig.channels?.discord)
-  await reconcileIncompleteDiscordInteractions(coreDb);
 const app = createApp({
+  communicationStorage: { binding: communicationBinding },
   onKnowledgeMaintenanceReady: (prepare) => {
     prepareKnowledgeMaintenance = prepare;
   },

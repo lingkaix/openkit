@@ -21,23 +21,9 @@ import {
 } from '../auth/local-identity-codecs.js';
 import { type DataRootLock, retainDataRootLock } from '../bootstrap/lock.js';
 import { assertScopeAdmitted } from '../bootstrap/readiness.js';
-import {
-  type ControlDiscordChannelInput,
-  ControlDiscordChannelInputSchema,
-  type ControlDiscordChannelResult,
-  ControlDiscordChannelResultSchema,
-} from '../channels/discord-codecs.js';
+import type { DiscordChannelOwners } from '../channel-services.js';
 import { BootConfigError } from '../config/mode.js';
 import { ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
-import type { AttentionDelivery } from '../notifications/attention.js';
-import {
-  type AttentionEnqueueCommand,
-  AttentionEnqueueCommandSchema,
-  AttentionEnqueueResultSchema,
-  type AttentionReconciliation,
-  AttentionReconciliationResultSchema,
-  AttentionReconciliationSchema,
-} from '../notifications/attention-codecs.js';
 import { AttentionError } from '../notifications/attention-error.js';
 import type { ControlGoalCommandResult, ControlGoalInput } from '../runtime/goal-codecs.js';
 import { GoalCommandError } from '../runtime/goal-error.js';
@@ -46,27 +32,28 @@ import {
   PreservedWorkspaceCaptureRefusal,
   WorkspaceCaptureRecoveryRequired,
 } from '../runtime/workspace-snapshot-chain.js';
-import {
-  type ControlAttentionAttemptClaim,
-  ControlAttentionAttemptClaimResultSchema,
-  ControlAttentionAttemptClaimSchema,
-} from './attention-attempt-claim-codecs.js';
-import {
-  type ControlAttentionAttemptCompletion,
-  type ControlAttentionAttemptCompletionResult,
-  ControlAttentionAttemptCompletionResultSchema,
-  ControlAttentionAttemptCompletionSchema,
-} from './attention-attempt-completion-codecs.js';
 import type {
   ControlAutomationScanner,
   ControlAutomationScannerResult,
 } from './automation-scanner-codecs.js';
+import type { CommunicationAttentionOwner } from './communication-attention.js';
+import type {
+  CommunicationDiscordWrites,
+  PairingAuthorityObservation,
+  WithPairingAuthority,
+} from './communication-discord.js';
+import { communicationOwner } from './communication-owner.js';
+import type {
+  CommunicationWriterCommand,
+  CommunicationWriterReply,
+} from './communication-writer.js';
+import type { ControlKernelStore } from './control-kernel-port.js';
 import {
   CoreSchedulerRefusalSchema,
   CoreSchedulerResultSchema,
 } from './control-store-admission-codecs.js';
-
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
 import type {
   ControlResolvedAgentSetupInput,
@@ -226,6 +213,7 @@ import type {
 import {
   CommandReceiptSchema,
   type CoreSchedulerResult,
+  PairingAuditIntentSchema,
   SchedulerAdmissionTransitionError,
 } from './control-store-admission-codecs.js';
 import {
@@ -267,6 +255,8 @@ import type {
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
+  type CommunicationKernelInput,
+  type CommunicationKernelReply,
   type ControlBootAuditInput,
   ControlPhysicalForecastDecisionSchema,
   ControlPhysicalForecastSchema,
@@ -334,7 +324,12 @@ import type {
   ControlRuntimeTargetResult,
 } from './runtime-target-codecs.js';
 import type { ControlServerAdminTokenDefault } from './server-admin-token-default-codecs.js';
-import type { StorageResult, StorageStatus, StorageUnavailable } from './storage-owner.js';
+import type {
+  StorageOwner,
+  StorageResult,
+  StorageStatus,
+  StorageUnavailable,
+} from './storage-owner.js';
 import {
   type ControlThreadReadMembership,
   THREAD_READ_RECEIPT_INVALID,
@@ -555,7 +550,7 @@ interface NanoHostOwnerBinding
 }
 
 /** Projects owner-local failures through the existing storage admission outcomes. */
-function serverOwnerUnavailable<Owner extends ServerOwnerDescriptor['owner']>(
+function serverOwnerUnavailable<Owner extends StorageOwner>(
   owner: Owner,
   error: unknown
 ): StorageUnavailable<Owner> {
@@ -584,6 +579,41 @@ function serverOwnerUnavailable<Owner extends ServerOwnerDescriptor['owner']>(
   return { state: 'unavailable', owner, reason };
 }
 
+type CommunicationKernel = NonNullable<DiscordChannelOwners['kernel']> &
+  Pick<ControlKernelStore, 'inspectPairingAudit' | 'relayPairingAudit'>;
+
+type CommunicationResult<Value> = StorageResult<'communication', Value>;
+
+type CommunicationKernelValues = {
+  [Reply in CommunicationKernelReply as Reply['kind']]: Reply['value'];
+};
+
+interface CommunicationOwnerDependencies {
+  readonly observeAuthority: (
+    selection: Parameters<WithPairingAuthority>[0]
+  ) => PairingAuthorityObservation;
+  readonly createCommunicationDiscord: typeof import('./communication-discord.js').createCommunicationDiscord;
+  readonly readPendingPairingAuditInDb: typeof import('./communication-pairing-native.js').readPendingPairingAuditInDb;
+  readonly relayNextPairingAudit: typeof import('./communication-pairing-relay.js').relayNextPairingAudit;
+  readonly CommunicationWriterCommandSchema: typeof import('./communication-writer.js').CommunicationWriterCommandSchema;
+  readonly CommunicationWriterReplySchema: typeof import('./communication-writer.js').CommunicationWriterReplySchema;
+}
+
+export interface CommunicationOwnerBinding {
+  readonly owners: DiscordChannelOwners;
+  readonly withProducer: <Value>(
+    effect: () => Promise<Value>
+  ) => Promise<CommunicationResult<Value>>;
+  readonly wakePairingAudit: () => void;
+  readonly setExpiryAgeMs: (ageMs: number | undefined) => void;
+}
+
+const communicationHeld = {
+  state: 'unavailable',
+  owner: 'communication',
+  reason: 'recovery-required',
+} as const;
+
 /** A process-wide physical reservation, including a fresh scope awaiting native initialization. */
 interface Opening {
   readonly command: Omit<OpenCommand, 'operation'>;
@@ -597,6 +627,9 @@ interface Opening {
   readonly policyReads: Set<PolicyReadResource>;
   /** A second NanoHost tuple cannot rely on a write whose FULL ACK is outstanding. */
   nanoHostWritePending?: true;
+  communicationRelayWake?: () => void;
+  communicationBindingPending?: boolean;
+  communicationReader?: Database.Database;
   /** Request-local capture enrollment stays with this existing physical Workspace owner. */
   captureReads?: CaptureReadGeneration;
   /** The exact close owner excludes later OPEN/read acquisition, including after a failed attempt. */
@@ -962,6 +995,13 @@ class ControlStoreWorkerClient {
   private shutdownPromise: Promise<void> | undefined;
   private backupHold: PostingHold | undefined;
   private readonly databaseHolds = new Map<string, PostingHold>();
+  private communicationProducerHold = false;
+  private readonly communicationProducers = new Set<Promise<unknown>>();
+  private readonly communicationLease = new AsyncLocalStorage<{
+    readonly database: string;
+    readonly retention: boolean;
+    active: boolean;
+  }>();
   /** Returns the actual logical scope gates; physical host disposal never releases them. */
   private workspaceMutations(dataRoot: string): WorkspaceMutationScope {
     const root = resolve(dataRoot);
@@ -3043,12 +3083,433 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Closes intake before waiting so accepted producers can finish their original ACKs. */
+  private holdCommunicationProducers(): (() => void) | null {
+    if (this.communicationProducerHold) return null;
+    this.communicationProducerHold = true;
+    return () => {
+      this.communicationProducerHold = false;
+      for (const opening of this.openings.values()) opening.communicationRelayWake?.();
+    };
+  }
+
+  /** Covers the six Communication receipt operations on the existing admitted Core writer. */
+  communicationKernel(db: CoreDb): CommunicationKernel {
+    const core = nativeProductScope(db.dataRoot, { kind: 'server' });
+    const database = `core:${core.path}`;
+    const unavailable = {
+      state: 'unavailable',
+      owner: 'control-kernel',
+      reason: 'recovery-required',
+    } as const;
+    const currentCore = () => {
+      const opening = this.openings.get(database);
+      return opening?.acknowledged &&
+        opening.path === db.sqlite.name &&
+        !opening.host.failed &&
+        !opening.retirement
+        ? opening
+        : undefined;
+    };
+    const post = async <Kind extends CommunicationKernelInput['kind']>(
+      input: CommunicationKernelInput & { kind: Kind }
+    ): Promise<StorageResult<'control-kernel', CommunicationKernelValues[Kind]>> => {
+      const coreOpening = currentCore();
+      const lease = this.communicationLease.getStore();
+      const communication = lease && this.openings.get(lease.database);
+      if (
+        coreOpening?.openingRequestId === undefined ||
+        !lease?.active ||
+        !communication?.acknowledged ||
+        communication.command.serverOwner?.owner !== 'communication' ||
+        communication.command.dataRoot !== db.dataRoot ||
+        !communication.identity ||
+        communication.host.failed ||
+        communication.retirement
+      )
+        return unavailable;
+      try {
+        const reply = await this.request({
+          operation: 'communication-kernel',
+          database,
+          openingRequestId: coreOpening.openingRequestId,
+          communicationIdentity: communication.identity,
+          input,
+        });
+        if (reply.operation !== 'communication-kernel' || reply.result.kind !== input.kind)
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return {
+          state: 'ready',
+          value: reply.result.value as CommunicationKernelValues[Kind],
+        };
+      } catch (error) {
+        if (
+          error instanceof ControlStoreWorkerError &&
+          (error.commit === 'unknown' || error.code === 'integrity')
+        )
+          this.fail(coreOpening.host);
+        return serverOwnerUnavailable('control-kernel', error);
+      }
+    };
+
+    const inspectChannelInbound: CommunicationKernel['inspectChannelInbound'] = (key) => {
+      const { deploymentId, sourceOwner, verb, occurrenceKey } = key;
+      return post({ kind: 'inspect', key: { deploymentId, sourceOwner, verb, occurrenceKey } });
+    };
+    return {
+      status: () => (currentCore() ? { state: 'ready', owner: 'control-kernel' } : unavailable),
+      reserveChannelInbound: (envelope) => post({ kind: 'reserve', envelope }),
+      bindChannelInboundOrigin: (origin) => post({ kind: 'bind', origin }),
+      inspectChannelInbound,
+      settleChannelInbound: async (envelope, outcome) => {
+        if (outcome.kind === 'handled') return post({ kind: 'settle', envelope, outcome });
+        const original = await inspectChannelInbound(envelope);
+        if (original.state !== 'ready') return original;
+        if (original.value.state === 'settled') return post({ kind: 'settle', envelope, outcome });
+        if (original.value.state !== 'origin-bound')
+          return { state: 'ready', value: { state: 'unknown' } };
+        const release = this.enterWorkspaceMutation(db.dataRoot, original.value.origin.workspaceId);
+        if (!release) return unavailable;
+        try {
+          return await post({ kind: 'settle', envelope, outcome });
+        } finally {
+          release();
+        }
+      },
+      relayPairingAudit: async (intent, event) => {
+        const parsed = PairingAuditIntentSchema.safeParse(intent);
+        return parsed.success
+          ? post({ kind: 'relay-audit', intent: parsed.data, event })
+          : unavailable;
+      },
+      inspectPairingAudit: async (intent) => {
+        const parsed = PairingAuditIntentSchema.safeParse(intent);
+        return parsed.success ? post({ kind: 'inspect-audit', intent: parsed.data }) : unavailable;
+      },
+    };
+  }
+
+  /** Binds the staged owner only after both lifecycle and the production receipt adapter qualify. */
+  async bindCommunicationOwner(input: {
+    readonly coreDb: CoreDb;
+    readonly kernel?: CommunicationKernel;
+    readonly dependencies: CommunicationOwnerDependencies;
+  }): Promise<
+    CommunicationResult<CommunicationOwnerBinding> | StorageUnavailable<'control-kernel'>
+  > {
+    const { coreDb, kernel, dependencies } = input;
+    if (!kernel) return { state: 'unavailable', owner: 'control-kernel', reason: 'missing' };
+    const kernelStatus = kernel.status();
+    if (kernelStatus.state !== 'ready') return kernelStatus;
+    const owner = 'communication';
+    let claimedOpening: Opening | undefined;
+    let readConnection: Database.Database | undefined;
+    let bound = false;
+    try {
+      const {
+        observeAuthority,
+        createCommunicationDiscord,
+        readPendingPairingAuditInDb,
+        relayNextPairingAudit,
+        CommunicationWriterCommandSchema,
+        CommunicationWriterReplySchema,
+      } = dependencies;
+      const root = await realpath(coreDb.dataRoot);
+      const opened = await this.openServerOwner(root, communicationOwner);
+      if (opened.state !== 'ready') return opened;
+
+      const database = `server-owner:${serverStoragePath(root, owner)}`;
+      const opening = this.openings.get(database);
+      const openingRequestId = opening?.openingRequestId;
+      const cell = opening?.command.communicationExpiryPolicy;
+      if (
+        !opening?.acknowledged ||
+        openingRequestId === undefined ||
+        !cell ||
+        opening.command.serverOwner?.owner !== owner ||
+        opening.communicationRelayWake ||
+        opening.communicationBindingPending
+      )
+        return communicationHeld;
+      opening.communicationBindingPending = true;
+      claimedOpening = opening;
+      const sqlite = await this.openAcknowledgedServerOwnerReadDb(database, owner, opening);
+      readConnection = sqlite;
+      const policy = new BigInt64Array(cell);
+      const deploymentId = readDataRootLayoutMarker(root).deploymentId;
+      const available = () =>
+        (!this.stopping || this.communicationLease.getStore()?.active === true) &&
+        !opening.host.failed &&
+        !opening.retirement &&
+        this.openings.get(database) === opening &&
+        sqlite.open;
+      const status = (): StorageStatus<'communication'> =>
+        available() ? { state: 'ready', owner } : communicationHeld;
+      const read = <Value>(
+        query: (database: Database.Database) => Value
+      ): CommunicationResult<Value> =>
+        available() ? { state: 'ready', value: query(sqlite) } : communicationHeld;
+
+      const withProducer: CommunicationOwnerBinding['withProducer'] = async (effect) => {
+        if (this.stopping || this.communicationProducerHold || !available())
+          return communicationHeld;
+        const lease = { database, retention: false, active: true };
+        const accepted = this.runOperation(() => this.communicationLease.run(lease, effect));
+        this.communicationProducers.add(accepted);
+        try {
+          return { state: 'ready', value: await accepted };
+        } finally {
+          lease.active = false;
+          this.communicationProducers.delete(accepted);
+        }
+      };
+
+      const write = async <Command extends CommunicationWriterCommand, Value>(
+        mutation: Command,
+        value: (reply: Extract<CommunicationWriterReply, { stage: Command['stage'] }>) => Value
+      ): Promise<CommunicationResult<Value>> => {
+        const lease = this.communicationLease.getStore();
+        if (
+          !available() ||
+          !lease?.active ||
+          lease.database !== database ||
+          lease.retention !== (mutation.stage === 'discord-retention')
+        )
+          return communicationHeld;
+        try {
+          const json = JSON.stringify(CommunicationWriterCommandSchema.parse(mutation));
+          const reply = await this.request(
+            {
+              operation: 'communication-owner',
+              database,
+              openingRequestId,
+              stage: mutation.stage,
+              input: frameControlScalarText(json),
+              content: new ArrayBuffer(0),
+            },
+            [json]
+          );
+          const decoded =
+            reply.operation === 'communication-owner'
+              ? CommunicationWriterReplySchema.safeParse(reply.result)
+              : null;
+          if (!decoded?.success || decoded.data.stage !== mutation.stage)
+            throw new ControlStoreWorkerError('invalid-request', 'unknown');
+          return {
+            state: 'ready',
+            value: value(
+              decoded.data as Extract<CommunicationWriterReply, { stage: Command['stage'] }>
+            ),
+          };
+        } catch (error) {
+          if (error instanceof ControlStoreWorkerError) {
+            if (error.commit === 'unknown' || error.code === 'integrity') this.fail(opening.host);
+            if (
+              error.commit === 'not-committed' &&
+              error.domain?.operation === 'communication-owner'
+            ) {
+              const { code, message, status, kind } = error.domain;
+              if (kind === 'attention')
+                throw new AttentionError(code as ConstructorParameters<typeof AttentionError>[0]);
+              throw new OperationError(code, message, status);
+            }
+          }
+          return serverOwnerUnavailable(owner, error);
+        }
+      };
+      const noValue = () => undefined;
+      const settleReceipt = (
+        stage: 'settle-origin' | 'settle-handled' | 'settle-pairing-audit',
+        input: unknown
+      ) => write(CommunicationWriterCommandSchema.parse({ stage, input }), noValue);
+      const writer: CommunicationDiscordWrites = {
+        stageEnvelope: (envelope, externalAccountId) =>
+          write(
+            { stage: 'stage-envelope', envelope, externalAccountId },
+            (reply) => reply.admission
+          ),
+        issueChallenge: (input, authority) =>
+          write({ stage: 'issue-challenge', input, authority }, noValue),
+        revokeChallenges: (userId, authority) =>
+          write({ stage: 'revoke-challenges', input: { userId }, authority }, noValue),
+        pair: (input, authority) =>
+          write({ stage: 'pair', input, authority }, (reply) => reply.change),
+        unbind: (input, authority) =>
+          write({ stage: 'unbind', input, authority }, (reply) => reply.change),
+        writeDisclosure: (input, authority) =>
+          write({ stage: 'write-disclosure', input, authority }, noValue),
+        claimOrigin: (input) => write({ stage: 'claim-origin', input }, (reply) => reply.claimed),
+        settleInbound: (input) => settleReceipt('settle-origin', input),
+        settleHandled: (input) => settleReceipt('settle-handled', input),
+        settleRefusal: (input) => write({ stage: 'settle-refusal', input }, noValue),
+        applyRetention: async (input, authority) => {
+          const applied = await write(
+            { stage: 'discord-retention', input, authority },
+            (reply) => reply.acknowledgement
+          );
+          if (applied.state !== 'ready') return applied;
+          return applied.value === null
+            ? { state: 'unavailable', owner, reason: 'disabled' }
+            : { state: 'ready', value: applied.value };
+        },
+      };
+      const withAuthority: WithPairingAuthority = async ({ userId, actor }, post) => {
+        const scope = nativeProductScope(root, { kind: 'server' });
+        const coreKey = `core:${scope.path}`;
+        const admitted = this.openings.get(coreKey);
+        if (!admitted?.acknowledged || coreDb.sqlite.name !== scope.path || this.backupHold)
+          return communicationHeld;
+        // Only Core postings are held. The exact Communication write can commit and ACK independently.
+        const resume = await this.pauseForDataRootBackup(coreKey);
+        try {
+          if (
+            kernel.status().state !== 'ready' ||
+            admitted.host.failed ||
+            this.openings.get(coreKey) !== admitted
+          )
+            return communicationHeld;
+          return await post(observeAuthority({ userId, ...(actor ? { actor } : {}) }));
+        } finally {
+          resume();
+        }
+      };
+      let relayRequested = false;
+      let relaying = false;
+      function wakePairingAudit() {
+        relayRequested = true;
+        tryStartRelay();
+      }
+      const tryStartRelay = () => {
+        if (
+          !relayRequested ||
+          relaying ||
+          this.communicationProducerHold ||
+          !available() ||
+          kernel.status().state !== 'ready'
+        )
+          return;
+        relayRequested = false;
+        relaying = true;
+        void withProducer(async () => {
+          do {
+            const result = await relayNextPairingAudit(
+              {
+                readPendingPairingAudit: async () => read(readPendingPairingAuditInDb),
+                settlePairingAudit: (input) => settleReceipt('settle-pairing-audit', input),
+              },
+              kernel
+            );
+            if (result.state !== 'ready' || result.value !== 'relayed') return;
+          } while (available() && kernel.status().state === 'ready');
+        })
+          .catch(() => undefined)
+          .finally(() => {
+            relaying = false;
+            tryStartRelay();
+          });
+      };
+      const readExpiryAgeMs = () => {
+        const value = Atomics.load(policy, 0);
+        return value === 0n ? undefined : Number(value);
+      };
+      const communication = createCommunicationDiscord({
+        status,
+        read,
+        writer,
+        withAuthority,
+        kernel,
+        pairingAuditReady: wakePairingAudit,
+        retention: {
+          readExpiryAgeMs,
+          withProducerDrain: async (post) => {
+            if (this.communicationLease.getStore()?.active) return communicationHeld;
+            const resume = this.holdCommunicationProducers();
+            if (!resume) return communicationHeld;
+            const lease = { database, retention: true, active: true };
+            try {
+              return await this.runOperation(async () => {
+                await Promise.allSettled(this.communicationProducers);
+                if (!available()) return communicationHeld;
+                return this.communicationLease.run(lease, post);
+              });
+            } finally {
+              lease.active = false;
+              resume();
+            }
+          },
+        },
+      });
+      const attention: CommunicationAttentionOwner = {
+        read,
+        enqueue: (input) => write({ stage: 'enqueue-attention', input }, (reply) => reply.delivery),
+        claim: (input) => write({ stage: 'claim-attention', input }, (reply) => reply.delivery),
+        settle: (input) => write({ stage: 'settle-attention', input }, noValue),
+        reconcile: async () => {
+          const admitted = await withProducer(() =>
+            write({ stage: 'reconcile-attention' }, (reply) => reply.changes)
+          );
+          return admitted.state === 'ready' ? admitted.value : admitted;
+        },
+        withWorkspace: async (workspaceId, effect) => {
+          const admitted = await withProducer(async () => {
+            const release = this.enterWorkspaceMutation(root, workspaceId);
+            if (!release) return communicationHeld;
+            try {
+              return { state: 'ready' as const, value: await effect() };
+            } finally {
+              release();
+            }
+          });
+          return admitted.state === 'ready' ? admitted.value : admitted;
+        },
+      };
+      const reconciled = await attention.reconcile();
+      if (reconciled.state !== 'ready') return reconciled;
+      opening.communicationReader = sqlite;
+      opening.communicationRelayWake = tryStartRelay;
+      bound = true;
+      return {
+        state: 'ready',
+        value: {
+          owners: { deploymentId, kernel, communication, attention },
+          withProducer,
+          wakePairingAudit,
+          setExpiryAgeMs: (ageMs) => {
+            if (!available()) throw new ServerOwnerAdmissionError('recovery-required');
+            if (ageMs !== undefined && (!Number.isSafeInteger(ageMs) || ageMs <= 0))
+              throw new TypeError('Communication expiry age must be a positive safe integer.');
+            Atomics.store(policy, 0, BigInt(ageMs ?? 0));
+          },
+        },
+      };
+    } catch (error) {
+      return serverOwnerUnavailable(owner, error);
+    } finally {
+      if (claimedOpening) delete claimedOpening.communicationBindingPending;
+      if (!bound && readConnection?.open) readConnection.close();
+    }
+  }
+
   /** Closes an admitted owner and retains its bytes. */
   async closeServerOwner(dataRoot: string, owner: ServerOwnerDescriptor['owner']): Promise<void> {
     let database = `server-owner:${serverStoragePath(dataRoot, owner)}`;
     if (!this.openings.has(database))
       database = `server-owner:${serverStoragePath(await realpath(dataRoot), owner)}`;
-    if (this.openings.has(database)) await this.close(database);
+    if (!this.openings.has(database)) return;
+    if (owner !== 'communication') {
+      await this.close(database);
+      return;
+    }
+    if (this.communicationLease.getStore()?.active)
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    const resume = this.holdCommunicationProducers();
+    if (!resume) throw new ControlStoreWorkerError('busy', 'not-committed');
+    try {
+      await Promise.allSettled(this.communicationProducers);
+      await this.close(database);
+    } finally {
+      resume();
+    }
   }
 
   /** Projects owner-local admission failures without failing Core or another owner. */
@@ -3062,13 +3523,20 @@ class ControlStoreWorkerClient {
     try {
       const root = await realpath(dataRoot);
       const path = serverStoragePath(root, owner);
+      const database = `server-owner:${path}`;
+      const communicationExpiryPolicy =
+        owner === 'communication'
+          ? (this.openings.get(database)?.command.communicationExpiryPolicy ??
+            new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT))
+          : undefined;
       await this.admitOpen({
-        database: `server-owner:${path}`,
+        database,
         path,
         dataRoot: root,
         create,
         serverOwner: { owner },
         ...(migrateServerOwner ? { migrateServerOwner } : {}),
+        ...(communicationExpiryPolicy ? { communicationExpiryPolicy } : {}),
       });
       return { state: 'ready', owner };
     } catch (error) {
@@ -4167,301 +4635,6 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
-  }
-
-  /** Joins one original Discord stage before permitting its caller to continue. */
-  async discordChannel(
-    db: CoreDb,
-    value: ControlDiscordChannelInput
-  ): Promise<Exclude<ControlDiscordChannelResult, { stage: 'refused' }>> {
-    return this.runOperation(
-      async () => {
-        const input = ControlDiscordChannelInputSchema.parse(value);
-        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        const database = `core:${scope.path}`;
-        const admitted = this.openings.get(database);
-        if (
-          admitted &&
-          (admitted.command.path !== scope.path ||
-            admitted.command.dataRoot !== db.dataRoot ||
-            !isDeepStrictEqual(admitted.command.productOwner, scope.owner))
-        )
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        const command = { operation: 'discord-channel' as const, database, input };
-        const reply = admitted
-          ? await this.request(command)
-          : (
-              await Promise.all([
-                this.open({
-                  database,
-                  path: scope.path,
-                  dataRoot: db.dataRoot,
-                  create: false,
-                  initialize: 'core',
-                  productOwner: scope.owner,
-                  contentMount: scope.contentMount,
-                }),
-                this.request(command),
-              ])
-            )[1];
-        if (reply.operation !== 'discord-channel')
-          throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        const result = ControlDiscordChannelResultSchema.safeParse(reply.result);
-        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        if (result.data.stage === 'refused')
-          throw new OperationError(result.data.code, result.data.message, result.data.status);
-        if (result.data.stage !== input.stage)
-          throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        return result.data;
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      db
-    );
-  }
-
-  /** Returns the original deduplicated enqueue snapshot only after its Core FULL acknowledgement. */
-  async attentionEnqueue(db: CoreDb, value: AttentionEnqueueCommand): Promise<AttentionDelivery> {
-    return this.runOperation(
-      async () => {
-        const admittedInput = AttentionEnqueueCommandSchema.parse(value);
-        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        const database = `core:${scope.path}`;
-        const admitted = this.openings.get(database);
-        if (
-          admitted &&
-          (admitted.command.path !== scope.path ||
-            admitted.command.dataRoot !== db.dataRoot ||
-            !isDeepStrictEqual(admitted.command.productOwner, scope.owner))
-        )
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        // JSON preserves every admitted JS identity for the unchanged SQLite boundary,
-        // including escaped scalar values. Existing binary capacity is checked before allocation.
-        const json = JSON.stringify(admittedInput);
-        const command = {
-          operation: 'attention-enqueue' as const,
-          database,
-          input: frameControlScalarText(json),
-          content: new ArrayBuffer(0),
-        };
-        const reply = admitted
-          ? await this.request(command, [json])
-          : (
-              await Promise.all([
-                this.open({
-                  database,
-                  path: scope.path,
-                  dataRoot: db.dataRoot,
-                  create: false,
-                  initialize: 'core',
-                  productOwner: scope.owner,
-                  contentMount: scope.contentMount,
-                }),
-                this.request(command, [json]),
-              ])
-            )[1];
-        if (reply.operation !== 'attention-enqueue')
-          throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        const result = AttentionEnqueueResultSchema.safeParse(reply.result);
-        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        if (result.data.status === 'refused') throw new AttentionError(result.data.code);
-        return result.data.delivery;
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      db
-    );
-  }
-
-  /** Joins the complete original startup reconciliation under the native Core FULL boundary. */
-  async attentionReconcileIncompleteAttempts(
-    db: CoreDb,
-    value: AttentionReconciliation
-  ): Promise<number> {
-    return this.runOperation(
-      async () => {
-        const input = AttentionReconciliationSchema.parse(value);
-        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        const database = `core:${scope.path}`;
-        const admitted = this.openings.get(database);
-        let reply: Success;
-        if (!admitted) {
-          reply = (
-            await Promise.all([
-              this.open({
-                database,
-                path: scope.path,
-                dataRoot: db.dataRoot,
-                create: false,
-                initialize: 'core',
-                productOwner: scope.owner,
-                contentMount: scope.contentMount,
-              }),
-              this.request({
-                operation: 'attention-reconcile-incomplete-attempts',
-                database,
-                input,
-              }),
-            ])
-          )[1];
-        } else {
-          if (
-            admitted.command.path !== scope.path ||
-            admitted.command.dataRoot !== db.dataRoot ||
-            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-          )
-            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-          reply = await this.request({
-            operation: 'attention-reconcile-incomplete-attempts',
-            database,
-            input,
-          });
-        }
-        if (reply.operation !== 'attention-reconcile-incomplete-attempts')
-          throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        const result = AttentionReconciliationResultSchema.safeParse(reply.result);
-        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        if (result.data.status === 'refused') throw new AttentionError(result.data.code);
-        return result.data.changes;
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      db
-    );
-  }
-
-  /** Returns only the original transaction's durable claim snapshot, never a later re-read. */
-  async attentionAttemptClaim(
-    db: CoreDb,
-    value: ControlAttentionAttemptClaim
-  ): Promise<AttentionDelivery> {
-    return this.runOperation(
-      async () => {
-        const input = ControlAttentionAttemptClaimSchema.parse(value);
-        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        const database = `core:${scope.path}`;
-        const admitted = this.openings.get(database);
-        let reply: Success;
-        if (!admitted) {
-          reply = (
-            await Promise.all([
-              this.open({
-                database,
-                path: scope.path,
-                dataRoot: db.dataRoot,
-                create: false,
-                initialize: 'core',
-                productOwner: scope.owner,
-                contentMount: scope.contentMount,
-              }),
-              this.request({ operation: 'attention-attempt-claim', database, input }),
-            ])
-          )[1];
-        } else {
-          if (
-            admitted.command.path !== scope.path ||
-            admitted.command.dataRoot !== db.dataRoot ||
-            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-          )
-            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-          reply = await this.request({ operation: 'attention-attempt-claim', database, input });
-        }
-        if (reply.operation !== 'attention-attempt-claim')
-          throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        const result = ControlAttentionAttemptClaimResultSchema.safeParse(reply.result);
-        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        if (result.data.status === 'refused') throw new AttentionError(result.data.code);
-        const delivery = result.data.delivery;
-        if (
-          delivery.id !== input.deliveryId ||
-          delivery.recipientUserId !== input.recipientUserId ||
-          delivery.channel !== input.channel ||
-          delivery.attempt.startedAt !== input.startedAt
-        )
-          throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        return delivery;
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      db
-    );
-  }
-
-  /** Commits only the original attempt completion; Main's following projection stays separate. */
-  async attentionAttemptCompletion(
-    db: CoreDb,
-    value: ControlAttentionAttemptCompletion
-  ): Promise<ControlAttentionAttemptCompletionResult> {
-    return this.runOperation(
-      async () => {
-        const input = ControlAttentionAttemptCompletionSchema.parse(value);
-        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        const database = `core:${scope.path}`;
-        const admitted = this.openings.get(database);
-        let reply: Success;
-        if (!admitted) {
-          reply = (
-            await Promise.all([
-              this.open({
-                database,
-                path: scope.path,
-                dataRoot: db.dataRoot,
-                create: false,
-                initialize: 'core',
-                productOwner: scope.owner,
-                contentMount: scope.contentMount,
-              }),
-              this.request({ operation: 'attention-attempt-completion', database, input }),
-            ])
-          )[1];
-        } else {
-          if (
-            admitted.command.path !== scope.path ||
-            admitted.command.dataRoot !== db.dataRoot ||
-            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-          )
-            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-          reply = await this.request({
-            operation: 'attention-attempt-completion',
-            database,
-            input,
-          });
-        }
-        if (reply.operation !== 'attention-attempt-completion')
-          throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        const result = ControlAttentionAttemptCompletionResultSchema.safeParse(reply.result);
-        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        return result.data;
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      db
-    );
   }
 
   /** Initializes or reuses the canonical local User under captured fresh authority and FULL commit. */
@@ -6546,6 +6719,7 @@ class ControlStoreWorkerClient {
         }
         await this.drainScopePublications(opening);
         if (opening) {
+          if (opening.communicationReader?.open) opening.communicationReader.close();
           closeWorkspaceProductReadHandles(opening.path);
           await drainMainScopeReadHandles([opening.path]);
           // Accepted ACK continuations can create an idle metadata reader before releasing their own.
@@ -6746,6 +6920,16 @@ class ControlStoreWorkerClient {
     if (failed()) throw new ControlStoreWorkerError('unavailable', 'not-committed');
     if (database === undefined && this.backupHold)
       throw new ControlStoreWorkerError('busy', 'not-committed');
+    const resumeCommunication = database === undefined ? this.holdCommunicationProducers() : null;
+    if (database === undefined && !resumeCommunication)
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    if (resumeCommunication && this.communicationProducers.size !== 0) {
+      await Promise.allSettled(this.communicationProducers);
+      if (failed()) {
+        resumeCommunication();
+        throw new ControlStoreWorkerError('unavailable', 'not-committed');
+      }
+    }
     const previous = database === undefined ? undefined : this.databaseHolds.get(database);
     const dependencies =
       database === undefined
@@ -6764,6 +6948,7 @@ class ControlStoreWorkerClient {
       else if (hold.released === released) this.databaseHolds.delete(database);
       release();
       for (const entry of this.pending.values()) if (!entry.posted) this.post(entry);
+      resumeCommunication?.();
     };
     try {
       await Promise.all(dependencies);
@@ -6807,6 +6992,9 @@ class ControlStoreWorkerClient {
         }
         // Accepted ACK continuations have finished; release readers before final writer close.
         closeWorkspaceProductReadHandles();
+        for (const opening of this.openings.values()) {
+          if (opening.communicationReader?.open) opening.communicationReader.close();
+        }
         await drainMainScopeReadHandles([...this.openings.values()].map((opening) => opening.path));
         closeWorkspaceProductReadHandles();
         const shutdowns = await Promise.allSettled(
@@ -6991,7 +7179,7 @@ class ControlStoreWorkerClient {
         command.operation === 'generative-presentation' ||
         command.operation === 'app-kernel' ||
         command.operation === 'schema-application' ||
-        command.operation === 'attention-enqueue' ||
+        command.operation === 'communication-owner' ||
         (command.operation === 'transition' &&
           'kind' in command.transition &&
           (command.transition.kind === 'command-receipt' ||
@@ -7020,7 +7208,7 @@ class ControlStoreWorkerClient {
                 : command.operation === 'generative-presentation' ||
                     command.operation === 'app-kernel' ||
                     command.operation === 'schema-application' ||
-                    command.operation === 'attention-enqueue' ||
+                    command.operation === 'communication-owner' ||
                     command.operation === 'standalone-audit' ||
                     command.operation === 'workspace-queue-input' ||
                     command.operation === 'thread-read-membership' ||
@@ -7954,6 +8142,10 @@ class ControlStoreWorkerClient {
         value.operation === 'nanohost-owner' &&
         entry.command.operation === 'nanohost-owner' &&
         value.result.kind !== entry.command.mutation.kind) ||
+      (value.status === 'ok' &&
+        value.operation === 'communication-owner' &&
+        entry.command.operation === 'communication-owner' &&
+        value.result.stage !== entry.command.stage) ||
       (value.status === 'error' &&
         value.domain !== undefined &&
         value.domain.operation !== entry.command.operation)

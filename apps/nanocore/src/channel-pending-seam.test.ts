@@ -1,17 +1,24 @@
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { isRecord } from '@openkit/protocol';
 import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
-import { createChannelServices, type DiscordAttentionTransport } from './channel-services.js';
-import type { DiscordReply } from './channels/discord.js';
+import {
+  createCommunicationChannelServices,
+  type DiscordAttentionTransport,
+  type DiscordChannelOwners,
+} from './channel-services.js';
+import { type DiscordReply, verifyDiscordInteraction } from './channels/discord-interaction.js';
 import { prepareDiscordPublication } from './channels/discord-publication-intent.js';
 import { raiseDiscordPublicationFallback } from './channels/discord-publication-pending.js';
 import { FsStore } from './lib/store.js';
@@ -30,13 +37,21 @@ import {
 } from './runtime/pending-request-flow.js';
 import { readPendingRequest } from './runtime/pending-requests.js';
 import {
-  ControlStoreWorkerError,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
+  claimCommunicationAttentionInDb,
+  settleCommunicationAttentionInDb,
+} from './storage/communication-attention-native.js';
+import { createCommunicationDiscord } from './storage/communication-discord.js';
+import { inspectPendingDecision, requireChannelStorage } from './storage/communication-inbound.js';
+import { readChannelInboundProof } from './storage/communication-inbound-native.js';
+import {
+  communicationKernelFixture,
+  openCommunicationFixture,
+} from './storage/communication-worker.test-support.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb, serverStoragePath } from './storage/db.js';
+import { ensureLayout } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
-import { DISCORD_STATE_CHANGE } from './test-support/discord-inbound-rows.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import {
@@ -50,6 +65,7 @@ import { removeWorkspaceMember } from './workspace-sharing.js';
 // Pending producer, Attention owner, SQLite, claim and transport caller stay real.
 const enqueueAck = vi.hoisted(() => ({
   hold: false,
+  inKernel: false,
   arrived: undefined as (() => void) | undefined,
   release: undefined as (() => void) | undefined,
   worker: undefined as NativeWorker | undefined,
@@ -60,32 +76,33 @@ vi.mock('node:worker_threads', async (load) => {
   const actual = await load<typeof import('node:worker_threads')>();
   return {
     ...actual,
+    get isMainThread() {
+      return !enqueueAck.inKernel && actual.isMainThread;
+    },
     Worker: class extends actual.Worker {
       override postMessage(...args: Parameters<NativeWorker['postMessage']>) {
-        const message: unknown = args[0];
-        if (isRecord(message)) {
-          if (message.operation === 'attention-enqueue') {
-            enqueueAck.enqueues += 1;
-            enqueueAck.worker = this;
-          }
-          if (message.operation === 'attention-attempt-claim') enqueueAck.claims += 1;
+        const frame: unknown = args[0];
+        if (isRecord(frame) && frame.operation === 'communication-owner') {
+          if (frame.stage === 'enqueue-attention') enqueueAck.enqueues += 1;
+          if (frame.stage === 'claim-attention') enqueueAck.claims += 1;
         }
         return super.postMessage(...args);
       }
       override emit(event: string | symbol, ...args: unknown[]): boolean {
         const reply = args[0];
         if (
-          enqueueAck.hold &&
           event === 'message' &&
           isRecord(reply) &&
           reply.status === 'ok' &&
-          reply.operation === 'attention-enqueue' &&
-          isRecord(reply.result) &&
-          reply.result.status === 'enqueued'
+          reply.operation === 'communication-owner' &&
+          isRecord(reply.result)
         ) {
-          enqueueAck.release = () => super.emit(event, ...args);
-          enqueueAck.arrived?.();
-          return true;
+          if (reply.result.stage === 'enqueue-attention' && enqueueAck.hold) {
+            enqueueAck.worker = this;
+            enqueueAck.release = () => super.emit(event, ...args);
+            enqueueAck.arrived?.();
+            return true;
+          }
         }
         return super.emit(event, ...args);
       }
@@ -103,6 +120,7 @@ const publicKey = keys.publicKey
   .toString('hex');
 const databases: CoreDb[] = [];
 const directories: string[] = [];
+const communicationConnections = new Set<Database.Database>();
 
 /** Observes reply text while preserving the private Discord response predicate. */
 function text(reply: DiscordReply): string {
@@ -120,6 +138,7 @@ async function fixture(
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'channel-pending-seam-'));
   directories.push(dataRoot);
+  ensureLayout(dataRoot);
   let coreDb = openCoreDb(dataRoot);
   databases.push(coreDb);
   applyMigrations(coreDb);
@@ -284,11 +303,43 @@ async function fixture(
     .fn<DiscordAttentionTransport['sendAttention']>()
     .mockResolvedValue({ status: 'sent', externalMessageId: '523456789012345678' });
   let workspaceAvailable = true;
-  function compose(configured = true) {
-    const repositoryWorkspaceDb = (workspaceId: string) => {
-      if (!workspaceAvailable) throw new Error('Simulated unavailable Workspace storage');
-      return openWorkspaceDb(dataRoot, workspaceId);
-    };
+  const repositoryWorkspaceDb = (workspaceId: string) => {
+    if (!workspaceAvailable) throw new Error('Simulated unavailable Workspace storage');
+    return openWorkspaceDb(dataRoot, workspaceId);
+  };
+  const path = serverStoragePath(dataRoot, 'communication');
+  const decideReceipt = (origin: Parameters<typeof inspectPendingDecision>[1]) => {
+    const proofDb = new Database(path, { readonly: true, fileMustExist: true });
+    try {
+      const proof = readChannelInboundProof(proofDb, origin.envelope, origin);
+      if (!proof?.inputHash || proof.refusalCode) return null;
+      const db = repositoryWorkspaceDb(origin.workspaceId);
+      try {
+        return inspectPendingDecision(db, origin, new Date().toISOString(), proof.inputHash);
+      } finally {
+        db.sqlite.close();
+      }
+    } finally {
+      proofDb.close();
+    }
+  };
+  let kernelDb = openCoreDb(dataRoot);
+  databases.push(kernelDb);
+  function openOwner(mode: 'local' | 'server' = 'server') {
+    const kernel = communicationKernelFixture(kernelDb, decideReceipt, (effect) => {
+      enqueueAck.inKernel = true;
+      try {
+        return effect();
+      } finally {
+        enqueueAck.inKernel = false;
+      }
+    });
+    return openCommunicationFixture(coreDb, mode, kernel);
+  }
+  let owner = await openOwner();
+  let communicationDb = new Database(path);
+  communicationConnections.add(communicationDb);
+  const compose = (configured = true) => {
     const inflightCommands = new WeakMap();
     const invoke = createOperationInvocation({
       coreDb,
@@ -298,24 +349,48 @@ async function fixture(
       inflightCommands,
       pendingRequestServices: { coreDb, repositoryWorkspaceDb, inflightCommands },
     });
-    return createChannelServices({
-      publicBaseUrl: 'https://openkit.invalid',
-      coreDb,
-      store,
-      mode: 'server',
-      ...(configured
-        ? { discordConfig: { applicationId, publicKey }, transport: { sendAttention } }
-        : {}),
-      openWorkspace: repositoryWorkspaceDb,
-      invokePending: async (id, input, decidingActor) => {
-        nativeCalls.push({ id, input, actor: decidingActor });
-        return invoke(id, input, { kind: 'public', actor: decidingActor, delivery: 'human' });
-      },
-    });
-  }
+    return requireChannelStorage(
+      createCommunicationChannelServices({
+        publicBaseUrl: 'https://openkit.invalid',
+        coreDb,
+        store,
+        mode: 'server',
+        discordOwners: owner.owners,
+        ...(configured
+          ? { discordConfig: { applicationId, publicKey }, transport: { sendAttention } }
+          : {}),
+        openWorkspace: repositoryWorkspaceDb,
+        invokePending: async (id, input, decidingActor) => {
+          nativeCalls.push({ id, input, actor: decidingActor });
+          return invoke(id, input, { kind: 'public', actor: decidingActor, delivery: 'human' });
+        },
+      })
+    );
+  };
   let services = compose();
-  await services.notifications.reconcileIncompleteAttempts();
-  await services.discord?.reconcileIncompleteInteractions();
+  function withProducer<T>(effect: () => Promise<T>) {
+    return owner.withProducer(effect).then(requireChannelStorage);
+  }
+  const beginPairing = () => withProducer(() => services.discord!.beginPairing(actor));
+  const postSigned = (input: ReturnType<typeof signed>) =>
+    withProducer(() =>
+      services.discord!.handleVerified(
+        verifyDiscordInteraction({ ...input, applicationId, publicKey })
+      )
+    );
+  const retainedAttention = () =>
+    new AttentionNotifications(communicationDb).listForActor(actor.userId, {}, () => true);
+  const revoke = () =>
+    withProducer(async () => {
+      const binding = requireChannelStorage(services.credentials.readBinding(actor.userId));
+      if (!binding) throw new Error('Expected the original binding.');
+      return requireChannelStorage(
+        await services.credentials.unbind({
+          actor,
+          bindingRevision: binding.revision,
+        })
+      );
+    });
   let event = 100000000000000000n;
   const envelope = (command: string, values: Record<string, string>) => ({
     id: String(++event),
@@ -352,7 +427,7 @@ async function fixture(
     };
   };
   const send = (command: string, values: Record<string, string>) =>
-    services.discord!.handleSignedInteraction(signed(envelope(command, values)));
+    postSigned(signed(envelope(command, values)));
   const target = { workspace: DEMO_WORKSPACE_ID, thread: thread.id, request: requestId };
   const record = () => {
     const db = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
@@ -365,6 +440,22 @@ async function fixture(
   return {
     nativeCalls,
     sendAttention,
+    beginPairing,
+    postSigned,
+    revoke,
+    retainedAttention,
+    get communicationDb() {
+      return communicationDb;
+    },
+    get owners() {
+      return owner.owners;
+    },
+    withProducer,
+    async openLocalOwner() {
+      await shutdownControlStoreWorkerClient();
+      owner = await openOwner('local');
+      services = compose();
+    },
     send,
     signed,
     envelope,
@@ -398,7 +489,7 @@ async function fixture(
       workspaceAvailable = available;
     },
     async pair() {
-      const { challenge } = await services.discord!.beginPairing(actor);
+      const { challenge } = await beginPairing();
       expect(text(await send('pair', { challenge }))).toContain('paired');
     },
     async disclose() {
@@ -410,12 +501,12 @@ async function fixture(
     },
     async withoutAdapter() {
       const unconfigured = compose(false);
-      await unconfigured.notifications.reconcileIncompleteAttempts();
       const invoke = createOperationInvocation({
         coreDb,
         store,
         mode: 'server',
         channelServices: unconfigured,
+        communicationCredentialBinding: { communicationCredentials: unconfigured.credentials },
       });
       return async (id: 'channel.discord.status' | 'credential.revoke') => {
         const context = { kind: 'public' as const, actor, delivery: 'human' as const };
@@ -428,7 +519,7 @@ async function fixture(
                 )!.id,
               }
             : {};
-        return invoke(id, input, context);
+        return withProducer(() => invoke(id, input, context));
       };
     },
     removeMembership() {
@@ -469,14 +560,19 @@ async function fixture(
       writeFileSync(join(directory, 'workspace.jsonc'), JSON.stringify(config));
     },
     async restart() {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      kernelDb.sqlite.close();
+      communicationDb.close();
       coreDb = openCoreDb(dataRoot);
       databases.push(coreDb);
-      applyMigrations(coreDb);
+      kernelDb = openCoreDb(dataRoot);
+      databases.push(kernelDb);
+      communicationDb = new Database(path);
+      communicationConnections.add(communicationDb);
+      owner = await openOwner();
       store = new FsStore({ dataRoot });
       services = compose();
-      await services.notifications.reconcileIncompleteAttempts();
-      await services.discord?.reconcileIncompleteInteractions();
     },
   };
 }
@@ -490,6 +586,8 @@ afterEach(async () => {
   await shutdownControlStoreWorkerClient();
   enqueueAck.enqueues = 0;
   enqueueAck.claims = 0;
+  for (const db of communicationConnections) if (db.open) db.close();
+  communicationConnections.clear();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
@@ -539,19 +637,13 @@ describe('Discord to native Pending Request seam', () => {
         })
       )
     ).toBe(expected);
-    expect(f.coreDb.sqlite.prepare('SELECT COUNT(*) AS n FROM discord_disclosures').get()).toEqual({
+    expect(
+      f.communicationDb.prepare('SELECT COUNT(*) AS n FROM channel_disclosures').get()
+    ).toEqual({
       n: 0,
     });
     expect(f.nativeCalls).toEqual([]);
     expect(f.record().state).toBe('pending');
-    expect(
-      f.services.inspectPending({
-        actor,
-        workspaceId: DEMO_WORKSPACE_ID,
-        threadId: f.target.thread,
-        pendingRequestId: f.target.request,
-      })
-    ).toMatchObject({ status: 'app-only' });
   });
 
   it('refuses the deferred security attention flow before reading its legacy notice', async () => {
@@ -565,7 +657,7 @@ describe('Discord to native Pending Request seam', () => {
     await f.pair();
     const record = f.record();
     const delivery = enqueueAttentionInDb(
-      f.coreDb.sqlite,
+      f.communicationDb,
       {
         source: {
           workspaceId: record.workspaceId,
@@ -584,7 +676,6 @@ describe('Discord to native Pending Request seam', () => {
     );
     try {
       expect(f.services.readableDelivery(delivery)).toBe(false);
-      expect(f.services.eligible(delivery)).toBe(false);
       await f.services.attentionRaised(record);
       await expect(f.services.send(actor, delivery.id, null)).rejects.toMatchObject({
         code: 'notification_unavailable',
@@ -598,13 +689,196 @@ describe('Discord to native Pending Request seam', () => {
     }
   });
 
+  it('serves admitted Attention with the five Core tables absent and fences its Workspace', async () => {
+    const f = await fixture();
+    const legacy =
+      /discord_account_bindings|discord_pairing_challenges|discord_disclosures|notification_attention|notification_delivery_attempts/;
+    expect(
+      (
+        f.coreDb.sqlite
+          .prepare("SELECT name FROM sqlite_schema WHERE type = 'table'")
+          .pluck()
+          .all() as string[]
+      ).filter((name) => legacy.test(name))
+    ).toEqual([]);
+    const sqlite = new Database(':memory:');
+    try {
+      migrate(drizzle(sqlite), {
+        migrationsFolder: fileURLToPath(
+          new URL('../drizzle/services/communication/', import.meta.url)
+        ),
+      });
+      const revision = randomUUID();
+      sqlite
+        .prepare(`
+          INSERT INTO channel_account_bindings(revision, channel_kind, external_account_id, user_id, paired_at)
+          VALUES (?, 'discord', ?, ?, ?)
+        `)
+        .run(revision, discordUserId, actor.userId, Date.now());
+      const ready = <T>(value: T) => ({ state: 'ready' as const, value });
+      const unexpected = async (): Promise<never> => {
+        throw new Error('Unexpected Discord writer call.');
+      };
+      const communication = createCommunicationDiscord({
+        read: (read) => ready(read(sqlite)),
+        status: () => ({ state: 'ready', owner: 'communication' }),
+        withAuthority: unexpected,
+        pairingAuditReady: () => {},
+        writer: {
+          stageEnvelope: unexpected,
+          revokeChallenges: unexpected,
+          issueChallenge: unexpected,
+          pair: unexpected,
+          unbind: unexpected,
+          writeDisclosure: unexpected,
+          claimOrigin: unexpected,
+          settleInbound: unexpected,
+          settleHandled: unexpected,
+          settleRefusal: unexpected,
+          applyRetention: unexpected,
+        },
+      });
+      let fenced = true;
+      const clock = () => new Date().toISOString();
+      const input = {
+        coreDb: f.coreDb,
+        store: f.store,
+        mode: 'server' as const,
+        openWorkspace: (workspaceId: string) => openWorkspaceDb(f.coreDb.dataRoot, workspaceId),
+        invokePending: unexpected,
+      };
+      const owners: DiscordChannelOwners = {
+        deploymentId: 'communication-serving-fixture',
+        communication,
+        kernel: {
+          status: () => ({ state: 'ready', owner: 'control-kernel' }),
+          reserveChannelInbound: unexpected,
+          inspectChannelInbound: unexpected,
+          bindChannelInboundOrigin: unexpected,
+          settleChannelInbound: unexpected,
+        },
+        attention: {
+          read: (read) => ready(read(sqlite)),
+          enqueue: async (selection) => ready(enqueueAttentionInDb(sqlite, selection, clock)),
+          claim: async (selection) =>
+            ready(claimCommunicationAttentionInDb(sqlite, selection, clock)),
+          settle: async (selection) => {
+            settleCommunicationAttentionInDb(sqlite, selection);
+            return ready(undefined);
+          },
+          reconcile: async () => ready(0),
+          withWorkspace: async (_workspaceId, effect) =>
+            fenced
+              ? { state: 'unavailable', owner: 'communication', reason: 'recovery-required' }
+              : ready(await effect()),
+        },
+      };
+      expect(createCommunicationChannelServices(input)).toEqual({
+        state: 'unavailable',
+        owner: 'communication',
+        reason: 'missing',
+      });
+      expect(
+        createCommunicationChannelServices({
+          ...input,
+          discordOwners: {
+            deploymentId: owners.deploymentId,
+            communication,
+            attention: owners.attention,
+          },
+        })
+      ).toEqual({
+        state: 'unavailable',
+        owner: 'control-kernel',
+        reason: 'missing',
+      });
+      const opened = createCommunicationChannelServices({ ...input, discordOwners: owners });
+      if (opened.state !== 'ready') throw new Error('Expected both owners ready.');
+      const services = opened.value;
+      const coreQuery = vi.spyOn(f.coreDb.sqlite, 'prepare');
+      try {
+        expect(services.discord).toBeNull();
+        expect(services.credentials.readBinding(actor.userId)).toEqual(
+          ready(expect.objectContaining({ revision, externalAccountId: discordUserId }))
+        );
+        await expect(services.attentionRaised(f.record())).rejects.toMatchObject({
+          code: 'channel_storage_unavailable',
+        });
+        expect(
+          services.notifications.pageForActor(actor.userId, {}, services.readableDelivery)
+        ).toEqual({
+          items: [],
+          hasMore: false,
+        });
+        fenced = false;
+        await services.attentionRaised(f.record());
+        await services.recoverAttention();
+        const page = services.notifications.pageForActor(
+          actor.userId,
+          {},
+          services.readableDelivery
+        );
+        expect(page.items).toHaveLength(1);
+        expect(page.items[0]).toMatchObject({
+          source: { requestId: f.target.request, kind: 'approval-request' },
+          recipientUserId: actor.userId,
+          status: 'queued',
+        });
+        const transport = {
+          sendAttention: vi.fn<DiscordAttentionTransport['sendAttention']>().mockResolvedValue({
+            status: 'sent',
+            externalMessageId: '523456789012345678',
+          }),
+        };
+        const discordInputs = {
+          ...input,
+          publicBaseUrl: 'https://openkit.invalid',
+          discordConfig: { applicationId, publicKey },
+          transport,
+        };
+        expect(createCommunicationChannelServices(discordInputs)).toEqual({
+          state: 'unavailable',
+          owner: 'communication',
+          reason: 'missing',
+        });
+        expect(transport.sendAttention).not.toHaveBeenCalled();
+        const sending = createCommunicationChannelServices({
+          ...discordInputs,
+          discordOwners: owners,
+        });
+        if (sending.state !== 'ready') throw new Error('Expected both owners ready for send.');
+        fenced = true;
+        await expect(sending.value.send(actor, page.items[0]!.id, null)).rejects.toMatchObject({
+          code: 'channel_storage_unavailable',
+        });
+        expect(transport.sendAttention).not.toHaveBeenCalled();
+        fenced = false;
+        await expect(sending.value.send(actor, page.items[0]!.id, null)).resolves.toMatchObject({
+          status: 'sent',
+          attempt: { status: 'sent' },
+        });
+        expect(transport.sendAttention).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            discordUserId,
+            appPath: expect.stringContaining(f.target.request),
+          })
+        );
+        expect(coreQuery.mock.calls.filter(([sql]) => legacy.test(sql))).toEqual([]);
+      } finally {
+        coreQuery.mockRestore();
+      }
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it('does not enqueue or send after the responsible recipient loses current membership', async () => {
     const f = await fixture();
     await f.pair();
     const pending = f.record();
     f.removeMembership();
     await f.services.attentionRaised(pending);
-    expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
+    expect(f.retainedAttention()).toEqual([]);
     expect(enqueueAck.enqueues).toBe(0);
     expect(f.sendAttention).not.toHaveBeenCalled();
     expect(f.record()).toEqual(pending);
@@ -614,7 +888,7 @@ describe('Discord to native Pending Request seam', () => {
     const f = await fixture();
     const original = f.record();
     setPendingRequestAttentionObserver(f.store, f.services.attentionRaised);
-    f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_attention_enqueue BEFORE INSERT ON notification_attention
+    f.communicationDb.exec(`CREATE TRIGGER refuse_attention_enqueue BEFORE INSERT ON notification_attention
       BEGIN SELECT RAISE(ABORT, 'simulated attention projection refusal'); END`);
     const workspaceDb = openWorkspaceDb(f.coreDb.dataRoot, f.target.workspace);
     try {
@@ -650,14 +924,14 @@ describe('Discord to native Pending Request seam', () => {
           f.target.thread
         )
       ).toEqual(raised);
-      expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
+      expect(f.retainedAttention()).toEqual([]);
       expect(enqueueAck.enqueues).toBe(1);
       expect(f.sendAttention).not.toHaveBeenCalled();
       expect(f.nativeCalls).toEqual([]);
       expect(f.record()).toEqual(original);
     } finally {
       workspaceDb.sqlite.close();
-      f.coreDb.sqlite.exec('DROP TRIGGER refuse_attention_enqueue');
+      f.communicationDb.exec('DROP TRIGGER refuse_attention_enqueue');
     }
   });
 
@@ -684,7 +958,7 @@ describe('Discord to native Pending Request seam', () => {
             throw new Error('Attention publication completed before its native enqueue ACK.');
           }),
         ]);
-        const coldDb = new Database(f.coreDb.sqlite.name, { readonly: true });
+        const coldDb = new Database(f.communicationDb.name, { readonly: true });
         let retained: AttentionDelivery;
         try {
           const cold = new AttentionNotifications(coldDb);
@@ -718,7 +992,7 @@ describe('Discord to native Pending Request seam', () => {
         if (outcome === 'lost-ack') {
           await enqueueAck.worker!.terminate();
           enqueueAck.release = undefined;
-          await expect(publication).rejects.toMatchObject({ commit: 'unknown' });
+          await expect(publication).rejects.toMatchObject({ code: 'channel_storage_unavailable' });
         } else {
           enqueueAck.release!();
           enqueueAck.release = undefined;
@@ -726,13 +1000,18 @@ describe('Discord to native Pending Request seam', () => {
         }
         if (outcome === 'acknowledged') {
           await vi.waitFor(
-            () => expect(f.services.notifications.get(retained.id)?.status).toBe('sent'),
+            () =>
+              expect(
+                f.retainedAttention().find((delivery) => delivery.id === retained.id)?.status
+              ).toBe('sent'),
             { timeout: 15_000 }
           );
           expect(f.sendAttention).toHaveBeenCalledTimes(1);
           expect(enqueueAck.claims).toBe(1);
         } else {
-          expect(f.services.notifications.get(retained.id)).toEqual(retained);
+          expect(f.retainedAttention().find((delivery) => delivery.id === retained.id)).toEqual(
+            retained
+          );
           expect(f.sendAttention).not.toHaveBeenCalled();
           expect(enqueueAck.claims).toBe(0);
         }
@@ -756,22 +1035,28 @@ describe('Discord to native Pending Request seam', () => {
     const invokePending = vi.fn(async () => {
       throw new Error('Pairing must not invoke a Pending Request');
     });
-    const services = createChannelServices({
-      coreDb: f.coreDb,
-      store: f.store,
-      mode: 'local',
-      publicBaseUrl: 'https://openkit.invalid',
-      discordConfig: { applicationId, publicKey },
-      openWorkspace,
-      invokePending,
-    });
-    await services.notifications.reconcileIncompleteAttempts();
-    await services.discord?.reconcileIncompleteInteractions();
-    expect(
-      await services.discord!.beginPairing({ userId: FIXTURE_LOCAL_USER_ID, kind: 'local' })
-    ).toEqual({ challenge: expect.any(String), expiresAt: expect.any(Number) });
-    await expect(services.discord!.beginPairing(actor)).rejects.toThrow(
-      'Current actor authority is unavailable.'
+    await f.openLocalOwner();
+    const services = requireChannelStorage(
+      createCommunicationChannelServices({
+        coreDb: f.coreDb,
+        store: f.store,
+        mode: 'local',
+        discordOwners: f.owners,
+        publicBaseUrl: 'https://openkit.invalid',
+        discordConfig: { applicationId, publicKey },
+        openWorkspace,
+        invokePending,
+      })
+    );
+    await expect(
+      f.withProducer(() =>
+        services.discord!.beginPairing({ userId: FIXTURE_LOCAL_USER_ID, kind: 'local' })
+      )
+    ).resolves.toEqual({ challenge: expect.any(String), expiresAt: expect.any(Number) });
+    await expect(f.withProducer(() => services.discord!.beginPairing(actor))).rejects.toMatchObject(
+      {
+        code: 'channel_authority_unavailable',
+      }
     );
     expect(openWorkspace).not.toHaveBeenCalled();
     expect(invokePending).not.toHaveBeenCalled();
@@ -782,19 +1067,19 @@ describe('Discord to native Pending Request seam', () => {
     const pending = f.record();
     f.setWorkspaceAvailable(false);
     await expect(f.services.recoverAttention()).resolves.toBeUndefined();
-    expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
+    expect(f.retainedAttention()).toEqual([]);
     expect(f.sendAttention).not.toHaveBeenCalled();
     expect(f.record()).toEqual(pending);
 
     f.setWorkspaceAvailable(true);
-    f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_attention_enqueue BEFORE INSERT ON notification_attention
+    f.communicationDb.exec(`CREATE TRIGGER refuse_attention_enqueue BEFORE INSERT ON notification_attention
       BEGIN SELECT RAISE(ABORT, 'simulated attention projection refusal'); END`);
     await expect(f.services.recoverAttention()).resolves.toBeUndefined();
-    expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
+    expect(f.retainedAttention()).toEqual([]);
     expect(f.record()).toEqual(pending);
-    f.coreDb.sqlite.exec('DROP TRIGGER refuse_attention_enqueue');
+    f.communicationDb.exec('DROP TRIGGER refuse_attention_enqueue');
     await f.services.recoverAttention();
-    expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([
+    expect(f.retainedAttention()).toEqual([
       expect.objectContaining({
         source: {
           workspaceId: f.target.workspace,
@@ -816,11 +1101,11 @@ describe('Discord to native Pending Request seam', () => {
   it('retains native binding status and revocation after Discord configuration is removed', async () => {
     const f = await fixture();
     await f.pair();
-    await f.services.discord!.beginPairing(actor);
+    await f.beginPairing();
     expect(
-      f.coreDb.sqlite
+      f.communicationDb
         .prepare(
-          'SELECT COUNT(*) AS count FROM discord_pairing_challenges WHERE user_id = ? AND consumed_at IS NULL'
+          'SELECT COUNT(*) AS count FROM channel_pairing_challenges WHERE user_id = ? AND consumed_at IS NULL'
         )
         .get(actor.userId)
     ).toEqual({ count: 1 });
@@ -837,9 +1122,9 @@ describe('Discord to native Pending Request seam', () => {
       binding: null,
     });
     expect(
-      f.coreDb.sqlite
+      f.communicationDb
         .prepare(
-          'SELECT COUNT(*) AS count FROM discord_pairing_challenges WHERE user_id = ? AND consumed_at IS NULL'
+          'SELECT COUNT(*) AS count FROM channel_pairing_challenges WHERE user_id = ? AND consumed_at IS NULL'
         )
         .get(actor.userId)
     ).toEqual({ count: 0 });
@@ -860,7 +1145,7 @@ describe('Discord to native Pending Request seam', () => {
         ...(kind === 'user-input' ? { answers: JSON.stringify({ color: ['blue'] }) } : {}),
       };
       const signed = f.signed(f.envelope(command, values));
-      expect(text(await f.services.discord!.handleSignedInteraction(signed))).toContain('accepted');
+      expect(text(await f.postSigned(signed))).toContain('accepted');
       expect(f.nativeCalls).toHaveLength(1);
       expect(f.nativeCalls[0]).toMatchObject({
         id: kind === 'approval' ? 'approval.respond' : 'question.answer',
@@ -881,9 +1166,7 @@ describe('Discord to native Pending Request seam', () => {
         });
       }
       const settled = f.record();
-      expect(text(await f.services.discord!.handleSignedInteraction(signed))).toContain(
-        'already handled'
-      );
+      expect(text(await f.postSigned(signed))).toContain('already handled');
       expect(f.nativeCalls).toHaveLength(1);
       expect(f.record()).toEqual(settled);
       expect(f.store.listThreadTurns(DEMO_WORKSPACE_ID, f.target.thread)).toHaveLength(1);
@@ -969,7 +1252,7 @@ describe('Discord to native Pending Request seam', () => {
         expect(isThreadIdVisible(f.store, DEMO_WORKSPACE_ID, thread.id, actor.userId)).toBe(false);
         expect(f.store.getThread(DEMO_WORKSPACE_ID, thread.id)).toEqual(thread);
       } else {
-        await f.services.discord!.revoke(actor);
+        await f.revoke();
       }
       expect(text(await f.send('deny', { ...f.target, disclosure }))).toContain('refused');
       expect(f.nativeCalls).toHaveLength(0);
@@ -1006,17 +1289,18 @@ describe('Discord to native Pending Request seam', () => {
       await preparing;
       try {
         if (loss === 'membership') f.removeMembership();
-        else await f.services.discord!.revoke(actor);
+        else {
+          // An out-of-band change invalidates the snapshot even while the local send owns the binding.
+          f.communicationDb
+            .prepare('UPDATE channel_account_bindings SET revoked_at = ? WHERE user_id = ?')
+            .run(Date.now(), actor.userId);
+        }
       } finally {
         release!();
       }
-      await vi.waitFor(
-        () =>
-          expect(
-            f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status
-          ).toBe('failed-no-send'),
-        { timeout: 15_000 }
-      );
+      await vi.waitFor(() => expect(f.retainedAttention()[0]?.status).toBe('failed-no-send'), {
+        timeout: 15_000,
+      });
       expect(messageContacts).toBe(0);
       expect(f.sendAttention).toHaveBeenCalledTimes(1);
       expect(f.nativeCalls).toHaveLength(0);
@@ -1030,20 +1314,18 @@ describe('Discord to native Pending Request seam', () => {
     f.sendAttention.mockRejectedValue(new Error('simulated lost message acknowledgement'));
     const pending = f.record();
     await f.services.attentionRaised(pending);
-    await vi.waitFor(
-      () =>
-        expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
-          'delivery-unknown'
-        ),
-      { timeout: 15_000 }
-    );
-    const delivery = f.services.notifications.listForActor(actor.userId, {}, () => true)[0]!;
+    await vi.waitFor(() => expect(f.retainedAttention()[0]?.status).toBe('delivery-unknown'), {
+      timeout: 15_000,
+    });
+    const delivery = f.retainedAttention()[0]!;
     expect(f.record()).toEqual(pending);
     expect(f.sendAttention).toHaveBeenCalledTimes(1);
     await f.restart();
     await f.services.recoverAttention();
     await expect(f.services.send(actor, delivery.id, delivery.attempt!.id)).rejects.toThrow();
-    expect(f.services.notifications.get(delivery.id)?.status).toBe('delivery-unknown');
+    expect(f.retainedAttention().find((row) => row.id === delivery.id)?.status).toBe(
+      'delivery-unknown'
+    );
     expect(f.sendAttention).toHaveBeenCalledTimes(1);
     expect(f.nativeCalls).toHaveLength(0);
     expect(f.record()).toEqual(pending);
@@ -1058,14 +1340,10 @@ describe('Discord to native Pending Request seam', () => {
     });
     const pending = f.record();
     await f.services.attentionRaised(pending);
-    await vi.waitFor(
-      () =>
-        expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
-          'failed-no-send'
-        ),
-      { timeout: 15_000 }
-    );
-    const delivery = f.services.notifications.listForActor(actor.userId, {}, () => true)[0]!;
+    await vi.waitFor(() => expect(f.retainedAttention()[0]?.status).toBe('failed-no-send'), {
+      timeout: 15_000,
+    });
+    const delivery = f.retainedAttention()[0]!;
     const expectedAttemptId = delivery.attempt!.id;
     expect((await f.services.send(actor, delivery.id, expectedAttemptId)).status).toBe(
       'failed-no-send'
@@ -1083,21 +1361,16 @@ describe('Discord to native Pending Request seam', () => {
     const disclosure = await f.disclose();
     const event = f.envelope('deny', { ...f.target, disclosure });
     const signed = f.signed(event);
-    // Keep the origin prerequisite writable; fail only the receipt publication after native dispatch.
-    f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_channel_receipt BEFORE UPDATE OF response_json ON idempotency_requests
-      WHEN ${DISCORD_STATE_CHANGE} AND OLD.request_id = '${event.id}' BEGIN SELECT RAISE(ABORT, 'simulated receipt publication failure'); END`);
-    const failed = f.services.discord!.handleSignedInteraction(signed);
-    // Native diagnostics redact SQLite text; only this separate settlement was rolled back.
-    await expect(failed).rejects.toBeInstanceOf(ControlStoreWorkerError);
-    await expect(failed).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+    // Keep the exact origin writable and fail only local receipt publication after native dispatch.
+    f.communicationDb.exec(`CREATE TRIGGER refuse_channel_receipt BEFORE UPDATE OF receipt_digest ON communication_intents
+      WHEN OLD.kind = 'channel.inbound' BEGIN SELECT RAISE(ABORT, 'simulated receipt publication failure'); END`);
+    expect(text(await f.postSigned(signed))).toContain('outcome is unknown');
     expect(f.record().state).toBe('resolved');
     expect(f.store.getApproval(f.target.request).status).toBe('denied');
     expect(f.nativeCalls).toHaveLength(1);
-    f.coreDb.sqlite.exec('DROP TRIGGER refuse_channel_receipt');
+    f.communicationDb.exec('DROP TRIGGER refuse_channel_receipt');
     await f.restart();
-    expect(text(await f.services.discord!.handleSignedInteraction(signed))).toContain(
-      'outcome is unknown'
-    );
+    expect(text(await f.postSigned(signed))).toContain('already handled');
     expect(f.nativeCalls).toHaveLength(1);
     expect(f.store.getApproval(f.target.request).status).toBe('denied');
   });

@@ -37,7 +37,8 @@ import {
   publishWorkspaceResourceCatalog,
   readWorkspaceResourceCatalog,
 } from '../catalog/resource-catalog.js';
-import { createChannelServices } from '../channel-services.js';
+import { createCommunicationChannelServices } from '../channel-services.js';
+import * as discordOwner from '../channels/discord-owner.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -72,6 +73,11 @@ import {
   getWorkspaceRegistryLifecycleFact,
 } from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { requireChannelStorage } from './communication-inbound.js';
+import {
+  communicationKernelFixture,
+  openCommunicationFixture,
+} from './communication-worker.test-support.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -593,25 +599,42 @@ async function fixture(channelHistory = false, unfinished = false, longPage = fa
     pendingRequestId: pendingId,
   };
   // Exercise the actual channel admission owner without contacting an external transport.
-  const inspectChannel = () => {
+  const inspectChannel = async () => {
     const channelDb = openCoreDb(dataRoot);
+    const observeOwner = vi.spyOn(discordOwner, 'openCommunicationDiscordChannel');
     try {
-      const channels = createChannelServices({
-        coreDb: channelDb,
-        store,
-        mode: 'server',
-        openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
-        invokePending: async () => {
-          throw new Error('An inspection must not dispatch a channel effect.');
-        },
-      });
-      return channels.inspectPending(channelQuery);
+      const kernel = communicationKernelFixture(
+        channelDb,
+        () => null,
+        () => {
+          throw new Error('A Workspace inspection cannot write a Core receipt.');
+        }
+      );
+      const binding = await openCommunicationFixture(channelDb, 'server', kernel);
+      requireChannelStorage(
+        createCommunicationChannelServices({
+          coreDb: channelDb,
+          store,
+          mode: 'server',
+          openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
+          invokePending: async () => {
+            throw new Error('An inspection must not dispatch a channel effect.');
+          },
+          discordOwners: binding.owners,
+          discordConfig: { applicationId: '123456789012345678', publicKey: '0'.repeat(64) },
+          publicBaseUrl: 'https://openkit.example.invalid',
+        })
+      );
+      const [ownerOptions] = observeOwner.mock.calls[0] ?? [];
+      if (!ownerOptions) throw new Error('The admitted Discord owner did not open.');
+      return ownerOptions.inspectPending(channelQuery);
     } finally {
+      observeOwner.mockRestore();
       channelDb.sqlite.close();
     }
   };
   if (channelHistory)
-    expect(inspectChannel()).toMatchObject({ status: 'available', responseAllowed: true });
+    expect(await inspectChannel()).toMatchObject({ status: 'available', responseAllowed: true });
   await shutdownControlStoreWorkerClient();
   const sourceDeploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
@@ -2886,7 +2909,7 @@ describe('D0-2 same-deployment restore', () => {
     expect(rows(coreDbPath(f.dataRoot), 'recurring_schedules')).toEqual([
       expect.objectContaining({ id: schedule.id, status: 'paused', next_scheduled_at: null }),
     ]);
-    expect(f.inspectChannel()).toMatchObject({ status: 'unavailable' });
+    expect(await f.inspectChannel()).toMatchObject({ status: 'unavailable' });
     const audit = rows(workspaceDbPath(f.dataRoot, workspaceId), 'audit_events');
     expect(
       audit.some(

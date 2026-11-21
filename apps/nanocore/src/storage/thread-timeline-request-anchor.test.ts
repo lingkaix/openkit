@@ -6,6 +6,7 @@ import { ThreadTimelineResponseSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, type Item } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { prepareCommunicationOwner } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import * as channelOwners from '../channel-services.js';
 import {
@@ -20,7 +21,9 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { communicationOwner } from './communication-owner.js';
 import { commandInputHash } from './control-store-input.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
 import { nativeProductScope, type ThreadTimelineSnapshot } from './workspace-file-records.js';
 
@@ -141,7 +144,32 @@ async function fixture(
     input: Record<string, unknown> = {},
     headers: Record<string, string> = {}
   ) => {
-    app ??= createApp({ coreDb, store });
+    if (!app) {
+      const writer = getControlStoreWorkerClient();
+      const scope = nativeProductScope(root, { kind: 'server' });
+      // The production access-token verifier joins this same Core opening.
+      await writer.open({
+        database: `core:${scope.path}`,
+        path: scope.path,
+        dataRoot: root,
+        create: false,
+        initialize: 'core',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      expect((await writer.provisionServerOwner(root, communicationOwner)).state).toBe('ready');
+      const binding = await prepareCommunicationOwner({
+        coreDb,
+        mode: 'local',
+        kernel: writer.communicationKernel(coreDb),
+      });
+      expect(binding.state).toBe('ready');
+      app = createApp({
+        coreDb,
+        store,
+        communicationStorage: { binding },
+      });
+    }
     const response = await app.request('/api/app/operations/thread.timeline', {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
@@ -491,13 +519,18 @@ describe('Exact request-ID timeline anchors', () => {
     // Startup can still be recovering attention after the first timeline response.
     const resumeRecovery = Promise.withResolvers<void>();
     let recovery: Promise<void> | undefined;
-    const createChannels = channelOwners.createChannelServices;
-    const observeStartup = vi.spyOn(channelOwners, 'createChannelServices');
+    const createChannels = channelOwners.createCommunicationChannelServices;
+    const observeStartup = vi.spyOn(channelOwners, 'createCommunicationChannelServices');
     observeStartup.mockImplementationOnce((options) => {
       const services = createChannels(options);
+      if (services.state !== 'ready') return services;
+      const { value } = services;
       return {
-        ...services,
-        recoverAttention: () => (recovery = resumeRecovery.promise.then(services.recoverAttention)),
+        state: 'ready',
+        value: {
+          ...value,
+          recoverAttention: () => (recovery = resumeRecovery.promise.then(value.recoverAttention)),
+        },
       };
     });
     try {

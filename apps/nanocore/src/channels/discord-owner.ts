@@ -588,9 +588,8 @@ function createCommunicationDiscordChannel(options: CommunicationDiscordChannelO
     try {
       const staged = requireChannelStorage(await storage.stageEnvelope(envelope, command.user.id));
       admission = await reserveDiscordInteraction(kernel, envelope, staged);
-    } catch (error) {
-      if (error instanceof OperationError && error.code === 'channel_storage_unavailable')
-        throw error;
+    } catch {
+      // Both owners were ready before posting. A failed stage may have committed.
       return reply(unknownReply);
     }
     if (admission.state === 'conflict')
@@ -714,9 +713,16 @@ function createCommunicationDiscordChannel(options: CommunicationDiscordChannelO
           expiresAt: now() + discordFreshnessMs,
         })
       );
-      admitDisclosedSource(actor, target, selected.revision, view);
-      await settleHandled(envelope);
-      admitDisclosedSource(actor, target, selected.revision, view);
+      try {
+        admitDisclosedSource(actor, target, selected.revision, view);
+        await settleHandled(envelope);
+        admitDisclosedSource(actor, target, selected.revision, view);
+      } catch (error) {
+        const code = definiteRefusalCode(error);
+        // A stored disclosure digest alone sends no content to Discord.
+        if (code) return reply(await refuse(envelope, null, code));
+        throw error;
+      }
       return reply(text);
     } catch (error) {
       const code = definiteRefusalCode(error);

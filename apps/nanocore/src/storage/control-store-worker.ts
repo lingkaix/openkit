@@ -61,11 +61,6 @@ import {
   applyNanoHostTransportMutation,
 } from '../auth/nanohost-transport-native.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
-import { applyControlDiscordChannel } from '../channels/discord.js';
-import {
-  type ControlDiscordChannelResult,
-  ControlDiscordChannelResultSchema,
-} from '../channels/discord-codecs.js';
 import { assertWritable, mapAppSqliteError } from '../generative-kernel/app-model.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import {
@@ -93,18 +88,6 @@ import {
   prepareNativeSchemaApplication,
 } from '../knowledge/schema-application.js';
 import { ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
-import {
-  enqueueAttentionInDb,
-  reconcileIncompleteAttentionAttemptsInDb,
-} from '../notifications/attention.js';
-import {
-  type AttentionEnqueueCommand,
-  AttentionEnqueueCommandSchema,
-  type AttentionEnqueueResult,
-  AttentionEnqueueResultSchema,
-  type AttentionReconciliationResult,
-  AttentionReconciliationResultSchema,
-} from '../notifications/attention-codecs.js';
 import { AttentionError } from '../notifications/attention-error.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
@@ -162,15 +145,31 @@ import {
   lightAppDbPath,
   openAppDbReadOnly,
 } from './app-db.js';
-import { applyControlAttentionAttemptClaim } from './attention-attempt-claim-native.js';
-import { applyControlAttentionAttemptCompletion } from './attention-attempt-completion-native.js';
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
+import {
+  inspectChannelInboundReceipt,
+  inspectPairingAuditReceipt,
+} from './command-request-records.js';
+import { inspectPendingDecision } from './communication-inbound.js';
+import { readChannelInboundProof } from './communication-inbound-native.js';
+import { readPendingPairingAuditInDb } from './communication-pairing-native.js';
+import {
+  applyCommunicationWriterCommand,
+  type CommunicationWriterCommand,
+  CommunicationWriterCommandSchema,
+} from './communication-writer.js';
 import {
   ControlStoreBusyError,
   ControlStoreNoSpaceError,
   controlStoreFor,
 } from './control-store.js';
-import { applyControlAdmission } from './control-store-admission.js';
+import {
+  applyControlAdmission,
+  bindChannelInboundOriginInDb,
+  relayPairingAuditInDb,
+  reserveChannelInboundInDb,
+  settleChannelInboundInDb,
+} from './control-store-admission.js';
 import type { CoreSchedulerResult } from './control-store-admission-codecs.js';
 import {
   type ControlAdmissionResult,
@@ -214,7 +213,6 @@ import {
   applyControlProducts,
   applyControlPublication,
   applyControlTerminal,
-  assertControlProductWriter,
   ControlItemAppendError,
   type ControlPublicationInput,
   type ControlTerminalTransition,
@@ -243,6 +241,7 @@ import {
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
+  type CommunicationKernelReply,
   ControlPhysicalForecastDecisionSchema,
   type ControlPhysicalForecastFiles,
   ControlPhysicalForecastSchema,
@@ -277,6 +276,7 @@ import {
   bindWorkspaceSqlite,
   type CoreDb,
   inspectServerOwnerFile,
+  openAdmittedWorkspaceReadDb,
   openSupportedScopeReadOnlySqlite,
   serverStoragePath,
   type WorkspaceDb,
@@ -288,7 +288,7 @@ import {
   applyControlExecutionAttempt,
   controlExecutionAttemptLanes,
 } from './execution-attempt-native.js';
-import { coreDbPath, workspaceDbPath } from './fs-layout.js';
+import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import { HarnessLifecycleRefusal } from './harness-lifecycle-codecs.js';
 import { applyControlHarnessLifecycle } from './harness-lifecycle-native.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
@@ -446,11 +446,6 @@ type WriteCommand = Extract<
       | 'runtime-target'
       | 'backend-session'
       | 'remote-mcp-audit'
-      | 'attention-reconcile-incomplete-attempts'
-      | 'attention-enqueue'
-      | 'discord-channel'
-      | 'attention-attempt-claim'
-      | 'attention-attempt-completion'
       | 'local-identity'
       | 'bootstrap-consume'
       | 'bootstrap-ensure'
@@ -470,6 +465,8 @@ type WriteCommand = Extract<
       | 'better-auth'
       | 'vault'
       | 'runtime-policy-publication'
+      | 'communication-owner'
+      | 'communication-kernel'
       | 'nanohost-owner'
       | 'nanohost-transport'
       | 'worker-control-evidence'
@@ -514,7 +511,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedSchemaApplication?: PreparedNativeSchemaApplication;
   readonly appInput?: ControlAppInput;
   readonly preparedSchedulerAdmission?: CoreSchedulerInput;
-  readonly preparedAttentionEnqueue?: AttentionEnqueueCommand;
+  readonly preparedCommunication?: CommunicationWriterCommand;
   readonly preparedCommandReceipt?: ControlCommandReceiptAdmission;
   readonly preparedStandaloneAudit?: ControlStandaloneAuditInput;
   readonly preparedThreadReadItemIds?: readonly string[];
@@ -570,6 +567,12 @@ interface OwnedDatabase {
   readonly productOwner: ControlProductOwner | undefined;
   readonly physicalScope: ControlAppScope | undefined;
   readonly serverOwner: ServerOwnerDescriptor['owner'] | undefined;
+  readonly communication:
+    | {
+        readonly dataRoot: string;
+        readonly expiryPolicy: BigInt64Array | undefined;
+      }
+    | undefined;
   readonly contentMount: ControlProductContentMount | undefined;
   readonly pending: WriteRequest[];
   readonly publications: ControlContentPreparation['publications'];
@@ -1077,6 +1080,25 @@ function domainRefusal(
     error instanceof RuntimeTargetRefusal
   )
     return { operation, code: 'runtime_target_refused', message: error.message, status: 409 };
+  if (operation === 'communication-owner') {
+    if (error instanceof AttentionError)
+      return { operation, kind: 'attention', code: error.code, message: error.code, status: 409 };
+    if (
+      error instanceof OperationError &&
+      (error.status === 400 ||
+        error.status === 403 ||
+        error.status === 404 ||
+        error.status === 409 ||
+        error.status === 503)
+    )
+      return {
+        operation,
+        kind: 'operation',
+        code: error.code,
+        message: error.message,
+        status: error.status,
+      };
+  }
   if (operation === 'execution-attempt' && error instanceof ExecutionAttemptRefusal)
     return { operation, code: 'attempt_refused', message: error.message, status: 409 };
   if (operation === 'harness-lifecycle' && error instanceof HarnessLifecycleRefusal)
@@ -1409,6 +1431,100 @@ function apply(
     }
     return { mode: 'get', row: row ?? null };
   });
+}
+
+/** Resolves the original admitted Communication file while the Core transaction owns the receipt. */
+function applyCommunicationKernel(
+  owner: OwnedDatabase,
+  request: Extract<WriteRequest, { operation: 'communication-kernel' }>
+): CommunicationKernelReply {
+  const db = owner.scopeDb;
+  if (db?.scope !== 'core' || owner.openingRequestId !== request.openingRequestId)
+    throw new ControlProductPreconditionError();
+
+  const { input } = request;
+  const key =
+    'envelope' in input
+      ? input.envelope
+      : 'origin' in input
+        ? input.origin.envelope
+        : 'key' in input
+          ? input.key
+          : input.intent;
+  if (key.deploymentId !== readDataRootLayoutMarker(db.dataRoot).deploymentId)
+    throw new ControlProductPreconditionError();
+
+  const path = serverStoragePath(db.dataRoot, 'communication');
+  const isCurrent = () => {
+    const file = lstatSync(path, { throwIfNoEntry: false });
+    return (
+      file?.isFile() &&
+      file.nlink === 1 &&
+      `${file.dev}:${file.ino}` === request.communicationIdentity &&
+      realpathSync(path) === path
+    );
+  };
+  if (!isCurrent()) throw new ServerOwnerAdmissionError('recovery-required');
+
+  const communication = new Database(path, { readonly: true, fileMustExist: true, timeout: 5 });
+  try {
+    communication.pragma('query_only = ON');
+    if (!isCurrent()) throw new ServerOwnerAdmissionError('recovery-required');
+    switch (input.kind) {
+      case 'inspect':
+        return { kind: input.kind, value: inspectChannelInboundReceipt(db, input.key, true) };
+      case 'inspect-audit':
+        return { kind: input.kind, value: inspectPairingAuditReceipt(db, input.intent, true) };
+      case 'reserve': {
+        const existing = inspectChannelInboundReceipt(db, input.envelope, true);
+        if (
+          existing.state === 'absent' &&
+          !readChannelInboundProof(communication, input.envelope, null)
+        )
+          return { kind: input.kind, value: { state: 'unknown' } };
+        return { kind: input.kind, value: reserveChannelInboundInDb(db, input.envelope, true) };
+      }
+      case 'bind': {
+        const proof = readChannelInboundProof(communication, input.origin.envelope, input.origin);
+        if (!proof?.inputHash || proof.refusalCode)
+          return { kind: input.kind, value: { state: 'unknown' } };
+        return { kind: input.kind, value: bindChannelInboundOriginInDb(db, input.origin, true) };
+      }
+      case 'settle':
+        return {
+          kind: input.kind,
+          value: settleChannelInboundInDb(db, input.envelope, input.outcome, true, (origin) => {
+            const proof = readChannelInboundProof(communication, origin.envelope, origin);
+            if (!proof?.inputHash || proof.refusalCode) return null;
+            const workspace = openAdmittedWorkspaceReadDb(db.dataRoot, origin.workspaceId);
+            try {
+              return inspectPendingDecision(
+                workspace,
+                origin,
+                new Date().toISOString(),
+                proof.inputHash
+              );
+            } finally {
+              workspace.sqlite.close();
+            }
+          }),
+        };
+      case 'relay-audit': {
+        const original = readPendingPairingAuditInDb(communication);
+        if (
+          !isDeepStrictEqual(original?.relay, input.intent) ||
+          !isDeepStrictEqual(original?.audit, input.event)
+        )
+          return { kind: input.kind, value: { state: 'unknown' } };
+        return {
+          kind: input.kind,
+          value: relayPairingAuditInDb(db, input.intent, input.event, true),
+        };
+      }
+    }
+  } finally {
+    communication.close();
+  }
 }
 
 /** Applies one local tuple inside the existing owner transaction and savepoint. */
@@ -2788,97 +2904,6 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-image',
               result,
             };
-          } else if (request.operation === 'discord-channel') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            let result: ControlDiscordChannelResult;
-            try {
-              result = applyControlDiscordChannel(owner.scopeDb, request.input);
-            } catch (error) {
-              if (!(error instanceof OperationError)) throw error;
-              result = ControlDiscordChannelResultSchema.parse({
-                stage: 'refused',
-                code: error.code,
-                message: error.message,
-                status: error.status,
-              });
-            }
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'discord-channel',
-              result,
-            };
-          } else if (request.operation === 'attention-enqueue') {
-            if (owner.scopeDb?.scope !== 'core' || !request.preparedAttentionEnqueue)
-              throw new ControlProductPreconditionError();
-            assertControlProductWriter(owner.sqlite);
-            const input = request.preparedAttentionEnqueue;
-            let result: AttentionEnqueueResult;
-            try {
-              const delivery = enqueueAttentionInDb(owner.sqlite, input, () => {
-                if (input.createdAt === null) throw new AttentionError('invalid_attention_input');
-                return input.createdAt;
-              });
-              result = { status: 'enqueued', delivery };
-            } catch (error) {
-              // The original nested transaction has rolled back before safe refusal.
-              if (!(error instanceof AttentionError)) throw error;
-              result = AttentionEnqueueResultSchema.parse({ status: 'refused', code: error.code });
-            }
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'attention-enqueue',
-              result,
-            };
-          } else if (request.operation === 'attention-reconcile-incomplete-attempts') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            assertControlProductWriter(owner.sqlite);
-            let result: AttentionReconciliationResult;
-            try {
-              const changes = reconcileIncompleteAttentionAttemptsInDb(owner.sqlite, () => {
-                if (request.input.finishedAt === null)
-                  throw new AttentionError('invalid_attention_input');
-                return request.input.finishedAt;
-              });
-              result = { status: 'reconciled', changes };
-            } catch (error) {
-              // The original nested transaction has rolled back before returning a safe refusal.
-              if (!(error instanceof AttentionError)) throw error;
-              result = AttentionReconciliationResultSchema.parse({
-                status: 'refused',
-                code: error.code,
-              });
-            }
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'attention-reconcile-incomplete-attempts',
-              result,
-            };
-          } else if (request.operation === 'attention-attempt-claim') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlAttentionAttemptClaim(owner.scopeDb, request.input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'attention-attempt-claim',
-              result,
-            };
-          } else if (request.operation === 'attention-attempt-completion') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlAttentionAttemptCompletion(owner.scopeDb, request.input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'attention-attempt-completion',
-              result,
-            };
           } else if (request.operation === 'local-identity') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlLocalIdentity(owner.scopeDb, request.input);
@@ -3429,6 +3454,45 @@ function flush(owner: OwnedDatabase): void {
               status: 'ok',
               operation: 'nanohost-owner',
               result: applyNanoHostOwnerMutation(owner, request.openingRequestId, request.mutation),
+            };
+          } else if (request.operation === 'communication-kernel') {
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'communication-kernel',
+              result: applyCommunicationKernel(owner, request),
+            };
+          } else if (request.operation === 'communication-owner') {
+            const file = lstatSync(owner.path, { throwIfNoEntry: false });
+            if (
+              owner.openingRequestId !== request.openingRequestId ||
+              !file?.isFile() ||
+              file.nlink !== 1 ||
+              `${file.dev}:${file.ino}` !== owner.identity ||
+              realpathSync(owner.path) !== owner.path
+            )
+              throw new ServerOwnerAdmissionError('recovery-required');
+            const communication = owner.communication;
+            if (!communication || !request.preparedCommunication)
+              throw new ServerOwnerAdmissionError('recovery-required');
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'communication-owner',
+              result: applyCommunicationWriterCommand(
+                owner.sqlite,
+                readDataRootLayoutMarker(communication.dataRoot).deploymentId,
+                request.preparedCommunication,
+                Date.now,
+                () => {
+                  const value = communication.expiryPolicy
+                    ? Atomics.load(communication.expiryPolicy, 0)
+                    : 0n;
+                  return value === 0n ? undefined : Number(value);
+                }
+              ),
             };
           } else if (request.operation === 'nanohost-transport') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
@@ -4426,6 +4490,15 @@ async function openDatabase(request: OpenRequest): Promise<void> {
         productOwner: request.productOwner,
         physicalScope: request.physicalScope,
         serverOwner: split?.owner,
+        communication:
+          split?.owner === 'communication'
+            ? {
+                dataRoot: dataRoot!,
+                expiryPolicy: request.communicationExpiryPolicy
+                  ? new BigInt64Array(request.communicationExpiryPolicy)
+                  : undefined,
+              }
+            : undefined,
         contentMount,
         pending: [],
         publications: new Map(),
@@ -4684,12 +4757,14 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       return;
     }
     if (
-      value.operation === 'nanohost-owner'
-        ? owner.serverOwner !== 'nanohost'
-        : owner.serverOwner &&
-          value.operation !== 'close' &&
-          value.operation !== 'checkpoint' &&
-          value.operation !== 'reclaim'
+      value.operation === 'communication-owner'
+        ? owner.serverOwner !== 'communication'
+        : value.operation === 'nanohost-owner'
+          ? owner.serverOwner !== 'nanohost'
+          : owner.serverOwner &&
+            value.operation !== 'close' &&
+            value.operation !== 'checkpoint' &&
+            value.operation !== 'reclaim'
     ) {
       reply(failure(value.id, 'precondition'));
       return;
@@ -4727,6 +4802,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'better-auth' ||
       value.operation === 'runtime-policy-publication' ||
       value.operation === 'vault' ||
+      value.operation === 'communication-owner' ||
+      value.operation === 'communication-kernel' ||
       value.operation === 'nanohost-owner' ||
       value.operation === 'nanohost-transport' ||
       value.operation === 'worker-control-evidence' ||
@@ -4761,11 +4838,6 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'runtime-target' ||
       value.operation === 'backend-session' ||
       value.operation === 'remote-mcp-audit' ||
-      value.operation === 'attention-reconcile-incomplete-attempts' ||
-      value.operation === 'attention-enqueue' ||
-      value.operation === 'discord-channel' ||
-      value.operation === 'attention-attempt-claim' ||
-      value.operation === 'attention-attempt-completion' ||
       value.operation === 'local-identity' ||
       value.operation === 'bootstrap-consume' ||
       value.operation === 'bootstrap-ensure' ||
@@ -4845,7 +4917,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedApp: PreparedControlApp | undefined;
           let appInput: ControlAppInput | undefined;
           let preparedSchedulerAdmission: CoreSchedulerInput | undefined;
-          let preparedAttentionEnqueue: AttentionEnqueueCommand | undefined;
+          let preparedCommunication: CommunicationWriterCommand | undefined;
           let preparedCommandReceipt: ControlCommandReceiptAdmission | undefined;
           let preparedStandaloneAudit: ControlStandaloneAuditInput | undefined;
           let preparedThreadReadItemIds: readonly string[] | undefined;
@@ -4872,10 +4944,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedObservation: ControlWorkObservationInput | undefined;
           let preparedResolvedSetup: PreparedResolvedAgentSetup | undefined;
           try {
-            if (value.operation === 'attention-enqueue') {
-              preparedAttentionEnqueue = AttentionEnqueueCommandSchema.parse(
+            if (value.operation === 'communication-owner') {
+              preparedCommunication = CommunicationWriterCommandSchema.parse(
                 JSON.parse(readControlScalarText(value.input, value.content))
               );
+              if (preparedCommunication.stage !== value.stage) throw new PreconditionError();
             }
             if (value.operation === 'workspace-queue-input') {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
@@ -5313,7 +5386,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedApp,
               appInput,
               preparedSchedulerAdmission,
-              preparedAttentionEnqueue,
+              preparedCommunication,
               preparedCommandReceipt,
               preparedStandaloneAudit,
               preparedThreadReadItemIds,

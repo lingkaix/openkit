@@ -2,7 +2,7 @@ import type { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { AuthVariables } from './auth/middleware.js';
 import type { ChannelServices } from './channel-services.js';
-import { discordPrivateReply, verifyDiscordInteraction } from './channels/discord.js';
+import { discordPrivateReply, verifyDiscordInteraction } from './channels/discord-interaction.js';
 import type { OpenKitConfig } from './config/openkit-config.js';
 import { OperationError } from './operation-error.js';
 

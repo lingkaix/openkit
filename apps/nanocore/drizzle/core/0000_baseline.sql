@@ -177,33 +177,6 @@ CREATE TABLE `control_work_observations` (
   UNIQUE (`turn_id`, `id`)
 );
 --> statement-breakpoint
-CREATE TABLE discord_account_bindings (
-  discord_user_id TEXT PRIMARY KEY NOT NULL,
-  user_id TEXT NOT NULL,
-  revision TEXT NOT NULL,
-  paired_at INTEGER NOT NULL,
-  revoked_at INTEGER
-);
---> statement-breakpoint
-CREATE TABLE discord_disclosures (
-  token_digest TEXT PRIMARY KEY NOT NULL,
-  discord_user_id TEXT NOT NULL,
-  binding_revision TEXT NOT NULL,
-  workspace_id TEXT NOT NULL,
-  thread_id TEXT NOT NULL,
-  pending_request_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('approval','user-input')),
-  content_digest TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE discord_pairing_challenges (
-  digest TEXT PRIMARY KEY NOT NULL,
-  user_id TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  consumed_at INTEGER
-);
---> statement-breakpoint
 CREATE TABLE `evidence_bundles` (
   `evidence_bundle_id` text PRIMARY KEY NOT NULL,
   `workspace_id` text CHECK (`workspace_id` IS NULL),
@@ -269,7 +242,8 @@ CREATE TABLE `idempotency_requests` (
   `expires_at` text,
   `schema_version` integer DEFAULT 1 NOT NULL,
   CHECK ((command_name IN ('scheduler.external-trigger.admit', 'channel.discord.inbound') AND expires_at IS NULL)
-    OR (command_name NOT IN ('scheduler.external-trigger.admit', 'channel.discord.inbound') AND expires_at IS NOT NULL))
+    OR (command_name IN ('channel.inbound', 'relay-pairing-audit') AND response_kind = 'storage-receipt' AND expires_at IS NULL)
+    OR (command_name NOT IN ('scheduler.external-trigger.admit', 'channel.discord.inbound', 'channel.inbound', 'relay-pairing-audit') AND expires_at IS NOT NULL))
 );
 --> statement-breakpoint
 CREATE TABLE `nanohost_integration_identities` (
@@ -309,34 +283,6 @@ CREATE TABLE `nanohost_transport_tokens` (
 	`last_used_at` text,
 	`last_used_channel` text,
 	`last_used_source` text
-);
---> statement-breakpoint
-CREATE TABLE notification_attention (
-  id TEXT PRIMARY KEY NOT NULL,
-  workspace_id TEXT NOT NULL,
-  thread_id TEXT NOT NULL,
-  source_kind TEXT NOT NULL CHECK (source_kind IN ('approval-request', 'user-input-request', 'security-notice')),
-  request_id TEXT NOT NULL,
-  recipient_user_id TEXT NOT NULL,
-  channel TEXT,
-  created_at TEXT NOT NULL,
-  UNIQUE (workspace_id, thread_id, source_kind, request_id, recipient_user_id)
-);
---> statement-breakpoint
-CREATE UNIQUE INDEX notification_security_notice ON notification_attention(request_id) WHERE source_kind = 'security-notice';
---> statement-breakpoint
-CREATE TABLE notification_delivery_attempts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  attention_id TEXT NOT NULL REFERENCES notification_attention(id) ON DELETE CASCADE,
-  channel TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('sending', 'sent', 'failed-no-send', 'delivery-unknown')),
-  failure_code TEXT CHECK (failure_code IN ('authority-unavailable', 'transport-refused', 'transport-unknown', 'restart')),
-  started_at TEXT NOT NULL,
-  finished_at TEXT,
-  CHECK ((status = 'sending' AND finished_at IS NULL AND failure_code IS NULL)
-    OR (status = 'sent' AND finished_at IS NOT NULL AND failure_code IS NULL)
-    OR (status = 'failed-no-send' AND finished_at IS NOT NULL AND failure_code IN ('authority-unavailable', 'transport-refused'))
-    OR (status = 'delivery-unknown' AND finished_at IS NOT NULL AND failure_code IN ('transport-unknown', 'restart')))
 );
 --> statement-breakpoint
 CREATE TABLE `openkit_access_tokens` (
@@ -950,8 +896,6 @@ CREATE INDEX `control_turns_thread_idx` ON `control_turns` (`thread_id`, `id`);
 --> statement-breakpoint
 CREATE INDEX `control_turns_thread_read_order_idx` ON `control_turns` (`thread_id`,`thread_read_order`);
 --> statement-breakpoint
-CREATE UNIQUE INDEX discord_account_bindings_active_user ON discord_account_bindings(user_id) WHERE revoked_at IS NULL;
---> statement-breakpoint
 CREATE INDEX `evidence_bundles_status_idx` ON `evidence_bundles` (`import_status`,`retention_class`);
 --> statement-breakpoint
 CREATE INDEX `evidence_bundles_thread_idx` ON `evidence_bundles` (`thread_id`,`turn_id`);
@@ -965,12 +909,6 @@ CREATE UNIQUE INDEX `nanohost_integration_identities_deployment_idx` ON `nanohos
 CREATE UNIQUE INDEX `nanohost_transport_tokens_hash_idx` ON `nanohost_transport_tokens` (`token_hash`);
 --> statement-breakpoint
 CREATE INDEX `nanohost_transport_tokens_owner_idx` ON `nanohost_transport_tokens` (`owner_nanohost_identity_id`,`deployment_id`,`status`);
---> statement-breakpoint
-CREATE INDEX notification_attempt_attention ON notification_delivery_attempts (attention_id, id DESC);
---> statement-breakpoint
-CREATE INDEX notification_attention_recipient ON notification_attention (recipient_user_id, created_at DESC, id DESC);
---> statement-breakpoint
-CREATE UNIQUE INDEX notification_one_active_attempt ON notification_delivery_attempts (attention_id) WHERE status = 'sending';
 --> statement-breakpoint
 CREATE UNIQUE INDEX `openkit_access_tokens_hash_idx` ON `openkit_access_tokens` (`token_hash`);
 --> statement-breakpoint

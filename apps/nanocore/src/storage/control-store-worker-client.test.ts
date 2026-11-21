@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import {
   existsSync,
   linkSync,
@@ -17,13 +17,20 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
 import type { JsonOperationId, LightAppSchemaInput } from '@openkit/app-api-schemas';
-import { allocateEntityId, type Item, writeRetainedV1 } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  type Item,
+  KernelAuditEventSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
+import { prepareCommunicationOwner } from '../app.js';
+import { auditEventFromRow, listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
 import type { ControlNanoHostTransportInput } from '../auth/nanohost-transport-codecs.js';
 import { listNanoHostTransportTokenRecords } from '../auth/nanohost-transport-token-store.js';
+import { openCommunicationDiscordChannel } from '../channels/discord-owner.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import {
@@ -55,6 +62,8 @@ import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import { commandRequestKey, getCommandRequestRecord } from './command-request-records.js';
+import { requireChannelStorage } from './communication-inbound.js';
+import { communicationOwner } from './communication-owner.js';
 import { admitCoreScheduler } from './control-store-admission.js';
 import { WorkspaceQueueInputRefSchema } from './control-store-admission-codecs.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
@@ -371,6 +380,365 @@ afterEach(async () => {
   interception.workers.length = 0;
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+/** Real split owner writer and its admitted Core receipt handle. */
+async function communicationWorkerFixture(holdCoreCommit = false) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'control-communication-')));
+  roots.push(root);
+  ensureLayout(root);
+  initializeTestCore(root);
+  const coreDb = openCoreDb(root);
+  nativeHandles.push(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  const writer = getControlStoreWorkerClient();
+  client = writer;
+  const corePath = coreDbPath(root);
+  const coreOpen = {
+    database: `core:${corePath}`,
+    path: corePath,
+    create: false,
+    initialize: 'core' as const,
+    productOwner: { kind: 'server' as const },
+    dataRoot: root,
+  };
+  const gate = holdCoreCommit ? new Int32Array(new SharedArrayBuffer(4 * 4)) : undefined;
+  if (gate) {
+    // Arm only after boot and challenge publication; worker zero owns Core.
+    interception.gate = gate.buffer as SharedArrayBuffer;
+    interception.point = 'after';
+    Atomics.store(gate, 0, 1);
+  }
+  await writer.open(coreOpen);
+
+  const kernel = writer.communicationKernel(coreDb);
+  const input = { coreDb, mode: 'local' as const };
+  await expect(prepareCommunicationOwner(input)).resolves.toEqual({
+    state: 'unavailable',
+    owner: 'control-kernel',
+    reason: 'missing',
+  });
+  expect(existsSync(serverStoragePath(root, 'communication'))).toBe(false);
+  await expect(writer.provisionServerOwner(root, communicationOwner)).resolves.toEqual({
+    state: 'ready',
+    owner: 'communication',
+  });
+  const bound = await prepareCommunicationOwner({ ...input, kernel });
+  if (bound.state !== 'ready') throw new Error(`Communication binding failed: ${bound.reason}`);
+  return {
+    root,
+    writer,
+    binding: bound.value,
+    coreDb,
+    kernel,
+    userId,
+    coreOpen,
+    gate,
+    reopen: () => prepareCommunicationOwner({ ...input, kernel }),
+  };
+}
+
+async function signedCommunicationFixture(holdCoreCommit = false) {
+  const fixture = await communicationWorkerFixture(holdCoreCommit);
+  const { binding, userId } = fixture;
+  const actor = { kind: 'local' as const, userId };
+  const applicationId = '123456789012345678';
+  const externalAccountId = '223456789012345678';
+  const keys = generateKeyPairSync('ed25519');
+  const publicKey = keys.publicKey
+    .export({ type: 'spki', format: 'der' })
+    .subarray(-32)
+    .toString('hex');
+  const compose = (owner: typeof binding, kernel: typeof fixture.kernel) =>
+    requireChannelStorage(
+      openCommunicationDiscordChannel({
+        storage: owner.owners.communication.storage,
+        deploymentId: owner.owners.deploymentId,
+        kernel,
+        applicationId,
+        publicKey,
+        appBaseUrl: 'https://openkit.invalid',
+        requestLink: () => null,
+        resolveActor: (candidate) => (candidate === userId ? actor : null),
+        inspectPending: () => {
+          throw new Error('Pairing must not inspect a Pending Request.');
+        },
+        inspectPendingDecision: () => null,
+        invoke: async () => {
+          throw new Error('Pairing must not post a Pending Request.');
+        },
+      })
+    );
+  const channel = compose(binding, fixture.kernel);
+  const run = async <Value>(effect: () => Promise<Value>) =>
+    requireChannelStorage(await binding.withProducer(effect));
+  const { challenge } = await run(() => channel.beginPairing(actor));
+  const body = Buffer.from(
+    JSON.stringify({
+      id: '123456789012345679',
+      application_id: applicationId,
+      type: 2,
+      version: 1,
+      context: 1,
+      channel: { id: '323456789012345678', type: 1 },
+      user: { id: externalAccountId },
+      data: {
+        id: '423456789012345678',
+        type: 1,
+        name: 'openkit',
+        options: [
+          { name: 'pair', type: 1, options: [{ name: 'challenge', type: 3, value: challenge }] },
+        ],
+      },
+    })
+  );
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = sign(
+    null,
+    Buffer.concat([Buffer.from(timestamp), body]),
+    keys.privateKey
+  ).toString('hex');
+  const signedPair = { body, timestamp, signature };
+  const pair = () => run(() => channel.handleSignedInteraction(signedPair));
+  return { ...fixture, actor, channel, compose, externalAccountId, pair, run, signedPair };
+}
+
+it('pairs and unbinds a signed DM through both native owners and relays each original Audit once', async () => {
+  const { actor, binding, channel, coreDb, externalAccountId, pair, run, userId } =
+    await signedCommunicationFixture();
+
+  await expect(pair()).resolves.toMatchObject({
+    data: { content: expect.stringContaining('paired') },
+  });
+  expect(
+    requireChannelStorage(binding.owners.communication.storage.readBinding(userId))
+  ).toMatchObject({
+    externalAccountId,
+  });
+  await expect(pair()).resolves.toMatchObject({
+    data: { content: expect.stringContaining('already handled') },
+  });
+  await run(() => channel.revoke(actor));
+  expect(
+    requireChannelStorage(binding.owners.communication.storage.readBinding(userId))
+  ).toBeNull();
+  const originalEvents = requireChannelStorage(
+    binding.owners.attention.read((sqlite) =>
+      sqlite
+        .prepare(
+          "SELECT event_json FROM communication_intents WHERE kind = 'relay-pairing-audit' ORDER BY sequence"
+        )
+        .pluck()
+        .all()
+        .map((json) => KernelAuditEventSchema.parse(JSON.parse(json as string)))
+    )
+  );
+  expect(originalEvents).toHaveLength(2);
+  await vi.waitFor(() => {
+    const entries = coreDb.sqlite
+      .prepare(
+        "SELECT action FROM audit_events WHERE action IN ('channel.pairing.bind', 'channel.pairing.unbind') ORDER BY action"
+      )
+      .pluck()
+      .all();
+    expect(entries).toEqual(['channel.pairing.bind', 'channel.pairing.unbind']);
+    const readEvent = coreDb.sqlite.prepare('SELECT * FROM audit_events WHERE audit_event_id = ?');
+    for (const original of originalEvents) {
+      expect(auditEventFromRow(readEvent.get(original.id))).toEqual(original);
+    }
+  });
+});
+
+it('keeps a signed DM read-only on replay after the Core FULL reservation ACK is lost', async () => {
+  const fixture = await signedCommunicationFixture(true);
+  const gate = fixture.gate!;
+  Atomics.store(gate, 0, 0);
+  const first = fixture.pair();
+  const reservations = () =>
+    fixture.coreDb.sqlite
+      .prepare("SELECT count(*) FROM idempotency_requests WHERE command_name = 'channel.inbound'")
+      .pluck()
+      .get();
+  try {
+    await waitForHold(gate);
+    expect(reservations()).toBe(1);
+    expect(
+      requireChannelStorage(
+        fixture.binding.owners.communication.storage.readBinding(fixture.userId)
+      )
+    ).toBeNull();
+    await interception.workers[0]!.terminate();
+  } finally {
+    release(gate);
+  }
+  await expect(first).resolves.toMatchObject({
+    data: { content: expect.stringContaining('Inspect') },
+  });
+
+  await shutdownControlStoreWorkerClient();
+  interception.gate = undefined;
+  const writer = getControlStoreWorkerClient();
+  client = writer;
+  await writer.open(fixture.coreOpen);
+  const kernel = writer.communicationKernel(fixture.coreDb);
+  const reopened = requireChannelStorage(
+    await prepareCommunicationOwner({
+      coreDb: fixture.coreDb,
+      mode: 'local',
+      kernel,
+    })
+  );
+  const channel = fixture.compose(reopened, kernel);
+  const posted = vi.spyOn(Worker.prototype, 'postMessage');
+  try {
+    const reply = requireChannelStorage(
+      await reopened.withProducer(() => channel.handleSignedInteraction(fixture.signedPair))
+    );
+    expect(reply).toMatchObject({ data: { content: expect.stringContaining('Inspect') } });
+    expect(
+      posted.mock.calls
+        .filter(([request]) => request.operation === 'communication-kernel')
+        .map(([request]) => request.input.kind)
+    ).toEqual(['inspect']);
+  } finally {
+    posted.mockRestore();
+  }
+  expect(reservations()).toBe(1);
+  expect(
+    requireChannelStorage(reopened.owners.communication.storage.readBinding(fixture.userId))
+  ).toBeNull();
+  expect(
+    fixture.coreDb.sqlite
+      .prepare("SELECT count(*) FROM audit_events WHERE action = 'channel.pairing.bind'")
+      .pluck()
+      .get()
+  ).toBe(0);
+});
+
+it('joins the Communication producer before the common cut and refuses a closed Workspace', async () => {
+  const { root, writer, binding, userId } = await communicationWorkerFixture();
+  const { attention } = binding.owners;
+  const workspaceId = allocateEntityId('ws');
+  const selection = {
+    source: {
+      kind: 'approval-request' as const,
+      workspaceId,
+      threadId: allocateEntityId('th'),
+      requestId: 'ap_communication_binding',
+    },
+    recipientUserId: userId,
+  };
+  const held = { state: 'unavailable', owner: 'communication', reason: 'recovery-required' };
+
+  writer.restoreWorkspaceMutationsClosed(root, workspaceId);
+  const probe = vi.fn(async () => undefined);
+  await expect(attention.withWorkspace(workspaceId, probe)).resolves.toEqual(held);
+  expect(probe).not.toHaveBeenCalled();
+  writer.reopenWorkspaceMutations(root, workspaceId);
+
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const original = attention.withWorkspace(workspaceId, async () => {
+    entered.resolve();
+    await release.promise;
+    return attention.enqueue(selection);
+  });
+  await entered.promise;
+  const acquired = vi.fn();
+  const cut = writer.pauseForDataRootBackup().then((resume) => {
+    acquired();
+    return resume;
+  });
+  try {
+    await expect(binding.withProducer(probe)).resolves.toEqual(held);
+    expect(acquired).not.toHaveBeenCalled();
+  } finally {
+    release.resolve();
+  }
+  await expect(original).resolves.toMatchObject({
+    state: 'ready',
+    value: { state: 'ready', value: { source: selection.source, status: 'queued' } },
+  });
+  const resume = await cut;
+  try {
+    expect(acquired).toHaveBeenCalledOnce();
+    await expect(binding.withProducer(probe)).resolves.toEqual(held);
+  } finally {
+    resume();
+  }
+  await expect(binding.withProducer(probe)).resolves.toMatchObject({ state: 'ready' });
+  expect(probe).toHaveBeenCalledOnce();
+  await writer.closeServerOwner(root, 'communication');
+  expect(attention.read(() => true)).toEqual(held);
+  expect(existsSync(serverStoragePath(root, 'communication'))).toBe(true);
+});
+
+it('replays a Communication Attention selector beyond the ordinary worker metadata limit', async () => {
+  const { root, writer, binding, userId, reopen } = await communicationWorkerFixture();
+  const requestId = `apr_${'"\\\n\u0000\uFEFF😀'.repeat(110_000)}`;
+  expect(Buffer.byteLength(requestId)).toBeGreaterThan(1_048_576);
+  const selection = {
+    source: {
+      kind: 'approval-request' as const,
+      workspaceId: allocateEntityId('ws'),
+      threadId: allocateEntityId('th'),
+      requestId,
+    },
+    recipientUserId: userId,
+  };
+  const enqueue = (owner: typeof binding) =>
+    owner.withProducer(() => owner.owners.attention.enqueue(selection));
+  const [original, concurrent] = await Promise.all([enqueue(binding), enqueue(binding)]);
+  if (original.state !== 'ready' || original.value.state !== 'ready')
+    throw new Error('Expected the exact large Attention enqueue to be ready.');
+  if (concurrent.state !== 'ready' || concurrent.value.state !== 'ready')
+    throw new Error('Expected the exact concurrent enqueue to be ready.');
+  expect(original.value.value.id).toBe(concurrent.value.value.id);
+  expect(sha256CanonicalJson(original.value.value.source)).toBe(
+    sha256CanonicalJson(selection.source)
+  );
+  await writer.closeServerOwner(root, 'communication');
+  const again = await reopen();
+  if (again.state !== 'ready') throw new Error('Expected Communication to reopen.');
+  const replay = await enqueue(again.value);
+  if (replay.state !== 'ready' || replay.value.state !== 'ready')
+    throw new Error('Expected the exact large selector to replay.');
+  expect(replay.value.value.id).toBe(original.value.value.id);
+  expect(sha256CanonicalJson(replay.value.value.source)).toBe(
+    sha256CanonicalJson(selection.source)
+  );
+});
+
+it('reads the live Communication expiry policy in the real writer after the retention drain', async () => {
+  const { binding, userId } = await communicationWorkerFixture();
+  const actor = { kind: 'local' as const, userId };
+  const { communication } = binding.owners;
+  const selection = { kind: 'expire' as const };
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const oldProducer = binding.withProducer(async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  await entered.promise;
+  binding.setExpiryAgeMs(1_000);
+  const retained = communication.runRetention(actor, randomUUID(), selection);
+  try {
+    binding.setExpiryAgeMs(undefined);
+  } finally {
+    release.resolve();
+  }
+  await oldProducer;
+  await expect(retained).resolves.toEqual({
+    state: 'unavailable',
+    owner: 'communication',
+    reason: 'disabled',
+  });
+  binding.setExpiryAgeMs(1_000);
+  await expect(communication.runRetention(actor, randomUUID(), selection)).resolves.toMatchObject({
+    state: 'ready',
+    value: { challenges: 0, auditEventId: expect.any(String) },
+  });
 });
 
 const nanoHostReaders = {

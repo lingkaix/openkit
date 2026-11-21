@@ -8,9 +8,12 @@ import {
 import {
   AccessTokenIdSchema,
   ActorRefSchema,
+  ApprovalRequestIdSchema,
   ArtifactIdSchema,
+  AuditEventIdSchema,
   AuditEventSchema,
   AuthenticationSessionIdSchema,
+  canonicalIdentifierName,
   KnowledgeOwnerScopeSchema,
   ReasoningEffortSchema,
   RequestIdSchema,
@@ -18,6 +21,7 @@ import {
   ThreadIdSchema,
   TurnIdSchema,
   UserIdSchema,
+  UserInputRequestIdSchema,
   WorkerStorageTargetIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
@@ -41,6 +45,74 @@ import {
   StoredRecurringOccurrenceV1Schema,
 } from './recurring-retained-v1.js';
 import type { SchedulerAdmissionDenialReason } from './schema/index.js';
+
+const contentDigest = z.string().regex(/^[a-f0-9]{64}$/);
+const channelEventCoordinate = z.string().min(1).max(256);
+const channelEventTuple = z.tuple([
+  channelEventCoordinate,
+  channelEventCoordinate,
+  channelEventCoordinate,
+]);
+
+/** Permanent event identity has no actor or selected target. */
+export const ChannelInboundKeySchema = z.strictObject({
+  deploymentId: z.string().min(1).max(128),
+  sourceOwner: z.literal('communication'),
+  verb: z.literal('channel.inbound'),
+  occurrenceKey: z
+    .string()
+    .max(2048)
+    .refine((key) => {
+      try {
+        return canonicalIdentifierName(channelEventTuple.parse(JSON.parse(key))) === key;
+      } catch {
+        return false;
+      }
+    }),
+});
+
+export const ChannelInboundEnvelopeSchema = ChannelInboundKeySchema.extend({
+  requestId: z.uuid(),
+  inputDigest: contentDigest,
+});
+
+export const ChannelInboundOriginSchema = z.strictObject({
+  envelope: ChannelInboundEnvelopeSchema,
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
+  pendingRequestId: z.union([ApprovalRequestIdSchema, UserInputRequestIdSchema]),
+  userId: UserIdSchema,
+  bindingRevision: RequestIdSchema,
+  disclosureDigest: contentDigest,
+  operation: z.enum(['question.answer', 'approval.respond']),
+});
+
+export const ChannelInboundOutcomeSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('handled') }),
+  z.strictObject({ kind: z.literal('pending-decision'), decisionRef: contentDigest }),
+]);
+
+/** Native relay intent from the admitted communication owner. */
+export const PairingAuditIntentSchema = z.strictObject({
+  deploymentId: z.string().min(1),
+  sourceOwner: z.literal('communication'),
+  verb: z.literal('relay-pairing-audit'),
+  occurrenceKey: AuditEventIdSchema,
+  requestId: z.uuid(),
+  target: z.strictObject({ eventId: AuditEventIdSchema }),
+  expectedGeneration: RequestIdSchema,
+  inputDigest: contentDigest,
+});
+
+/** The original pairing producer's redacted event attributes, independent of current authority. */
+export const PairingAuditFactsSchema = z.strictObject({
+  channelKind: channelEventCoordinate,
+  userId: UserIdSchema,
+  bindingRevision: RequestIdSchema,
+  administratorAtEvent: z.boolean(),
+});
+
 /** Five noncredential Server MCP commands retain their original Core receipt partition. */
 export const SERVER_MCP_CORE_COMMAND_RECEIPTS = [
   'administration.server-mcp-create',

@@ -1,7 +1,14 @@
 import { isDeepStrictEqual } from 'node:util';
-import { readRetainedV1, responsibleUserIdForActor, writeRetainedV1 } from '@openkit/protocol';
+import {
+  type AuditEvent,
+  readRetainedV1,
+  responsibleUserIdForActor,
+  writeRetainedV1,
+} from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
+import { prepareAuditEventStatement } from '../audit-events.js';
 import {
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
@@ -37,24 +44,40 @@ import { applyAutomationDefinitionInDb } from './automation-definition-native.js
 import { parseStoredCommandScope } from './command-request-codecs.js';
 import {
   assertCommandRequestDbOwner,
+  channelRequestEnvelope,
   commandRequestExpiresAt,
   commandRequestKey,
   getCommandRequestRecordFromDb,
+  insertChannelInboundReservation,
+  inspectChannelInboundReceipt,
+  inspectPairingAuditReceipt,
   mapCommandRequestRow,
   normalizeCommandRequestResponse,
   recordControlCommandRequestRecordInDb,
+  replaceChannelInboundStage,
+  writeChannelInboundSettlement,
   writeCommandRequestRecordInDb,
+  writePairingAuditReceipt,
 } from './command-request-records.js';
+import type {
+  ChannelInboundEnvelope,
+  ChannelInboundOrigin,
+  ChannelInboundReceipt,
+  PairingAuditIntent,
+  PairingAuditReceipt,
+} from './communication-port.js';
 import {
   AutomationMutationError,
   AutomationRecordNotFoundError,
+  ChannelInboundEnvelopeSchema,
+  ChannelInboundOriginSchema,
+  ChannelInboundOutcomeSchema,
   type ControlAdmission,
   type ControlAdmissionInput,
   ControlAdmissionInputSchema,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
   type ControlCommandReceiptAdmission,
-  ControlCommandReceiptAdmissionSchema,
   type ControlKnowledgeAdmissionInput,
   ControlKnowledgeAdmissionInputSchema,
   type ControlKnowledgeAdmissionResult,
@@ -64,6 +87,8 @@ import {
   type CoreSchedulerResult,
   type GoalTaskCitation,
   isSeparateScopedNotebookReceipt,
+  PairingAuditFactsSchema,
+  PairingAuditIntentSchema,
   SCOPED_NOTEBOOK_SERVER_RECEIPTS,
   SCOPED_NOTEBOOK_USER_RECEIPTS,
 } from './control-store-admission-codecs.js';
@@ -93,8 +118,137 @@ import {
   findRecurringAutomationFromDb,
 } from './recurring-attempt-native.js';
 import { StoredItemV1Schema } from './retained-work-items-v1.js';
+import { type StorageDecision, storageRequestId } from './storage-owner.js';
 import { nativeProductScope } from './workspace-file-records.js';
 import { hasCommittedWorkspaceQueueInput } from './workspace-queue-inputs.js';
+
+/** Appends the original pairing event and receipt in the same native transaction. */
+export function relayPairingAuditInDb(
+  db: CoreDb,
+  intent: PairingAuditIntent,
+  event: AuditEvent,
+  completeHistory: boolean
+): StorageDecision<PairingAuditReceipt> {
+  assertControlProductWriter(db.sqlite);
+  const verifiedIntent = PairingAuditIntentSchema.safeParse(intent);
+  if (!verifiedIntent.success) return { state: 'conflict' };
+  let facts: z.infer<typeof PairingAuditFactsSchema>;
+  try {
+    facts = PairingAuditFactsSchema.parse(JSON.parse(event.summary));
+  } catch {
+    return { state: 'conflict' };
+  }
+  if (
+    (event.action !== 'channel.pairing.bind' && event.action !== 'channel.pairing.unbind') ||
+    event.workspaceId !== null ||
+    event.turnId !== null ||
+    event.outcome !== 'succeeded' ||
+    event.actor?.kind !== 'user' ||
+    event.actor.id !== facts.userId ||
+    !isDeepStrictEqual(event.subject, event.actor) ||
+    event.resource !== `channel:${facts.channelKind}:${facts.userId}` ||
+    facts.bindingRevision !== verifiedIntent.data.expectedGeneration ||
+    event.id !== intent.target.eventId ||
+    intent.inputDigest !== sha256CanonicalJson(event) ||
+    event.createdAt === undefined ||
+    event.occurredAt === undefined
+  )
+    return { state: 'conflict' };
+  const prior = inspectPairingAuditReceipt(db, intent, completeHistory);
+  if (prior.state !== 'absent') return prior;
+  const retained = db.sqlite
+    .prepare('SELECT 1 FROM audit_events WHERE audit_event_id = ?')
+    .get(event.id);
+  if (retained) return { state: 'unknown' };
+  const audit = prepareAuditEventStatement(event);
+  db.sqlite.prepare(audit.sql).run(...audit.parameters);
+  return { state: 'settled', receipt: writePairingAuditReceipt(db, intent, event.createdAt) };
+}
+
+/** The admitted communication owner stages the signed event before the first Core reservation. */
+export function reserveChannelInboundInDb(
+  db: CoreDb,
+  envelope: ChannelInboundEnvelope,
+  completeHistory: boolean
+): { state: 'reserved-now' | 'inspect-original' | 'conflict' | 'unknown' } {
+  assertControlProductWriter(db.sqlite);
+  const parsed = ChannelInboundEnvelopeSchema.safeParse(envelope);
+  if (!parsed.success || parsed.data.requestId !== storageRequestId(parsed.data))
+    return { state: 'conflict' };
+  const existing = inspectChannelInboundReceipt(db, envelope, completeHistory);
+  switch (existing.state) {
+    case 'unknown':
+      return { state: 'unknown' };
+    case 'absent':
+      insertChannelInboundReservation(db, parsed.data, new Date().toISOString());
+      return { state: 'reserved-now' };
+    default:
+      return {
+        state: isDeepStrictEqual(channelRequestEnvelope(existing), parsed.data)
+          ? 'inspect-original'
+          : 'conflict',
+      };
+  }
+}
+
+/** Freezes the exact current binding and target once. Only this commit permits a first effect. */
+export function bindChannelInboundOriginInDb(
+  db: CoreDb,
+  origin: ChannelInboundOrigin,
+  completeHistory: boolean
+): { state: 'bound-now' | 'inspect-original' | 'conflict' | 'unknown' } {
+  assertControlProductWriter(db.sqlite);
+  const parsed = ChannelInboundOriginSchema.safeParse(origin);
+  if (!parsed.success || parsed.data.envelope.requestId !== storageRequestId(parsed.data.envelope))
+    return { state: 'conflict' };
+  const existing = inspectChannelInboundReceipt(db, origin.envelope, completeHistory);
+  if (existing.state === 'unknown' || existing.state === 'absent') return { state: 'unknown' };
+  if (!isDeepStrictEqual(channelRequestEnvelope(existing), parsed.data.envelope))
+    return { state: 'conflict' };
+  if (existing.state !== 'reserved')
+    return {
+      state: isDeepStrictEqual(existing.origin, parsed.data) ? 'inspect-original' : 'conflict',
+    };
+  if (!completeHistory) return { state: 'unknown' };
+  replaceChannelInboundStage(db, existing, { state: 'origin-bound', origin: parsed.data });
+  return { state: 'bound-now' };
+}
+
+/** The writer verifies the actual Workspace receipt while holding its current admission claim. */
+export function settleChannelInboundInDb(
+  db: CoreDb,
+  envelope: ChannelInboundEnvelope,
+  outcome: Extract<ChannelInboundReceipt, { disposition: 'applied' }>['result'],
+  completeHistory: boolean,
+  readPendingDecision: (original: ChannelInboundOrigin) => string | null
+): StorageDecision<ChannelInboundReceipt> {
+  assertControlProductWriter(db.sqlite);
+  const request = ChannelInboundEnvelopeSchema.safeParse(envelope);
+  const result = ChannelInboundOutcomeSchema.safeParse(outcome);
+  if (
+    !request.success ||
+    request.data.requestId !== storageRequestId(request.data) ||
+    !result.success
+  )
+    return { state: 'conflict' };
+  const existing = inspectChannelInboundReceipt(db, envelope, completeHistory);
+  if (existing.state === 'absent' || existing.state === 'unknown') return { state: 'unknown' };
+  if (!isDeepStrictEqual(channelRequestEnvelope(existing), request.data))
+    return { state: 'conflict' };
+  if (existing.state === 'settled')
+    return isDeepStrictEqual(existing.receipt.result, result.data)
+      ? { state: 'settled', receipt: existing.receipt }
+      : { state: 'conflict' };
+  if (!completeHistory) return { state: 'unknown' };
+  if (result.data.kind === 'handled') {
+    if (existing.state !== 'reserved') return { state: 'conflict' };
+  } else {
+    if (existing.state !== 'origin-bound') return { state: 'conflict' };
+    if (readPendingDecision(existing.origin) !== result.data.decisionRef)
+      return { state: 'unknown' };
+  }
+  return { state: 'settled', receipt: writeChannelInboundSettlement(db, existing, result.data) };
+}
 
 /** Verifies the actual physical receipt owner, without treating extra resource selectors as new authority. */
 function assertReceiptOwner(owner: ControlProductOwner, scope: Record<string, string>): void {

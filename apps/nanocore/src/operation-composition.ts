@@ -9,9 +9,13 @@ import { createWorkerOperationImplementations } from './agents/workspace-workers
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createAppUpdateOperationImplementations } from './app-update/app-update-operations.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
-import { createCredentialOperationImplementations } from './auth/credential-operations.js';
+import {
+  createCommunicationCredentialOperationImplementations,
+  createCredentialOperationImplementations,
+} from './auth/credential-operations.js';
 import { createNanoHostOperationImplementations } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
+import { listNanoHostTransportTokenRecords } from './auth/nanohost-transport-token-store.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { createCallerOperationImplementations } from './caller-operation-implementations.js';
 import {
@@ -87,6 +91,11 @@ import { createWorkerEnvironmentOperationImplementations } from './worker-enviro
 import { createWorkspaceDeletionOperationImplementations } from './workspace-deletion-operations.js';
 import { createWorkspaceOperationImplementations } from './workspace-operation-implementations.js';
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
+export type CommunicationCredentialBinding = Pick<
+  Parameters<typeof createCommunicationCredentialOperationImplementations>[0],
+  'communicationCredentials' | 'listNanoHostTransportTokens'
+>;
+
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
   /** Original live Worker credential owner used by human credential management. */
@@ -114,6 +123,8 @@ export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
   /** Shared deployment-local channel and notification owners. */
   readonly channelServices?: ChannelServices;
+  /** Selected only by the gated Communication serving binding. */
+  readonly communicationCredentialBinding?: CommunicationCredentialBinding;
   /** Current process and configuration owners for admitted product diagnostics. */
   readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
   /** Existing deployment configuration family services. */
@@ -218,6 +229,19 @@ export interface OperationInvocationDependencies {
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
   const snapshot = createWorkspaceSnapshotOperationImplementations(dependencies);
+  const credentialOwners = {
+    coreDb: dependencies.coreDb,
+    mode: dependencies.mode ?? 'local',
+    ...(dependencies.store ? { store: dependencies.store } : {}),
+    ...(dependencies.workerControlGateway
+      ? { workerControlGateway: dependencies.workerControlGateway }
+      : {}),
+    ...(dependencies.turnExecutor ? { turnExecutor: dependencies.turnExecutor } : {}),
+    ...(dependencies.inflightCommands ? { inflightCommands: dependencies.inflightCommands } : {}),
+    ...(dependencies.nanoHostSessionAuthority
+      ? { nanoHostSessionAuthority: dependencies.nanoHostSessionAuthority }
+      : {}),
+  };
   return composeOperationTables(
     {
       'workspace.backup-capture': snapshot['workspace.backup-capture'],
@@ -232,19 +256,18 @@ export function createOperationImplementations(dependencies: OperationInvocation
       inflightCommands: dependencies.inflightCommands!,
       repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
     }),
-    createCredentialOperationImplementations({
-      coreDb: dependencies.coreDb,
-      mode: dependencies.mode ?? 'local',
-      ...(dependencies.store ? { store: dependencies.store } : {}),
-      ...(dependencies.workerControlGateway
-        ? { workerControlGateway: dependencies.workerControlGateway }
-        : {}),
-      ...(dependencies.turnExecutor ? { turnExecutor: dependencies.turnExecutor } : {}),
-      ...(dependencies.inflightCommands ? { inflightCommands: dependencies.inflightCommands } : {}),
-      ...(dependencies.nanoHostSessionAuthority
-        ? { nanoHostSessionAuthority: dependencies.nanoHostSessionAuthority }
-        : {}),
-    }),
+    dependencies.communicationCredentialBinding
+      ? createCommunicationCredentialOperationImplementations({
+          ...credentialOwners,
+          ...dependencies.communicationCredentialBinding,
+          listNanoHostTransportTokens:
+            dependencies.communicationCredentialBinding.listNanoHostTransportTokens ??
+            (() =>
+              dependencies.coreDb
+                ? { state: 'ready', value: listNanoHostTransportTokenRecords(dependencies.coreDb) }
+                : { state: 'unavailable', owner: 'nanohost', reason: 'missing' }),
+        })
+      : createCredentialOperationImplementations(credentialOwners),
     createDiagnosticsOperationImplementations(dependencies.diagnosticsServices, dependencies),
     createRuntimeConfigOperationImplementations(dependencies.runtimeConfigOperations),
     createProviderSubscriptionOperationImplementations(dependencies.providerSubscriptionOperations),

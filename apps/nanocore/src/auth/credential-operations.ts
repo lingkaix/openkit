@@ -7,7 +7,6 @@ import type {
 } from '@openkit/app-api-schemas';
 import { allocateEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 import { prepareServerAuditEvent } from '../audit-events.js';
-import { readDiscordAccountBinding, revokeDiscordAccountBinding } from '../channels/discord.js';
 import type { CoreMode } from '../config/mode.js';
 import type { FsStore } from '../lib/store.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
@@ -198,20 +197,17 @@ interface CredentialStorage {
   transportTokens(db: CoreDb): TransportTokens;
 }
 
-/** Current App composition uses the admitted Core credential owners. */
+const unavailableCommunication = {
+  state: 'unavailable',
+  owner: 'communication',
+  reason: 'missing',
+} as const;
+
+/** Keeps the independent credential owners available before the Communication adapter is selected. */
 export function createCredentialOperationImplementations(owners: InboundCredentialOwners) {
   return createCredentialOperations(owners, {
-    readBinding: (db, userId) => ({
-      state: 'ready',
-      value: readDiscordAccountBinding(db.sqlite, userId),
-    }),
-    unbind: async (db, { actor, bindingRevision }) => {
-      await revokeDiscordAccountBinding(db, actor.userId, {
-        revision: bindingRevision,
-        actor: presentControlFacts(actor),
-      });
-      return { state: 'ready', value: undefined };
-    },
+    readBinding: () => unavailableCommunication,
+    unbind: async () => unavailableCommunication,
     transportTokens: (db) => ({ state: 'ready', value: listNanoHostTransportTokenRecords(db) }),
   });
 }
@@ -223,11 +219,11 @@ export function createCommunicationCredentialOperationImplementations(
     readonly listNanoHostTransportTokens?: () => TransportTokens;
   }
 ) {
-  const unavailable = { state: 'unavailable', owner: 'communication', reason: 'missing' } as const;
   return createCredentialOperations(owners, {
     readBinding: (_db, userId) =>
-      owners.communicationCredentials?.readBinding(userId) ?? unavailable,
-    unbind: async (_db, input) => owners.communicationCredentials?.unbind(input) ?? unavailable,
+      owners.communicationCredentials?.readBinding(userId) ?? unavailableCommunication,
+    unbind: async (_db, input) =>
+      owners.communicationCredentials?.unbind(input) ?? unavailableCommunication,
     transportTokens: () =>
       owners.listNanoHostTransportTokens?.() ?? {
         state: 'unavailable',

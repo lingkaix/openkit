@@ -1,21 +1,26 @@
-import { randomUUID } from 'node:crypto';
 import type { CHANNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { OpenKitConfig } from '@openkit/config-schema';
 import { canonicalJsonText, RequestIdSchema, UserIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import type { CommunicationCredentials } from './auth/credential-operations.js';
 import { type Actor, getLocalUserId } from './auth/identity.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
+import type { DiscordPendingView } from './channels/discord-interaction.js';
 import {
-  createDiscordChannel,
-  type DiscordPendingView,
-  readDiscordAccountBinding,
-} from './channels/discord.js';
+  type CommunicationDiscordChannelOptions,
+  openCommunicationDiscordChannel,
+} from './channels/discord-owner.js';
 import type { createDiscordRestTransport } from './channels/discord-rest.js';
 import type { CoreMode } from './config/mode.js';
 import type { FsStore } from './lib/store.js';
-import { type AttentionDelivery, AttentionNotifications } from './notifications/attention.js';
+import {
+  type AttentionDelivery,
+  type AttentionNotifications,
+  getAttentionForRecipientInDb,
+  pageAttentionForRecipientInDb,
+} from './notifications/attention.js';
 import { AttentionError } from './notifications/attention-error.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
@@ -25,13 +30,24 @@ import {
   listThreadPendingRequests,
   type PendingRequestRecord,
 } from './runtime/pending-requests.js';
+import {
+  type CommunicationAttentionOwner,
+  observePublishedCommunicationAttention,
+  sendCommunicationAttention,
+} from './storage/communication-attention.js';
+import type { createCommunicationDiscord } from './storage/communication-discord.js';
+import {
+  admitDiscordOwners,
+  inspectPendingDecision,
+  requireChannelStorage,
+} from './storage/communication-inbound.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import type { StorageResult, StorageUnavailable } from './storage/storage-owner.js';
 
 /** Private Discord transport injected by startup or deterministic external-boundary tests. */
 export type DiscordAttentionTransport = ReturnType<typeof createDiscordRestTransport>;
 
-/** Binds external delivery to current Core request owners, without granting channel-specific decision authority. */
-export function createChannelServices(input: {
+interface ChannelServiceInputs {
   readonly coreDb: CoreDb;
   readonly store: FsStore;
   readonly mode: CoreMode;
@@ -44,7 +60,10 @@ export function createChannelServices(input: {
     value: unknown,
     actor: Actor
   ) => Promise<unknown>;
-}) {
+}
+
+/** Projects live Core and Workspace authority without giving the channel deciding authority. */
+function createChannelAuthority(input: ChannelServiceInputs) {
   const { coreDb, store } = input;
   // The local User owner retains this identity; each channel action still checks its active state.
   const localUserId = input.mode === 'local' ? getLocalUserId(coreDb) : undefined;
@@ -142,109 +161,204 @@ export function createChannelServices(input: {
     const route = thread.visibility === 'private' ? 'chat' : 'tasks';
     return `/${route}/${encodeURIComponent(source.workspaceId)}/${encodeURIComponent(source.threadId)}?requestId=${encodeURIComponent(source.requestId)}`;
   };
-  const notifications = new AttentionNotifications(coreDb.sqlite, {
-    buildAppPath: attentionPath,
-    nativeCoreDb: coreDb,
-  });
-  if (input.discordConfig && !input.publicBaseUrl)
+  const requestLink: CommunicationDiscordChannelOptions['requestLink'] = (query) => {
+    try {
+      const record = currentRequest(
+        query.actor,
+        { ...query, requestId: query.pendingRequestId },
+        { pendingOnly: false }
+      );
+      return record ? new URL(attentionPath(record), input.publicBaseUrl!).href : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /** Checks the exact recipient and source before either an Attention read or send. */
+  function admittedDelivery(delivery: AttentionDelivery, pendingOnly: boolean): boolean {
+    if (delivery.source.kind === 'security-notice') return false;
+    try {
+      const actor = ordinaryActor(delivery.recipientUserId);
+      const record = actor && currentRequest(actor, delivery.source, { pendingOnly });
+      return Boolean(
+        record &&
+          delivery.source.kind ===
+            (record.kind === 'approval' ? 'approval-request' : 'user-input-request')
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  return {
+    ordinaryActor,
+    currentRequest,
+    inspectPending,
+    attentionPath,
+    requestLink,
+    readableDelivery: (delivery: AttentionDelivery) => admittedDelivery(delivery, false),
+    eligible: (delivery: AttentionDelivery) => admittedDelivery(delivery, true),
+  };
+}
+
+/** Re-enumerates current Pending Requests at boot or binding change, without implicit retry. */
+async function recoverPendingAttention(
+  input: Pick<ChannelServiceInputs, 'store' | 'openWorkspace'>,
+  attentionRaised: (record: PendingRequestRecord) => Promise<void>
+): Promise<void> {
+  const { store, openWorkspace } = input;
+  for (const workspace of store.listWorkspaces()) {
+    try {
+      const db = openWorkspace(workspace.id);
+      try {
+        for (const thread of store.listThreads(workspace.id)) {
+          for (const record of listThreadPendingRequests(db.sqlite, workspace.id, thread.id)) {
+            try {
+              await attentionRaised(record);
+            } catch {
+              /* An unavailable projection never settles or blocks a Core request. */
+            }
+          }
+        }
+      } finally {
+        db.sqlite.close();
+      }
+    } catch {
+      /* Missing source storage skips this projection; a later recovery can inspect it again. */
+    }
+  }
+}
+
+type ChannelDiscordHandler = Extract<
+  ReturnType<typeof openCommunicationDiscordChannel>,
+  { state: 'ready' }
+>['value'];
+
+/** App operations and signed ingress consume a single selected owner. */
+export interface ChannelServices {
+  readonly discord: Pick<ChannelDiscordHandler, 'beginPairing' | 'handleVerified'> | null;
+  readonly binding: (actor: Actor) => { discordUserId: string; pairedAt: number } | null;
+  readonly notifications: Pick<AttentionNotifications, 'pageForActor'>;
+  readonly send: (
+    actor: Actor,
+    deliveryId: string,
+    expectedAttemptId: number | null
+  ) => Promise<AttentionDelivery & { appPath: string }>;
+  readonly attentionRaised: (record: PendingRequestRecord) => Promise<void>;
+  readonly recoverAttention: () => Promise<void>;
+  readonly attentionPath: (source: AttentionDelivery['source']) => string;
+  readonly readableDelivery: (delivery: AttentionDelivery) => boolean;
+  readonly sendingAvailable: boolean;
+}
+
+export interface DiscordChannelOwners {
+  readonly deploymentId: string;
+  readonly kernel?: CommunicationDiscordChannelOptions['kernel'];
+  readonly communication: ReturnType<typeof createCommunicationDiscord>;
+  readonly attention: CommunicationAttentionOwner;
+}
+
+export type OwnedChannelServices = ChannelServices & {
+  readonly credentials: CommunicationCredentials;
+  readonly runRetention: DiscordChannelOwners['communication']['runRetention'];
+  readonly reconcileAttention: () => Promise<StorageResult<'communication', number>>;
+};
+
+/** Serving composition for the combined switch. Missing owners refuse before any Core fallback. */
+export function createCommunicationChannelServices(
+  input: ChannelServiceInputs & { readonly discordOwners?: DiscordChannelOwners }
+): StorageResult<'communication', OwnedChannelServices> | StorageUnavailable<'control-kernel'> {
+  const owners = input.discordOwners;
+  if (!owners) return { state: 'unavailable', owner: 'communication', reason: 'missing' };
+  const { communication, attention, deploymentId } = owners;
+  const admission = admitDiscordOwners(communication.storage, owners.kernel);
+  if (admission.state !== 'ready') return admission;
+  const { kernel } = admission.value;
+
+  const {
+    ordinaryActor,
+    currentRequest,
+    inspectPending,
+    attentionPath,
+    requestLink,
+    readableDelivery,
+    eligible,
+  } = createChannelAuthority(input);
+  const { discordConfig, publicBaseUrl, transport } = input;
+  if (discordConfig && !publicBaseUrl)
     throw new OperationError(
       'channel_configuration_invalid',
       'A public HTTPS App origin is required.',
       503
     );
-  const discord = input.discordConfig
-    ? createDiscordChannel({
-        sqlite: coreDb.sqlite,
-        nativeCoreDb: coreDb,
-        mode: input.mode,
-        ...input.discordConfig,
-        newRequestId: randomUUID,
-        appBaseUrl: input.publicBaseUrl!,
-        requestLink: (query) => {
-          try {
-            const record = currentRequest(
-              query.actor,
-              { ...query, requestId: query.pendingRequestId },
-              { pendingOnly: false }
-            );
-            return record ? new URL(attentionPath(record), input.publicBaseUrl!).href : null;
-          } catch {
-            return null;
-          }
-        },
+
+  const result = discordConfig
+    ? openCommunicationDiscordChannel({
+        ...discordConfig,
+        appBaseUrl: publicBaseUrl!,
+        storage: communication.storage,
+        deploymentId,
+        kernel,
+        requestLink,
         resolveActor: ordinaryActor,
         inspectPending,
+        inspectPendingDecision: (origin, inputHash) => {
+          const db = input.openWorkspace(origin.workspaceId);
+          try {
+            return inspectPendingDecision(db, origin, new Date().toISOString(), inputHash);
+          } finally {
+            db.sqlite.close();
+          }
+        },
         invoke: input.invokePending,
       })
     : null;
+  if (result?.state === 'unavailable') return result;
+  const discord = result?.value ?? null;
 
-  /** Retains readable transport history after a Core decision without granting a later send. */
-  function readableDelivery(delivery: AttentionDelivery): boolean {
-    if (delivery.source.kind === 'security-notice') return false;
-    try {
-      const actor = ordinaryActor(delivery.recipientUserId);
-      const record = actor && currentRequest(actor, delivery.source, { pendingOnly: false });
-      return Boolean(
-        record &&
-          delivery.source.kind ===
-            (record.kind === 'approval' ? 'approval-request' : 'user-input-request')
-      );
-    } catch {
-      return false;
-    }
+  function binding(actor: Actor) {
+    if (!ordinaryActor(actor.userId)) return null;
+    return requireChannelStorage(communication.storage.readBinding(actor.userId));
   }
 
-  /** Rechecks the recipient and source; transport also calls it after asynchronous DM preparation. */
-  function eligible(delivery: AttentionDelivery): boolean {
-    if (delivery.source.kind === 'security-notice') return false;
-    try {
-      const actor = ordinaryActor(delivery.recipientUserId);
-      const record = actor && currentRequest(actor, delivery.source);
-      return Boolean(
-        record &&
-          delivery.source.kind ===
-            (record.kind === 'approval' ? 'approval-request' : 'user-input-request')
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  /** Sends one conditional attempt, with a second authority check at the actual message boundary. */
   async function send(actor: Actor, deliveryId: string, expectedAttemptId: number | null) {
-    const delivery = notifications.getForActor(deliveryId, actor.userId, eligible);
+    const delivery = requireChannelStorage(
+      attention.read((sqlite) =>
+        getAttentionForRecipientInDb(sqlite, deliveryId, actor.userId, eligible)
+      )
+    );
     if (!delivery)
       throw new OperationError('notification_unavailable', 'The notification is unavailable.', 404);
-    const bound = discord?.binding(actor);
-    if (!bound || !input.transport)
+    const selected = binding(actor);
+    if (!discord || !transport || !selected)
       throw new OperationError('channel_unavailable', 'Discord sending is unavailable.', 503);
+    const source = canonicalJsonText(delivery.source);
     try {
-      const result = await notifications.deliver(
-        {
-          deliveryId,
-          recipientUserId: actor.userId,
-          channel: 'discord',
-          expectedAttemptId,
-          retry: expectedAttemptId !== null,
-        },
-        {
-          isEligible: (candidate) =>
-            eligible(candidate) && discord?.binding(actor)?.revision === bound.revision,
-          transport: async (payload) => {
-            const result = await input.transport!.sendAttention({
-              discordUserId: bound.discordUserId,
-              appPath: payload.appPath,
-              automation:
-                currentRequest(actor, delivery.source, { pendingOnly: false })?.requesterKind ===
-                'automation',
-              beforeSend: () =>
-                eligible(delivery) && discord?.binding(actor)?.revision === bound.revision,
-            });
-            return { status: result.status };
-          },
-        }
+      const sent = requireChannelStorage(
+        await attention.withWorkspace(delivery.source.workspaceId, () =>
+          sendCommunicationAttention({
+            selection: {
+              deliveryId,
+              recipientUserId: actor.userId,
+              expectedAttemptId,
+              retry: expectedAttemptId !== null,
+            },
+            withBinding: communication.withBinding,
+            readBinding: (userId) => {
+              const current = communication.storage.readBinding(userId);
+              return current.state === 'ready' && current.value?.revision !== selected.revision
+                ? { state: 'ready', value: null }
+                : current;
+            },
+            writer: attention,
+            isEligible: (candidate) =>
+              canonicalJsonText(candidate.source) === source && eligible(candidate),
+            buildAppPath: attentionPath,
+            send: (payload) => transport.sendAttention(payload),
+          })
+        )
       );
-      return { ...result, appPath: attentionPath(result.source) };
+      return { ...sent, appPath: attentionPath(sent.source) };
     } catch (error) {
       if (error instanceof AttentionError)
         throw new OperationError(
@@ -257,65 +371,56 @@ export function createChannelServices(input: {
     }
   }
 
-  /** Publishes only an exact source reference; a notification write cannot change the Core request. */
   async function attentionRaised(record: PendingRequestRecord): Promise<void> {
     if (record.requesterKind === 'automation' || record.state !== 'pending') return;
     const actor = ordinaryActor(record.responsibleUserId);
-    if (!actor || !currentRequest(actor, record)) return;
-    const delivery = await notifications.enqueue({
-      source: {
-        workspaceId: record.workspaceId,
-        threadId: record.threadId,
-        requestId: record.requestId,
-        kind: record.kind === 'approval' ? 'approval-request' : 'user-input-request',
-      },
-      recipientUserId: record.responsibleUserId,
-    });
-    if (delivery.status === 'queued' && discord?.binding(actor) && input.transport)
+    if (!actor) return;
+    const observed = requireChannelStorage(
+      await attention.withWorkspace(record.workspaceId, () =>
+        observePublishedCommunicationAttention(record, {
+          isCurrent: (source) => Boolean(currentRequest(actor, source)),
+          enqueue: attention.enqueue,
+        })
+      )
+    );
+    const delivery = requireChannelStorage(observed);
+    if (delivery?.status === 'queued' && discord && transport && binding(actor))
       void send(actor, delivery.id, null).catch(() => undefined);
   }
 
-  /** Re-enumerates current Pending Requests at boot or binding change, without implicit retry. */
-  async function recoverAttention(): Promise<void> {
-    for (const workspace of store.listWorkspaces()) {
-      try {
-        const db = input.openWorkspace(workspace.id);
-        try {
-          for (const thread of store.listThreads(workspace.id)) {
-            for (const record of listThreadPendingRequests(db.sqlite, workspace.id, thread.id)) {
-              try {
-                await attentionRaised(record);
-              } catch {
-                /* An unavailable projection never settles or blocks a Core request. */
-              }
-            }
-          }
-        } finally {
-          db.sqlite.close();
-        }
-      } catch {
-        /* Missing source storage skips this projection; a later recovery can inspect it again. */
-      }
-    }
-  }
-
   return {
-    discord,
-    binding: (actor: Actor) => readDiscordAccountBinding(coreDb.sqlite, actor.userId),
-    notifications,
-    inspectPending,
-    eligible,
-    send,
-    attentionRaised,
-    recoverAttention,
-    attentionPath,
-    readableDelivery,
-    sendingAvailable: Boolean(discord && input.transport),
+    state: 'ready',
+    value: {
+      discord,
+      binding: (actor) => {
+        const selected = binding(actor);
+        return (
+          selected && { discordUserId: selected.externalAccountId, pairedAt: selected.pairedAt }
+        );
+      },
+      notifications: {
+        pageForActor: (userId, page, isReadable) =>
+          requireChannelStorage(
+            attention.read((sqlite) =>
+              pageAttentionForRecipientInDb(sqlite, userId, page, isReadable)
+            )
+          ),
+      },
+      send,
+      attentionRaised,
+      recoverAttention: () => recoverPendingAttention(input, attentionRaised),
+      attentionPath,
+      readableDelivery,
+      sendingAvailable: Boolean(discord && transport),
+      credentials: {
+        readBinding: communication.storage.readBinding,
+        unbind: communication.unbindCredential,
+      },
+      runRetention: communication.runRetention,
+      reconcileAttention: attention.reconcile,
+    },
   };
 }
-
-/** App-owned channel services shared by native settings, the signed Discord entry, and request attention. */
-export type ChannelServices = ReturnType<typeof createChannelServices>;
 
 /** Joins user settings and transport observations to their existing domain owners. */
 export function createChannelOperationImplementations(services: ChannelServices | undefined) {

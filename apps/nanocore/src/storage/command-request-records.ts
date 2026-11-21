@@ -1,7 +1,17 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { compareCodeUnits, readRetainedV1, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  AuditEventIdSchema,
+  canonicalIdentifierName,
+  compareCodeUnits,
+  PolicyDigestV1Schema,
+  readRetainedV1,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type Database from 'better-sqlite3';
+import { z } from 'zod';
+import { auditEventFromRow } from '../audit-events.js';
 import { assertScopeAdmitted } from '../bootstrap/readiness.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import type {
@@ -23,25 +33,34 @@ import {
   prepareControlCommandRequestStatement,
   readCommandResponseMetadata,
 } from './command-request-codecs.js';
+import type {
+  ChannelInboundEnvelope,
+  ChannelInboundKey,
+  ChannelInboundReceipt,
+  PairingAuditIntent,
+  PairingAuditReceipt,
+} from './communication-port.js';
 import { pruneControlAdmissionReceipts } from './control-store-admission.js';
 import {
-  ControlProductPreconditionError,
-  openControlStoreProductReadHandle,
-} from './control-store-product-records.js';
+  ChannelInboundEnvelopeSchema,
+  ChannelInboundKeySchema,
+  ChannelInboundOriginSchema,
+  ChannelInboundOutcomeSchema,
+  PairingAuditIntentSchema,
+} from './control-store-admission-codecs.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
   bindCoreSqlite,
   bindWorkspaceSqlite,
   type CoreDb,
-  openCoreDb,
-  openUserDb,
   openUserReadDb,
-  openWorkspaceDb,
   type UserDb,
   type WorkspaceDb,
 } from './db.js';
 import { coreDbPath, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
-import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import type { StorageReceiptLookup } from './storage-owner.js';
+import { storageReceipt, storageRequestId } from './storage-owner.js';
 
 /** Raw SQLite row for one command idempotency request. */
 type CommandRequestRow = {
@@ -118,6 +137,247 @@ export function recordControlCommandRequestRecordInDb(
         : { kind: 'workspace', workspaceId: db.workspaceId },
     record.createdAt
   );
+}
+
+const permanentKernelScope = '{"coreId":"server"}';
+
+type KernelRequestRow = Omit<CommandRequestRow, 'command' | 'responseKind'> & {
+  command: string;
+  responseKind: string;
+};
+
+function readKernelRequestRow(db: CoreDb, requestId: string): KernelRequestRow | undefined {
+  return db.sqlite.prepare(`${COMMAND_REQUEST_SELECT} WHERE request_key = ?`).get(requestId) as
+    | KernelRequestRow
+    | undefined;
+}
+
+function matchesKernelRequestRow(
+  row: KernelRequestRow,
+  intent: { verb: string; requestId: string; inputDigest: string },
+  responseId: string
+): boolean {
+  return (
+    row.command === intent.verb &&
+    row.responseKind === 'storage-receipt' &&
+    row.requestId === intent.requestId &&
+    row.key === intent.requestId &&
+    row.scopeJson === permanentKernelScope &&
+    row.inputHash === intent.inputDigest &&
+    row.responseId === responseId &&
+    row.expiresAt === null
+  );
+}
+
+function insertKernelRequest(
+  db: CoreDb,
+  intent: { verb: string; requestId: string; inputDigest: string },
+  responseId: string,
+  payload: unknown,
+  createdAt: string
+): void {
+  assertControlProductWriter(db.sqlite);
+  db.sqlite
+    .prepare(`INSERT INTO idempotency_requests
+      (schema_version, request_key, command_name, request_id, scope_json, input_hash,
+       response_kind, response_id, response_json, created_at, expires_at)
+      VALUES (1, ?, ?, ?, ?, ?, 'storage-receipt', ?, ?, ?, NULL)`)
+    .run(
+      intent.requestId,
+      intent.verb,
+      intent.requestId,
+      permanentKernelScope,
+      intent.inputDigest,
+      responseId,
+      canonicalIdentifierName(payload),
+      createdAt
+    );
+}
+
+const retainedPairingReceiptSchema = z
+  .object({
+    intent: PairingAuditIntentSchema,
+    disposition: z.literal('applied'),
+    result: z.strictObject({ eventId: AuditEventIdSchema }),
+    receiptDigest: PolicyDigestV1Schema,
+  })
+  .strict();
+
+/** Reads the complete pairing receipt after the caller verifies current read authority. */
+export function inspectPairingAuditReceipt(
+  db: CoreDb,
+  intent: PairingAuditIntent,
+  completeHistory: boolean
+): StorageReceiptLookup<PairingAuditReceipt> {
+  if (
+    intent.requestId !== storageRequestId(intent) ||
+    intent.occurrenceKey !== intent.target.eventId
+  )
+    return { state: 'conflict' };
+  const row = readKernelRequestRow(db, intent.requestId);
+  if (!row) return { state: completeHistory ? 'absent' : 'unknown' };
+  try {
+    const receipt = readRetainedV1(row, () =>
+      retainedPairingReceiptSchema.parse(JSON.parse(row.responseJson ?? 'null'))
+    );
+    if (
+      !matchesKernelRequestRow(row, receipt.intent, receipt.result.eventId) ||
+      receipt.result.eventId !== receipt.intent.target.eventId ||
+      receipt.intent.occurrenceKey !== receipt.intent.target.eventId
+    )
+      return { state: 'unknown' };
+    const expected = storageReceipt(receipt.intent, {
+      disposition: 'applied',
+      result: receipt.result,
+    });
+    if (receipt.receiptDigest !== expected.receiptDigest) return { state: 'unknown' };
+    if (canonicalIdentifierName(intent) !== canonicalIdentifierName(receipt.intent))
+      return { state: 'conflict' };
+    const audit = db.sqlite
+      .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
+      .get(receipt.result.eventId);
+    if (!audit || sha256CanonicalJson(auditEventFromRow(audit)) !== receipt.intent.inputDigest)
+      return { state: 'unknown' };
+    return { state: 'settled', receipt };
+  } catch {
+    return { state: 'unknown' };
+  }
+}
+
+/** Writes the original permanent pairing receipt in the native Audit transaction. */
+export function writePairingAuditReceipt(
+  db: CoreDb,
+  intent: PairingAuditIntent,
+  createdAt: string
+): PairingAuditReceipt {
+  assertControlProductWriter(db.sqlite);
+  const receipt = retainedPairingReceiptSchema.parse(
+    storageReceipt(intent, {
+      disposition: 'applied',
+      result: { eventId: intent.target.eventId },
+    })
+  );
+  insertKernelRequest(db, intent, receipt.result.eventId, receipt, createdAt);
+  return receipt;
+}
+
+const retainedChannelReceiptSchema = z.strictObject({
+  intent: ChannelInboundEnvelopeSchema,
+  disposition: z.literal('applied'),
+  result: ChannelInboundOutcomeSchema,
+  receiptDigest: PolicyDigestV1Schema,
+});
+const retainedChannelRequestSchema = z.discriminatedUnion('state', [
+  z.strictObject({ state: z.literal('reserved'), envelope: ChannelInboundEnvelopeSchema }),
+  z.strictObject({ state: z.literal('origin-bound'), origin: ChannelInboundOriginSchema }),
+  z.strictObject({
+    state: z.literal('settled'),
+    origin: ChannelInboundOriginSchema.nullable(),
+    receipt: retainedChannelReceiptSchema,
+  }),
+]);
+type RetainedChannelRequest = z.infer<typeof retainedChannelRequestSchema>;
+
+export function channelRequestEnvelope(state: RetainedChannelRequest): ChannelInboundEnvelope {
+  if (state.state === 'reserved') return state.envelope;
+  if (state.state === 'origin-bound') return state.origin.envelope;
+  return state.receipt.intent;
+}
+
+/** Validates the permanent occurrence, version, stage and complete receipt before disclosure. */
+export function inspectChannelInboundReceipt(
+  db: CoreDb,
+  key: ChannelInboundKey,
+  completeHistory: boolean
+): RetainedChannelRequest | { state: 'absent' } | { state: 'unknown' } {
+  const parsed = ChannelInboundKeySchema.safeParse({
+    deploymentId: key.deploymentId,
+    sourceOwner: key.sourceOwner,
+    verb: key.verb,
+    occurrenceKey: key.occurrenceKey,
+  });
+  if (!parsed.success) return { state: 'unknown' };
+  const requestId = storageRequestId(parsed.data);
+  const row = readKernelRequestRow(db, requestId);
+  if (!row) return { state: completeHistory ? 'absent' : 'unknown' };
+  try {
+    const state = readRetainedV1(row, () =>
+      retainedChannelRequestSchema.parse(JSON.parse(row.responseJson ?? 'null'))
+    );
+    const envelope = channelRequestEnvelope(state);
+    if (
+      !matchesKernelRequestRow(row, envelope, requestId) ||
+      envelope.requestId !== storageRequestId(envelope) ||
+      envelope.requestId !== requestId
+    )
+      return { state: 'unknown' };
+    if (state.state === 'settled') {
+      if (
+        (state.receipt.result.kind === 'handled') !== (state.origin === null) ||
+        (state.origin &&
+          canonicalIdentifierName(state.origin.envelope) !== canonicalIdentifierName(envelope)) ||
+        state.receipt.receiptDigest !==
+          storageReceipt(envelope, {
+            disposition: 'applied',
+            result: state.receipt.result,
+          }).receiptDigest
+      )
+        return { state: 'unknown' };
+    }
+    return state;
+  } catch {
+    return { state: 'unknown' };
+  }
+}
+
+/** Allocates one permanent reservation for the first authenticated occurrence. */
+export function insertChannelInboundReservation(
+  db: CoreDb,
+  envelope: ChannelInboundEnvelope,
+  createdAt: string
+): void {
+  insertKernelRequest(
+    db,
+    envelope,
+    envelope.requestId,
+    {
+      state: 'reserved',
+      envelope,
+    },
+    createdAt
+  );
+}
+
+/** The saved phase and exact original payload guard all later stage transitions. */
+export function replaceChannelInboundStage(
+  db: CoreDb,
+  original: RetainedChannelRequest,
+  next: RetainedChannelRequest
+): void {
+  assertControlProductWriter(db.sqlite);
+  const envelope = channelRequestEnvelope(original);
+  const changed = db.sqlite
+    .prepare(`UPDATE idempotency_requests
+    SET response_json = ?
+    WHERE request_key = ? AND response_kind = 'storage-receipt' AND response_json = ?`)
+    .run(canonicalIdentifierName(next), envelope.requestId, canonicalIdentifierName(original));
+  if (changed.changes !== 1) throw new Error('Channel occurrence lost its original stage.');
+}
+
+/** Commits the outcome at the original permanent key and preserves its bound origin. */
+export function writeChannelInboundSettlement(
+  db: CoreDb,
+  original: Extract<RetainedChannelRequest, { state: 'reserved' | 'origin-bound' }>,
+  outcome: Extract<ChannelInboundReceipt, { disposition: 'applied' }>['result']
+): ChannelInboundReceipt {
+  const envelope = channelRequestEnvelope(original);
+  const receipt = storageReceipt(envelope, { disposition: 'applied', result: outcome });
+  replaceChannelInboundStage(db, original, {
+    state: 'settled',
+    origin: original.state === 'origin-bound' ? original.origin : null,
+    receipt,
+  });
+  return receipt;
 }
 
 /** One row serializer on an actual scoped connection; command entry points retain authority, transaction and maintenance ownership. */
@@ -324,7 +584,7 @@ export function* readCommandRequestRecordPagesFromSqlite(
   for (;;) {
     const rows = sqlite
       .prepare(
-        `${COMMAND_REQUEST_SELECT}${afterKey === undefined ? '' : ' WHERE request_key > ?'} ORDER BY request_key ASC LIMIT 128`
+        `${COMMAND_REQUEST_SELECT} WHERE response_kind <> 'storage-receipt'${afterKey === undefined ? '' : ' AND request_key > ?'} ORDER BY request_key ASC LIMIT 128`
       )
       .all(...(afterKey === undefined ? [] : [afterKey])) as CommandRequestRow[];
     if (rows.length === 0) return;
@@ -368,7 +628,9 @@ export function readDurableCommandRequestRecords(dataRoot: string): DurableComma
           return { status: 'unreadable' };
         }
         const rows = sqlite
-          .prepare(`${COMMAND_REQUEST_SELECT} ORDER BY created_at ASC, request_key ASC`)
+          .prepare(
+            `${COMMAND_REQUEST_SELECT} WHERE response_kind <> 'storage-receipt' ORDER BY created_at ASC, request_key ASC`
+          )
           .all() as CommandRequestRow[];
         for (const row of rows) {
           records.push(mapCommandRequestRow(row));
@@ -507,7 +769,9 @@ export function listCommandRequestRecords(
     try {
       return (
         db.sqlite
-          .prepare(`${COMMAND_REQUEST_SELECT} ORDER BY created_at ASC, request_key ASC`)
+          .prepare(
+            `${COMMAND_REQUEST_SELECT} WHERE response_kind <> 'storage-receipt' ORDER BY created_at ASC, request_key ASC`
+          )
           .all() as CommandRequestRow[]
       )
         .map((row) => {

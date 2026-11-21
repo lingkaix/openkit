@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { isUserId, RequestIdSchema } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import type { CoreDb } from '../storage/db.js';
 import {
   type AttemptStatusSchema,
   AttentionEnqueueSchema,
@@ -276,15 +275,67 @@ export async function deliverClaimedAttention(
   );
 }
 
-/** Owns attention delivery only; the injected Core database must already be migrated. */
+interface AttentionPageOptions {
+  readonly limit?: number | undefined;
+  readonly cursor?: { createdAt: string; id: string } | undefined;
+}
+
+/** Reads an exact recipient-scoped delivery through the admitted connection. */
+export function getAttentionForRecipientInDb(
+  sqlite: Database.Database,
+  id: string,
+  userId: string,
+  isEligible: AttentionEligibility
+): AttentionDelivery | null {
+  if (!RequestIdSchema.safeParse(id).success) throw new AttentionError('invalid_attention_input');
+  const row = sqlite
+    .prepare(`${SELECT} WHERE a.id = ? AND a.recipient_user_id = ?`)
+    .get(id, userId);
+  if (!row) return null;
+  const delivery = decodeRow(row);
+  return isEligible(delivery) === true ? delivery : null;
+}
+
+/** Reads bounded batches while preserving visible-page semantics through filtered rows. */
+export function pageAttentionForRecipientInDb(
+  sqlite: Database.Database,
+  userId: string,
+  options: AttentionPageOptions,
+  isEligible: AttentionEligibility
+): { items: AttentionDelivery[]; hasMore: boolean } {
+  const limit = options.limit ?? 50;
+  if (!isUserId(userId) || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new AttentionError('invalid_attention_input');
+  }
+  const batchSize = 101;
+  const order = 'ORDER BY a.created_at DESC, a.id DESC LIMIT ?';
+  const first = sqlite.prepare(`${SELECT} WHERE a.recipient_user_id = ? ${order}`);
+  const after = sqlite.prepare(`${SELECT} WHERE a.recipient_user_id = ?
+    AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?)) ${order}`);
+  let cursor = options.cursor;
+  const items: AttentionDelivery[] = [];
+  for (;;) {
+    const rows = cursor
+      ? after.all(userId, cursor.createdAt, cursor.createdAt, cursor.id, batchSize)
+      : first.all(userId, batchSize);
+    for (const raw of rows) {
+      const delivery = decodeRow(raw);
+      cursor = { createdAt: delivery.createdAt, id: delivery.id };
+      if (isEligible(delivery) !== true) continue;
+      if (items.length === limit) return { items, hasMore: true };
+      items.push(delivery);
+    }
+    if (rows.length < batchSize) return { items, hasMore: false };
+  }
+}
+
+/** Exercises the same Attention transactions on an already migrated Communication database. */
 export class AttentionNotifications {
   constructor(
     private readonly sqlite: Database.Database,
     private readonly options: {
       now?: () => string;
       buildAppPath?: (source: AttentionSource) => string;
-      /** Canonical runtime binding for enqueue, startup reconciliation, claim and completion commits. */
-      nativeCoreDb?: CoreDb;
     } = {}
   ) {}
 
@@ -295,34 +346,7 @@ export class AttentionNotifications {
   }): Promise<AttentionDelivery> {
     const parsed = AttentionEnqueueSchema.safeParse(input);
     if (!parsed.success) throw new AttentionError('invalid_attention_input');
-    const coreDb = this.options.nativeCoreDb;
-    if (!coreDb) return enqueueAttentionInDb(this.sqlite, parsed.data, () => this.now());
-    const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(
-      '../storage/control-store-worker-client.js'
-    );
-    if (coreDb.sqlite !== this.sqlite)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    let createdAt: string | null = null;
-    let clockError: unknown;
-    try {
-      createdAt = this.now();
-    } catch (error) {
-      clockError = error;
-    }
-    try {
-      return await getControlStoreWorkerClient().attentionEnqueue(coreDb, {
-        ...parsed.data,
-        createdAt,
-      });
-    } catch (error) {
-      if (
-        createdAt === null &&
-        error instanceof AttentionError &&
-        error.code === 'invalid_attention_input'
-      )
-        throw clockError;
-      throw error;
-    }
+    return enqueueAttentionInDb(this.sqlite, parsed.data, () => this.now());
   }
 
   /** Reads an internal reference; callers must use current admission before exposing it. */
@@ -336,13 +360,7 @@ export class AttentionNotifications {
     userId: string,
     isEligible: AttentionEligibility
   ): AttentionDelivery | null {
-    if (!RequestIdSchema.safeParse(id).success) throw new AttentionError('invalid_attention_input');
-    const row = this.sqlite
-      .prepare(`${SELECT} WHERE a.id = ? AND a.recipient_user_id = ?`)
-      .get(id, userId);
-    if (!row) return null;
-    const delivery = decodeRow(row);
-    return isEligible(delivery) === true ? delivery : null;
+    return getAttentionForRecipientInDb(this.sqlite, id, userId, isEligible);
   }
 
   /** Reads at most limit recipient rows before current source/audience filtering. */
@@ -364,40 +382,13 @@ export class AttentionNotifications {
       .filter((delivery) => isEligible(delivery) === true);
   }
 
-  /** Reads one recipient-scoped page in descending (createdAt, id) order after current source/audience admission. */
+  /** Reads a page after current source and audience admission. */
   pageForActor(
     userId: string,
-    options: {
-      limit?: number | undefined;
-      cursor?: { createdAt: string; id: string } | undefined;
-    },
+    options: AttentionPageOptions,
     isEligible: AttentionEligibility
   ): { items: AttentionDelivery[]; hasMore: boolean } {
-    const limit = options.limit ?? 50;
-    if (!isUserId(userId) || !Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new AttentionError('invalid_attention_input');
-    }
-    const cursor = options.cursor;
-    const rows = cursor
-      ? this.sqlite
-          .prepare(
-            `${SELECT} WHERE a.recipient_user_id = ? AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?)) ORDER BY a.created_at DESC, a.id DESC`
-          )
-          .all(userId, cursor.createdAt, cursor.createdAt, cursor.id)
-      : this.sqlite
-          .prepare(`${SELECT} WHERE a.recipient_user_id = ? ORDER BY a.created_at DESC, a.id DESC`)
-          .all(userId);
-    const items: AttentionDelivery[] = [];
-    for (const raw of rows) {
-      const delivery = decodeRow(raw);
-      if (isEligible(delivery) !== true) continue;
-      if (items.length < limit) {
-        items.push(delivery);
-      } else {
-        return { items, hasMore: true };
-      }
-    }
-    return { items, hasMore: false };
+    return pageAttentionForRecipientInDb(this.sqlite, userId, options, isEligible);
   }
 
   /** Claims before contact; only explicit retry after proved no-send can create another attempt. */
@@ -414,9 +405,7 @@ export class AttentionNotifications {
     const parsed = DeliverSchema.safeParse(input);
     if (!parsed.success) throw new AttentionError('invalid_attention_input');
     const admitted = parsed.data;
-    const delivery = this.options.nativeCoreDb
-      ? await this.claimNative(admitted)
-      : claimAttentionAttemptInDb(this.sqlite, admitted, () => this.now());
+    const delivery = claimAttentionAttemptInDb(this.sqlite, admitted, () => this.now());
     return deliverClaimedAttention(delivery, {
       ...dependencies,
       buildAppPath: this.options.buildAppPath,
@@ -426,67 +415,7 @@ export class AttentionNotifications {
 
   /** At startup before serving, makes every unfinished send unknown without contacting a transport. */
   async reconcileIncompleteAttempts(): Promise<number> {
-    const coreDb = this.options.nativeCoreDb;
-    if (!coreDb) return reconcileIncompleteAttentionAttemptsInDb(this.sqlite, () => this.now());
-    const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(
-      '../storage/control-store-worker-client.js'
-    );
-    if (coreDb.sqlite !== this.sqlite)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    let finishedAt: string | null = null;
-    let clockError: unknown;
-    try {
-      finishedAt = this.now();
-    } catch (error) {
-      clockError = error;
-    }
-    try {
-      return await getControlStoreWorkerClient().attentionReconcileIncompleteAttempts(coreDb, {
-        finishedAt,
-      });
-    } catch (error) {
-      // Keep the original corruption-before-clock refusal inside whole-operation rollback.
-      if (
-        finishedAt === null &&
-        error instanceof AttentionError &&
-        error.code === 'invalid_attention_input'
-      )
-        throw clockError;
-      throw error;
-    }
-  }
-
-  /** Only a durable original claim snapshot may reach routing, fresh eligibility or transport. */
-  private async claimNative(admitted: z.infer<typeof DeliverSchema>): Promise<AttentionDelivery> {
-    const coreDb = this.options.nativeCoreDb!;
-    const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(
-      '../storage/control-store-worker-client.js'
-    );
-    if (coreDb.sqlite !== this.sqlite)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    let startedAt: string | null = null;
-    let clockError: unknown;
-    try {
-      startedAt = this.now();
-    } catch (error) {
-      clockError = error;
-    }
-    try {
-      return await getControlStoreWorkerClient().attentionAttemptClaim(coreDb, {
-        ...admitted,
-        startedAt,
-      });
-    } catch (error) {
-      // A prepared invalid clock is consumed only at the original insertion point,
-      // after the original lookup/CAS/channel/status guards and inside rollback.
-      if (
-        startedAt === null &&
-        error instanceof AttentionError &&
-        error.code === 'invalid_attention_input'
-      )
-        throw clockError;
-      throw error;
-    }
+    return reconcileIncompleteAttentionAttemptsInDb(this.sqlite, () => this.now());
   }
 
   /** Settles only the exact live claim; an already-reconciled attempt can never become sent. */
@@ -502,21 +431,7 @@ export class AttentionNotifications {
       failureCode,
       finishedAt: this.now(),
     };
-    const coreDb = this.options.nativeCoreDb;
-    if (coreDb) {
-      const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(
-        '../storage/control-store-worker-client.js'
-      );
-      // Bind the actual owner connection before any native open/post. The client
-      // independently binds the supplied Core scope and canonical physical path.
-      if (coreDb.sqlite !== this.sqlite)
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      await getControlStoreWorkerClient().attentionAttemptCompletion(coreDb, input);
-    } else {
-      // Original raw-database owners/fixtures retain their existing statement.
-      completeAttentionAttemptInDb(this.sqlite, input);
-    }
-    // This was always a separate post-commit projection, never part of the UPDATE.
+    completeAttentionAttemptInDb(this.sqlite, input);
     return this.get(delivery.id)!;
   }
 

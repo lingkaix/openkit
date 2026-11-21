@@ -10,6 +10,7 @@ import {
 import {
   type CommunicationCredentials,
   createCommunicationCredentialOperationImplementations,
+  createCredentialOperationImplementations,
 } from '../auth/credential-operations.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -30,51 +31,62 @@ async function withCore<T>(run: (db: ReturnType<typeof openCoreDb>) => Promise<T
 }
 
 describe('Communication credentials in the shared credential family', () => {
-  it('keeps the kernel access-token inventory and revoke available when communication is missing', () =>
-    withCore(async (coreDb) => {
-      const userId = ensureLocalUser(coreDb);
-      const { tokenId } = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: userId,
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      });
-      const context = { kind: 'public', actor: { kind: 'local', userId } } as const;
-      const unavailable = {
-        state: 'unavailable',
-        owner: 'communication',
-        reason: 'missing',
-      } as const;
-      const unbind = vi.fn(async () => unavailable);
-      const operations = createCommunicationCredentialOperationImplementations({
-        coreDb,
-        mode: 'local',
-        communicationCredentials: { readBinding: () => unavailable, unbind },
-      });
-      expect(operations['credential.list']({}, context).items).toEqual([
-        expect.objectContaining({ kind: 'access-token', id: tokenId }),
-      ]);
-      await expect(
-        operations['credential.revoke'](
-          {
-            kind: 'discord-pairing',
-            id: randomUUID(),
-          },
-          context
-        )
-      ).rejects.toMatchObject({ code: 'channel_storage_unavailable', status: 503 });
-      expect(unbind).not.toHaveBeenCalled();
-      await expect(
-        operations['credential.revoke'](
-          {
-            kind: 'access-token',
-            id: tokenId,
-          },
-          context
-        )
-      ).resolves.toEqual({ status: 'revoked' });
-      expect(getOpenKitAccessTokenRecord(coreDb, tokenId)?.status).toBe('revoked');
-    }));
+  it.each(['default', 'selected'] as const)(
+    'keeps the Kernel inventory and revoke available in the %s composition with Communication unavailable',
+    (composition) =>
+      withCore(async (coreDb) => {
+        const userId = ensureLocalUser(coreDb);
+        expect(
+          coreDb.sqlite
+            .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
+            .get('discord_account_bindings')
+        ).toBeUndefined();
+        const { tokenId } = createOpenKitAccessTokenRecord(coreDb, {
+          ownerUserId: userId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+        const context = { kind: 'public', actor: { kind: 'local', userId } } as const;
+        const unavailable = {
+          state: 'unavailable',
+          owner: 'communication',
+          reason: 'missing',
+        } as const;
+        const unbind = vi.fn(async () => unavailable);
+        const owners = { coreDb, mode: 'local' as const };
+        const operations =
+          composition === 'default'
+            ? createCredentialOperationImplementations(owners)
+            : createCommunicationCredentialOperationImplementations({
+                ...owners,
+                communicationCredentials: { readBinding: () => unavailable, unbind },
+              });
+        expect(operations['credential.list']({}, context).items).toEqual([
+          expect.objectContaining({ kind: 'access-token', id: tokenId }),
+        ]);
+        await expect(
+          operations['credential.revoke'](
+            {
+              kind: 'discord-pairing',
+              id: randomUUID(),
+            },
+            context
+          )
+        ).rejects.toMatchObject({ code: 'channel_storage_unavailable', status: 503 });
+        expect(unbind).not.toHaveBeenCalled();
+        await expect(
+          operations['credential.revoke'](
+            {
+              kind: 'access-token',
+              id: tokenId,
+            },
+            context
+          )
+        ).resolves.toEqual({ status: 'revoked' });
+        expect(getOpenKitAccessTokenRecord(coreDb, tokenId)?.status).toBe('revoked');
+      })
+  );
 
   it('forwards the exact selected revision and presented actor to unbind', () =>
     withCore(async (coreDb) => {

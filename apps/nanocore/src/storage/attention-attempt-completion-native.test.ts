@@ -7,18 +7,22 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AttentionNotifications, enqueueAttentionInDb } from '../notifications/attention.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestCoreDb } from '../test-support/store.js';
 import {
   type ControlAttentionAttemptCompletion,
   ControlAttentionAttemptCompletionSchema,
 } from './attention-attempt-completion-codecs.js';
-import { applyControlAttentionAttemptCompletion } from './attention-attempt-completion-native.js';
+import { sendCommunicationAttention } from './communication-attention.js';
+import { settleCommunicationAttentionInDb } from './communication-attention-native.js';
+import { requireChannelStorage } from './communication-inbound.js';
 import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './control-store-worker-client.js';
+  communicationKernelFixture,
+  openCommunicationFixture,
+} from './communication-worker.test-support.js';
+import { CommunicationWriterCommandSchema } from './communication-writer.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { isControlWorkerRequest } from './control-store-worker-protocol.js';
-import { type CoreDb, openCoreDb } from './db.js';
-import { applyNativeScopeMigrations } from './migrate.js';
+import { serverStoragePath } from './db.js';
 
 // Reuse the real SQLite Worker and hold only
 // its genuine post-commit completion ACK. No fake SQL result or reply is made.
@@ -30,6 +34,7 @@ const fault = vi.hoisted(() => ({
   posts: [] as string[],
   requests: [] as number[],
   acknowledgements: 0,
+  refusals: [] as unknown[],
 }));
 
 vi.mock('node:worker_threads', async (load) => {
@@ -41,7 +46,7 @@ vi.mock('node:worker_threads', async (load) => {
         const message: unknown = args[0];
         if (isControlWorkerRequest(message)) {
           fault.posts.push(message.operation);
-          if (message.operation === 'attention-attempt-completion') {
+          if (message.operation === 'communication-owner' && message.stage === 'settle-attention') {
             fault.requests.push(message.id);
             fault.worker = this;
           }
@@ -53,9 +58,18 @@ vi.mock('node:worker_threads', async (load) => {
         if (
           event === 'message' &&
           isRecord(reply) &&
-          reply.status === 'ok' &&
-          reply.operation === 'attention-attempt-completion' &&
+          reply.status === 'error' &&
           fault.requests.includes(reply.id as number)
+        )
+          fault.refusals.push(reply);
+        if (
+          event === 'message' &&
+          isRecord(reply) &&
+          reply.status === 'ok' &&
+          reply.operation === 'communication-owner' &&
+          fault.requests.includes(reply.id as number) &&
+          isRecord(reply.result) &&
+          reply.result.stage === 'settle-attention'
         ) {
           if (fault.hold) {
             fault.release = () => {
@@ -90,21 +104,38 @@ function track<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
-function fixture() {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-attention-completion-'));
+async function fixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-communication-completion-'));
   roots.push(dataRoot);
-  const coreDb: CoreDb = openCoreDb(dataRoot);
+  const coreDb = createTestCoreDb(dataRoot);
   databases.push(coreDb.sqlite);
-  applyNativeScopeMigrations(coreDb.sqlite, 'core');
+  const kernel = communicationKernelFixture(
+    coreDb,
+    () => null,
+    () => {
+      throw new Error('Attention cannot submit a Core receipt.');
+    }
+  );
+  const open = () => openCommunicationFixture(coreDb, 'local', kernel);
+  let binding = await open();
+  const path = serverStoragePath(dataRoot, 'communication');
+  const sqlite = new Database(path, { fileMustExist: true });
+  databases.push(sqlite);
+  const reader = new Database(path, { readonly: true, fileMustExist: true });
+  databases.push(reader);
+  const projection = new AttentionNotifications(reader);
+  const bindingRevision = crypto.randomUUID();
+  sqlite
+    .prepare(`INSERT INTO channel_account_bindings
+    (revision, channel_kind, external_account_id, user_id, paired_at)
+    VALUES (?, 'discord', '302', ?, ?)`)
+    .run(bindingRevision, recipientUserId, Date.now());
   const options = {
-    nativeCoreDb: coreDb,
     now: () => finishedAt,
     buildAppPath: () => '/tasks/completion?requestId=apr_completion_owner',
   };
-  const notifications = new AttentionNotifications(coreDb.sqlite, options);
-  // Isolated pre-open fixture setup retains the original owner; the subject starts its native scope.
   const delivery = enqueueAttentionInDb(
-    coreDb.sqlite,
+    sqlite,
     {
       source: {
         workspaceId: testEntityId('ws', 'completion-owner'),
@@ -116,19 +147,70 @@ function fixture() {
     },
     () => finishedAt
   );
-  return { coreDb, notifications, delivery, options };
+  fault.posts.length = 0;
+  const notifications = {
+    get: (id: string) => projection.get(id),
+    deliver: async (
+      { channel: _channel, ...selection }: Parameters<AttentionNotifications['deliver']>[0],
+      dependencies: Parameters<AttentionNotifications['deliver']>[1]
+    ) => {
+      const { attention, communication } = binding.owners;
+      return requireChannelStorage(
+        await attention.withWorkspace(delivery.source.workspaceId, () =>
+          sendCommunicationAttention({
+            selection: { ...selection, retry: selection.retry ?? false },
+            withBinding: communication.withBinding,
+            readBinding: communication.storage.readBinding,
+            writer: attention,
+            isEligible: dependencies.isEligible,
+            buildAppPath: options.buildAppPath,
+            now: options.now,
+            send: async ({ appPath }) => {
+              const { status } = await dependencies.transport({
+                kind: 'attention-link',
+                deliveryId: selection.deliveryId,
+                appPath,
+              });
+              return status === 'sent'
+                ? { status, externalMessageId: '523456789012345678' }
+                : { status, code: 'fixture-outcome' };
+            },
+          })
+        )
+      );
+    },
+    enqueue: async (input: Parameters<typeof binding.owners.attention.enqueue>[0]) => {
+      const { attention } = binding.owners;
+      return requireChannelStorage(
+        requireChannelStorage(
+          await attention.withWorkspace(delivery.source.workspaceId, () => attention.enqueue(input))
+        )
+      );
+    },
+    reconcileIncompleteAttempts: async () =>
+      requireChannelStorage(await binding.owners.attention.reconcile()),
+  };
+  return {
+    sqlite,
+    path,
+    notifications,
+    delivery,
+    options,
+    bindingRevision,
+    current: () => binding,
+    reopen: async () => {
+      binding = await open();
+    },
+  };
 }
-
-type Fixture = ReturnType<typeof fixture>;
-
-function cold(coreDb: CoreDb) {
-  const reader = new Database(coreDb.sqlite.name, { readonly: true });
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+function cold(f: Fixture) {
+  const reader = new Database(f.path, { readonly: true, fileMustExist: true });
   databases.push(reader);
   return reader;
 }
-
 function outcome(f: Fixture) {
-  return cold(f.coreDb)
+  return cold(f)
     .prepare(
       'SELECT status, failure_code AS failureCode, finished_at AS finishedAt FROM notification_delivery_attempts WHERE attention_id = ?'
     )
@@ -140,7 +222,7 @@ function outcome(f: Fixture) {
 }
 
 function count(f: Fixture) {
-  return cold(f.coreDb)
+  return cold(f)
     .prepare('SELECT COUNT(*) AS count FROM notification_delivery_attempts WHERE attention_id = ?')
     .get(f.delivery.id) as { count: number };
 }
@@ -191,6 +273,7 @@ beforeEach(async () => {
   fault.posts.length = 0;
   fault.requests.length = 0;
   fault.acknowledgements = 0;
+  fault.refusals.length = 0;
 });
 
 afterEach(async () => {
@@ -208,12 +291,12 @@ afterEach(async () => {
 
 describe('native Attention attempt completion', () => {
   it('commits the original completion after transport with Main readonly', async () => {
-    const f = fixture();
+    const f = await fixture();
     let sends = 0;
     const result = send(f, async () => {
       sends += 1;
       expect(f.notifications.get(f.delivery.id)?.status).toBe('sending');
-      f.coreDb.sqlite.pragma('query_only = ON');
+      f.sqlite.pragma('query_only = ON');
       return { status: 'sent' };
     });
     await expect(result).resolves.toMatchObject({
@@ -231,11 +314,11 @@ describe('native Attention attempt completion', () => {
   it.each(['failed-no-send', 'delivery-unknown', 'throw', 'malformed'] as const)(
     'records the original transport outcome %s without a Main completion write',
     async (mode) => {
-      const f = fixture();
+      const f = await fixture();
       let sends = 0;
       const result = send(f, async () => {
         sends += 1;
-        f.coreDb.sqlite.pragma('query_only = ON');
+        f.sqlite.pragma('query_only = ON');
         if (mode === 'throw') throw new Error('Adapter acknowledgement unavailable.');
         if (mode === 'malformed') return { status: 'not-an-outcome' as 'sent' };
         return { status: mode };
@@ -253,12 +336,12 @@ describe('native Attention attempt completion', () => {
   it.each(['sent', 'invalid-path', 'ineligible'] as const)(
     'waits for the actual native completion ACK before publishing %s',
     async (mode) => {
-      const f = fixture();
+      const f = await fixture();
       const arrived = holdAcknowledgement();
       let sends = 0;
       if (mode === 'invalid-path')
         f.options.buildAppPath = () => {
-          f.coreDb.sqlite.pragma('query_only = ON');
+          f.sqlite.pragma('query_only = ON');
           return 'https://outside.invalid/';
         };
       const result = track(
@@ -272,12 +355,12 @@ describe('native Attention attempt completion', () => {
           },
           {
             isEligible: () => {
-              if (mode === 'ineligible') f.coreDb.sqlite.pragma('query_only = ON');
+              if (mode === 'ineligible') f.sqlite.pragma('query_only = ON');
               return mode !== 'ineligible';
             },
             transport: async () => {
               sends += 1;
-              f.coreDb.sqlite.pragma('query_only = ON');
+              f.sqlite.pragma('query_only = ON');
               return { status: 'sent' };
             },
           }
@@ -319,32 +402,33 @@ describe('native Attention attempt completion', () => {
   );
 
   it('leaves the original sending attempt intact on a real native SQL rollback', async () => {
-    const f = fixture();
-    f.coreDb.sqlite.exec(`CREATE TRIGGER reject_attention_completion
+    const f = await fixture();
+    f.sqlite.exec(`CREATE TRIGGER reject_attention_completion
       BEFORE UPDATE ON notification_delivery_attempts
       BEGIN SELECT RAISE(ABORT, 'completion-rejected'); END`);
     let sends = 0;
     await expect(
       send(f, async () => {
         sends += 1;
-        f.coreDb.sqlite.pragma('query_only = ON');
+        f.sqlite.pragma('query_only = ON');
         return { status: 'sent' };
       })
-    ).rejects.toMatchObject({ commit: 'not-committed' });
+    ).rejects.toMatchObject({ code: 'channel_storage_unavailable' });
     expect(outcome(f)).toEqual({ status: 'sending', failureCode: null, finishedAt: null });
     expect(count(f).count).toBe(1);
     expect(sends).toBe(1);
     expect(fault.requests).toHaveLength(1);
     expect(fault.acknowledgements).toBe(0);
+    expect(fault.refusals).toEqual([expect.objectContaining({ commit: 'not-committed' })]);
   });
 
   it('does not publish, fallback or repost after a genuine committed ACK is lost', async () => {
-    const f = fixture();
+    const f = await fixture();
     const arrived = holdAcknowledgement();
     let sends = 0;
     const result = send(f, async () => {
       sends += 1;
-      f.coreDb.sqlite.pragma('query_only = ON');
+      f.sqlite.pragma('query_only = ON');
       return { status: 'sent' };
     });
     await arrived;
@@ -353,13 +437,14 @@ describe('native Attention attempt completion', () => {
     const worker = fault.worker;
     if (!worker) throw new Error('The real completion Worker must have posted.');
     await worker.terminate();
-    await expect(result).rejects.toMatchObject({ commit: 'unknown' });
+    await expect(result).rejects.toMatchObject({ code: 'channel_storage_unavailable' });
     expect(fault.requests).toHaveLength(1);
     expect(fault.acknowledgements).toBe(0);
     expect(sends).toBe(1);
     // Claim inspection now needs a live native owner. Recreate it explicitly
     // for this durable retry fence; production never retries the lost command.
     await shutdownControlStoreWorkerClient();
+    await f.reopen();
     await expect(
       f.notifications.deliver(
         {
@@ -385,53 +470,63 @@ describe('native Attention attempt completion', () => {
     expect(outcome(f)).toEqual({ status: 'sent', failureCode: null, finishedAt });
   });
 
-  it.each(['connection', 'path', 'scope'] as const)(
-    'refuses a mismatched physical Core %s before native open/post',
+  it.each(['unadmitted', 'foreign opening'] as const)(
+    'refuses a %s completion producer after the genuine claim',
     async (mode) => {
-      const f = fixture();
-      const other = fixture();
-      let sends = 0;
-      let postsBefore: string[] = [];
-      await expect(
-        send(f, async () => {
-          // Keep this completion-stage probe after the genuine native claim.
-          postsBefore = fault.posts.slice();
-          f.options.nativeCoreDb =
-            mode === 'connection'
-              ? other.coreDb
-              : mode === 'path'
-                ? { ...f.coreDb, dataRoot: other.coreDb.dataRoot }
-                : ({ ...f.coreDb, scope: 'workspace' } as unknown as CoreDb);
-          sends += 1;
-          f.coreDb.sqlite.pragma('query_only = ON');
-          return { status: 'sent' };
-        })
-      ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
-      expect(sends).toBe(1);
-      expect(fault.posts).toEqual(postsBefore);
-      expect(outcome(f)).toEqual({ status: 'sending', failureCode: null, finishedAt: null });
-      expect(count(other).count).toBe(0);
-      expect(other.notifications.get(other.delivery.id)?.status).toBe('queued');
+      const f = await fixture();
+      const other = mode === 'foreign opening' ? await fixture() : null;
+      const arrived = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const result = send(f, async () => {
+        arrived.resolve();
+        await release.promise;
+        return { status: 'sent' };
+      });
+      try {
+        await arrived.promise;
+        const postsBefore = fault.posts.slice();
+        const settle = () => f.current().owners.attention.settle(input(f));
+        const refused = other
+          ? requireChannelStorage(await other.current().withProducer(settle))
+          : await settle();
+        expect(refused).toMatchObject({ state: 'unavailable' });
+        expect(() =>
+          f
+            .current()
+            .owners.attention.read((sqlite) => settleCommunicationAttentionInDb(sqlite, input(f)))
+        ).toThrow(expect.objectContaining({ code: 'SQLITE_READONLY' }));
+        if (other) expect(count(other).count).toBe(0);
+        expect(fault.posts).toEqual(postsBefore);
+        expect(outcome(f)).toEqual({ status: 'sending', failureCode: null, finishedAt: null });
+      } finally {
+        release.resolve();
+      }
+      await expect(result).resolves.toMatchObject({ status: 'sent' });
     }
   );
 
   it('keeps the original sending predicate when startup reconciliation wins first', async () => {
-    const f = fixture();
+    const f = await fixture();
     await expect(
       send(f, async () => {
         expect(await f.notifications.reconcileIncompleteAttempts()).toBe(1);
-        f.coreDb.sqlite.pragma('query_only = ON');
+        f.sqlite.pragma('query_only = ON');
         return { status: 'sent' };
       })
-    ).resolves.toMatchObject({ status: 'delivery-unknown', attempt: { failureCode: 'restart' } });
-    expect(outcome(f)).toEqual({ status: 'delivery-unknown', failureCode: 'restart', finishedAt });
+    ).rejects.toMatchObject({ code: 'attention_attempt_conflict' });
+    expect(outcome(f)).toEqual({
+      status: 'delivery-unknown',
+      failureCode: 'restart',
+      finishedAt: expect.any(String),
+    });
     expect(count(f).count).toBe(1);
     expect(fault.requests).toHaveLength(1);
-    expect(fault.acknowledgements).toBe(1);
+    expect(fault.acknowledgements).toBe(0);
+    expect(fault.refusals).toEqual([expect.objectContaining({ commit: 'not-committed' })]);
   });
 
   it('rejects malformed private completion fields before any native frame', async () => {
-    const f = fixture();
+    const f = await fixture();
     await expect(
       send(f, async () => {
         const postsBefore = fault.posts.slice();
@@ -449,38 +544,26 @@ describe('native Attention attempt completion', () => {
           ControlAttentionAttemptCompletionSchema.safeParse({ ...value, finishedAt: 'not-a-date' })
             .success
         ).toBe(false);
-        await expect(
-          getControlStoreWorkerClient().attentionAttemptCompletion(f.coreDb, {
-            ...value,
-            callback: 'not-a-program',
-          } as ControlAttentionAttemptCompletion)
-        ).rejects.toThrow();
+        const writer = f.current().owners.attention;
+        const malformed = { ...value, callback: 'not-a-program' };
+        expect(
+          CommunicationWriterCommandSchema.safeParse({
+            stage: 'settle-attention',
+            input: malformed,
+          }).success
+        ).toBe(false);
+        await expect(writer.settle(malformed)).resolves.toMatchObject({ state: 'unavailable' });
         expect(fault.posts).toEqual(postsBefore);
         expect(outcome(f).status).toBe('sending');
-        f.coreDb.sqlite.pragma('query_only = ON');
+        f.sqlite.pragma('query_only = ON');
         return { status: 'sent' };
       })
     ).resolves.toMatchObject({ status: 'sent' });
     expect(fault.requests).toHaveLength(1);
   });
 
-  it('refuses the native owner on a real Main connection before its SQL effects', async () => {
-    const f = fixture();
-    await expect(
-      send(f, async () => {
-        const postsBefore = fault.posts.slice();
-        expect(() => applyControlAttentionAttemptCompletion(f.coreDb, input(f))).toThrow();
-        expect(outcome(f)).toEqual({ status: 'sending', failureCode: null, finishedAt: null });
-        expect(fault.posts).toEqual(postsBefore);
-        f.coreDb.sqlite.pragma('query_only = ON');
-        return { status: 'sent' };
-      })
-    ).resolves.toMatchObject({ status: 'sent' });
-    expect(fault.requests).toHaveLength(1);
-  });
-
-  it('retains the commit when the original post-ACK projection encounters real corrupt data', async () => {
-    const f = fixture();
+  it('returns the claimed snapshot after the committing ACK despite corrupt retained source data', async () => {
+    const f = await fixture();
     // Warm the same admitted physical Core through another genuine enqueue,
     // claim and completion, not an invented receipt or an off-domain command.
     const warm = await f.notifications.enqueue({
@@ -503,13 +586,14 @@ describe('native Attention attempt completion', () => {
       send(f, async () => {
         sends += 1;
         // Deliberate retained-row corruption is a fault, never accepted history.
-        f.coreDb.sqlite
+        f.sqlite
           .prepare('UPDATE notification_attention SET created_at = ? WHERE id = ?')
           .run('not-a-date', f.delivery.id);
-        f.coreDb.sqlite.pragma('query_only = ON');
+        f.sqlite.pragma('query_only = ON');
         return { status: 'sent' };
       })
-    ).rejects.toMatchObject({ code: 'attention_recovery_required' });
+    ).resolves.toMatchObject({ status: 'sent', createdAt: finishedAt });
+    expect(() => f.notifications.get(f.delivery.id)).toThrow('attention_recovery_required');
     expect(fault.requests).toHaveLength(before + 1);
     expect(fault.acknowledgements).toBe(before + 1);
     expect(sends).toBe(1);

@@ -97,23 +97,23 @@ function evaluateEntrypointShutdown(effects: {
   audit: Promise<void>;
   coreMigrationsComplete: boolean;
   coreMigrationFailure?: Error;
-  attentionReconciliation?: Promise<number>;
+  communicationAdmission?: Promise<{ state: 'ready' } | { state: 'unavailable' }>;
 }) {
   const source = readEntrypointSource();
   const sourceFile = createSourceFile('index.ts', source, ScriptTarget.Latest, true);
   let migrationPhase: string | undefined;
+  let communicationPhase: string | undefined;
   sourceFile.forEachChild(function visit(node) {
-    if (
-      isObjectLiteralExpression(node) &&
-      node.properties.some(
-        (property) =>
-          isPropertyAssignment(property) &&
-          property.name.getText(sourceFile) === 'name' &&
-          isStringLiteral(property.initializer) &&
-          property.initializer.text === 'migrations'
-      )
-    )
-      migrationPhase = node.getText(sourceFile);
+    if (isObjectLiteralExpression(node)) {
+      const name = node.properties.find(
+        (property) => isPropertyAssignment(property) && property.name.getText(sourceFile) === 'name'
+      );
+      if (name && isPropertyAssignment(name) && isStringLiteral(name.initializer)) {
+        if (name.initializer.text === 'migrations') migrationPhase = node.getText(sourceFile);
+        if (name.initializer.text === 'communication-admission')
+          communicationPhase = node.getText(sourceFile);
+      }
+    }
     node.forEachChild(visit);
   });
   const bootOutcomePublication = sourceFile.statements.find(
@@ -121,7 +121,7 @@ function evaluateEntrypointShutdown(effects: {
       isIfStatement(statement) &&
       statement.getText(sourceFile).includes('await recordBootAuditEvent(')
   );
-  if (!migrationPhase || !bootOutcomePublication)
+  if (!migrationPhase || !communicationPhase || !bootOutcomePublication)
     throw new Error('NanoCore migration phase or boot-outcome publication was not found.');
   const names = [
     'shutdown',
@@ -150,6 +150,17 @@ function evaluateEntrypointShutdown(effects: {
       bootReadiness = bootResult.readiness;
       return bootResult;
     }
+    async function runCommunicationPhase() {
+      return await runBootPhases({ bootId, phases: [${communicationPhase}, {
+        name: 'after-communication',
+        subsystem: 'storage',
+        critical: true,
+        run: () => {
+          events.push('after.communication');
+          return { status: 'ok' };
+        },
+      }] });
+    }
     async function publishBootOutcome() {
       ${bootOutcomePublication.getText(sourceFile)}
     }`,
@@ -170,6 +181,8 @@ function evaluateEntrypointShutdown(effects: {
     events.push('native.closed');
   });
   const getControlStoreWorkerClient = vi.fn(() => {
+    if (effects.communicationAdmission)
+      return { communicationKernel: () => ({ status: () => ({ state: 'ready' }) }) };
     throw new Error('Shutdown must not open a replacement native writer.');
   });
   const exit = vi.fn((code: number) => {
@@ -186,15 +199,11 @@ function evaluateEntrypointShutdown(effects: {
   };
   const openCoreDbWithIntegrityCheck = vi.fn(() => coreDb);
   const applyMigrations = vi.fn(() => {
-    if (effects.attentionReconciliation) {
-      events.push('core.migrated');
-      return;
-    }
     throw effects.coreMigrationFailure ?? new Error('Unexpected migration invocation.');
   });
-  const reconcileIncompleteAttempts = vi.fn(() => {
+  const prepareCommunicationOwner = vi.fn(() => {
     events.push('attention.started');
-    return effects.attentionReconciliation;
+    return effects.communicationAdmission;
   });
   const recoverRunningCapabilityCalls = vi.fn(async () => {
     events.push('recovery.started');
@@ -212,9 +221,10 @@ function evaluateEntrypointShutdown(effects: {
     verifyExistingCoreBaseline: vi.fn(async () => {}),
     openCoreDbWithIntegrityCheck,
     applyMigrations,
-    AttentionNotifications: class {
-      reconcileIncompleteAttempts = reconcileIncompleteAttempts;
-    },
+    mode: 'local',
+    communicationBinding: undefined,
+    prepareCommunicationOwner,
+    events,
     restoreWorkspaceRetirementAdmission: vi.fn(),
     restoreWorkspaceRecoveryAdmission: vi.fn(),
     recoverRunningCapabilityCalls,
@@ -269,7 +279,7 @@ function evaluateEntrypointShutdown(effects: {
     recordShutdownAuditEvent,
     shutdownControlStoreWorkerClient,
     getControlStoreWorkerClient,
-    coreDb: effects.coreMigrationsComplete ? coreDb : undefined,
+    coreDb: effects.coreMigrationsComplete || effects.communicationAdmission ? coreDb : undefined,
     dataRootLock: { release: () => events.push('lock.released') },
     process: { exit },
     console: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -279,6 +289,7 @@ function evaluateEntrypointShutdown(effects: {
     `let shutdownCompletion;\n${javascript}\nreturn {
       shutdown,
       runMigrationPhase,
+      runCommunicationPhase,
       publishBootOutcome,
       completion: () => shutdownCompletion,
       readiness: () => bootReadiness,
@@ -286,6 +297,7 @@ function evaluateEntrypointShutdown(effects: {
   )(...Object.values(bindings)) as {
     shutdown: (signal: NodeJS.Signals) => void;
     runMigrationPhase: () => ReturnType<typeof runBootPhases>;
+    runCommunicationPhase: () => ReturnType<typeof runBootPhases>;
     publishBootOutcome: () => Promise<void>;
     completion: () => Promise<void>;
     readiness: () => ReturnType<typeof computeBootReadinessSnapshot>;
@@ -299,7 +311,7 @@ function evaluateEntrypointShutdown(effects: {
     recordBootStartAuditEvent,
     openCoreDbWithIntegrityCheck,
     applyMigrations,
-    reconcileIncompleteAttempts,
+    prepareCommunicationOwner,
     recoverRunningCapabilityCalls,
     shutdownControlStoreWorkerClient,
     getControlStoreWorkerClient,
@@ -310,61 +322,54 @@ function evaluateEntrypointShutdown(effects: {
 }
 
 describe('NanoCore boot phase order', () => {
-  it('joins Attention reconciliation before recovery or completion of critical migrations', async () => {
+  it('joins Communication admission and its Attention reconciliation before scheduler recovery', async () => {
     const ack = pendingShutdownEffect();
     const lifecycle = evaluateEntrypointShutdown({
       maintenance: Promise.resolve(),
       executions: Promise.resolve(),
       listeners: Promise.resolve(),
       audit: Promise.resolve(),
-      coreMigrationsComplete: false,
-      attentionReconciliation: ack.promise.then(() => 2),
+      coreMigrationsComplete: true,
+      communicationAdmission: ack.promise.then(() => ({ state: 'ready' })),
     });
-    let completed = false;
-    const boot = lifecycle.runMigrationPhase().then((result) => {
-      completed = true;
-      return result;
-    });
-
-    await Promise.resolve();
-    // Core Storage requires the covering FULL ACK before startup admission.
-    expect(lifecycle.events).toEqual(['core.migrated', 'attention.started']);
-    expect(lifecycle.reconcileIncompleteAttempts).toHaveBeenCalledTimes(1);
-    expect(lifecycle.recoverRunningCapabilityCalls).not.toHaveBeenCalled();
-    expect(lifecycle.recordBootStartAuditEvent).not.toHaveBeenCalled();
-    expect(completed).toBe(false);
+    const boot = lifecycle.runCommunicationPhase();
+    expect(lifecycle.events).toEqual(['attention.started']);
+    expect(lifecycle.prepareCommunicationOwner).toHaveBeenCalledOnce();
 
     ack.resolve();
     const result = await boot;
     expect(result.outcomes[0]?.outcome.status).toBe('ok');
-    expect(lifecycle.recoverRunningCapabilityCalls).toHaveBeenCalledTimes(1);
-    expect(lifecycle.recordBootStartAuditEvent).toHaveBeenCalledTimes(1);
-    expect(completed).toBe(true);
+    expect(lifecycle.events).toEqual(['attention.started', 'after.communication']);
+
+    const source = readEntrypointSource();
+    const migrations = source.indexOf("name: 'migrations'");
+    const communication = source.indexOf("name: 'communication-admission'");
+    const scheduler = source.indexOf("name: 'scheduler-restart-recovery'");
+    expect(migrations).toBeGreaterThan(-1);
+    expect(communication).toBeGreaterThan(migrations);
+    expect(scheduler).toBeGreaterThan(communication);
   });
 
-  it('keeps startup closed when Attention reconciliation refuses retained corruption', async () => {
+  it('contains a refused Communication reconciliation and keeps unrelated startup serving', async () => {
     const lifecycle = evaluateEntrypointShutdown({
       maintenance: Promise.resolve(),
       executions: Promise.resolve(),
       listeners: Promise.resolve(),
       audit: Promise.resolve(),
-      coreMigrationsComplete: false,
-      attentionReconciliation: Promise.reject(new Error('attention_recovery_required')),
+      coreMigrationsComplete: true,
+      communicationAdmission: Promise.resolve({ state: 'unavailable' }),
     });
-    const result = await lifecycle.runMigrationPhase();
-    expect(result.readiness.acceptingProductWork).toBe(false);
-    expect(result.outcomes).toEqual([
-      expect.objectContaining({
-        name: 'migrations',
-        critical: true,
-        outcome: expect.objectContaining({
-          status: 'failed',
-          reason: expect.objectContaining({ message: 'attention_recovery_required' }),
-        }),
-      }),
-    ]);
-    expect(lifecycle.recoverRunningCapabilityCalls).not.toHaveBeenCalled();
-    expect(lifecycle.recordBootStartAuditEvent).not.toHaveBeenCalled();
+    const result = await lifecycle.runCommunicationPhase();
+    expect(result.readiness.acceptingProductWork).toBe(true);
+    expect(result.outcomes[0]).toMatchObject({
+      name: 'communication-admission',
+      critical: false,
+      outcome: {
+        status: 'degraded',
+        reason: { code: 'storage.communication_unavailable', blocks: [] },
+      },
+    });
+    expect(lifecycle.events).toEqual(['attention.started', 'after.communication']);
   });
 
   it('settles listener shutdown when boot has not created optional process owners', async () => {
