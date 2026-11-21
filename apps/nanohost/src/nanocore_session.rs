@@ -2080,8 +2080,9 @@ where
 ///
 /// # Errors
 ///
-/// Rejects transport failure, any status other than `204` or `200`, an
-/// oversized or malformed command, missing `requestId`, a body operation
+/// Retries a complete HTTP `503` inside one bounded poll recovery window.
+/// Rejects transport failure, other unsuccessful responses, an oversized
+/// or malformed command, missing `requestId`, a body operation
 /// selector, or bulk/credential/physical-connection fields. A correlated raw
 /// import admission refusal returns only its identity and local failure reason
 /// for the existing typed effect result, without exposing unverified content.
@@ -2092,15 +2093,82 @@ pub async fn poll_effect_command(
     live_bridge: bool,
     staging_root: &std::path::Path,
 ) -> Result<Option<PolledEffectCommand>, OuterSessionFailure> {
-    let first_poll = *cursor == 0;
     let kind = effect_kind_for_cursor(*cursor);
-    let operation = OuterSessionOperation::from(kind);
     let index = *cursor % EFFECT_PATHS.len();
-    let (path, _, _) = EFFECT_PATHS[index];
+    let original_cursor = *cursor;
     // Reserve zero for the first poll so a completed cycle cannot reopen its terminal window.
     *cursor = index + 1;
+    // Keep retries on this generation inside one existing outer recovery interval.
+    // The window starts before the original request, and a retry keeps its first-poll fences.
+    let deadline = tokio::time::Instant::now() + crate::OUTER_SESSION_RECONNECT_DELAY;
+    let mut polled = poll_effect_command_once(
+        authority,
+        sender,
+        original_cursor,
+        live_bridge,
+        staging_root,
+        deadline,
+    )
+    .await;
+    while let Err(failure) = &polled {
+        if failure.status() != Some(StatusCode::SERVICE_UNAVAILABLE.as_u16())
+            || !matches!(
+                failure.reason(),
+                "effect command poll rejected" | "reference.import command poll rejected"
+            )
+        {
+            break;
+        }
+        let retry_at = tokio::time::Instant::now() + crate::EFFECT_POLL_IDLE_DELAY;
+        if retry_at >= deadline {
+            break;
+        }
+        tokio::time::sleep_until(retry_at).await;
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        polled = match tokio::time::timeout_at(
+            deadline,
+            poll_effect_command_once(
+                authority,
+                sender,
+                original_cursor,
+                live_bridge,
+                staging_root,
+                deadline,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(OuterSessionFailure::terminal(
+                OuterSessionStage::Poll,
+                OuterSessionOperation::from(kind),
+                None,
+                if kind == RuntimeEffectKind::OpenBridge && !live_bridge {
+                    "bridge.open command delivery unknown"
+                } else {
+                    "effect command poll retry deadline expired"
+                },
+            )),
+        };
+    }
+    polled
+}
+
+async fn poll_effect_command_once(
+    authority: &str,
+    sender: &mut h2::client::SendRequest<Bytes>,
+    cursor: usize,
+    live_bridge: bool,
+    staging_root: &std::path::Path,
+    deadline: tokio::time::Instant,
+) -> Result<Option<PolledEffectCommand>, OuterSessionFailure> {
+    let (path, _, kind) = EFFECT_PATHS[cursor % EFFECT_PATHS.len()];
+    let first_poll = cursor == 0;
+    let operation = OuterSessionOperation::from(kind);
     if kind == RuntimeEffectKind::ImportReference {
-        return poll_reference_import(authority, sender, path, staging_root).await;
+        return poll_reference_import(authority, sender, path, staging_root, deadline).await;
     }
     let (status, body, trace_context) =
         match send_effect_request(authority, sender, path, b"{}", None).await {
@@ -2427,6 +2495,7 @@ async fn poll_reference_import(
     sender: &mut h2::client::SendRequest<Bytes>,
     path: &str,
     staging_root: &std::path::Path,
+    deadline: tokio::time::Instant,
 ) -> Result<Option<PolledEffectCommand>, OuterSessionFailure> {
     let operation = OuterSessionOperation::ImportReference;
     let terminal_without_status =
@@ -2487,6 +2556,16 @@ async fn poll_reference_import(
         return Ok(None);
     }
     if status != StatusCode::OK {
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            // A partial error response cannot trigger a retry on this physical session.
+            tokio::time::timeout_at(
+                deadline,
+                collect_effect_response_body(status, response.into_body()),
+            )
+            .await
+            .map_err(|_| terminal("effect command poll retry deadline expired"))?
+            .map_err(|(_, reason)| terminal(reason))?;
+        }
         return Err(terminal("reference.import command poll rejected"));
     }
     let headers = response.headers();
@@ -3191,7 +3270,15 @@ async fn send_effect_request(
         .map_err(|_| (None, "effect response failed"))?;
     let context = crate::telemetry::extract(response.headers());
     let status = response.status();
-    let mut response_body = response.into_body();
+    let bytes = collect_effect_response_body(status, response.into_body()).await?;
+    Ok((status, bytes, context))
+}
+
+/// Collects a complete control response using the existing in-flight byte limit.
+async fn collect_effect_response_body(
+    status: StatusCode,
+    mut response_body: h2::RecvStream,
+) -> Result<BytesMut, (Option<StatusCode>, &'static str)> {
     let mut bytes = BytesMut::new();
     while let Some(chunk) = response_body.data().await {
         let chunk = chunk.map_err(|_| (Some(status), "effect response failed"))?;
@@ -3204,7 +3291,7 @@ async fn send_effect_request(
             .map_err(|_| (Some(status), "effect response flow control failed"))?;
         bytes.extend_from_slice(&chunk);
     }
-    Ok((status, bytes, context))
+    Ok(bytes)
 }
 
 /// Test-only bounded request used to prove predecessor and replay fencing.
@@ -3442,6 +3529,7 @@ mod tests {
                 &mut sender,
                 "/api/nanohost/transport/effects/reference.import",
                 std::env::temp_dir().as_path(),
+                test_startup_deadline(),
             )
             .await;
             driver.abort();
@@ -4199,6 +4287,7 @@ mod tests {
                 &mut sender,
                 "/api/nanohost/transport/effects/reference.import",
                 std::env::temp_dir().as_path(),
+                test_startup_deadline(),
             )
             .await;
             let admitted = result
@@ -5122,6 +5211,7 @@ mod tests {
                     .unwrap()
                     .0,
                 std::env::temp_dir().as_path(),
+                test_startup_deadline(),
             )
             .await
             {
@@ -5452,6 +5542,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum TestEffectResponse {
         NoContent,
+        Rejected(StatusCode),
         PhysicalClose,
         OversizedBody,
     }
@@ -5599,6 +5690,22 @@ mod tests {
                             )
                             .expect("empty effect response send");
                     }
+                    TestEffectResponse::Rejected(status) => {
+                        let mut response = respond
+                            .send_response(
+                                Response::builder().status(status).body(()).unwrap(),
+                                false,
+                            )
+                            .unwrap();
+                        response
+                            .send_data(
+                                Bytes::from_static(
+                                    b"{\"code\":\"nanohost_transport_effect_rejected\"}",
+                                ),
+                                true,
+                            )
+                            .unwrap();
+                    }
                     TestEffectResponse::PhysicalClose => return,
                     TestEffectResponse::OversizedBody => {
                         let mut body = respond
@@ -5629,6 +5736,119 @@ mod tests {
             );
         });
         (client_io, server)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn effect_poll_retry_survives_transient_503_on_json_and_raw_routes() {
+        let (context, presentation) = test_outer_credentials();
+        for kind in [
+            RuntimeEffectKind::InspectStorage,
+            RuntimeEffectKind::ImportReference,
+        ] {
+            let cursor = EFFECT_PATHS
+                .iter()
+                .position(|(_, _, item)| *item == kind)
+                .unwrap();
+            let path = EFFECT_PATHS[cursor].0;
+            let next_path = EFFECT_PATHS[(cursor + 1) % EFFECT_PATHS.len()].0;
+            let (io, server) = scripted_outer_server(
+                8,
+                TestReadinessResponse::Status(StatusCode::NO_CONTENT),
+                None,
+                vec![
+                    (
+                        path,
+                        TestEffectResponse::Rejected(StatusCode::SERVICE_UNAVAILABLE),
+                    ),
+                    (path, TestEffectResponse::NoContent),
+                    (next_path, TestEffectResponse::NoContent),
+                ],
+            );
+            let generation = run_outer_session(
+                io,
+                "http://nanocore.test",
+                &context,
+                &presentation,
+                Some(7),
+                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                    Ok(None)
+                }),
+                |_, mut sender| async move {
+                    let mut cursor = cursor;
+                    for _ in 0..2 {
+                        assert!(
+                            poll_effect_command(
+                                "http://nanocore.test",
+                                &mut sender,
+                                &mut cursor,
+                                false,
+                                std::env::temp_dir().as_path(),
+                            )
+                            .await?
+                            .is_none()
+                        );
+                    }
+                    Ok(())
+                },
+            )
+            .await
+            .expect("503 must leave the same authoritative session able to poll");
+            assert_eq!(generation, 8);
+            server
+                .await
+                .expect("the same HTTP/2 session served both poll paths");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn effect_poll_retry_ends_session_on_exhaustion_or_terminal_refusal() {
+        let (context, presentation) = test_outer_credentials();
+        let cursor = EFFECT_PATHS
+            .iter()
+            .position(|(_, _, item)| *item == RuntimeEffectKind::InspectStorage)
+            .unwrap();
+        let path = EFFECT_PATHS[cursor].0;
+        for (status, responses) in [
+            (StatusCode::SERVICE_UNAVAILABLE, 3),
+            (StatusCode::CONFLICT, 1),
+        ] {
+            let (io, server) = scripted_outer_server(
+                8,
+                TestReadinessResponse::Status(StatusCode::NO_CONTENT),
+                None,
+                vec![(path, TestEffectResponse::Rejected(status)); responses],
+            );
+            let failure = run_outer_session(
+                io,
+                "http://nanocore.test",
+                &context,
+                &presentation,
+                Some(7),
+                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                    Ok(None)
+                }),
+                |_, mut sender| async move {
+                    let mut cursor = cursor;
+                    poll_effect_command(
+                        "http://nanocore.test",
+                        &mut sender,
+                        &mut cursor,
+                        false,
+                        std::env::temp_dir().as_path(),
+                    )
+                    .await
+                    .map(|_| ())
+                },
+            )
+            .await
+            .expect_err("the outer session must stop");
+            assert_eq!(failure.disposition(), OuterSessionDisposition::Terminal);
+            assert_eq!(failure.stage, OuterSessionStage::Poll);
+            assert_eq!(failure.operation, OuterSessionOperation::InspectStorage);
+            assert_eq!(failure.status(), Some(status.as_u16()));
+            assert_eq!(failure.reconnect_after(), Some(8));
+            server.await.expect("only the allowed number of polls");
+        }
     }
 
     #[tokio::test]

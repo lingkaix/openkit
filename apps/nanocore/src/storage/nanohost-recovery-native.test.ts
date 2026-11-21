@@ -28,7 +28,11 @@ import {
   getWorkerBackendSession,
   readNanoHostWorkerRouteBinding,
 } from '../runtime/worker-backend-session-records.js';
-import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
+import {
+  getWorkerControlAcceptedFinalStatus,
+  waitForWorkerControlFinalStatus,
+  writeWorkerControlAcceptedRecord,
+} from '../runtime/worker-control-records.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import {
   prepareWorkerTurnJournalIntents,
@@ -839,6 +843,63 @@ async function admitOriginal(prepareWorkspace = false) {
   await expect(dispatch()).resolves.toBeNull();
   return { f, root, core, store, actor, input, now, retained };
 }
+
+it.each(['accepted', 'expired', 'unavailable'] as const)(
+  'handles the exact Native completion observation within the original deadline (%s)',
+  async (outcome) => {
+    const { f, core, retained } = await admitOriginal();
+    const originalDeadline = Date.parse(retained!.lease.grant.deadline);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(originalDeadline - 30);
+      let observations = 0;
+      const wait = waitForWorkerControlFinalStatus(
+        core,
+        { attemptId, lineage: { ...lineage, requestId: null } },
+        (query) => {
+          observations += 1;
+          if (outcome === 'unavailable' || observations > 2)
+            return { state: 'unavailable', owner: 'nanohost', reason: 'disabled' };
+          if (observations === 1 || outcome === 'expired') return { state: 'pending' };
+          return { state: 'ready', value: query(f.owner.sqlite) };
+        }
+      ).then(
+        (value) => value,
+        (error: unknown) => (error as Error).message
+      );
+      if (outcome === 'unavailable') {
+        await expect(wait).resolves.toBe('NanoHost completion storage is unavailable.');
+        expect(observations).toBe(1);
+        return;
+      }
+      if (outcome === 'accepted')
+        f.owner.setup((sqlite) =>
+          writeWorkerControlAcceptedRecord(
+            { sqlite },
+            {
+              acceptedAt,
+              lineage: { ...lineage, requestId: null },
+              operation: 'final_status',
+              record: { sequence: 9, status: 'completed', stopReason: 'completed' },
+              recordKey: '9',
+              sequence: 9,
+            }
+          )
+        );
+      vi.setSystemTime(originalDeadline);
+      if (outcome === 'accepted')
+        await expect(wait).resolves.toEqual({
+          acceptedAt,
+          status: 'completed',
+          stopReason: 'completed',
+        });
+      else await expect(wait).resolves.toBe('Worker lease expired before durable final status.');
+      expect(observations).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+);
 
 it('resolves App and Gateway bindings from the retained Core grant and the admitted Native proof', async () => {
   const { core, f, input, now, root, retained } = await admitOriginal();
