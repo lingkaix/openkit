@@ -12,6 +12,7 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import type { NanoHostLocalHarnessLifecycleInput } from '../storage/harness-lifecycle-codecs.js';
 import type { NanoHostRuntimeTargetEpochKernel } from '../storage/nanohost-epoch-invalidation.js';
 import type {
   ControlRuntimeTargetInput,
@@ -98,6 +99,7 @@ export interface AdmittedNanoHostTransportStorage {
   readonly owner: {
     read<Value>(query: (sqlite: Database.Database) => Value): StorageResult<'nanohost', Value>;
     transport(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
+    harnessLifecycle(input: NanoHostLocalHarnessLifecycleInput): Promise<void>;
     transitionRuntimeTarget(
       kernel: NanoHostRuntimeTargetEpochKernel,
       input: ControlRuntimeTargetInput

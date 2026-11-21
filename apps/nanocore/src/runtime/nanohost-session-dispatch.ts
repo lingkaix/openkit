@@ -2104,27 +2104,43 @@ export function registerNanoHostSessionSemanticRoutes(
     if (delivery.proofTimer) clearTimeout(delivery.proofTimer);
   };
   /** Reads exact dispatched authority; an accepted result or fenced successor always wins. */
-  const pendingDelivery = (command: NanoHostHarnessCommand) =>
-    input.coreDb?.sqlite
-      .prepare(
-        `SELECT harness_binding_ref AS harnessBindingRef FROM harness_instance_records
-       WHERE harness_instance_id = ? AND operation_id = ? AND operation_state = 'dispatched'`
-      )
-      .get(command.harnessInstanceId, command.operationId) as
-      | { harnessBindingRef: string }
-      | undefined;
+  const pendingDelivery = (command: NanoHostHarnessCommand) => {
+    const read = (sqlite: CoreDb['sqlite']) =>
+      sqlite
+        .prepare(
+          `SELECT harness_binding_ref AS harnessBindingRef FROM harness_instance_records
+         WHERE harness_instance_id = ? AND operation_id = ? AND operation_state = 'dispatched'`
+        )
+        .get(command.harnessInstanceId, command.operationId) as
+        | { harnessBindingRef: string }
+        | undefined;
+    if (!input.nativeStorage) return input.coreDb ? read(input.coreDb.sqlite) : undefined;
+    if (input.nativeStorage.state === 'ready') {
+      const result = input.nativeStorage.value.owner.read(read);
+      if (result.state === 'ready') return result.value;
+    }
+    throw effectTransportError(503, 'NanoHost Harness delivery storage is unavailable.');
+  };
   /** Settles incomplete delivery immediately through the existing unknown/cleanup owner. */
   const failDelivery = async (command: NanoHostHarnessCommand) => {
     const delivery = deliveries.get(command.harnessInstanceId);
     if (delivery?.command.operationId === command.operationId) releaseDelivery(delivery);
     try {
       const pending = pendingDelivery(command);
-      if (!pending || !input.coreDb) return;
-      await markNanoHostHarnessOperationUnknown(input.coreDb, {
+      if (!pending) return;
+      const unknown = {
         harnessBindingRef: pending.harnessBindingRef,
         operationId: command.operationId,
         timestamp: new Date().toISOString(),
-      });
+      };
+      if (input.nativeStorage?.state === 'ready') {
+        await input.nativeStorage.value.owner.harnessLifecycle({
+          ...unknown,
+          kind: 'operation.unknown',
+        });
+      } else if (input.coreDb) {
+        await markNanoHostHarnessOperationUnknown(input.coreDb, unknown);
+      }
     } catch (failure) {
       input.harnessCommandDeliveryFailed?.(command, failure);
       return;
