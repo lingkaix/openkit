@@ -52,14 +52,6 @@ export type {
   SchedulerExecutionDisposition,
 } from './scheduler-execution-attempts.js';
 export { schedulerExecutionAttempts } from './scheduler-execution-attempts.js';
-export { securityThreadDestinations } from './security-thread-destinations.js';
-export {
-  securityTriggerAlarms,
-  securityTriggerAuditAssessments,
-  securityTriggerAuditProgress,
-  securityTriggerOutbox,
-  securityTriggerState,
-} from './security-trigger.js';
 export { serverSettings } from './server-settings.js';
 export type {
   VaultGrantLifetime,

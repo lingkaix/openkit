@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { type CoreDb, openCoreReadDb, openWorkspaceReadDb, type WorkspaceDb } from './db.js';
+import { SECURITY_TRIGGER_OWNER } from './security-trigger-port.js';
 
 const journalTags = {
   core: ['0000_baseline'],
@@ -60,29 +61,14 @@ describe('fresh Core and Workspace setup', () => {
         expect(db.sqlite.pragma('integrity_check', { simple: true })).toBe('ok');
       }
 
-      // Late Core schema and its current default must survive the squash, not just the old setup DDL.
+      const triggerTables = SECURITY_TRIGGER_OWNER.requiredTables;
       expect(
         core.sqlite
           .prepare(
-            'SELECT singleton, state, enable_generation, enabling_user_id, expected_alarm_count FROM security_trigger_state'
+            `SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN (${triggerTables.map(() => '?').join(',')})`
           )
-          .all()
-      ).toEqual([
-        {
-          singleton: 1,
-          state: 'off',
-          enable_generation: 0,
-          enabling_user_id: null,
-          expected_alarm_count: 0,
-        },
-      ]);
-      for (const table of [
-        'security_trigger_alarms',
-        'security_trigger_outbox',
-        'security_thread_destinations',
-      ]) {
-        expect(core.sqlite.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get()).toBe(0);
-      }
+          .all(...triggerTables)
+      ).toEqual([]);
 
       // Full fresh Workspace publication includes its actual initial Knowledge authority.
       expect(

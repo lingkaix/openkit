@@ -1,19 +1,11 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { hrtime } from 'node:process';
 import { isDeepStrictEqual } from 'node:util';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
-import { allocateEntityId, compareCodeUnits } from '@openkit/protocol';
+import { compareCodeUnits } from '@openkit/protocol';
 import { policyDigest } from '@openkit/protocol/digest';
-import type { WorkerLineage } from '@openkit/worker-protocol';
-import { auditEventFromRow } from '../audit-events.js';
-import { verifyRunBoundSensorInDb } from '../auth/run-bound-access-token-native.js';
-import { recordProductPermissionDecisionInDb } from '../policy/permission-decisions.js';
 import { validatePolicyDocument } from '../policy/statements.js';
 import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
-import {
-  requireSchedulerExecutionAttempt,
-  schedulerExecutionCorrelation,
-} from '../runtime/execution-attempt-records.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import {
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
@@ -29,7 +21,6 @@ import {
 } from '../runtime/execution-journal.js';
 import { nonClosedSandboxAttempts } from '../runtime/idle-cleanup-records.js';
 import { nanoHostSandboxIdFromBackendSessionId } from '../runtime/nanohost-effect-identity.js';
-import { drainNanoHostSandboxAdmission } from '../runtime/nanohost-harness-records.js';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
@@ -43,33 +34,7 @@ import {
 import type { CoreDb } from './db.js';
 import { insertEvidenceBundle } from './evidence-bundle-records.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
-import {
-  prepareSecurityCanaryAuditInDb,
-  recordContainmentGapInDb,
-} from './security-canary-audit-native.js';
-import { applySecurityTriggerInDb } from './security-trigger-native.js';
-import { ControlStandaloneAuditInputSchema } from './standalone-audit-codecs.js';
-
-/** Only the original native cryptographic or canary owner can prove a sensor. */
-function existingSensor(db: CoreDb, row: unknown, lineage: WorkerLineage): boolean {
-  if (!row) return false;
-  const event = auditEventFromRow(row);
-  if (event.action === 'security.honey-credential')
-    return verifyRunBoundSensorInDb(db, row, lineage);
-  if (event.action !== 'security.canary') return false;
-  return (
-    prepareSecurityCanaryAuditInDb(
-      db,
-      ControlStandaloneAuditInputSchema.parse({
-        stage: 'security.canary',
-        canaryLineage: lineage,
-        event,
-      })
-    ) === 'existing'
-  );
-}
-
-import { applyControlVault } from './vault-native.js';
+import { recordContainmentGapInDb } from './security-canary-audit-native.js';
 
 /** Decides one original Core journal tuple against current rows inside its savepoint and FULL commit. */
 export function applyControlCoreJournal(
@@ -646,6 +611,10 @@ function applyContainmentJournal(
     });
     return encodeExecutionJournalValue(readExecutionJournalInvocation(db, input.ref));
   }
+  // Automatic containment stays disabled in v0.2.0. Acknowledge effect requests
+  // without admitting them, while retaining inspection and the closeout paths above.
+  if (input.kind !== 'containment-inspect') return null;
+
   const currentTargets = new Set<string>();
   const currentWorkspace = new Map<string, Set<string>>();
   for (const statement of document.statements) {
@@ -753,13 +722,7 @@ function applyContainmentJournal(
       throw new CoreJournalRefusal('Containment pending scope is uncertain.');
     pendingTargets.set(process, workspace);
   }
-  const workspaceId =
-    input.kind === 'containment-inspect'
-      ? input.workspaceId
-      : input.kind === 'containment-intent'
-        ? input.lineage.workspaceId
-        : undefined;
-  const impact = new Set([...currentTargets, ...pendingTargets.keys()]);
+  const { workspaceId } = input;
   const usage = {
     currentServer: currentTargets.size,
     currentWorkspace: workspaceId ? (currentWorkspace.get(workspaceId)?.size ?? 0) : 0,
@@ -777,572 +740,27 @@ function applyContainmentJournal(
       : 0,
     windowStart: new Date(windowStart).toISOString(),
   };
-  if (input.kind === 'containment-inspect') {
-    const workspaces = new Set([
-      ...currentWorkspace.keys(),
-      ...accepted.map((entry) => entry.workspaceId),
-      ...pendingTargets.values(),
-    ]);
-    if (
-      workspaces.size >
-      SECURITY_CONTAINMENT_LIMITS.currentServer +
-        SECURITY_CONTAINMENT_LIMITS.cumulativeServer +
-        SECURITY_CONTAINMENT_LIMITS.pendingServer
-    )
-      throw new CoreJournalRefusal('Containment review scope exceeds its static bound.');
-    return JSON.stringify({
-      ...usage,
-      workspaces: [...workspaces].sort().map((id) => ({
-        workspaceId: id,
-        current: currentWorkspace.get(id)?.size ?? 0,
-        cumulative: new Set(
-          accepted.filter((entry) => entry.workspaceId === id).map((entry) => entry.process)
-        ).size,
-        pending: [...pendingTargets.values()].filter((ws) => ws === id).length,
-      })),
-    });
-  }
-  const state = applySecurityTriggerInDb(db, { action: 'current', timestamp: now.toISOString() });
-  // Preserve the original R8/stop maintenance ACK instead of rolling it back on refusal.
-  if (state.kind !== 'state' || state.snapshot.state !== 'on' || !state.snapshot.delegationCurrent)
-    return null;
-  const permissions = document.statements.filter((statement) => statement.kind === 'permission');
-  const grants = permissions.filter((statement) => {
-    const subject = statement.scope.subjects[0];
-    const resource = statement.scope.resources[0];
-    const anchor = statement.lifetime.anchor;
-    return (
-      statement.state === 'active' &&
-      statement.effect === 'allow' &&
-      statement.grant.kind === 'ordinary' &&
-      statement.author.kind === 'human' &&
-      statement.authority.kind === 'human' &&
-      statement.author.id === statement.authority.userId &&
-      statement.author.id === state.snapshot.enablingUserId &&
-      statement.scope.subjects.length === 1 &&
-      subject?.kind === 'human' &&
-      subject.id === statement.author.id &&
-      statement.scope.actions.length === 1 &&
-      statement.scope.actions[0] === 'security.containment' &&
-      statement.scope.resources.length === 1 &&
-      resource?.kind === 'container' &&
-      resource.container.owner.kind === 'server' &&
-      resource.container.kind === 'containment-template' &&
-      resource.container.id === policyDigest(SECURITY_CONTAINMENT_LIMITS) &&
-      anchor.owner.kind === 'server' &&
-      anchor.kind === 'server' &&
-      anchor.id === 'server' &&
-      statement.lifetime.uses === undefined &&
-      (statement.lifetime.notAfter === undefined ||
-        Date.parse(statement.lifetime.notAfter) > now.getTime())
-    );
-  });
-  if (grants.length !== 1) return null;
-  const grant = grants[0]!;
+  const workspaces = new Set([
+    ...currentWorkspace.keys(),
+    ...accepted.map((entry) => entry.workspaceId),
+    ...pendingTargets.values(),
+  ]);
   if (
-    grant.author.kind !== 'human' ||
-    grant.authority.kind !== 'human' ||
-    grant.author.id !== state.snapshot.enablingUserId
+    workspaces.size >
+    SECURITY_CONTAINMENT_LIMITS.currentServer +
+      SECURITY_CONTAINMENT_LIMITS.cumulativeServer +
+      SECURITY_CONTAINMENT_LIMITS.pendingServer
   )
-    return null;
-  const grantRef = `${grant.id}@${policyDigest(grant)}`;
-  if (input.kind === 'containment-stop') {
-    const quarantine = readExecutionJournalInvocation(db, { ...input.ref, stepId: 'quarantine' });
-    if (
-      input.ref.stepId !== 'stop' ||
-      quarantine.state !== 'completed' ||
-      quarantine.clock.processWitness !== executionJournalProcessWitness() ||
-      hrtime.bigint() - quarantine.clock.admittedMonotonicNano >=
-        BigInt(SECURITY_CONTAINMENT_LIMITS.actionSeconds) * 1_000_000_000n ||
-      !quarantine.control.authorityRefs.includes(grantRef) ||
-      quarantine.control.deadlineUnixNano === null ||
-      quarantine.control.deadlineUnixNano <= BigInt(now.getTime()) * 1_000_000n
-    )
-      return null;
-    applyContainmentJournal(
-      db,
-      { kind: 'containment-settle', policy: document, ref: { ...input.ref, stepId: 'quarantine' } },
-      publication
-    );
-    if (
-      db.sqlite
-        .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
-        .get(input.ref.execution.executionId, 'stop')
-    )
-      return null;
-    const cancel = readExecutionJournalInvocation(db, { ...input.ref, stepId: 'cancel' });
-    if (cancel.control.kind !== 'cancel' || !cancel.control.attemptId) return null;
-    const attempt = requireSchedulerExecutionAttempt(db, cancel.control.attemptId);
-    if (attempt.phase === 'open' || attempt.operationId !== cancel.control.operationId) return null;
-    const anchor = getWorkerBackendSession(db, attempt.attemptId);
-    if (!anchor || !anchor.sandboxBindingRef || attempt.inputRef !== anchor.packageSnapshotId)
-      return null;
-    const affected = db.sqlite
-      .prepare(`SELECT b.agent_session_id AS sessionId,b.current_turn_id AS turnId,
-      b.current_attempt_id AS attemptId FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
-      JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
-      WHERE s.sandbox_binding_ref=? AND s.origin_physical_epoch=? LIMIT 2`)
-      .all(anchor.sandboxBindingRef, anchor.originPhysicalEpoch) as {
-      sessionId: string;
-      turnId: string | null;
-      attemptId: string | null;
-    }[];
-    const alreadyRemoved =
-      affected.length === 0 &&
-      anchor.state === 'cleaned' &&
-      anchor.physicalCleanedAt !== null &&
-      !db.sqlite
-        .prepare(
-          'SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref=? AND origin_physical_epoch=?'
-        )
-        .get(anchor.sandboxBindingRef, anchor.originPhysicalEpoch);
-    if (
-      !alreadyRemoved &&
-      (affected.length !== 1 ||
-        affected[0]!.sessionId !== attempt.agentSessionId ||
-        (affected[0]!.turnId !== null && affected[0]!.turnId !== attempt.turnId) ||
-        (affected[0]!.attemptId !== null && affected[0]!.attemptId !== attempt.attemptId))
-    ) {
-      recordContainmentGapInDb(
-        db,
-        'shared-resource',
-        attempt.workspaceId,
-        quarantine.control.workId,
-        grant.author.id
-      );
-      return null;
-    }
-    const grants = db.sqlite
-      .prepare(`SELECT grant_id AS id FROM vault_grants
-      WHERE target_agent_session_id=? AND lifetime='agent-session' AND issuance='target' AND status='active' LIMIT 33`)
-      .all(attempt.agentSessionId) as { id: string }[];
-    if (grants.length > 32) {
-      recordContainmentGapInDb(
-        db,
-        'control-unknown',
-        attempt.workspaceId,
-        quarantine.control.workId,
-        grant.author.id
-      );
-      return null;
-    }
-    const root = readExecutionJournalRoot(db, quarantine.ref.execution);
-    const evidenceId = `containment-stop-${policyDigest(root.ref)}`;
-    insertEvidenceBundle(db, {
-      id: evidenceId,
-      owner: { kind: 'server' },
-      threadId: attempt.threadId,
-      turnId: attempt.turnId,
-      agentSessionId: attempt.agentSessionId,
-      goalId: null,
-      backendType: attempt.backendId,
-      sourceKind: 'security-containment',
-      summary:
-        'Exact quarantine and original cancellation are recorded. This exclusively owned Sandbox is selected for credential revocation and cleanup; physical stop is not yet proved.',
-      rawEvidenceRefs: [],
-      redactedEvidenceRefs: [
-        { kind: 'audit', ref: quarantine.control.workId },
-        { kind: 'policy', ref: revision },
-        { kind: 'scheduler-attempt', ref: attempt.attemptId },
-        ...grants.map(({ id }) => ({ kind: 'vault-grant', ref: id })),
-      ],
-      contentDigests: [],
-      retentionClass: 'workspace-audit',
-      sensitivityClass: 'restricted',
-      importStatus: 'collected',
-      requiredFeatures: [],
-      createdAt: now.toISOString(),
-    });
-    const admitted = writeExecutionJournalIntent(db, {
-      execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
-      stepId: 'stop',
-      parentStepId: null,
-      control: {
-        ...quarantine.control,
-        kind: 'release',
-        attemptId: attempt.attemptId,
-        operationId: attempt.operationId,
-        invocationId: randomUUID(),
-        inputRefs: [...cancel.control.inputRefs, `evidence:${evidenceId}`],
-        outputRefs: [],
-        target: {
-          backendKind: anchor.backendKind,
-          targetId: anchor.runtimeTargetId,
-          allocationRef: anchor.sandboxBindingRef,
-        },
-        physicalFenceRefs: [anchor.originPhysicalEpoch],
-        authorityRefs: [...quarantine.control.authorityRefs, revision],
-      },
-      parent: null,
-      carriage: {
-        operation: 'sandbox.delete',
-        requestId: attempt.operationId!,
-        sequence: null,
-        bindingRef: anchor.sandboxBindingRef,
-      },
-      inspectedStep: null,
-      span: {
-        ...root.span,
-        spanId: randomBytes(8).toString('hex'),
-        name: 'containment cleanup',
-        endTimeUnixNano: null,
-      },
-    });
-    // Intent, exact session grant withdrawal and admission drain commit together before external cleanup.
-    // The drain prevents another binding from joining after the exclusive affected-set proof.
-    for (const { id } of grants)
-      applyControlVault(db, { kind: 'grant-revoke', record: { grantId: id } });
-    drainNanoHostSandboxAdmission(db, {
-      sandboxBindingRef: anchor.sandboxBindingRef,
-      originPhysicalEpoch: anchor.originPhysicalEpoch,
-    });
-    return encodeExecutionJournalValue(admitted);
-  }
-  if (input.kind === 'containment-cancel') {
-    const quarantine = readExecutionJournalInvocation(db, { ...input.ref, stepId: 'quarantine' });
-    if (
-      input.ref.stepId !== 'cancel' ||
-      quarantine.state !== 'completed' ||
-      quarantine.clock.processWitness !== executionJournalProcessWitness() ||
-      hrtime.bigint() - quarantine.clock.admittedMonotonicNano >=
-        BigInt(SECURITY_CONTAINMENT_LIMITS.actionSeconds) * 1_000_000_000n ||
-      !quarantine.control.authorityRefs.includes(grantRef) ||
-      quarantine.control.deadlineUnixNano === null ||
-      quarantine.control.deadlineUnixNano <= BigInt(now.getTime()) * 1_000_000n
-    )
-      return null;
-    // Re-prove the current exact Policy receipt, including its full deny scope.
-    applyContainmentJournal(
-      db,
-      { kind: 'containment-settle', policy: document, ref: { ...input.ref, stepId: 'quarantine' } },
-      publication
-    );
-    if (
-      db.sqlite
-        .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
-        .get(input.ref.execution.executionId, input.ref.stepId)
-    )
-      return null; // Never repeat possibly invoked work.
-    const lineage = readCoreJournalLineage(quarantine.control.inputRefs);
-    const attempts = db.sqlite
-      .prepare(`SELECT attempt_id AS id FROM scheduler_execution_attempts
-      WHERE input_ref=? AND workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=? AND phase='open' LIMIT 2`)
-      .all(
-        lineage.packageSnapshotId,
-        lineage.workspaceId,
-        lineage.threadId,
-        lineage.turnId,
-        lineage.agentSessionId
-      ) as { id: string }[];
-    if (attempts.length !== 1) return null;
-    const row = db.sqlite
-      .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
-      .get(quarantine.control.workId);
-    if (!existingSensor(db, row, lineage)) return null;
-    if (
-      impact.size > SECURITY_CONTAINMENT_LIMITS.currentServer ||
-      (currentWorkspace.get(lineage.workspaceId)?.size ?? 0) >
-        SECURITY_CONTAINMENT_LIMITS.currentWorkspace
-    )
-      return null;
-    const attempt = requireSchedulerExecutionAttempt(db, attempts[0]!.id);
-    const correlation = schedulerExecutionCorrelation(attempt);
-    const root = readExecutionJournalRoot(db, quarantine.ref.execution);
-    const evidenceId = `containment-${policyDigest(root.ref)}`;
-    const deliveries = db.sqlite
-      .prepare(`SELECT p.plan_id AS planId,p.grant_id AS grantId,r.receipt_id AS receiptId
-      FROM vault_injection_plans p LEFT JOIN vault_injection_receipts r ON r.plan_id=p.plan_id AND r.agent_session_id=?
-      WHERE p.package_snapshot_id=? LIMIT 33`)
-      .all(lineage.agentSessionId, lineage.packageSnapshotId) as {
-      planId: string;
-      grantId: string;
-      receiptId: string | null;
-    }[];
-    if (deliveries.length > 32) {
-      recordContainmentGapInDb(
-        db,
-        'control-unknown',
-        lineage.workspaceId,
-        quarantine.control.workId,
-        grant.author.id
-      );
-      return null;
-    }
-
-    insertEvidenceBundle(db, {
-      id: evidenceId,
-      owner: { kind: 'server' },
-      threadId: lineage.threadId,
-      turnId: lineage.turnId,
-      agentSessionId: lineage.agentSessionId,
-      goalId: null,
-      backendType: attempt.backendId,
-      sourceKind: 'security-containment',
-      summary: 'Exact quarantine committed. Cancellation and physical stop are not yet proved.',
-      rawEvidenceRefs: [],
-      redactedEvidenceRefs: [
-        { kind: 'audit', ref: quarantine.control.workId },
-        { kind: 'policy', ref: revision },
-        { kind: 'grant', ref: grantRef },
-        { kind: 'package', ref: lineage.packageSnapshotId },
-        { kind: 'scheduler-attempt', ref: attempt.attemptId },
-        ...deliveries.flatMap((delivery) => [
-          { kind: 'vault-plan', ref: delivery.planId },
-          { kind: 'vault-grant', ref: delivery.grantId },
-          ...(delivery.receiptId ? [{ kind: 'vault-receipt', ref: delivery.receiptId }] : []),
-        ]),
-      ],
-      contentDigests: [policyDigest(correlation)],
-      retentionClass: 'workspace-audit',
-      sensitivityClass: 'restricted',
-      importStatus: 'collected',
-      requiredFeatures: [],
-      createdAt: now.toISOString(),
-    });
-    return encodeExecutionJournalValue(
-      writeExecutionJournalIntent(db, {
-        execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
-        stepId: 'cancel',
-        parentStepId: null,
-        control: {
-          ...quarantine.control,
-          kind: 'cancel',
-          attemptId: attempt.attemptId,
-          operationId: correlation.operationId,
-          invocationId: randomUUID(),
-          inputRefs: [
-            ...quarantine.control.inputRefs,
-            `package:${attempt.inputRef}`,
-            `evidence:${evidenceId}`,
-          ],
-          outputRefs: [],
-          authorityRefs: [...quarantine.control.authorityRefs, revision],
-        },
-        parent: null,
-        carriage: {
-          operation: 'turn.interrupt',
-          requestId: correlation.operationId,
-          sequence: null,
-          bindingRef: correlation.bindingRef,
-        },
-        inspectedStep: null,
-        span: {
-          ...root.span,
-          spanId: randomBytes(8).toString('hex'),
-          name: 'containment cancellation',
-          endTimeUnixNano: null,
-        },
-      })
-    );
-  }
-  if (input.kind === 'containment-check') {
-    const original = readExecutionJournalInvocation(db, input.ref);
-    if (
-      original.control.definitionVersion !== CORE_CONTAINMENT_EXECUTION_DEFINITION ||
-      !original.control.authorityRefs.includes(grantRef) ||
-      original.remainingMs <= 0
-    )
-      return null;
-    const lineage = readCoreJournalLineage(original.control.inputRefs);
-    const row = db.sqlite
-      .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
-      .get(original.control.workId);
-    if (!existingSensor(db, row, lineage)) return null;
-    const workspaceImpact = new Set([
-      ...(currentWorkspace.get(lineage.workspaceId) ?? []),
-      ...[...pendingTargets].filter(([, ws]) => ws === lineage.workspaceId).map(([key]) => key),
-    ]).size;
-    if (
-      impact.size > SECURITY_CONTAINMENT_LIMITS.currentServer ||
-      workspaceImpact > SECURITY_CONTAINMENT_LIMITS.currentWorkspace ||
-      usage.pendingServer > SECURITY_CONTAINMENT_LIMITS.pendingServer
-    )
-      return null;
-    return encodeExecutionJournalValue(original);
-  }
-  const raw = db.sqlite
-    .prepare(
-      `SELECT * FROM audit_events WHERE action IN ('security.canary','security.honey-credential') AND workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=? ORDER BY rowid LIMIT 3`
-    )
-    .all(
-      input.lineage.workspaceId,
-      input.lineage.threadId,
-      input.lineage.turnId,
-      input.lineage.agentSessionId
-    );
-  if (raw.length === 0) return null;
-  if (raw.length > 2)
-    throw new CoreJournalRefusal('The original native sensor fact is unavailable.');
-  const selected = raw.find((row) => existingSensor(db, row, input.lineage));
-  if (!selected) return null;
-  const source = { event: auditEventFromRow(selected) };
-  const process = policyDigest({
-    kind: 'process',
-    workspaceId: input.lineage.workspaceId,
-    threadId: input.lineage.threadId,
-    turnId: input.lineage.turnId,
+    throw new CoreJournalRefusal('Containment review scope exceeds its static bound.');
+  return JSON.stringify({
+    ...usage,
+    workspaces: [...workspaces].sort().map((id) => ({
+      workspaceId: id,
+      current: currentWorkspace.get(id)?.size ?? 0,
+      cumulative: new Set(
+        accepted.filter((entry) => entry.workspaceId === id).map((entry) => entry.process)
+      ).size,
+      pending: [...pendingTargets.values()].filter((ws) => ws === id).length,
+    })),
   });
-  const executionId = `containment:${process}`;
-  const ref = {
-    execution: { owner: { kind: 'server' as const }, executionId },
-    stepId: 'quarantine',
-  };
-  if (db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id=?').get(executionId)) {
-    const original = readExecutionJournalInvocation(db, ref);
-    if (original.control.authorityRefs.includes(grantRef) && original.remainingMs > 0)
-      return encodeExecutionJournalValue(original);
-    return null;
-  }
-  const workspaceImpact = new Set([
-    ...(currentWorkspace.get(input.lineage.workspaceId) ?? []),
-    ...[...pendingTargets].filter(([, ws]) => ws === input.lineage.workspaceId).map(([key]) => key),
-  ]).size;
-  if (
-    impact.size >= SECURITY_CONTAINMENT_LIMITS.currentServer ||
-    workspaceImpact >= SECURITY_CONTAINMENT_LIMITS.currentWorkspace ||
-    usage.cumulativeServer >= SECURITY_CONTAINMENT_LIMITS.cumulativeServer ||
-    usage.cumulativeWorkspace >= SECURITY_CONTAINMENT_LIMITS.cumulativeWorkspace ||
-    usage.pendingServer >= SECURITY_CONTAINMENT_LIMITS.pendingServer ||
-    usage.pendingWorkspace >= SECURITY_CONTAINMENT_LIMITS.pendingWorkspace
-  ) {
-    recordContainmentGapInDb(
-      db,
-      'capacity',
-      input.lineage.workspaceId,
-      source.event.id,
-      grant.author.id
-    );
-    return null;
-  }
-  const decisionId = allocateEntityId('pd');
-  const actor = {
-    kind: 'system' as const,
-    id: 'security.containment',
-    responsibleUserId: grant.author.id,
-  };
-  recordProductPermissionDecisionInDb({
-    coreDb: db,
-    decisionId,
-    ownerScope: 'server',
-    policyEngineVersion: 'nanocore-policy:v1',
-    policySnapshotId: revision,
-    subjectSummary: grant.author,
-    action: 'security.containment',
-    resourceSummary: input.lineage,
-    contextSummary: {
-      executionId,
-      workspaceId: input.lineage.workspaceId,
-      process,
-      sensorAuditEventId: source.event.id,
-      template: grantRef,
-    },
-    result: 'allow',
-    reasonCode: 'exact_bounded_containment_grant',
-    enforcementPoint: 'security.containment@admit',
-    auditActor: actor,
-    now,
-  });
-  const traceId = randomBytes(16).toString('hex');
-  const span = (name: string) => ({
-    traceId,
-    spanId: randomBytes(8).toString('hex'),
-    flags: 0,
-    name,
-    kind: 'INTERNAL' as const,
-    startTimeUnixNano: BigInt(now.getTime()) * 1_000_000n,
-    endTimeUnixNano: null,
-    status: { code: 'UNSET' as const },
-    attributes: [],
-    droppedAttributesCount: 0,
-    events: [],
-    droppedEventsCount: 0,
-    links: [],
-    droppedLinksCount: 0,
-    instrumentationScope: {
-      name: 'openkit.execution',
-      version: CORE_CONTAINMENT_EXECUTION_DEFINITION,
-      attributes: [],
-      droppedAttributesCount: 0,
-    },
-    resource: { attributes: [], droppedAttributesCount: 0 },
-  });
-  const fingerprint = policyDigest([source.event.id, input.lineage, grantRef]);
-  const execution = {
-    ref: ref.execution,
-    definitionVersion: CORE_CONTAINMENT_EXECUTION_DEFINITION,
-    workId: source.event.id,
-    fingerprint,
-    exclusionRefs: [`process:${process}`],
-    span: span('containment'),
-  };
-  const control = {
-    definitionVersion: CORE_CONTAINMENT_EXECUTION_DEFINITION,
-    target: null,
-    workId: source.event.id,
-    operationId: randomUUID(),
-    attemptId: null,
-    invocationId: randomUUID(),
-    actor,
-    inputRefs: [
-      source.event.id,
-      `workspace:${input.lineage.workspaceId}`,
-      `process:${process}`,
-      `lineage:${JSON.stringify(input.lineage)}`,
-    ],
-    outputRefs: [],
-    fingerprint,
-    permittingDecisionRef: decisionId,
-    authorityRefs: [revision, grantRef, policyDigest(SECURITY_CONTAINMENT_LIMITS)],
-    retryDeclarationRef: null,
-    retryPermitted: false,
-    deadlineUnixNano:
-      BigInt(now.getTime() + SECURITY_CONTAINMENT_LIMITS.actionSeconds * 1000) * 1_000_000n,
-    physicalFenceRefs: [],
-  };
-  const admitted = writeExecutionJournalIntent(db, {
-    execution,
-    stepId: 'quarantine',
-    parentStepId: null,
-    control: { ...control, kind: 'fence' },
-    parent: null,
-    carriage: {
-      operation: 'policy.write',
-      requestId: control.operationId,
-      sequence: null,
-      bindingRef: process,
-    },
-    inspectedStep: null,
-    span: span('quarantine'),
-  });
-  const admittedWindow = Number(admitted.clock.admittedUnixNano / 1_000_000n);
-  if (
-    Math.floor(admittedWindow / (SECURITY_CONTAINMENT_LIMITS.windowSeconds * 1000)) *
-      SECURITY_CONTAINMENT_LIMITS.windowSeconds *
-      1000 !==
-    windowStart
-  )
-    throw new CoreJournalRefusal('Containment admission crossed its capacity window.');
-  writeExecutionJournalIntent(db, {
-    execution,
-    stepId: 'review',
-    parentStepId: null,
-    control: {
-      ...control,
-      kind: 'human-wait',
-      operationId: null,
-      invocationId: randomUUID(),
-      deadlineUnixNano:
-        BigInt(now.getTime() + SECURITY_CONTAINMENT_LIMITS.reviewSeconds * 1000) * 1_000_000n,
-    },
-    parent: null,
-    carriage: {
-      operation: 'policy.review',
-      requestId: source.event.id,
-      sequence: null,
-      bindingRef: process,
-    },
-    inspectedStep: null,
-    span: span('containment review'),
-  });
-  return encodeExecutionJournalValue(admitted);
 }

@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId, PolicyDocumentV1Schema } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { describe, it } from 'vitest';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
+import { publishCoreJournal } from '../runtime/core-journal-owner.js';
 import { drainSecurityNotices } from '../security/publication.js';
 import { SecurityTriggerStore } from '../security/trigger.js';
 import { createTestCoreDb } from '../test-support/store.js';
@@ -20,18 +23,6 @@ import {
 import { SECURITY_TRIGGER_OWNER } from './security-trigger-port.js';
 
 const TABLES = SECURITY_TRIGGER_OWNER.requiredTables;
-
-function dropTriggerTables(sqlite: Database.Database): void {
-  for (const table of [
-    'security_thread_destinations',
-    'security_trigger_outbox',
-    'security_trigger_alarms',
-    'security_trigger_audit_assessments',
-    'security_trigger_audit_progress',
-    'security_trigger_state',
-  ])
-    sqlite.exec(`DROP TABLE IF EXISTS ${table}`);
-}
 
 describe('security trigger service journal and off gate', () => {
   it('installs six tables, a command receipt, and an off seed', () => {
@@ -94,7 +85,6 @@ describe('security trigger service journal and off gate', () => {
     const root = mkdtempSync(join(tmpdir(), 'security-trigger-disabled-'));
     const coreDb = createTestCoreDb(root);
     try {
-      dropTriggerTables(coreDb.sqlite);
       const present = coreDb.sqlite
         .prepare(
           `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${TABLES.map(() => '?').join(',')})`
@@ -216,6 +206,128 @@ describe('security trigger service journal and off gate', () => {
         pendingWorkspace: 0,
         workspaces: [],
       });
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses automatic containment through the Core writer with an active grant', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'security-trigger-core-gate-'));
+    const coreDb = createTestCoreDb(root);
+    try {
+      const userId = allocateEntityId('usr');
+      const process = {
+        kind: 'process',
+        workspaceId: allocateEntityId('ws'),
+        threadId: allocateEntityId('th'),
+        turnId: allocateEntityId('tu'),
+      } as const;
+      const retainedPermission = {
+        kind: 'permission',
+        state: 'active',
+        grant: { kind: 'ordinary' },
+        author: { kind: 'human', id: userId },
+        authority: { kind: 'human', userId },
+        authoredAt: '2026-11-21T00:00:00.000Z',
+      } as const;
+      const server = { kind: 'server' } as const;
+      const policy = PolicyDocumentV1Schema.parse({
+        schemaVersion: 1,
+        statements: [
+          {
+            ...retainedPermission,
+            id: 'retained-containment-grant',
+            effect: 'allow',
+            scope: {
+              subjects: [{ kind: 'human', id: userId }],
+              actions: ['security.containment'],
+              resources: [
+                {
+                  kind: 'container',
+                  container: {
+                    owner: server,
+                    kind: 'containment-template',
+                    id: policyDigest(SECURITY_CONTAINMENT_LIMITS),
+                  },
+                },
+              ],
+            },
+            lifetime: { anchor: { owner: server, kind: 'server', id: 'server' } },
+          },
+          {
+            ...retainedPermission,
+            id: 'retained-quarantine',
+            effect: 'prohibit',
+            scope: {
+              subjects: [process],
+              actions: ['tool.use'],
+              resources: [
+                {
+                  kind: 'container',
+                  container: {
+                    owner: { kind: 'workspace', workspaceId: process.workspaceId },
+                    kind: 'workspace',
+                    id: process.workspaceId,
+                  },
+                },
+              ],
+            },
+            lifetime: {
+              anchor: { owner: server, kind: 'quarantine', id: allocateEntityId('aud') },
+            },
+          },
+        ],
+      });
+      const config = join(root, 'config');
+      mkdirSync(config, { recursive: true });
+      writeFileSync(
+        join(config, 'server.jsonc'),
+        JSON.stringify({ schemaVersion: 1, policy: { mediation: policy } })
+      );
+      const manager = createRuntimeConfigManager({ dataRoot: root });
+      await manager.bindNativePolicyPublication(coreDb);
+      const observed = await new SecurityTriggerStore(coreDb).containmentUsage(
+        policy,
+        process.workspaceId
+      );
+      assert.equal(observed.usage.currentServer, 1);
+      assert.equal(observed.usage.currentWorkspace, 1);
+
+      const changes = coreDb.sqlite.prepare(`SELECT
+        (SELECT count(*) FROM control_executions) AS executions,
+        (SELECT count(*) FROM control_execution_steps) AS steps,
+        (SELECT count(*) FROM permission_decisions) AS decisions,
+        (SELECT count(*) FROM audit_events) AS audit`);
+      const before = changes.get();
+      assert.equal(
+        await publishCoreJournal(coreDb, {
+          kind: 'containment-intent',
+          policy,
+          lineage: {
+            workspaceId: process.workspaceId,
+            threadId: process.threadId,
+            turnId: process.turnId,
+            agentSessionId: allocateEntityId('as'),
+            packageSnapshotId: 'original-package',
+          },
+        }),
+        null
+      );
+      const execution = { owner: server, executionId: `containment:${policyDigest(process)}` };
+      for (const [kind, stepId] of [
+        ['containment-check', 'quarantine'],
+        ['containment-cancel', 'cancel'],
+        ['containment-stop', 'stop'],
+      ] as const) {
+        assert.equal(
+          await publishCoreJournal(coreDb, { kind, policy, ref: { execution, stepId } }),
+          null
+        );
+      }
+      assert.deepEqual(changes.get(), before);
+      assert.deepEqual(manager.current().openKitConfig.policy?.mediation, policy);
     } finally {
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();

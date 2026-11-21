@@ -35,7 +35,7 @@ export function enqueueE12NoticeInDb(_db: CoreDb, _auditEventId: string): void {
 
 /**
  * Refuses every security-trigger effect before SQL.
- * `current` reports off so kernel containment that requires state `on` returns null.
+ * `current` returns the closed service snapshot.
  */
 export function applySecurityTriggerInDb(
   _db: CoreDb,
