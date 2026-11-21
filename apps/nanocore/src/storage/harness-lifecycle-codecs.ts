@@ -234,6 +234,49 @@ export const ControlHarnessLifecycleInputSchema = z.discriminatedUnion('kind', [
 ]);
 /** Exact domain input, with no SQL, callback or executable selector. */
 export type ControlHarnessLifecycleInput = z.infer<typeof ControlHarnessLifecycleInputSchema>;
+
+const nanoHostLocalHarnessKinds = [
+  'runtime.create',
+  'sandbox.remove-for-harness',
+  'sandbox.remove-by-binding',
+  'harness.drain',
+  'sandbox.drain',
+  'sandbox.fence',
+  'session-binding.open',
+  'session-binding.initialize-check-versions',
+  'session-binding.append-check-version',
+  'measured-identity.copy',
+  'operation.expire',
+  'operation.unknown',
+] as const satisfies readonly ControlHarnessLifecycleInput['kind'][];
+
+/** Tuples whose durable predicates and writes all belong to the admitted NanoHost owner. */
+export type NanoHostLocalHarnessLifecycleInput = Extract<
+  ControlHarnessLifecycleInput,
+  { kind: (typeof nanoHostLocalHarnessKinds)[number] }
+>;
+
+const nanoHostLocalHarnessKindSet: ReadonlySet<ControlHarnessLifecycleInput['kind']> = new Set(
+  nanoHostLocalHarnessKinds
+);
+
+export function isNanoHostLocalHarnessLifecycleInput(
+  input: ControlHarnessLifecycleInput
+): input is NanoHostLocalHarnessLifecycleInput {
+  return nanoHostLocalHarnessKindSet.has(input.kind);
+}
+
+/** Uses the same tuple codecs on the private NanoHost owner worker. */
+export const NanoHostLocalHarnessLifecycleInputSchema =
+  ControlHarnessLifecycleInputSchema.transform((input, context) => {
+    if (isNanoHostLocalHarnessLifecycleInput(input)) return input;
+    context.addIssue({
+      code: 'custom',
+      message: 'Harness tuple requires deciding Core authority.',
+    });
+    return z.NEVER;
+  });
+
 /** Existing method results only; void publication is represented by null on the private peer. */
 export const ControlHarnessLifecycleResultSchema = z.union([
   z.null(),
