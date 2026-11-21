@@ -112,6 +112,7 @@ it('commits local Harness and image tuples without admitting mixed Core operatio
       const { workerData } = require('node:worker_threads');
       (async () => {
         const { applyControlHarnessLifecycle } = await import(workerData.handler);
+        const { applyControlBackendSession } = await import(workerData.backendHandler);
         const { applyControlWorkerImage } = await import(workerData.imageHandler);
         const sqlite = new (require(workerData.sqlite))(workerData.path, { fileMustExist: true });
         try {
@@ -123,6 +124,9 @@ it('commits local Harness and image tuples without admitting mixed Core operatio
           ).immediate();
           for (const input of workerData.inputs) assert.equal(applyHarness(input), null);
           assert.throws(() => applyHarness(workerData.restore), /requires deciding Core authority/);
+          assert.throws(() => sqlite.transaction(() => applyControlBackendSession(owner, {
+            kind: 'transition', attemptId: 'fixture-attempt', fromState: 'materializing', toState: 'launching',
+          })).immediate(), /launch requires deciding Core authority/);
           const setup = workerData.inputs[0];
           for (const suffix of ['-later', '-accepting']) {
             assert.equal(applyHarness({
@@ -154,6 +158,10 @@ it('commits local Harness and image tuples without admitting mixed Core operatio
         eval: true,
         workerData: {
           acquisition,
+          backendHandler: new URL(
+            '../../dist/storage/worker-backend-session-native.js',
+            import.meta.url
+          ).href,
           build,
           handler: new URL('../../dist/storage/harness-lifecycle-native.js', import.meta.url).href,
           imageHandler: new URL('../../dist/storage/worker-image-native.js', import.meta.url).href,

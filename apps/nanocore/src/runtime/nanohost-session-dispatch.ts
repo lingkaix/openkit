@@ -24,10 +24,6 @@ import { z } from 'zod';
 import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
-  type AdmittedNanoHostTransportStorage,
-  transitionAdmittedNanoHostRuntimeTarget,
-} from '../auth/nanohost-transport-admission.js';
-import {
   isNanoHostPhysicalConnectionContext,
   type NanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
@@ -35,6 +31,10 @@ import {
 import { OperationError } from '../operation-error.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb } from '../storage/db.js';
+import {
+  type AdmittedNanoHostTransportStorage,
+  transitionAdmittedNanoHostRuntimeTarget,
+} from '../storage/nanohost-transport-owner.js';
 import type { StorageResult } from '../storage/storage-owner.js';
 import {
   captureTelemetryContext,
