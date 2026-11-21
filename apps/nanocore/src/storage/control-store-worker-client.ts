@@ -186,6 +186,7 @@ import {
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import type { AdmittedNanoHostAttemptRecovery } from '../runtime/nanohost-attempt-recovery.js';
 import type { AdmittedNanoHostHarnessTurnLifecycle } from '../runtime/nanohost-harness.js';
+import type { hasQueuedNanoHostHarnessOperation } from '../runtime/nanohost-harness-records.js';
 import {
   getNanoHostRuntimeTarget,
   type NanoHostRuntimeTargetRecord,
@@ -633,6 +634,7 @@ interface NanoHostOwnerReaders {
   readonly readNanoHostEpochInvalidation: typeof readNanoHostEpochInvalidation;
   readonly inspectNanoHostRuntimeTargetTransition: typeof inspectNanoHostRuntimeTargetTransition;
   readonly getWorkerBackendSession: typeof getWorkerBackendSession;
+  readonly hasQueuedNanoHostHarnessOperation?: typeof hasQueuedNanoHostHarnessOperation;
   readonly readPendingNanoHostEpochRetirement: typeof readPendingNanoHostEpochRetirement;
 }
 
@@ -3700,6 +3702,22 @@ class ControlStoreWorkerClient {
           return result;
         },
         dispatch: async ({ sandboxIntegrationBindingRef, now }) => {
+          const hasQueuedOperation = readers.hasQueuedNanoHostHarnessOperation;
+          if (!hasQueuedOperation || opening.nanoHostTargetTransition)
+            throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+          if (
+            opening.nanoHostWritePending === 'target-stable-write' ||
+            opening.nanoHostCoreHoldPending
+          ) {
+            // An in-flight serving write grants this poll no command. Verify only the owner.
+            readCurrent(() => undefined, true);
+            return null;
+          }
+          // Empty polls leave the Native and Core writers available to their live producers.
+          if (
+            !readCurrent((sqlite) => hasQueuedOperation({ sqlite }, sandboxIntegrationBindingRef))
+          )
+            return null;
           const result = await writeHarnessTurn({
             kind: 'operation.dispatch',
             sandboxIntegrationBindingRef,

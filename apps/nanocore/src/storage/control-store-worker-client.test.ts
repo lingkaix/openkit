@@ -69,6 +69,7 @@ import {
   CORE_SCHEDULER_EXECUTION_DEFINITION,
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
+import { hasQueuedNanoHostHarnessOperation } from '../runtime/nanohost-harness-records.js';
 import { stageSchedulerStartInput } from '../runtime/scheduler-input-staging.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { prepareWorkerStorageContributor } from '../runtime/worker-storage-binding-records.js';
@@ -1304,6 +1305,7 @@ describe('admitted Server work owner worker', () => {
 
 const nanoHostReaders = {
   getWorkerBackendSession,
+  hasQueuedNanoHostHarnessOperation,
   isEnrollmentAdministrator: isCurrentDeploymentAdministrator,
   listNanoHostTransportTokenRecords,
   prepareNanoHostRuntimeTargetTransition,
@@ -2795,7 +2797,7 @@ describe('admitted NanoHost owner worker', () => {
     expectNanoHostTablesAbsent(f.corePath, 'nanohost_runtime_targets');
   });
 
-  it('allows exact RuntimeTarget polling while the local Harness write awaits FULL', async () => {
+  it('keeps RuntimeTarget and empty Harness polling independent of mixed writes', async () => {
     const f = await nanoHostWorkerFixture();
     for (const target of [nanoHostTarget, nanoHostReady]) {
       const original = await prepareNanoHostTarget(f.owner, target);
@@ -2805,6 +2807,11 @@ describe('admitted NanoHost owner worker', () => {
         state: 'ready',
       });
     }
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const poll = () =>
+      f.owner.harnessTurnLifecycle.dispatch({
+        sandboxIntegrationBindingRef: 'sandbox-integration',
+      });
     Atomics.store(f.gate, 0, 0);
     const writing = f.owner.harnessLifecycle({
       kind: 'runtime.create',
@@ -2829,10 +2836,22 @@ describe('admitted NanoHost owner worker', () => {
         value: { connectionGeneration: 1, ready: true },
       });
       expect(f.owner.read(() => true)).toMatchObject({ state: 'unavailable' });
+      await expect(poll()).resolves.toBeNull();
     } finally {
       release(f.gate);
     }
     await expect(writing).resolves.toBeUndefined();
+
+    await expect(poll()).resolves.toBeNull();
+    expect(posted.mock.calls.map(([frame]) => frame)).not.toContainEqual(
+      expect.objectContaining({
+        operation: 'nanohost-owner',
+        mutation: expect.objectContaining({
+          kind: 'harness-turn-lifecycle',
+          input: expect.objectContaining({ kind: 'operation.dispatch' }),
+        }),
+      })
+    );
   });
 
   it('holds a successor when the original local settlement commits but loses its ACK', async () => {
