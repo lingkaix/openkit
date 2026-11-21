@@ -535,6 +535,15 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
   readonly coreDb?: CoreDb;
   /** The exact owner selection supplied by the serving gate. */
   readonly nativeStorage?: StorageResult<'nanohost', AdmittedNanoHostTransportStorage>;
+  /** The mixed dispatch and result paths require the original deciding Core receipt. */
+  readonly nativeHarnessLifecycle?: {
+    dispatch(
+      input: Parameters<typeof dispatchNanoHostHarnessOperation>[1]
+    ): ReturnType<typeof dispatchNanoHostHarnessOperation>;
+    settle(
+      input: Parameters<typeof settleNanoHostHarnessOperation>[1]
+    ): ReturnType<typeof settleNanoHostHarnessOperation>;
+  };
   /** Dispatcher shared with effect producers and native transport routes. */
   readonly dispatch: NanoHostSessionDispatch;
   /** Live runtime owner that binds dispatch-time Turn credentials before carriage. */
@@ -2210,6 +2219,9 @@ export function registerNanoHostSessionSemanticRoutes(
       const body = new Uint8Array(bodyBuffer);
       const isHarnessRoute = path === HARNESS_POLL_PATH || path === HARNESS_RESULT_PATH;
       if (isHarnessRoute) {
+        const nativeHarness = input.nativeStorage ? input.nativeHarnessLifecycle : undefined;
+        if (input.nativeStorage && (input.nativeStorage.state !== 'ready' || !nativeHarness))
+          throw effectTransportError(503, 'NanoHost Harness deciding storage is unavailable.');
         if (!input.coreDb) {
           throw new Error('NanoHost private Harness storage is unavailable.');
         }
@@ -2276,9 +2288,11 @@ export function registerNanoHostSessionSemanticRoutes(
           const dispatchStarted = performance.now();
           let command =
             delivery?.command ??
-            (await dispatchNanoHostHarnessOperation(input.coreDb, {
-              sandboxIntegrationBindingRef,
-            }));
+            (nativeHarness
+              ? await nativeHarness.dispatch({ sandboxIntegrationBindingRef })
+              : await dispatchNanoHostHarnessOperation(input.coreDb, {
+                  sandboxIntegrationBindingRef,
+                }));
           const committedAt = performance.now();
           if (command) {
             if (!input.harnessCommandDispatched)
@@ -2382,11 +2396,14 @@ export function registerNanoHostSessionSemanticRoutes(
         }
         const result = value as unknown as NanoHostHarnessResult;
         const completedAt = new Date().toISOString();
-        const settlement = await settleNanoHostHarnessOperation(input.coreDb, {
+        const originalResult = {
           sandboxIntegrationBindingRef,
           result,
           timestamp: completedAt,
-        });
+        };
+        const settlement = nativeHarness
+          ? await nativeHarness.settle(originalResult)
+          : await settleNanoHostHarnessOperation(input.coreDb, originalResult);
         if (!input.harnessResultSettled)
           throw new Error('NanoHost Harness native result consumer is unavailable.');
         // Exact result replay must cross the same durable consumer boundary before HTTP ACK.
