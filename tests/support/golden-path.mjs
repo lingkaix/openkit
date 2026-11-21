@@ -27,6 +27,7 @@ let selector;
 let phase = 'setup';
 let calls = 0;
 const observedThreads = [];
+const observedTurns = [];
 
 /** Fail before any host effect outside a disposable GitHub-hosted runner. */
 function validate() {
@@ -84,6 +85,12 @@ async function download(url, destination, digest) {
   const bytes = Buffer.from(await response.arrayBuffer());
   if (digest) assert.equal(createHash('sha256').update(bytes).digest('hex'), digest);
   await fs.writeFile(destination, bytes);
+}
+
+function goldenAppImage() {
+  return process.env.IMAGES === 'build'
+    ? 'openkit/golden-app:dev'
+    : `ghcr.io/lingkaix/openkit-app@${process.env.APP_DIGEST}`;
 }
 
 /** Reuse the release packager and installer, including their input checksums. */
@@ -471,10 +478,6 @@ async function install(providerPort) {
   await command('daemon-reload', 'systemctl', ['daemon-reload']);
   const authSecret = randomBytes(32).toString('hex');
   secrets.push(authSecret);
-  const appImage =
-    process.env.IMAGES === 'build'
-      ? 'openkit/golden-app:dev'
-      : `ghcr.io/lingkaix/openkit-app@${process.env.APP_DIGEST}`;
   await command(
     'app-start',
     'docker',
@@ -497,7 +500,7 @@ async function install(providerPort) {
       `BETTER_AUTH_URL=${appOrigin}`,
       '--env',
       'BETTER_AUTH_SECRET',
-      appImage,
+      goldenAppImage(),
     ],
     { env: { ...process.env, BETTER_AUTH_SECRET: authSecret } }
   );
@@ -588,6 +591,7 @@ async function turn(label, expected) {
         ? `Write ${filename} with ${marker} in the retained Workspace. Copy that actual file to your admitted default output root and submit it with work_artifact_submit as kind file, media type text/plain and title ${filename}. Wait for its acknowledged Artifact id, then answer.`
         : `Read the existing ${filename} without rewriting it, then answer.`,
   });
+  observedTurns.push({ ...selector, turnId: admitted.id });
   const turn = await until(
     label,
     () => operation('turn.read', { ...selector, turnId: admitted.id }),
@@ -672,6 +676,100 @@ async function fileObservation(turn) {
   assert.equal(artifact.origin.kind, 'turn-output');
   assert.equal(artifact.origin.threadId, selector.threadId);
   assert.equal(artifact.origin.turnId, turn.id);
+}
+
+/** Reads attempt evidence using the exact readers packaged in this run's App image. */
+async function captureAttemptRecords() {
+  if (observedTurns.length === 0) return;
+  const script = `
+import { randomUUID } from 'node:crypto';
+import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { acquireDataRootLock } from './dist/bootstrap/lock.js';
+import { listSchedulerExecutionAttemptsForTurn } from './dist/runtime/execution-attempt-records.js';
+import { readAdmittedNanoHostAttempt } from './dist/storage/control-store-worker-client.js';
+import {
+  inspectServerOwnerFile, openCoreReadDb, serverStoragePath, withStoppedServerOwnerReadConnection,
+} from './dist/storage/db.js';
+
+const source = process.argv[1];
+const turns = JSON.parse(process.argv[2]);
+const scratch = await mkdtemp('/tmp/openkit-attempts-');
+try {
+  // Both processes have stopped. Preserve committed WAL but recreate SHM only in scratch.
+  for (const owner of ['control-kernel', 'nanohost']) {
+    if (!(await inspectServerOwnerFile(source, owner))) continue;
+    const from = serverStoragePath(source, owner);
+    const to = serverStoragePath(scratch, owner);
+    await mkdir(dirname(to), { recursive: true });
+    await copyFile(from, to);
+    await copyFile(from + '-wal', to + '-wal').catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
+  await mkdir(join(scratch, 'server/runtime'), { recursive: true });
+  const lock = acquireDataRootLock(scratch, { bootId: randomUUID() });
+  try {
+    const core = openCoreReadDb(scratch);
+    try {
+      const attempts = turns.flatMap((turn) => listSchedulerExecutionAttemptsForTurn(core, turn));
+      const native = new Map();
+      let nanoHost = 'unavailable';
+      try {
+        await withStoppedServerOwnerReadConnection(scratch, 'nanohost', lock, (sqlite) => {
+          nanoHost = 'ready';
+          for (const attempt of attempts) {
+            if (attempt.backendId !== 'nanohost' || !attempt.deadline) continue;
+            try {
+              const { session, proof } = readAdmittedNanoHostAttempt(core, sqlite, attempt);
+              native.set(attempt.attemptId, {
+                state: session.state,
+                recoveryState: proof.recoveryState,
+                recoveryDeadline: proof.recoveryDeadline,
+                heartbeatDeadline: proof.heartbeatDeadline,
+              });
+            } catch {
+              native.set(attempt.attemptId, { state: 'unavailable' });
+            }
+          }
+        });
+      } catch { /* Keep the Core evidence when the optional owner is unavailable. */ }
+      console.log(JSON.stringify({ nanoHost, attempts: attempts.map(({
+        attemptId, workspaceId, threadId, turnId, phase, disposition, terminalCause, createdAt,
+        updatedAt, deadline,
+      }) => ({
+        attemptId, workspaceId, threadId, turnId, phase, disposition, terminalCause, createdAt,
+        updatedAt, deadline, native: native.get(attemptId) ?? null,
+      })) }));
+    } finally {
+      core.sqlite.close();
+    }
+  } finally {
+    lock.release();
+  }
+} finally {
+  await rm(scratch, { recursive: true, force: true });
+}
+`;
+  await command('attempt-records', 'docker', [
+    'run',
+    '--rm',
+    '--network=none',
+    '--pull=never',
+    '--read-only',
+    '--tmpfs',
+    '/tmp:rw,nosuid,nodev,mode=0700',
+    '--mount',
+    `type=bind,src=${path.join(root, 'data')},dst=/data/openkit,readonly`,
+    '--entrypoint',
+    'node',
+    goldenAppImage(),
+    '--input-type=module',
+    '-e',
+    script,
+    '/data/openkit',
+    JSON.stringify(observedTurns),
+  ]);
 }
 
 /** Prove the fresh path and then real retained association reuse across both process restarts. */
@@ -775,20 +873,8 @@ async function run() {
       ['cleanup-app', 'docker', ['rm', '-f', 'golden-path-app']],
     ])
       await command(name, exe, args).catch(() => {});
-    // Diagnostic-only read after App shutdown; never use private SQL as a verdict oracle.
-    await command('attempt-records', 'python3', [
-      '-c',
-      `
-import json, sqlite3, sys
-connection = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True)
-connection.row_factory = sqlite3.Row
-threads = json.loads(sys.argv[2])
-rows = connection.execute('SELECT attempt_id, workspace_id, thread_id, turn_id, phase, disposition, terminal_cause, recovery_state, created_at, updated_at FROM scheduler_execution_attempts WHERE thread_id IN (' + ','.join('?' for _ in threads) + ')', threads).fetchall()
-print(json.dumps([dict(row) for row in rows]))
-`,
-      path.join(root, 'data/server/db/core.sqlite'),
-      JSON.stringify(observedThreads.map((thread) => thread.threadId)),
-    ]).catch(() => {});
+    // Diagnostic-only read after App shutdown; never use attempt evidence as a verdict oracle.
+    await captureAttemptRecords().catch(() => {});
     await new Promise((resolve) => server.close(resolve));
     await scan(evidence, secrets);
     await fs.chmod(evidence, 0o755);
