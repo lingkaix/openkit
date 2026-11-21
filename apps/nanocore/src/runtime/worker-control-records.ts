@@ -775,7 +775,7 @@ export async function waitForWorkerControlFinalStatus(
   input: WaitForWorkerControlFinalStatusInput,
   readNanoHost?: <Value>(
     query: (sqlite: Database.Database) => Value
-  ) => StorageResult<'nanohost', Value>
+  ) => StorageResult<'nanohost', Value> | { readonly state: 'pending' }
 ): Promise<AcceptedWorkerFinalStatus> {
   for (;;) {
     if (readNanoHost) {
@@ -798,6 +798,12 @@ export async function waitForWorkerControlFinalStatus(
         accepted: getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage),
         native: readNanoHostRecoveryLease(sqlite, original.lease).attempt,
       }));
+      if (result.state === 'pending') {
+        const remaining = Date.parse(original.lease.grant.deadline) - Date.now();
+        if (remaining <= 0) throw new Error('Worker lease expired before durable final status.');
+        await delay(Math.min(WORKER_FINAL_STATUS_POLL_INTERVAL_MS, remaining));
+        continue;
+      }
       if (result.state !== 'ready') throw new Error('NanoHost completion storage is unavailable.');
       if (result.value.accepted) return result.value.accepted;
       const now = new Date().toISOString();

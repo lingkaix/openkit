@@ -385,6 +385,9 @@ export interface CreateConfiguredTurnExecutorOptions {
         readonly owner: StorageResult<'nanohost', NanoHostLifecycleOwner>;
         readonly admitSubmission?: AdmitNanoHostSubmission;
         readonly commitCloseout?: WorkerGovernanceTurnExecutorOptions['commitNanoHostCloseout'];
+        readonly readWorkerCompletion?: NonNullable<
+          Parameters<typeof waitForWorkerControlFinalStatus>[2]
+        >;
         readonly writeStorageAttachment?: WriteNanoHostStorageAttachment;
         readonly harnessTurnLifecycle?: AdmittedNanoHostHarnessTurnLifecycle;
         readonly advanceIdleCleanup?: (selection: IdleCleanupSelection) => Promise<void>;
@@ -576,6 +579,10 @@ function createNanoHostWorkerLifecycleRuntime(
   const readNanoHostEnvironment: NanoHostEnvironmentRead | undefined = nanoHostOwner
     ? (read) => (nanoHostOwner.state === 'ready' ? nanoHostOwner.value.read(read) : nanoHostOwner)
     : undefined;
+  const readWorkerCompletion =
+    nanoHostOwner?.state === 'ready'
+      ? (nanoHostRecovery?.readWorkerCompletion ?? readNanoHostEnvironment)
+      : readNanoHostEnvironment;
   let executionReconciler: ExecutionReconciler;
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
@@ -637,7 +644,7 @@ function createNanoHostWorkerLifecycleRuntime(
                   workspaceId: environmentPackage.scope.workspaceId,
                 },
               },
-              readNanoHostEnvironment
+              readWorkerCompletion
             ),
           backend,
           coreDb,
