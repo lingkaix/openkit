@@ -28,29 +28,19 @@ import type {
 /** Applies one original credential tuple or separate Audit stage in the existing native savepoint. */
 export function applyControlNanoHostTransport(
   coreDb: CoreDb,
-  input: ControlNanoHostTransportInput
+  input: ControlNanoHostTransportInput,
+  native?: { readonly sqlite: Database.Database }
 ): ControlNanoHostTransportResult {
   assertControlProductWriter(coreDb.sqlite);
-  if ('actor' in input && input.actor) {
-    try {
-      requireCurrentDeploymentAdmin(
-        coreDb,
-        nanoHostTransportAdminFacts(input.actor),
-        'record' in input ? input.record.now : 'now' in input ? input.now : undefined
-      );
-    } catch (error) {
-      if (!(error instanceof DeploymentAdminRequiredError)) throw error;
-      const refusal = NANOHOST_TRANSPORT_ADMIN_REFUSAL;
-      throw new OperationError(refusal.code, refusal.message, refusal.status, { cause: error });
-    }
-  }
+  if ('actor' in input && input.actor) requireNanoHostTransportAdministrator(coreDb, input);
   switch (input.kind) {
     case 'lifecycle-audit':
       recordNanoHostTransportLifecycleAuditEvent(
         coreDb,
         input.action,
         input.record,
-        input.actorUserId
+        input.actorUserId,
+        native
       );
       return { kind: 'audit' };
     case 'decommission-audit': {
@@ -68,6 +58,43 @@ export function applyControlNanoHostTransport(
     }
     default:
       return applyNanoHostTransportMutation(coreDb.sqlite, input);
+  }
+}
+
+type NanoHostAdministratorTransportInput = Extract<
+  ControlNanoHostTransportInput,
+  { kind: 'issue' | 'enroll' | 'rotate' | 'revoke' | 'abort' | 'decommission' }
+> & {
+  readonly actor: NonNullable<Extract<ControlNanoHostTransportInput, { kind: 'enroll' }>['actor']>;
+};
+
+/** Rechecks the original Administrator on the pinned Core peer, then uses the Native Token tuple. */
+export function applyNanoHostAdministratorTransport(
+  sqlite: Database.Database,
+  coreDb: CoreDb,
+  input: NanoHostAdministratorTransportInput
+): ControlNanoHostTransportResult {
+  requireNanoHostTransportAdministrator(coreDb, input);
+  return applyNanoHostTransportMutation(sqlite, input);
+}
+
+function requireNanoHostTransportAdministrator(
+  coreDb: CoreDb,
+  input: Exclude<
+    ControlNanoHostTransportInput,
+    { kind: 'verify' | 'lifecycle-audit' | 'decommission-audit' }
+  >
+): void {
+  try {
+    requireCurrentDeploymentAdmin(
+      coreDb,
+      input.actor ? nanoHostTransportAdminFacts(input.actor) : undefined,
+      'record' in input ? input.record.now : input.now
+    );
+  } catch (error) {
+    if (!(error instanceof DeploymentAdminRequiredError)) throw error;
+    const refusal = NANOHOST_TRANSPORT_ADMIN_REFUSAL;
+    throw new OperationError(refusal.code, refusal.message, refusal.status, { cause: error });
   }
 }
 
@@ -506,12 +533,20 @@ function recordNanoHostTransportLifecycleAuditEvent(
     | 'nanohost.transport.revoke'
     | 'nanohost.transport.rotate',
   record: NanoHostTransportTokenRecord,
-  actorUserId: string | null
+  actorUserId: string | null,
+  native?: { readonly sqlite: Database.Database }
 ): void {
   if (action === 'nanohost.transport.rotate' && record.status === 'revoked') {
-    const predecessor = record.predecessorTokenId
-      ? getNanoHostTransportTokenRecord(coreDb.sqlite, record.predecessorTokenId)
-      : null;
+    if (record.predecessorTokenId && !native)
+      throw new OperationError(
+        'nanohost_transport_storage_unavailable',
+        'NanoHost transport storage is unavailable.',
+        503
+      );
+    const predecessor =
+      record.predecessorTokenId && native
+        ? getNanoHostTransportTokenRecord(native.sqlite, record.predecessorTokenId)
+        : null;
     recordServerAuditEvent({
       action,
       category: 'system',

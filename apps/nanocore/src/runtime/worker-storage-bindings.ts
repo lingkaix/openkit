@@ -131,44 +131,54 @@ async function prepareAttachmentPublisher(
   }
   const { target, attemptId } = admitted;
   const authorize = authorizeContributor ?? admitted.authorizeContributor;
-  return (
+  return async (
     input: WorkerStorageAttachmentCommand,
     prior?: WorkerStorageBinding | null,
     contributors: readonly WorkerStorageContributor[] = []
-  ) =>
-    admitted.write(input, {
-      attemptId,
-      verifyBeforePost: (sqlite) =>
-        sqlite
-          .transaction(() => {
-            const owner = { sqlite };
-            const current = getNanoHostRuntimeTarget(owner, target.targetId);
-            if (
-              !current?.ready ||
-              !current.freshEmpty ||
-              !current.predecessorFenced ||
-              current.connectionGeneration !== target.connectionGeneration ||
-              current.deploymentId !== target.deploymentId ||
-              current.identityId !== target.identityId ||
-              current.physicalEpoch !== target.physicalEpoch ||
-              ('runtimeTargetId' in input && input.runtimeTargetId !== target.targetId) ||
-              ('deploymentId' in input && input.deploymentId !== target.deploymentId) ||
-              (prior &&
-                (prior.runtimeTargetId !== target.targetId ||
-                  prior.deploymentId !== target.deploymentId)) ||
-              !admitted.isCurrentAttempt() ||
-              !isDeepStrictEqual(getWorkerStorageBinding(owner, input), prior)
-            )
-              return false;
-            if (
-              input.kind !== 'activate' &&
-              input.authorizedContributorRefs.length !== contributors.length
-            )
-              return false;
-            return contributors.every(authorize);
-          })
-          .deferred(),
-    });
+  ) => {
+    let authorityRefused = false;
+    try {
+      return await admitted.write(input, {
+        attemptId,
+        verifyBeforePost: (sqlite) =>
+          sqlite
+            .transaction(() => {
+              const owner = { sqlite };
+              const current = getNanoHostRuntimeTarget(owner, target.targetId);
+              if (
+                !current?.ready ||
+                !current.freshEmpty ||
+                !current.predecessorFenced ||
+                current.connectionGeneration !== target.connectionGeneration ||
+                current.deploymentId !== target.deploymentId ||
+                current.identityId !== target.identityId ||
+                current.physicalEpoch !== target.physicalEpoch ||
+                ('runtimeTargetId' in input && input.runtimeTargetId !== target.targetId) ||
+                ('deploymentId' in input && input.deploymentId !== target.deploymentId) ||
+                (prior &&
+                  (prior.runtimeTargetId !== target.targetId ||
+                    prior.deploymentId !== target.deploymentId)) ||
+                !admitted.isCurrentAttempt() ||
+                !isDeepStrictEqual(getWorkerStorageBinding(owner, input), prior)
+              )
+                return false;
+              authorityRefused =
+                (input.kind !== 'activate' &&
+                  input.authorizedContributorRefs.length !== contributors.length) ||
+                !contributors.every(authorize);
+              return !authorityRefused;
+            })
+            .deferred(),
+      });
+    } catch (error) {
+      if (authorityRefused)
+        throw new WorkerStorageBindingError(
+          'authorization_denied',
+          'Worker storage contributor is not currently authorized.'
+        );
+      throw error;
+    }
+  };
 }
 
 /** Captures the current selected revision on the same reader as the attachment writer. */
@@ -179,9 +189,21 @@ function readAttachmentBinding(
 ): WorkerStorageBinding {
   const binding = requireNanoHostObservation(
     coreDb,
-    (sqlite) => getWorkerStorageBinding({ sqlite }, { storageRef }),
+    (sqlite) => {
+      try {
+        return getWorkerStorageBinding({ sqlite }, { storageRef });
+      } catch (error) {
+        if (
+          error instanceof WorkerStorageBindingError ||
+          (error instanceof TypeError && error.message === 'Unsupported retained record format.')
+        )
+          return error;
+        throw error;
+      }
+    },
     admitted?.read
   );
+  if (binding instanceof Error) throw binding;
   if (!binding)
     throw new WorkerStorageBindingError('not_found', 'Worker storage association was not found.');
   return binding;
