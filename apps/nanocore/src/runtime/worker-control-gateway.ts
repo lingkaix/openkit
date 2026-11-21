@@ -671,6 +671,19 @@ export class WorkerControlGateway {
    * @param input Durable session snapshot to serve.
    */
   public restoreSession(input: WorkerControlSessionRestoreInput): void {
+    this.restoreSessions([input]);
+  }
+
+  /** Checks every planned restore before changing the live session registry. */
+  public restoreSessions(inputs: readonly WorkerControlSessionRestoreInput[]): void {
+    const states = inputs.map((input) => this.prepareRestoredSession(input));
+    for (const state of states)
+      this.sessionsBySnapshotId.set(state.lineage.packageSnapshotId, state);
+  }
+
+  private prepareRestoredSession(
+    input: WorkerControlSessionRestoreInput
+  ): WorkerControlSessionState {
     if (
       input.environmentPackage &&
       !sameLineage(lineageFromEnvironmentPackage(input.environmentPackage), input.lineage)
@@ -737,7 +750,7 @@ export class WorkerControlGateway {
       turnId: input.lineage.turnId,
       workspaceId: input.lineage.workspaceId,
     };
-    const state: WorkerControlSessionState = {
+    return {
       environmentPackage: input.environmentPackage ?? null,
       eventFingerprintsBySequence: new Map(
         events.map((event) => [event.sequence, canonicalJsonText(event)])
@@ -753,8 +766,6 @@ export class WorkerControlGateway {
       workerInferenceTokenHash: input.workerInferenceTokenHash,
       workerCapabilityTokenHash: input.workerCapabilityTokenHash,
     };
-
-    this.sessionsBySnapshotId.set(input.lineage.packageSnapshotId, state);
   }
 
   /**

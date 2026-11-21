@@ -56,7 +56,10 @@ import { applyControlBootstrapEnsure } from '../auth/bootstrap-ensure-native.js'
 import { applyControlBootstrapConsume } from '../auth/bootstrap-token.js';
 import { applyControlLocalIdentity } from '../auth/identity.js';
 import { isNanoHostTransportAdminRefusal } from '../auth/nanohost-transport-codecs.js';
-import { applyControlNanoHostTransport } from '../auth/nanohost-transport-native.js';
+import {
+  applyControlNanoHostTransport,
+  applyNanoHostTransportMutation,
+} from '../auth/nanohost-transport-native.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { applyControlDiscordChannel } from '../channels/discord.js';
 import {
@@ -261,6 +264,8 @@ import {
   isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
+  type NanoHostOwnerMutation,
+  type NanoHostOwnerMutationResult,
   readControlSchemaApplicationInput,
   type ServerOwnerDescriptor,
 } from './control-store-worker-protocol.js';
@@ -295,6 +300,12 @@ import {
   assertSupportedNativeLedger,
   ServerOwnerAdmissionError,
 } from './migrate.js';
+import {
+  applyNanoHostRuntimeTargetMutation,
+  beginNanoHostEpochRetirement,
+  settleNanoHostEpochInvalidation,
+  stageNanoHostEpochInvalidation,
+} from './nanohost-epoch-invalidation-native.js';
 import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
 import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
 import {
@@ -453,6 +464,7 @@ type WriteCommand = Extract<
       | 'better-auth'
       | 'vault'
       | 'runtime-policy-publication'
+      | 'nanohost-owner'
       | 'nanohost-transport'
       | 'worker-control-evidence'
       | 'generative-presentation'
@@ -1053,7 +1065,10 @@ function domainRefusal(
       message: error.message,
       status: 409,
     };
-  if (operation === 'runtime-target' && error instanceof RuntimeTargetRefusal)
+  if (
+    (operation === 'runtime-target' || operation === 'nanohost-owner') &&
+    error instanceof RuntimeTargetRefusal
+  )
     return { operation, code: 'runtime_target_refused', message: error.message, status: 409 };
   if (operation === 'execution-attempt' && error instanceof ExecutionAttemptRefusal)
     return { operation, code: 'attempt_refused', message: error.message, status: 409 };
@@ -1387,6 +1402,51 @@ function apply(
     }
     return { mode: 'get', row: row ?? null };
   });
+}
+
+/** Applies one local tuple inside the existing owner transaction and savepoint. */
+function applyNanoHostOwnerMutation(
+  owner: OwnedDatabase,
+  openingRequestId: number,
+  mutation: NanoHostOwnerMutation
+): NanoHostOwnerMutationResult {
+  const file = lstatSync(owner.path, { throwIfNoEntry: false });
+  if (
+    owner.openingRequestId !== openingRequestId ||
+    !file?.isFile() ||
+    file.nlink !== 1 ||
+    `${file.dev}:${file.ino}` !== owner.identity ||
+    realpathSync(owner.path) !== owner.path
+  )
+    throw new ServerOwnerAdmissionError('recovery-required');
+
+  const { sqlite } = owner;
+  switch (mutation.kind) {
+    case 'transport': {
+      const input = mutation.input;
+      if (
+        input.kind === 'lifecycle-audit' ||
+        input.kind === 'decommission-audit' ||
+        ('actor' in input && input.actor !== undefined)
+      )
+        throw new ControlProductPreconditionError();
+      return { kind: mutation.kind, value: applyNanoHostTransportMutation(sqlite, input) };
+    }
+    case 'runtime-target':
+      return {
+        kind: mutation.kind,
+        value: applyNanoHostRuntimeTargetMutation(sqlite, mutation.input),
+      };
+    case 'begin-retirement':
+      beginNanoHostEpochRetirement(sqlite, mutation.input);
+      return { kind: mutation.kind, value: null };
+    case 'stage-invalidation':
+      stageNanoHostEpochInvalidation(sqlite, mutation.input);
+      return { kind: mutation.kind, value: null };
+    case 'settle-invalidation':
+      settleNanoHostEpochInvalidation(sqlite, mutation.input);
+      return { kind: mutation.kind, value: null };
+  }
 }
 
 /** Clears only this owner's scheduling handles; no other Workspace is paused. */
@@ -3341,6 +3401,14 @@ function flush(owner: OwnedDatabase): void {
               operation: 'vault',
               result,
             };
+          } else if (request.operation === 'nanohost-owner') {
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'nanohost-owner',
+              result: applyNanoHostOwnerMutation(owner, request.openingRequestId, request.mutation),
+            };
           } else if (request.operation === 'nanohost-transport') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlNanoHostTransport(owner.scopeDb, request.input);
@@ -4528,10 +4596,12 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       return;
     }
     if (
-      owner.serverOwner &&
-      value.operation !== 'close' &&
-      value.operation !== 'checkpoint' &&
-      value.operation !== 'reclaim'
+      value.operation === 'nanohost-owner'
+        ? owner.serverOwner !== 'nanohost'
+        : owner.serverOwner &&
+          value.operation !== 'close' &&
+          value.operation !== 'checkpoint' &&
+          value.operation !== 'reclaim'
     ) {
       reply(failure(value.id, 'precondition'));
       return;
@@ -4569,6 +4639,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'better-auth' ||
       value.operation === 'runtime-policy-publication' ||
       value.operation === 'vault' ||
+      value.operation === 'nanohost-owner' ||
       value.operation === 'nanohost-transport' ||
       value.operation === 'worker-control-evidence' ||
       value.operation === 'generative-presentation' ||

@@ -9,6 +9,7 @@ import type {
 import type Database from 'better-sqlite3';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   listRestorableNanoHostExecutionAttempts,
@@ -19,6 +20,7 @@ import type {
   WorkerControlArtifactNotice,
   WorkerControlGateway,
   WorkerControlLineage,
+  WorkerControlSessionRestoreInput,
   WorkerControlSupplyRefreshAck,
 } from './worker-control-gateway.js';
 import {
@@ -34,20 +36,41 @@ interface WorkerControlRecordRow {
 }
 
 /**
- * Restores live control, cancellation-only first-final serving state and exact final replay from durable owners.
- *
- * @param coreDb Server-scope Core database.
- * @param gateway Gateway instance to hydrate.
+ * Restores live control, cancellation-only first-final serving state and exact final replay.
+ * The acknowledged NanoHost reader must cover the entire plan before any session is published.
  */
 export function rebuildWorkerControlGatewaySessions(
   coreDb: CoreDb,
-  gateway: WorkerControlGateway
-): void {
+  gateway: WorkerControlGateway,
+  readNanoHost?: <Value>(
+    query: (sqlite: Database.Database) => Value
+  ) => StorageResult<'nanohost', Value>
+): StorageResult<'nanohost', void> {
+  const plan = (sqlite: Database.Database) => planWorkerControlRestore(coreDb, { sqlite });
+  if (!readNanoHost) {
+    gateway.restoreSessions(plan(coreDb.sqlite));
+    return { state: 'ready', value: undefined };
+  }
+  try {
+    const observed = readNanoHost(plan);
+    if (observed.state !== 'ready') return observed;
+    gateway.restoreSessions(observed.value);
+    return { state: 'ready', value: undefined };
+  } catch {
+    return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+  }
+}
+
+function planWorkerControlRestore(
+  coreDb: CoreDb,
+  owner: { readonly sqlite: Database.Database }
+): WorkerControlSessionRestoreInput[] {
+  const now = new Date().toISOString();
   const leases = [
     ...listRestorableNanoHostExecutionAttempts(coreDb),
-    ...listTerminalControlLeases(coreDb),
+    ...listTerminalControlLeases(coreDb, owner, now),
   ];
-
+  const planned: WorkerControlSessionRestoreInput[] = [];
   for (const lease of leases) {
     if (
       !lease.bindingRef ||
@@ -69,8 +92,8 @@ export function rebuildWorkerControlGatewaySessions(
     };
     if (
       lease.phase !== 'open' &&
-      !getWorkerControlAcceptedFinalStatus(coreDb, lineage) &&
-      !hasPendingWorkerCancellationFinal(lease, new Date().toISOString())
+      !getWorkerControlAcceptedFinalStatus(owner, lineage) &&
+      !hasPendingWorkerCancellationFinal(lease, now)
     )
       continue;
     const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, lease.workspaceId);
@@ -86,9 +109,9 @@ export function rebuildWorkerControlGatewaySessions(
       workspaceDb.sqlite.close();
     }
     assertRestoredPackageLineage(environmentPackage, lease, admission);
-    const records = readAcceptedRecords(coreDb, lineage);
+    const records = readAcceptedRecords(owner, lineage);
 
-    gateway.restoreSession({
+    planned.push({
       ...records,
       environmentPackage,
       lineage,
@@ -99,47 +122,61 @@ export function rebuildWorkerControlGatewaySessions(
       workerCapabilityTokenHash: lease.workerCapabilityTokenHash,
     });
   }
+  return planned;
 }
 
-/**
- * Lists terminal-control candidates whose current owners are checked before gateway restoration.
- *
- * @param coreDb Server-scope Core database.
- * @returns Cancellation-closing candidates and retained final-status replay candidates.
- */
-function listTerminalControlLeases(coreDb: CoreDb): NanoHostExecutionAttemptRecord[] {
+/** Core supplies candidate placement. Only the admitted record owner can show final acceptance. */
+function listTerminalControlLeases(
+  coreDb: CoreDb,
+  owner: { readonly sqlite: Database.Database },
+  now: string
+): NanoHostExecutionAttemptRecord[] {
   const table = coreDb.sqlite
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('scheduler_execution_attempts');
-
-  if (!table) {
-    return [];
-  }
+  if (!table) return [];
 
   const rows = coreDb.sqlite
     .prepare(
-      `SELECT attempt_id AS attemptId
-         FROM scheduler_execution_attempts AS lease
-         WHERE lease.phase IN ('closing', 'closed')
-           AND lease.binding_ref IS NOT NULL
-           AND lease.worker_control_token_hash IS NOT NULL
-           AND lease.worker_inference_token_hash IS NOT NULL
-           AND lease.deadline > ?
-          AND ((lease.phase = 'closing' AND lease.terminal_cause IN ('turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable')) OR EXISTS (
-            SELECT 1
-              FROM worker_control_records AS record
-             WHERE record.workspace_id = lease.workspace_id
-               AND record.thread_id = lease.thread_id
-               AND record.turn_id = lease.turn_id
-               AND record.agent_session_id = lease.agent_session_id
-               AND record.package_snapshot_id = lease.input_ref
-               AND record.operation = 'final_status'
-          ))
-        ORDER BY lease.created_at ASC, lease.attempt_id ASC`
+      `SELECT attempt_id AS attemptId, workspace_id AS workspaceId, thread_id AS threadId,
+         turn_id AS turnId, agent_session_id AS agentSessionId, input_ref AS packageSnapshotId,
+         phase, terminal_cause AS terminalCause
+       FROM scheduler_execution_attempts
+       WHERE phase IN ('closing', 'closed') AND binding_ref IS NOT NULL
+         AND worker_control_token_hash IS NOT NULL AND worker_inference_token_hash IS NOT NULL
+         AND deadline > ?
+       ORDER BY created_at ASC, attempt_id ASC`
     )
-    .all(new Date().toISOString()) as Array<{ attemptId: string }>;
+    .all(now) as Array<
+    Omit<WorkerControlLineage, 'requestId'> & {
+      attemptId: string;
+      phase: 'closing' | 'closed';
+      terminalCause: string | null;
+    }
+  >;
+  if (rows.length === 0) return [];
 
-  return rows.map((row) => requireNanoHostExecutionAttempt(coreDb, row.attemptId));
+  const hasFinal = owner.sqlite.prepare(
+    `SELECT 1 FROM worker_control_records
+     WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND agent_session_id = ?
+       AND package_snapshot_id = ? AND operation = 'final_status' LIMIT 1`
+  );
+  return rows
+    .filter(
+      (lease) =>
+        (lease.phase === 'closing' &&
+          ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
+            lease.terminalCause ?? ''
+          )) ||
+        hasFinal.get(
+          lease.workspaceId,
+          lease.threadId,
+          lease.turnId,
+          lease.agentSessionId,
+          lease.packageSnapshotId
+        )
+    )
+    .map((lease) => requireNanoHostExecutionAttempt(coreDb, lease.attemptId));
 }
 
 /**
@@ -191,13 +228,24 @@ export function readAcceptedRecords(
       `
       SELECT schema_version AS schemaVersion, operation, record_json AS recordJson, accepted_at AS acceptedAt
       FROM worker_control_records
-      WHERE agent_session_id = ?
+      WHERE workspace_id = ?
+        AND thread_id = ?
+        AND turn_id = ?
+        AND agent_session_id = ?
         AND package_snapshot_id = ?
+        AND request_id IS ?
         AND operation <> 'heartbeat'
       ORDER BY accepted_at ASC, operation ASC
       `
     )
-    .all(lineage.agentSessionId, lineage.packageSnapshotId) as WorkerControlRecordRow[];
+    .all(
+      lineage.workspaceId,
+      lineage.threadId,
+      lineage.turnId,
+      lineage.agentSessionId,
+      lineage.packageSnapshotId,
+      lineage.requestId ?? null
+    ) as WorkerControlRecordRow[];
   const result = {
     artifacts: [] as WorkerControlArtifactNotice[],
     capabilitySummaries: [] as WorkerCapabilityCallSummary[],
