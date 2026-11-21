@@ -20,11 +20,14 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
 import { createHttpTelemetryMiddleware, shutdownTelemetry, startTelemetry } from '../telemetry.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { queueTestPreparedHarnessOperation } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import {
   createTestServerThread,
@@ -32,17 +35,8 @@ import {
 } from '../test-support/server-work-store.js';
 import { shutdownTestStoreWorker } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
-import {
-  acknowledgeNanoHostHarnessResult,
-  createNanoHostHarnessRuntime,
-  dispatchNanoHostHarnessOperation,
-  type NanoHostHarnessResult,
-  type NanoHostHarnessResultSettlement,
-  openNanoHostAgentSessionBinding,
-  readConsumedNanoHostHarnessResult,
-  readNanoHostIdleCloseAuthority,
-} from './nanohost-harness.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
+import type { NanoHostHarnessResult } from './nanohost-harness.js';
+import type { AllocateNanoHostRuntimeTargetConnectionGenerationInput } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
   NANO_HOST_EFFECT_OPERATIONS,
@@ -50,18 +44,86 @@ import {
   registerNanoHostSessionSemanticRoutes,
 } from './nanohost-session-dispatch.js';
 
+function allocateDispatchTarget(
+  fixture: ReturnType<typeof openNanoHostTestOwner>,
+  {
+    targetId,
+    identityId,
+    deploymentId,
+    observedAt,
+  }: AllocateNanoHostRuntimeTargetConnectionGenerationInput
+) {
+  return fixture.transition({ kind: 'allocate', targetId, identityId, deploymentId, observedAt });
+}
+
 describe('authoritative NanoHost session dispatch', () => {
+  it('keeps native readiness held while the admitted NanoHost owner is unavailable', async () => {
+    const app = new Hono<{ Variables: AuthVariables }>();
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
+    const readiness = vi.spyOn(dispatch, 'readiness');
+    registerNanoHostSessionSemanticRoutes({
+      app,
+      dispatch,
+      nativeStorage: { state: 'unavailable', owner: 'nanohost', reason: 'disabled' },
+    });
+
+    const result = await app.request('/api/nanohost/transport/session/readiness', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ physicalEpoch: 'a'.repeat(64) }),
+    });
+    expect(result.status).toBe(503);
+    expect(readiness).not.toHaveBeenCalled();
+  });
+
+  it('refuses native Harness carriage until the mixed deciding adapter is attached', async () => {
+    const app = new Hono<{ Variables: AuthVariables }>();
+    const dispatch = createNanoHostSessionDispatch({
+      sessionAuthority: createNanoHostTransportSessionAuthority(),
+    });
+    const route = vi.spyOn(dispatch, 'route');
+    const owner = {
+      read: vi.fn(),
+      transport: vi.fn(),
+      harnessLifecycle: vi.fn(),
+      transitionRuntimeTarget: vi.fn(),
+    };
+    const kernel = {
+      reserveHolderIntent: vi.fn(),
+      fenceNanoHostEpoch: vi.fn(),
+      inspectNanoHostEpochFence: vi.fn(),
+    };
+    registerNanoHostSessionSemanticRoutes({
+      app,
+      dispatch,
+      nativeStorage: { state: 'ready', value: { owner, kernel } },
+    });
+    for (const path of ['/worker-control/harness/poll', '/worker-control/harness/result']) {
+      const result = await app.request(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(result.status).toBe(503);
+    }
+    expect(route).not.toHaveBeenCalled();
+    expect(owner.read).not.toHaveBeenCalled();
+    expect(owner.harnessLifecycle).not.toHaveBeenCalled();
+  });
+
   it.each(['enabled', 'disabled', 'refused'] as const)(
     'carries initiating context over native H2 independently of poll and export: %s',
     async (mode) => {
       const root = mkdtempSync(join(tmpdir(), 'openkit-effect-trace-'));
+      const nanoHost = openNanoHostTestOwner();
       const coreDb = openCoreDb(root);
       applyMigrations(coreDb);
       const authority = createNanoHostTransportSessionAuthority();
       const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
       const exporter = new InMemorySpanExporter();
       const target = { deploymentId: 'trace', identityId: 'trace', targetId: 'trace' };
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateDispatchTarget(nanoHost, {
         ...target,
         observedAt: new Date().toISOString(),
       });
@@ -100,6 +162,7 @@ describe('authoritative NanoHost session dispatch', () => {
         coreDb,
         dispatch,
         nanoHostConfig: target,
+        nativeStorage: { state: 'ready', value: nanoHost.storage },
       });
       registerNanoHostSessionEffectRoutes({ app, dispatch });
       const listener = getRequestListener(app.fetch);
@@ -253,6 +316,12 @@ describe('authoritative NanoHost session dispatch', () => {
                   })
                 );
               }
+              const held = await post(
+                '/worker-control/harness/poll?proof=sec2a',
+                { schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY },
+                { 'x-openkit-integration-binding': 'unknown-sec2a-binding' }
+              );
+              expect(held.headers[':status']).toBe(503);
             } finally {
               classified.mockRestore();
             }
@@ -271,12 +340,13 @@ describe('authoritative NanoHost session dispatch', () => {
 
   it('carries bounded delete resource summaries without changing cleanup or receipt identity', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-delete-resources-'));
+    const nanoHost = openNanoHostTestOwner();
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
     const target = { deploymentId: 'resources', identityId: 'resources', targetId: 'resources' };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateDispatchTarget(nanoHost, {
       ...target,
       observedAt: new Date().toISOString(),
     });
@@ -287,6 +357,7 @@ describe('authoritative NanoHost session dispatch', () => {
       coreDb,
       dispatch,
       nanoHostConfig: target,
+      nativeStorage: { state: 'ready', value: nanoHost.storage },
     });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
@@ -472,6 +543,7 @@ describe('authoritative NanoHost session dispatch', () => {
 
   it('carries strict directory and executable Skill imports over native H2', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-skill-import-h2-'));
+    const nanoHost = openNanoHostTestOwner();
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
@@ -481,7 +553,7 @@ describe('authoritative NanoHost session dispatch', () => {
       identityId: 'skill-import',
       targetId: 'skill-import',
     };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateDispatchTarget(nanoHost, {
       ...target,
       observedAt: '2026-10-17T00:00:00.000Z',
     });
@@ -492,6 +564,7 @@ describe('authoritative NanoHost session dispatch', () => {
       coreDb,
       dispatch,
       nanoHostConfig: target,
+      nativeStorage: { state: 'ready', value: nanoHost.storage },
     });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
@@ -707,13 +780,14 @@ describe('authoritative NanoHost session dispatch', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-command-pin-'));
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
+    const nanoHost = openNanoHostTestOwner();
     const authority = createNanoHostTransportSessionAuthority();
     const target = {
       deploymentId: 'command-pin',
       identityId: 'command-pin',
       targetId: 'command-pin',
     };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateDispatchTarget(nanoHost, {
       ...target,
       observedAt: '2026-10-05T00:00:00.000Z',
     });
@@ -777,7 +851,7 @@ describe('authoritative NanoHost session dispatch', () => {
         await current.readiness!(
           physical,
           Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64), note: 'ignored' })),
-          { ...target, coreDb }
+          { ...target, coreDb, nativeStorage: nanoHost.storage }
         );
         if (kind !== 'workspace.collect') {
           const rejection = current
@@ -948,6 +1022,7 @@ describe('authoritative NanoHost session dispatch', () => {
         {
           ...target,
           coreDb,
+          nativeStorage: nanoHost.storage,
         }
       );
       const liveInput = {
@@ -1061,6 +1136,7 @@ describe('authoritative NanoHost session dispatch', () => {
   });
 
   it('keeps current-epoch result-only cleanup pending after a live connection completed a poll', async () => {
+    const nanoHost = openNanoHostTestOwner();
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-live-cleanup-poll-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
@@ -1070,7 +1146,7 @@ describe('authoritative NanoHost session dispatch', () => {
       sessionAuthority: authority,
     });
     const target = { deploymentId: 'live-cleanup', identityId: 'live-cleanup' };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateDispatchTarget(nanoHost, {
       ...target,
       targetId: target.identityId,
       observedAt: new Date().toISOString(),
@@ -1082,6 +1158,7 @@ describe('authoritative NanoHost session dispatch', () => {
       coreDb,
       dispatch,
       nanoHostConfig: target,
+      nativeStorage: { state: 'ready', value: nanoHost.storage },
     });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
@@ -1177,6 +1254,7 @@ describe('authoritative NanoHost session dispatch', () => {
     'joins only the exact aborted accepted %s slot and retains its original consumer',
     async (kind) => {
       const root = mkdtempSync(join(tmpdir(), 'openkit-aborted-cleanup-join-'));
+      const nanoHost = openNanoHostTestOwner();
       const coreDb = openCoreDb(root);
       applyMigrations(coreDb);
       const authority = createNanoHostTransportSessionAuthority();
@@ -1186,7 +1264,7 @@ describe('authoritative NanoHost session dispatch', () => {
         identityId: 'cleanup-join',
         targetId: 'cleanup-join',
       };
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateDispatchTarget(nanoHost, {
         ...target,
         observedAt: new Date().toISOString(),
       });
@@ -1220,6 +1298,7 @@ describe('authoritative NanoHost session dispatch', () => {
         await dispatch.readiness!(physical, Buffer.from(JSON.stringify({ physicalEpoch: epoch })), {
           ...target,
           coreDb,
+          nativeStorage: nanoHost.storage,
         });
         const requestId = 'b'.repeat(64);
         const sandboxId = 'retained-cleanup';
@@ -1334,6 +1413,7 @@ describe('authoritative NanoHost session dispatch', () => {
   );
 
   it('polls every declared effect route while idle and admits additive baseline results', async () => {
+    const nanoHost = openNanoHostTestOwner();
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-collection-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
@@ -1343,7 +1423,7 @@ describe('authoritative NanoHost session dispatch', () => {
       sessionAuthority: authority,
     });
     const target = { deploymentId: 'collection', identityId: 'collection' };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateDispatchTarget(nanoHost, {
       ...target,
       targetId: target.identityId,
       observedAt: new Date().toISOString(),
@@ -1355,6 +1435,7 @@ describe('authoritative NanoHost session dispatch', () => {
       coreDb,
       dispatch,
       nanoHostConfig: target,
+      nativeStorage: { state: 'ready', value: nanoHost.storage },
     });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
@@ -1740,12 +1821,13 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
-  it('defers image settlement on storage failure and acknowledges only durable outcomes', async () => {
+  it('keeps prepared-image effects off the wire without a mixed settlement owner', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-image-settlement-')));
     applyMigrations(coreDb);
     // Retain actual caller provenance before exercising the original storage fault.
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
     const store = await createTestServerWorkStore(coreDb);
+    const { value: nanoHost } = await openAdmittedTestNanoHost(coreDb);
     const thread = await createTestServerThread(
       store,
       coreDb,
@@ -1774,14 +1856,20 @@ describe('authoritative NanoHost session dispatch', () => {
     });
     const target = {
       coreDb,
-      deploymentId: 'deployment-settlement',
+      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+      nativeStorage: nanoHost,
       identityId: 'host-settlement',
       targetId: 'host-settlement',
     };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      ...target,
-      observedAt: '2026-08-10T00:00:00.000Z',
-    });
+    await expect(
+      transitionAdmittedNanoHostRuntimeTarget(nanoHost, {
+        kind: 'allocate',
+        deploymentId: target.deploymentId,
+        identityId: target.identityId,
+        targetId: target.targetId,
+        observedAt: '2026-08-10T00:00:00.000Z',
+      })
+    ).resolves.toMatchObject({ state: 'ready', value: { connectionGeneration: 1 } });
     let accept!: (connection: object) => void;
     const physicalReady = new Promise<object>((resolve) => {
       accept = resolve;
@@ -1853,111 +1941,33 @@ describe('authoritative NanoHost session dispatch', () => {
         authoredContentDigest: `sha256:${'a'.repeat(64)}`,
         inputDigest: `sha256:${'b'.repeat(64)}`,
       };
-      const pending = dispatch.effect({
-        kind: 'image.acquire',
-        requestId,
-        input: { imageReference: 'openkit:test' },
-        imageSettlement,
-        imageExecution,
-      });
-      void pending.catch(() => undefined);
-      await vi.waitFor(async () => {
-        await expect(dispatch.poll(physical, 'image.acquire')).resolves.toEqual({
-          imageReference: 'openkit:test',
+      const intents = () =>
+        coreDb.sqlite
+          .prepare(
+            "SELECT count(*) FROM control_execution_steps WHERE json_extract(invocation_json, '$.carriage.requestId') = ?"
+          )
+          .pluck()
+          .get(requestId);
+      const before = intents();
+      await expect(
+        dispatch.effect({
+          kind: 'image.acquire',
           requestId,
-        });
-      });
-      // This persistent post-setup fault executes on the real native writer, unlike Main query_only.
-      coreDb.sqlite.exec(`CREATE TRIGGER reject_dispatch_image_receipt
-        BEFORE INSERT ON worker_image_settlements
-        BEGIN SELECT RAISE(ABORT, 'injected image receipt failure'); END`);
-      coreDb.sqlite.exec('PRAGMA query_only = ON');
-      const result = { requestId, digest: `sha256:${'c'.repeat(64)}`, note: 'ignored' };
-      await expect(dispatch.result(physical, 'image.acquire', result)).rejects.toMatchObject({
-        status: 503,
-      });
-      await expect(pending).rejects.toMatchObject({ code: 'recovery_required' });
-      expect(authority.mayCarryWork(physical)).toBe(true);
-      coreDb.sqlite.exec('PRAGMA query_only = OFF');
-      coreDb.sqlite.exec('DROP TRIGGER reject_dispatch_image_receipt');
-      coreDb.sqlite.exec('PRAGMA query_only = ON');
-      await dispatch.result(physical, 'image.acquire', result);
-      const restarted = createNanoHostSessionDispatch({
-        coreDb,
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        sessionAuthority: authority,
-      });
-      await expect(restarted.result(physical, 'image.acquire', result)).resolves.toBeUndefined();
-      await restarted.readiness!(
-        physical,
-        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-        target
-      );
-      const replay = restarted.effect({
-        kind: 'image.acquire',
-        requestId,
-        input: { imageReference: 'openkit:test' },
-        imageSettlement,
-        imageExecution,
-      });
-      await expect(restarted.poll(physical, 'image.acquire')).resolves.toBeNull();
-      await expect(replay).resolves.toEqual({ digest: result.digest });
-
-      await expect(
-        restarted.expectResultOnly!([{ kind: 'image.acquire', requestId, imageSettlement }])
-      ).resolves.toEqual({ kind: 'image.acquire', result: { digest: result.digest } });
-      expect(() =>
-        restarted.expectResultOnly!([
-          {
-            kind: 'bridge.close',
-            originPhysicalEpoch: 'pre-witness',
-            requestId: 'f'.repeat(64),
-          },
-          { kind: 'image.acquire', requestId, imageSettlement },
-        ])
-      ).toThrow(/one image group|one cleanup origin group/i);
-      await expect(restarted.poll(physical, 'bridge.close')).resolves.toBeNull();
-      await expect(
-        restarted.result(physical, 'image.acquire', {
-          ...result,
-          digest: `sha256:${'d'.repeat(64)}`,
-        })
-      ).rejects.toMatchObject({ status: 409 });
-      coreDb.sqlite.exec('PRAGMA query_only = OFF');
-      coreDb.sqlite
-        .prepare('UPDATE worker_image_settlements SET image_digest = ? WHERE request_id = ?')
-        .run('malformed-digest', requestId);
-      await expect(restarted.result(physical, 'image.acquire', result)).rejects.toMatchObject({
-        status: 409,
-      });
-
-      // A new dispatcher models another Core restart; this recovery has not completed a poll.
-      const unresolvedRestart = createNanoHostSessionDispatch({
-        coreDb,
-        sessionAuthority: authority,
-      });
-      await unresolvedRestart.readiness!(
-        physical,
-        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-        target
-      );
-      const unknownImageOutcome = unresolvedRestart.expectResultOnly!([
-        {
-          kind: 'image.build',
+          input: { imageReference: 'openkit:test' },
           imageSettlement,
-          requestId: 'f'.repeat(64),
-        },
-      ]).catch((error: unknown) => error);
-      await expect(unresolvedRestart.poll(physical, 'image.inspect')).rejects.toMatchObject({
-        status: 409,
-      });
-      expect(authority.mayCarryWork(physical)).toBe(false);
-      const unknownImageError = await unknownImageOutcome;
-      expect(unknownImageError).toBeInstanceOf(Error);
-      expect((unknownImageError as Error).message).toMatch(/unknown/i);
+          imageExecution,
+        })
+      ).rejects.toMatchObject({ status: 503 });
+      expect(() =>
+        dispatch.expectResultOnly!([{ kind: 'image.acquire', imageSettlement, requestId }])
+      ).toThrow(expect.objectContaining({ status: 503 }));
+      await expect(dispatch.poll(physical, 'image.acquire')).resolves.toBeNull();
+      expect(intents()).toBe(before);
+      expect(authority.mayCarryWork(physical)).toBe(true);
     } finally {
       client?.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      await shutdownTestStoreWorker();
       coreDb.sqlite.close();
     }
   });
@@ -2026,12 +2036,14 @@ describe('authoritative NanoHost session dispatch', () => {
     )
   )('guards $outcome consumption across $boundary', async ({ outcome, boundary }) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-result-continuation-'));
+    const nanoHost = openNanoHostTestOwner();
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
     const target = {
       coreDb,
+      nativeStorage: nanoHost.storage,
       deploymentId: 'continuation',
       identityId: 'continuation',
       targetId: 'continuation',
@@ -2055,7 +2067,7 @@ describe('authoritative NanoHost session dispatch', () => {
       if (!address || typeof address === 'string')
         throw new Error('Continuation fixture did not expose an address.');
       const connect = async (generation: number) => {
-        await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        await allocateDispatchTarget(nanoHost, {
           ...target,
           observedAt: new Date().toISOString(),
         });
@@ -2266,13 +2278,15 @@ describe('authoritative NanoHost session dispatch', () => {
     const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-typed-effect-failure-')));
     applyMigrations(coreDb);
+    const nanoHost = openNanoHostTestOwner();
     const target = {
       coreDb,
+      nativeStorage: nanoHost.storage,
       deploymentId: 'deployment-typed-failure',
       identityId: 'nanohost-typed-failure',
       targetId: 'nanohost-typed-failure',
     };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateDispatchTarget(nanoHost, {
       ...target,
       observedAt: '2026-08-10T00:00:00.000Z',
     });
@@ -2339,7 +2353,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).resolves.toBeUndefined();
       await rejected;
 
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateDispatchTarget(nanoHost, {
         ...target,
         observedAt: '2026-08-10T00:00:01.000Z',
       });
@@ -2506,7 +2520,7 @@ describe('authoritative NanoHost session dispatch', () => {
         });
       }
 
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateDispatchTarget(nanoHost, {
         ...target,
         observedAt: '2026-08-10T00:00:02.000Z',
       });
@@ -2661,7 +2675,7 @@ describe('authoritative NanoHost session dispatch', () => {
         () => null,
         (error: unknown) => error
       );
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateDispatchTarget(nanoHost, {
         ...target,
         observedAt: '2026-08-10T00:00:03.000Z',
       });
@@ -2708,15 +2722,17 @@ describe('authoritative NanoHost session dispatch', () => {
   it('settles prior accepted uncertainty once and preserves unaccepted work', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-create-cleanup-order-')));
     applyMigrations(coreDb);
+    const nanoHost = openNanoHostTestOwner();
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
     const target = {
       coreDb,
+      nativeStorage: nanoHost.storage,
       deploymentId: 'deployment-create-cleanup-order',
       identityId: 'nanohost-create-cleanup-order',
       targetId: 'nanohost-create-cleanup-order',
     };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateDispatchTarget(nanoHost, {
       ...target,
       observedAt: '2026-09-11T06:12:00.000Z',
     });
@@ -2802,7 +2818,7 @@ describe('authoritative NanoHost session dispatch', () => {
         kind: 'image.acquire',
         requestId: queuedRequestId,
       });
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateDispatchTarget(nanoHost, {
         ...target,
         observedAt: '2026-09-11T06:38:00.000Z',
       });
@@ -2839,7 +2855,7 @@ describe('authoritative NanoHost session dispatch', () => {
       expect(cleanupError).toBeInstanceOf(Error);
       expect((cleanupError as Error).message).toMatch(/unknown/i);
 
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateDispatchTarget(nanoHost, {
         ...target,
         observedAt: '2026-09-11T06:39:00.000Z',
       });
@@ -2883,6 +2899,7 @@ describe('authoritative NanoHost session dispatch', () => {
   });
 
   it('never delivers a queued effect to a different physical Epoch', async () => {
+    const nanoHost = openNanoHostTestOwner();
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-effect-epoch-origin-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
@@ -2893,11 +2910,12 @@ describe('authoritative NanoHost session dispatch', () => {
     });
     const target = {
       coreDb,
+      nativeStorage: nanoHost.storage,
       deploymentId: 'deployment-effect-epoch-origin',
       identityId: 'nanohost-effect-epoch-origin',
       targetId: 'nanohost-effect-epoch-origin',
     };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateDispatchTarget(nanoHost, {
       ...target,
       observedAt: '2026-09-11T00:00:00.000Z',
     });
@@ -2949,7 +2967,7 @@ describe('authoritative NanoHost session dispatch', () => {
       });
       void staleOutcome.catch(() => undefined);
 
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateDispatchTarget(nanoHost, {
         ...target,
         observedAt: '2026-09-11T00:00:01.000Z',
       });
@@ -2971,7 +2989,7 @@ describe('authoritative NanoHost session dispatch', () => {
         kind: 'image.inspect',
         requestId: reconnectRequestId,
       });
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateDispatchTarget(nanoHost, {
         ...target,
         observedAt: '2026-09-11T00:00:02.000Z',
       });
@@ -3000,11 +3018,12 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
-  it('retries one image.acquire mutation on the same receiver key and runs the host body once', async () => {
+  it('keeps repeated prepared-image requests off the physical receiver without a mixed settlement owner', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-image-acquire-retry-')));
     applyMigrations(coreDb);
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
     const store = await createTestServerWorkStore(coreDb);
+    const { value: nanoHost } = await openAdmittedTestNanoHost(coreDb);
     const thread = await createTestServerThread(
       store,
       coreDb,
@@ -3019,14 +3038,17 @@ describe('authoritative NanoHost session dispatch', () => {
       sessionAuthority: authority,
     });
     const target = {
-      deploymentId: 'deployment-image-retry',
+      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
       identityId: 'host-image-retry',
       targetId: 'host-image-retry',
     };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      ...target,
-      observedAt: '2026-08-10T00:00:00.000Z',
-    });
+    await expect(
+      transitionAdmittedNanoHostRuntimeTarget(nanoHost, {
+        kind: 'allocate',
+        ...target,
+        observedAt: '2026-08-10T00:00:00.000Z',
+      })
+    ).resolves.toMatchObject({ state: 'ready', value: { connectionGeneration: 1 } });
     const app = new Hono<{ Variables: AuthVariables }>();
     registerNanoHostSessionSemanticRoutes({
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
@@ -3034,6 +3056,7 @@ describe('authoritative NanoHost session dispatch', () => {
       coreDb,
       dispatch,
       nanoHostConfig: target,
+      nativeStorage: { state: 'ready', value: nanoHost },
     });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
@@ -3077,7 +3100,6 @@ describe('authoritative NanoHost session dispatch', () => {
           .status
       ).toBe(204);
       const requestId = 'e'.repeat(64);
-      const digest = `sha256:${'c'.repeat(64)}`;
       const imageSettlement = {
         authoredArtifactId: testEntityId('ar', 'artifact_image_retry'),
         authoredArtifactVersion: 1,
@@ -3086,60 +3108,23 @@ describe('authoritative NanoHost session dispatch', () => {
       };
       const imageExecution = { actor, authorize: () => true, workId: publicationTurn.id };
       const input = { imageReference: 'openkit:test' };
-      const pending = dispatch.effect({
-        imageExecution,
-        imageSettlement,
-        input,
-        kind: 'image.acquire',
-        requestId,
-      });
-      let delivered!: Awaited<ReturnType<typeof post>>;
-      await vi.waitFor(async () => {
-        delivered = await post('/api/nanohost/transport/effects/image.acquire', {});
-        expect(delivered.status).toBe(200);
-      });
-      expect(JSON.parse(delivered.body)).toMatchObject({
-        imageReference: 'openkit:test',
-        requestId,
-      });
-      expect(
-        (await post('/api/nanohost/transport/effects/image.acquire/result', { digest, requestId }))
-          .status
-      ).toBe(204);
-      await expect(pending).resolves.toEqual({ digest });
-      await expect(
+      const attempt = () =>
         dispatch.effect({
           imageExecution,
           imageSettlement,
           input,
           kind: 'image.acquire',
           requestId,
-        })
-      ).resolves.toEqual({ digest });
-      const idle = await post('/api/nanohost/transport/effects/image.acquire', {});
-      expect(idle.status).toBe(204);
-      expect(idle.body).toBe('');
-      await expect(
-        dispatch.effect({
-          imageExecution,
-          imageSettlement: {
-            ...imageSettlement,
-            inputDigest: `sha256:${'d'.repeat(64)}`,
-          },
-          input,
-          kind: 'image.acquire',
-          requestId,
-        })
-      ).rejects.toThrow(/conflicts/i);
-      const afterConflict = await post('/api/nanohost/transport/effects/image.acquire', {});
-      expect(afterConflict.status).toBe(204);
-      expect(afterConflict.body).toBe('');
-      expect(
-        [delivered, idle, afterConflict].filter((response) => response.status === 200)
-      ).toEqual([delivered]);
+        });
+      for (const _attempt of [1, 2]) {
+        await expect(attempt()).rejects.toMatchObject({ status: 503 });
+        const idle = await post('/api/nanohost/transport/effects/image.acquire', {});
+        expect(idle).toEqual({ status: 204, body: '' });
+      }
     } finally {
       client?.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      await shutdownTestStoreWorker();
       coreDb.sqlite.close();
     }
   });
@@ -3153,6 +3138,7 @@ async function privateLoginDispatchFixture(
   > = {}
 ) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-private-login-dispatch-'));
+  const nanoHost = openNanoHostTestOwner();
   const coreDb = openCoreDb(root);
   const authority = createNanoHostTransportSessionAuthority();
   const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
@@ -3173,6 +3159,7 @@ async function privateLoginDispatchFixture(
     coreDb,
     dispatch,
     nanoHostConfig: target,
+    nativeStorage: { state: 'ready', value: nanoHost.storage },
     ...(options.harnessResultSettled ? { harnessResultSettled: options.harnessResultSettled } : {}),
   });
   const listener = getRequestListener(app.fetch);
@@ -3205,7 +3192,7 @@ async function privateLoginDispatchFixture(
   };
   try {
     applyMigrations(coreDb);
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateDispatchTarget(nanoHost, {
       ...target,
       observedAt: new Date().toISOString(),
     });
@@ -3268,7 +3255,7 @@ async function privateLoginDispatchFixture(
       post,
       target,
       advanceGeneration: () =>
-        allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        allocateDispatchTarget(nanoHost, {
           ...target,
           observedAt: new Date().toISOString(),
         }),
@@ -3454,115 +3441,27 @@ it('carries real private semantic H2 request cancellation into the bound handler
 });
 
 // The outside close result is modeled. Real H2, native Core settlement and idle consumption are not.
-it('forwards the original Core close settlement clock once and no replacement clock on H2 replay', async () => {
-  let f: Awaited<ReturnType<typeof privateLoginDispatchFixture>> | undefined;
-  let consumerReceipt: string | null = null;
-  const settlements: NanoHostHarnessResultSettlement[] = [];
-  const harnessInstanceId = 'departure-clock-harness';
-  const harnessBindingRef = 'departure-clock-harness-binding';
-  const integrationRef = 'departure-clock-integration';
+it('holds Harness close result and replay before the mixed deciding owner is attached', async () => {
+  const result: NanoHostHarnessResult = {
+    schemaVersion: 2,
+    harnessInstanceId: 'departure-clock-harness',
+    operationId: 'c'.repeat(64),
+    sequence: 1,
+    disposition: 'succeeded',
+    body: { state: 'closed', privateState: 'absent', childState: 'absent' },
+  };
+  const consume = vi.fn(async () => undefined);
+  const fixture = await privateLoginDispatchFixture({ harnessResultSettled: consume });
   try {
-    f = await privateLoginDispatchFixture({
-      harnessResultSettled: async (result, settlement) => {
-        if (!f || !consumerReceipt || !settlement)
-          throw new Error('Actual close callback lacks its Core settlement evidence.');
-        expect(readConsumedNanoHostHarnessResult(f.coreDb, result)).not.toBeNull();
-        await acknowledgeNanoHostHarnessResult(f.coreDb, {
-          result,
-          harnessBindingRef,
-          consumerReceipt,
-          timestamp: new Date().toISOString(),
-        });
-        settlements.push(settlement);
-      },
-    });
-    await createNanoHostHarnessRuntime(f.coreDb, {
-      adapterId: 'codex',
-      adapterVersion: '0.153.4',
-      harnessBindingRef,
-      harnessCompatibilityKey: 'd'.repeat(64),
-      harnessInstanceId,
-      imageDigest: `sha256:${'f'.repeat(64)}`,
-      originPhysicalEpoch: f.epoch,
-      runtimeTargetId: f.target.targetId,
-      sandboxBindingRef: 'departure-clock-sandbox-binding',
-      sandboxCompatibilityKey: 'a'.repeat(64),
-      sandboxIntegrationBindingRef: integrationRef,
-      sandboxRuntimeId: 'departure-clock-sandbox',
-      timestamp: new Date().toISOString(),
-    });
-    const receiver = {
-      agentSessionId: testEntityId('as', 'departure-clock-session'),
-      agentSessionRuntimeBindingId: 'departure-clock-binding',
-      harnessInstanceId,
-      harnessBindingRef,
+    const headers = {
+      authorization: undefined,
+      'x-openkit-integration-binding': 'departure-clock-integration',
     };
-    await openNanoHostAgentSessionBinding(f.coreDb, {
-      agentSessionId: receiver.agentSessionId,
-      agentSessionRuntimeBindingId: receiver.agentSessionRuntimeBindingId,
-      harnessInstanceId,
-      agentSessionCompatibilityKey: 'b'.repeat(64),
-      effectiveSetupGeneration: 1,
-      threadId: testEntityId('th', 'departure-clock-thread'),
-      workspaceId: testEntityId('ws', 'departure-clock-workspace'),
-      timestamp: new Date().toISOString(),
-    });
-    const authority = readNanoHostIdleCloseAuthority(f.coreDb, receiver);
-    consumerReceipt = authority === null ? null : JSON.stringify(authority);
-    expect(consumerReceipt).not.toBeNull();
-    await queueTestPreparedHarnessOperation(f.coreDb, {
-      harnessInstanceId,
-      operation: 'session.close',
-      body: {
-        agentSessionId: receiver.agentSessionId,
-        agentSessionRuntimeBindingId: receiver.agentSessionRuntimeBindingId,
-      },
-      timestamp: new Date().toISOString(),
-    });
-    const command = await dispatchNanoHostHarnessOperation(f.coreDb, {
-      sandboxIntegrationBindingRef: integrationRef,
-    });
-    if (!command) throw new Error('Real Core close command was not dispatched.');
-    const result: NanoHostHarnessResult = {
-      schemaVersion: 2,
-      harnessInstanceId,
-      operationId: command.operationId,
-      sequence: command.sequence,
-      disposition: 'succeeded',
-      body: { state: 'closed', privateState: 'absent', childState: 'absent' },
-    };
-    const headers = { authorization: undefined, 'x-openkit-integration-binding': integrationRef };
-    expect(
-      (await f.post('/worker-control/harness/result', JSON.stringify(result), undefined, headers))[
-        ':status'
-      ]
-    ).toBe(204);
-    const first = settlements[0];
-    expect(first?.disposition).toBe('settled');
-    if (first?.disposition !== 'settled')
-      throw new Error('Actual first Core settlement is missing.');
-    expect(
-      f.coreDb.sqlite
-        .prepare(
-          'SELECT updated_at AS completedAt FROM harness_instance_records WHERE harness_instance_id = ?'
-        )
-        .get(harnessInstanceId)
-    ).toEqual({ completedAt: first.completedAt });
-    expect(
-      (await f.post('/worker-control/harness/result', JSON.stringify(result), undefined, headers))[
-        ':status'
-      ]
-    ).toBe(204);
-    expect(settlements).toEqual([first, { disposition: 'replayed' }]);
-    expect(
-      f.coreDb.sqlite
-        .prepare(
-          'SELECT updated_at AS completedAt FROM harness_instance_records WHERE harness_instance_id = ?'
-        )
-        .get(harnessInstanceId)
-    ).toEqual({ completedAt: first.completedAt });
+    const accept = () =>
+      fixture.post('/worker-control/harness/result', JSON.stringify(result), undefined, headers);
+    for (const _attempt of [1, 2]) expect((await accept())[':status']).toBe(503);
+    expect(consume).not.toHaveBeenCalled();
   } finally {
-    await shutdownTestStoreWorker();
-    await f?.close();
+    await fixture.close();
   }
 });

@@ -13,17 +13,18 @@ import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
-} from '../runtime/nanohost-harness.js';
+} from '../runtime/nanohost-harness-records.js';
 import {
   admitWorkerImageEnvironment,
-  writeWorkerImageSettlement,
-} from '../runtime/worker-image-settlements.js';
+  insertWorkerImageSettlementInTransaction,
+} from '../runtime/worker-image-settlements-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createAgentNativeEnvironmentService } from './agent-native-environment.js';
@@ -90,8 +91,10 @@ async function fixture() {
     readRuntimeConfigStatus: () => manager.status(),
   });
   const store = await createDemoStore({ dataRoot: root });
+  const native = openNanoHostTestOwner();
   const service = createAgentNativeEnvironmentService({
     coreDb: db,
+    readNanoHost: native.storage.owner.read,
     store,
     manager,
     filesForActor: () => files,
@@ -102,23 +105,31 @@ async function fixture() {
     authoredContentDigest: `sha256:${'a'.repeat(64)}`,
     inputDigest: `sha256:${'b'.repeat(64)}`,
   };
-  await writeWorkerImageSettlement(db, {
-    ...candidate,
-    requestId: '1'.repeat(64),
-    operation: 'image.acquire',
-    outcome: { kind: 'success', imageDigest },
-  });
+  native.setup((sqlite) =>
+    insertWorkerImageSettlementInTransaction(
+      { sqlite },
+      {
+        ...candidate,
+        requestId: '1'.repeat(64),
+        operation: 'image.acquire',
+        outcome: { kind: 'success', imageDigest },
+      }
+    )
+  );
   return {
     root,
     db,
+    native,
     path,
     fileId,
     manager,
     files,
     store,
     service,
-    admit: async () =>
-      await admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values }),
+    admit: () =>
+      native.setup((sqlite) =>
+        admitWorkerImageEnvironment({ sqlite }, candidate, { imageDigest, defaultsDigest, values })
+      ),
   };
 }
 
@@ -190,56 +201,73 @@ describe('Agent public native environment administration', () => {
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002' }
     );
     const now = '2026-10-01T00:00:00.000Z';
-    f.db.sqlite
-      .prepare(
-        `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count) VALUES ('target-native', 'identity-native', 'deployment-native', 1, 1, 1, 1, ?, ?, 1)`
+    f.native.setup((sqlite) =>
+      sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count) VALUES ('target-native', 'identity-native', 'deployment-native', 1, 1, 1, 1, ?, ?, 1)`
+        )
+        .run('a'.repeat(64), now)
+    );
+    f.native.setup((sqlite) =>
+      createNanoHostHarnessRuntime(
+        { sqlite },
+        {
+          adapterId: 'pi',
+          adapterVersion: 'test',
+          harnessInstanceId: 'harness-native',
+          harnessBindingRef: 'harness-binding-native',
+          harnessCompatibilityKey: 'a'.repeat(64),
+          sandboxRuntimeId: 'sandbox-native',
+          sandboxBindingRef: 'sandbox-binding-native',
+          sandboxIntegrationBindingRef: 'integration-native',
+          sandboxCompatibilityKey: 'b'.repeat(64),
+          originPhysicalEpoch: 'a'.repeat(64),
+          imageDigest,
+          runtimeTargetId: 'target-native',
+          timestamp: now,
+        }
       )
-      .run('a'.repeat(64), now);
-    await createNanoHostHarnessRuntime(f.db, {
-      adapterId: 'pi',
-      adapterVersion: 'test',
-      harnessInstanceId: 'harness-native',
-      harnessBindingRef: 'harness-binding-native',
-      harnessCompatibilityKey: 'a'.repeat(64),
-      sandboxRuntimeId: 'sandbox-native',
-      sandboxBindingRef: 'sandbox-binding-native',
-      sandboxIntegrationBindingRef: 'integration-native',
-      sandboxCompatibilityKey: 'b'.repeat(64),
-      originPhysicalEpoch: 'a'.repeat(64),
-      imageDigest,
-      runtimeTargetId: 'target-native',
-      timestamp: now,
-    });
+    );
     const environment = f.service.view(actor, f.fileId).desired;
-    await expect(
-      openNanoHostAgentSessionBinding(f.db, {
-        agentSessionId: 'as_00000000-0000-7000-8000-000000000004',
-        agentSessionRuntimeBindingId: 'binding-wrong-image',
-        agentSessionCompatibilityKey: 'c'.repeat(64),
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness-native',
-        workspaceId: workspaceIdForOwner(thread.owner),
-        threadId: thread.id,
-        nativeEnvironment: {
-          agentId: 'agent_native',
-          ...environment,
-          imageDigest: `sha256:${'e'.repeat(64)}`,
-        },
-        timestamp: now,
-      })
-    ).rejects.toThrow('measured Sandbox');
+    expect(() =>
+      f.native.setup((sqlite) =>
+        openNanoHostAgentSessionBinding(
+          { sqlite },
+          {
+            agentSessionId: 'as_00000000-0000-7000-8000-000000000004',
+            agentSessionRuntimeBindingId: 'binding-wrong-image',
+            agentSessionCompatibilityKey: 'c'.repeat(64),
+            effectiveSetupGeneration: 1,
+            harnessInstanceId: 'harness-native',
+            workspaceId: workspaceIdForOwner(thread.owner),
+            threadId: thread.id,
+            nativeEnvironment: {
+              agentId: 'agent_native',
+              ...environment,
+              imageDigest: `sha256:${'e'.repeat(64)}`,
+            },
+            timestamp: now,
+          }
+        )
+      )
+    ).toThrow('measured Sandbox');
     for (const row of [thread, hidden])
-      await openNanoHostAgentSessionBinding(f.db, {
-        agentSessionId: testEntityId('as', `as_${row.id.slice(3)}`),
-        agentSessionRuntimeBindingId: `binding-${row.id}`,
-        agentSessionCompatibilityKey: 'c'.repeat(64),
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness-native',
-        workspaceId: workspaceIdForOwner(row.owner),
-        threadId: row.id,
-        nativeEnvironment: { agentId: 'agent_native', ...environment },
-        timestamp: now,
-      });
+      f.native.setup((sqlite) =>
+        openNanoHostAgentSessionBinding(
+          { sqlite },
+          {
+            agentSessionId: testEntityId('as', `as_${row.id.slice(3)}`),
+            agentSessionRuntimeBindingId: `binding-${row.id}`,
+            agentSessionCompatibilityKey: 'c'.repeat(64),
+            effectiveSetupGeneration: 1,
+            harnessInstanceId: 'harness-native',
+            workspaceId: workspaceIdForOwner(row.owner),
+            threadId: row.id,
+            nativeEnvironment: { agentId: 'agent_native', ...environment },
+            timestamp: now,
+          }
+        )
+      );
     expect(f.service.view(actor, f.fileId).applied).toEqual([
       {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -261,18 +289,23 @@ describe('Agent public native environment administration', () => {
     };
     for (const nativeEnvironment of [undefined, { DEFAULT: 'wrong', EMPTY: '' }])
       expect(() =>
-        prepareNanoHostHarnessOperation(f.db, {
-          harnessInstanceId: 'harness-native',
-          operation: 'session.open',
-          body: { ...body, ...(nativeEnvironment ? { nativeEnvironment } : {}) },
-          timestamp: now,
-        })
+        prepareNanoHostHarnessOperation(
+          { ...f.db, sqlite: f.native.sqlite },
+          {
+            harnessInstanceId: 'harness-native',
+            operation: 'session.open',
+            body: { ...body, ...(nativeEnvironment ? { nativeEnvironment } : {}) },
+            timestamp: now,
+          }
+        )
       ).toThrow('exact binding');
-    f.db.sqlite
-      .prepare(
-        "UPDATE agent_session_runtime_bindings SET native_environment_applied = 1, lifecycle_state = 'open'"
-      )
-      .run();
+    f.native.setup((sqlite) =>
+      sqlite
+        .prepare(
+          "UPDATE agent_session_runtime_bindings SET native_environment_applied = 1, lifecycle_state = 'open'"
+        )
+        .run()
+    );
     expect(f.service.view(actor, f.fileId).applied).toEqual([
       {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -282,33 +315,41 @@ describe('Agent public native environment administration', () => {
         matchesDesired: true,
       },
     ]);
-    f.db.sqlite.prepare("UPDATE sandbox_runtime_records SET lifecycle_state = 'closed'").run();
+    f.native.setup((sqlite) =>
+      sqlite.prepare("UPDATE sandbox_runtime_records SET lifecycle_state = 'closed'").run()
+    );
     expect(f.service.view(actor, f.fileId).applied[0]).toMatchObject({
       state: 'unknown',
       environment: null,
       matchesDesired: false,
     });
-    f.db.sqlite.prepare("UPDATE sandbox_runtime_records SET lifecycle_state = 'open'").run();
-    f.db.sqlite.prepare('UPDATE nanohost_runtime_targets SET ready = 0').run();
+    f.native.setup((sqlite) =>
+      sqlite.prepare("UPDATE sandbox_runtime_records SET lifecycle_state = 'open'").run()
+    );
+    f.native.setup((sqlite) =>
+      sqlite.prepare('UPDATE nanohost_runtime_targets SET ready = 0').run()
+    );
     expect(f.service.view(actor, f.fileId).applied[0]).toMatchObject({
       state: 'unknown',
       environment: null,
       matchesDesired: false,
     });
-    f.db.sqlite
-      .prepare('UPDATE nanohost_runtime_targets SET ready = 1, physical_epoch = ?')
-      .run('b'.repeat(64));
+    f.native.setup((sqlite) =>
+      sqlite
+        .prepare('UPDATE nanohost_runtime_targets SET ready = 1, physical_epoch = ?')
+        .run('b'.repeat(64))
+    );
     expect(f.service.view(actor, f.fileId).applied[0]).toMatchObject({
       state: 'unknown',
       environment: null,
       matchesDesired: false,
     });
-    f.db.sqlite
-      .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
-      .run('a'.repeat(64));
-    f.db.sqlite
-      .prepare("UPDATE agent_session_runtime_bindings SET cleanup_state = 'unknown'")
-      .run();
+    f.native.setup((sqlite) =>
+      sqlite.prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?').run('a'.repeat(64))
+    );
+    f.native.setup((sqlite) =>
+      sqlite.prepare("UPDATE agent_session_runtime_bindings SET cleanup_state = 'unknown'").run()
+    );
     expect(f.service.view(actor, f.fileId).applied).toEqual([
       {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -318,14 +359,16 @@ describe('Agent public native environment administration', () => {
         matchesDesired: false,
       },
     ]);
-    f.db.sqlite
-      .prepare(
-        "UPDATE agent_session_runtime_bindings SET schema_version = 2, native_environment_json = '{' WHERE thread_id = ?"
-      )
-      .run(thread.id);
-    const retained = f.db.sqlite.serialize();
+    f.native.setup((sqlite) =>
+      sqlite
+        .prepare(
+          "UPDATE agent_session_runtime_bindings SET schema_version = 2, native_environment_json = '{' WHERE thread_id = ?"
+        )
+        .run(thread.id)
+    );
+    const retained = f.native.sqlite.serialize();
     expect(() => f.service.view(actor, f.fileId)).toThrow('Unsupported retained record format.');
-    expect(f.db.sqlite.serialize().equals(retained)).toBe(true);
+    expect(f.native.sqlite.serialize().equals(retained)).toBe(true);
   });
 
   it('publishes typed private runtime environment operations and refuses non-administrators before reading values', async () => {

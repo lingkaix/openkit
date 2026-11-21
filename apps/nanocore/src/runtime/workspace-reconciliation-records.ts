@@ -20,6 +20,7 @@ import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import type { FsStore } from '../lib/store.js';
 import { readProduct } from '../storage/control-store-product-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import { AgentSessionRecordSchema } from '../storage/workspace-file-records.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identity.js';
@@ -169,7 +170,10 @@ export async function hasPendingWorkspaceCapture(
       throw error;
     });
     if (!metadata && !prior) continue;
-    fullOwner ??= getWorkerBackendSession(coreDb, anchor.attemptId) ?? undefined;
+    fullOwner ??=
+      requireNanoHostObservation(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, anchor.attemptId)
+      ) ?? undefined;
     const owner = fullOwner;
     if (
       !owner ||

@@ -8,7 +8,6 @@ import {
   MaterialIdSchema,
   MaterialRevisionIdSchema,
   PresentationIdSchema,
-  RequestIdSchema,
   ResourceCandidateIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
@@ -84,7 +83,6 @@ const StoredConversationMetadataV1ReaderSchema = StoredConversationMetadataV1Sch
 /** The response discriminator selects its declared entity owner; other owners keep opaque keys. */
 const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<string> | null> = {
   scheduler_entry: z.string().min(1),
-  discord_inbound: RequestIdSchema,
   workspace: WorkspaceIdSchema,
   workspace_invitation: InvitationIdSchema,
   workspace_member: null,
@@ -143,32 +141,6 @@ export const ExternalTriggerCommandScopeSchema = z
   })
   .strict();
 
-/** Signed Discord event identity; the event id is the command request id. */
-const DiscordInboundCommandScopeSchema = z
-  .object({
-    coreId: z.literal('server'),
-    discordUserId: z
-      .string()
-      .regex(/^[0-9]{1,20}$/)
-      .optional(),
-  })
-  .strict();
-
-/** Guild ingress keeps sender identity in Communication's binding, not in the permanent receipt. */
-const DiscordGuildMentionScopeSchema = z
-  .object({
-    coreId: z.literal('server'),
-    guildId: z.string().regex(/^[0-9]{1,20}$/),
-    channelId: z.string().regex(/^[0-9]{1,20}$/),
-  })
-  .strict();
-
-/** Commands whose retained Core row is the permanent event record. */
-export const PERMANENT_COMMANDS: readonly CommandRequestName[] = [
-  'scheduler.external-trigger.admit',
-  'channel.discord.inbound',
-];
-
 /** Parses the one retained command scope representation. */
 export function parseStoredCommandScope(input: unknown): CommandRequestScope {
   return StoredCommandScopeV1Schema.parse(input);
@@ -181,10 +153,6 @@ export function parseCommandScope(
 ): CommandRequestScope {
   if (command === 'scheduler.external-trigger.admit')
     return ExternalTriggerCommandScopeSchema.parse(input);
-  if (command === 'channel.discord.inbound')
-    return z
-      .union([DiscordInboundCommandScopeSchema, DiscordGuildMentionScopeSchema])
-      .parse(input) as CommandRequestScope;
   return parseStoredCommandScope(input);
 }
 
@@ -224,8 +192,6 @@ export function normalizeCommandRequestResponse(
   COMMAND_RESPONSE_ID_SCHEMAS[response.kind]?.parse(response.id);
   if ((command === 'scheduler.external-trigger.admit') !== (response.kind === 'scheduler_entry'))
     throw new Error('External-event command response differs from its scheduler entry.');
-  if ((command === 'channel.discord.inbound') !== (response.kind === 'discord_inbound'))
-    throw new Error('Discord event command response differs from its native request.');
   if (response.conversationMetadata === undefined) return { kind: response.kind, id: response.id };
   if (command !== 'conversation.submit')
     throw new Error('Only conversation.submit may store extra command receipt metadata.');
@@ -251,7 +217,7 @@ export function readCommandResponseMetadata(command: CommandRequestName, json: s
 export function commandRequestValues(record: CommandRequestRecord) {
   const scope = parseCommandScope(record.command, record.scope);
   const response = normalizeCommandRequestResponse(record.command, record.response);
-  if (PERMANENT_COMMANDS.includes(record.command) !== (record.expiresAt === null))
+  if ((record.command === 'scheduler.external-trigger.admit') !== (record.expiresAt === null))
     throw new Error('Only original Core external-event commands are non-expiring.');
   return {
     schema_version: writeRetainedV1({}).schemaVersion,

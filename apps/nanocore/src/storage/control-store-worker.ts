@@ -118,6 +118,7 @@ import {
 } from '../runtime/pending-requests.js';
 import { ProjectWorkerBackendCleanupInputSchema } from '../runtime/worker-backend-cleanup-codecs.js';
 import { projectWorkerBackendCleanupInDb } from '../runtime/worker-backend-cleanup-projection.js';
+import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { WorkerImageSettlementConflict } from '../runtime/worker-image-settlements-records.js';
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {
@@ -148,6 +149,7 @@ import {
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
 import {
   inspectChannelInboundReceipt,
+  inspectNanoHostEpochFenceReceipt,
   inspectPairingAuditReceipt,
   inspectServerWorkReceipt,
 } from './command-request-records.js';
@@ -268,6 +270,7 @@ import {
   isControlWorkerRequest,
   type NanoHostOwnerMutation,
   type NanoHostOwnerMutationResult,
+  NanoHostOwnerRefusalSchema,
   readControlSchemaApplicationInput,
   type ServerOwnerDescriptor,
   type ServerWorkKernelReply,
@@ -292,7 +295,10 @@ import {
 } from './db.js';
 import { EvaluationCandidateCommandError } from './evaluation-candidate-codecs.js';
 import { applyControlEvaluationCandidate } from './evaluation-candidate-native.js';
-import { ExecutionAttemptRefusal } from './execution-attempt-codecs.js';
+import {
+  type ControlExecutionAttemptResult,
+  ExecutionAttemptRefusal,
+} from './execution-attempt-codecs.js';
 import {
   applyControlExecutionAttempt,
   controlExecutionAttemptLanes,
@@ -310,12 +316,17 @@ import {
   readServerOwnerJournal,
   ServerOwnerAdmissionError,
 } from './migrate.js';
+import { createNanoHostCoreReads } from './nanohost-core-reads.js';
 import {
   applyNanoHostRuntimeTargetMutation,
   beginNanoHostEpochRetirement,
   settleNanoHostEpochInvalidation,
   stageNanoHostEpochInvalidation,
+  verifyNanoHostRetiringPlacement,
+  verifyNanoHostStagedEpochInvalidation,
 } from './nanohost-epoch-invalidation-native.js';
+import type { NanoHostEpochKernelReply } from './nanohost-epoch-kernel-codecs.js';
+import { applyNanoHostSimulatorFinalStatus } from './nanohost-simulator-final.js';
 import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
 import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
 import {
@@ -329,7 +340,6 @@ import {
   type NativeRuntimePolicyPublication,
 } from './runtime-policy-publication.js';
 import { RuntimeTargetRefusal } from './runtime-target-codecs.js';
-import { applyControlRuntimeTarget } from './runtime-target-native.js';
 import { applyScopedNotebookSqlInDb } from './scoped-notebook-sql-native.js';
 import { SECURITY_TRIGGER_REFUSALS, SecurityTriggerRefusal } from './security-trigger-codecs.js';
 import { applySecurityTriggerInDb } from './security-trigger-native.js';
@@ -344,7 +354,11 @@ import {
   ThreadReadItemIdsSchema,
 } from './thread-read-membership-codecs.js';
 import { applyControlThreadReadReceipt } from './thread-read-membership-native.js';
-import { applyControlVault } from './vault-native.js';
+import {
+  applyControlVault,
+  fenceNanoHostEpochInDb,
+  reserveVaultEpochFenceInDb,
+} from './vault-native.js';
 import { controlVaultRefusal } from './vault-native-codecs.js';
 import {
   type PreparedNativeVaultRead,
@@ -362,10 +376,7 @@ import {
   controlBackendSessionLanes,
 } from './worker-backend-session-native.js';
 import { WorkerFinalStatusRefusal } from './worker-control-final-status-codecs.js';
-import { applyControlWorkerFinalStatus } from './worker-control-final-status-native.js';
 import { WorkerHeartbeatRefusal } from './worker-control-heartbeat-codecs.js';
-import { applyControlWorkerHeartbeat } from './worker-control-heartbeat-native.js';
-import { applyControlWorkerRecord } from './worker-control-record-native.js';
 import { applyControlWorkerImage } from './worker-image-native.js';
 import { applyControlWorkerStorageBinding } from './worker-storage-binding-native.js';
 import { WorkspaceApplyPlanConflictError } from './workspace-apply-plan-codecs.js';
@@ -479,6 +490,7 @@ type WriteCommand = Extract<
       | 'communication-kernel'
       | 'nanohost-owner'
       | 'server-work-owner'
+      | 'nanohost-epoch-kernel'
       | 'repair-kernel'
       | 'server-work-kernel'
       | 'nanohost-transport'
@@ -588,7 +600,7 @@ interface OwnedDatabase {
       }
     | undefined;
   readonly contentMount: ControlProductContentMount | undefined;
-  readonly serverWorkDataRoot: string | undefined;
+  readonly serverOwnerDataRoot: string | undefined;
   readonly pending: WriteRequest[];
   readonly publications: ControlContentPreparation['publications'];
   /** Accepted native-local preparation shares this finite scope lifetime, before SQL. */
@@ -924,6 +936,24 @@ function domainRefusal(
     return { operation, code: error.code, message: error.message, status: error.status };
   if (operation === 'worker-control-final-status' && error instanceof WorkerFinalStatusRefusal)
     return { operation, code: error.code, message: error.message, status: error.status };
+  if (request?.operation === 'nanohost-owner') {
+    const kind = request.mutation.kind;
+    if (
+      kind === 'harness-lifecycle' ||
+      kind === 'worker-image' ||
+      kind === 'backend-session' ||
+      kind === 'worker-storage-binding'
+    ) {
+      const domain = domainRefusal(kind, error);
+      if (domain?.operation === kind) {
+        const projected = NanoHostOwnerRefusalSchema.safeParse({
+          ...domain,
+          operation: 'nanohost-owner',
+        });
+        if (projected.success) return projected.data;
+      }
+    }
+  }
   if (
     operation === 'backend-session' &&
     (error instanceof BackendSessionRefusal ||
@@ -1473,6 +1503,101 @@ function requireCurrentKernelOpening(owner: OwnedDatabase, openingRequestId: num
   return db;
 }
 
+/** The Core decision reads the exact admitted Native placement while holding its own transaction. */
+function applyNanoHostEpochKernel(
+  owner: OwnedDatabase,
+  request: Extract<WriteRequest, { operation: 'nanohost-epoch-kernel' }>
+): NanoHostEpochKernelReply {
+  const core = requireCurrentKernelOpening(owner, request.openingRequestId);
+  const { input } = request;
+  if (input.kind === 'inspect')
+    return {
+      kind: input.kind,
+      value:
+        input.intent.deploymentId === readDataRootLayoutMarker(core.dataRoot).deploymentId
+          ? inspectNanoHostEpochFenceReceipt(core, input.intent, true)
+          : { state: 'conflict' },
+    };
+
+  return withCurrentNanoHostRead(core.dataRoot, input.ownerIdentity, (sqlite) =>
+    input.kind === 'reserve'
+      ? {
+          kind: input.kind,
+          value: reserveVaultEpochFenceInDb(core, input.placement, true, (original) =>
+            verifyNanoHostRetiringPlacement(sqlite, original)
+          ),
+        }
+      : {
+          kind: input.kind,
+          value: fenceNanoHostEpochInDb(core, input.intent, true, (original) =>
+            verifyNanoHostStagedEpochInvalidation(sqlite, original)
+          ),
+        }
+  );
+}
+
+/** Borrows the exact query-only file reserved by the acknowledged NanoHost writer. */
+function withCurrentNanoHostRead<Value>(
+  dataRoot: string,
+  ownerIdentity: string,
+  read: (sqlite: Database.Database) => Value
+): Value {
+  return withCurrentPhysicalRead(serverStoragePath(dataRoot, 'nanohost'), ownerIdentity, read);
+}
+
+function withCurrentPhysicalRead<Value>(
+  path: string,
+  ownerIdentity: string,
+  read: (sqlite: Database.Database) => Value
+): Value {
+  const assertCurrent = () => {
+    const file = lstatSync(path, { throwIfNoEntry: false });
+    if (
+      !file?.isFile() ||
+      file.nlink !== 1 ||
+      `${file.dev}:${file.ino}` !== ownerIdentity ||
+      realpathSync(path) !== path
+    )
+      throw new ServerOwnerAdmissionError('recovery-required');
+  };
+  assertCurrent();
+  const sqlite = new Database(path, { readonly: true, fileMustExist: true, timeout: 5 });
+  try {
+    sqlite.pragma('query_only = ON');
+    assertCurrent();
+    return read(sqlite);
+  } finally {
+    sqlite.close();
+  }
+}
+
+/** Joins the internal self-check to the exact current Native and Core files. */
+function withSimulatorCore<Value>(
+  owner: OwnedDatabase,
+  identity: string | undefined,
+  run: (db: CoreDb) => Value
+): Value {
+  const dataRoot = owner.serverOwnerDataRoot;
+  if (
+    process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR !== '1' ||
+    owner.serverOwner !== 'nanohost' ||
+    !dataRoot ||
+    !identity
+  )
+    throw new ServerOwnerAdmissionError('recovery-required');
+  const file = lstatSync(owner.path, { throwIfNoEntry: false });
+  if (
+    !file?.isFile() ||
+    file.nlink !== 1 ||
+    `${file.dev}:${file.ino}` !== owner.identity ||
+    realpathSync(owner.path) !== owner.path
+  )
+    throw new ServerOwnerAdmissionError('recovery-required');
+  return withCurrentPhysicalRead(coreDbPath(dataRoot), identity, (sqlite) =>
+    sqlite.transaction(() => run(bindCoreSqlite(sqlite, dataRoot))).deferred()
+  );
+}
+
 /** Reads a Server draft only from the physical file admitted by the owner worker. */
 function applyServerWorkKernel(
   owner: OwnedDatabase,
@@ -1671,6 +1796,26 @@ function applyNanoHostOwnerMutation(
     case 'settle-invalidation':
       settleNanoHostEpochInvalidation(sqlite, mutation.input);
       return { kind: mutation.kind, value: null };
+    case 'harness-lifecycle': {
+      const value = applyControlHarnessLifecycle({ sqlite }, mutation.input);
+      if (value !== null) throw new ControlProductPreconditionError();
+      return { kind: mutation.kind, value };
+    }
+    case 'worker-image':
+      return {
+        kind: mutation.kind,
+        value: applyControlWorkerImage({ sqlite }, mutation.input),
+      };
+    case 'backend-session':
+      return {
+        kind: mutation.kind,
+        value: applyControlBackendSession({ sqlite }, mutation.input),
+      };
+    case 'worker-storage-binding':
+      return {
+        kind: mutation.kind,
+        value: applyControlWorkerStorageBinding({ sqlite }, mutation.input),
+      };
   }
 }
 
@@ -1840,15 +1985,37 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       } else if (caller?.kind === 'coordinator') lanes.add(caller.turnId);
       break;
     }
-    case 'backend-session':
-      if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-      for (const lane of controlBackendSessionLanes(owner.scopeDb, request.input)) lanes.add(lane);
+    case 'nanohost-owner':
+      if (request.mutation.kind === 'backend-session') {
+        const { attemptId } = request.mutation.input;
+        lanes.add(`attempt:${attemptId}`);
+        const session = getWorkerBackendSession({ sqlite: owner.sqlite }, attemptId);
+        if (session) {
+          lanes.add(session.turnId);
+          lanes.add(`session:${session.agentSessionId}`);
+        }
+      }
       break;
-    case 'execution-attempt':
-      if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-      for (const lane of controlExecutionAttemptLanes(owner.scopeDb, request.input))
-        lanes.add(lane);
+    case 'backend-session': {
+      if (!request.simulatorCoreIdentity) throw new ControlProductPreconditionError();
+      const selected = withSimulatorCore(owner, request.simulatorCoreIdentity, (core) =>
+        controlBackendSessionLanes(core, request.input)
+      );
+      for (const lane of selected) lanes.add(lane);
       break;
+    }
+    case 'execution-attempt': {
+      const selected =
+        request.input.kind === 'simulator-final'
+          ? withSimulatorCore(owner, request.simulatorCoreIdentity, (core) =>
+              controlExecutionAttemptLanes(core, request.input)
+            )
+          : owner.scopeDb?.scope === 'core' &&
+            controlExecutionAttemptLanes(owner.scopeDb, request.input);
+      if (!selected) throw new ControlProductPreconditionError();
+      for (const lane of selected) lanes.add(lane);
+      break;
+    }
     case 'app-kernel':
       if (
         !owner.physicalScope ||
@@ -2980,66 +3147,77 @@ function flush(owner: OwnedDatabase): void {
               operation: 'review',
               result,
             };
-          } else if (request.operation === 'worker-control-final-status') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlWorkerFinalStatus(
-              owner.scopeDb,
-              request.input,
-              request.content
+          } else if (request.operation === 'backend-session') {
+            if (!request.simulatorCoreIdentity) throw new ControlProductPreconditionError();
+            const input = request.input;
+            if (input.kind === 'materializing') {
+              if (
+                input.identity.backendSessionId !== `self-check_${input.identity.packageSnapshotId}`
+              )
+                throw new ControlProductPreconditionError();
+            } else {
+              if (input.kind !== 'transition' && input.kind !== 'handoff')
+                throw new ControlProductPreconditionError();
+              const session = getWorkerBackendSession({ sqlite }, input.attemptId);
+              if (
+                !session ||
+                session.backendSessionId !== `self-check_${session.packageSnapshotId}`
+              )
+                throw new ControlProductPreconditionError();
+            }
+            const result = withSimulatorCore(owner, request.simulatorCoreIdentity, (core) =>
+              applyControlBackendSession({ sqlite }, input, core)
             );
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
               status: 'ok',
-              operation: 'worker-control-final-status',
+              operation: 'backend-session',
               result,
             };
-          } else if (request.operation === 'worker-control-heartbeat') {
+          } else if (
+            request.operation === 'worker-control-final-status' ||
+            request.operation === 'worker-control-heartbeat' ||
+            request.operation === 'worker-control-record' ||
+            request.operation === 'worker-image' ||
+            request.operation === 'runtime-target' ||
+            request.operation === 'harness-lifecycle' ||
+            request.operation === 'worker-storage-binding'
+          ) {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlWorkerHeartbeat(
-              owner.scopeDb,
-              request.input,
-              request.content
-            );
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'worker-control-heartbeat',
-              result,
-            };
-          } else if (request.operation === 'worker-control-record') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlWorkerRecord(owner.scopeDb, request.input, request.content);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'worker-control-record',
-              result,
-            };
+            // Split commands use the admitted NanoHost owner. The mixed decisions require the
+            // original Core and Native acknowledgements before they can enter either writer.
+            throw new ServerOwnerAdmissionError('recovery-required');
           } else if (request.operation === 'core-journal') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlCoreJournal(
-              owner.scopeDb,
-              request.input,
-              owner.runtimePolicy
-            );
+            const db = owner.scopeDb;
+            const result = request.nanoHostOwnerIdentity
+              ? withCurrentNanoHostRead(db.dataRoot, request.nanoHostOwnerIdentity, (sqlite) =>
+                  applyControlCoreJournal(
+                    db,
+                    request.input,
+                    owner.runtimePolicy,
+                    createNanoHostCoreReads({
+                      read: (query) => {
+                        try {
+                          return { state: 'ready', value: query(sqlite) };
+                        } catch {
+                          return {
+                            state: 'unavailable',
+                            owner: 'nanohost',
+                            reason: 'recovery-required',
+                          };
+                        }
+                      },
+                    })
+                  )
+                )
+              : applyControlCoreJournal(db, request.input, owner.runtimePolicy);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
               status: 'ok',
               operation: 'core-journal',
-              result,
-            };
-          } else if (request.operation === 'worker-image') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlWorkerImage(owner.scopeDb, request.input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'worker-image',
               result,
             };
           } else if (request.operation === 'local-identity') {
@@ -3145,16 +3323,6 @@ function flush(owner: OwnedDatabase): void {
               status: 'ok',
               operation: 'remote-mcp-audit',
               result: null,
-            };
-          } else if (request.operation === 'runtime-target') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlRuntimeTarget(owner.scopeDb, request.input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'runtime-target',
-              result,
             };
           } else if (request.operation === 'standalone-audit') {
             if (owner.scopeDb?.scope !== 'workspace' && owner.scopeDb?.scope !== 'core')
@@ -3345,48 +3513,22 @@ function flush(owner: OwnedDatabase): void {
               operation: 'workspace-apply-plan',
               result,
             };
-          } else if (request.operation === 'backend-session') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlBackendSession(owner.scopeDb, request.input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'backend-session',
-              result,
-            };
           } else if (request.operation === 'execution-attempt') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlExecutionAttempt(
-              owner.scopeDb,
-              request.input,
-              request.content
-            );
+            const input = request.input;
+            let result: ControlExecutionAttemptResult;
+            if (input.kind === 'simulator-final') {
+              result = withSimulatorCore(owner, request.simulatorCoreIdentity, (core) =>
+                applyNanoHostSimulatorFinalStatus(sqlite, core, input)
+              );
+            } else {
+              if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+              result = applyControlExecutionAttempt(owner.scopeDb, input, request.content);
+            }
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
               status: 'ok',
               operation: 'execution-attempt',
-              result,
-            };
-          } else if (request.operation === 'harness-lifecycle') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlHarnessLifecycle(owner.scopeDb, request.input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'harness-lifecycle',
-              result,
-            };
-          } else if (request.operation === 'worker-storage-binding') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlWorkerStorageBinding(owner.scopeDb, request.input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'worker-storage-binding',
               result,
             };
           } else if (request.operation === 'recovery-source-reactivation') {
@@ -3585,6 +3727,14 @@ function flush(owner: OwnedDatabase): void {
               operation: 'vault',
               result,
             };
+          } else if (request.operation === 'nanohost-epoch-kernel') {
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'nanohost-epoch-kernel',
+              result: applyNanoHostEpochKernel(owner, request),
+            };
           } else if (request.operation === 'repair-kernel') {
             const core = requireCurrentKernelOpening(owner, request.openingRequestId);
             outcome = {
@@ -3664,6 +3814,11 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'nanohost-transport') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            if (
+              request.input.kind !== 'lifecycle-audit' &&
+              request.input.kind !== 'decommission-audit'
+            )
+              throw new ServerOwnerAdmissionError('recovery-required');
             const result = applyControlNanoHostTransport(owner.scopeDb, request.input);
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -3717,7 +3872,15 @@ function flush(owner: OwnedDatabase): void {
               auditEventId,
             };
           } else if (request.operation === 'worker-control-evidence') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const file = lstatSync(owner.path, { throwIfNoEntry: false });
+            if (
+              owner.serverOwner !== 'nanohost' ||
+              !file?.isFile() ||
+              file.nlink !== 1 ||
+              `${file.dev}:${file.ino}` !== owner.identity ||
+              realpathSync(owner.path) !== owner.path
+            )
+              throw new ServerOwnerAdmissionError('recovery-required');
             const row = request.input;
             sqlite
               .prepare(`INSERT INTO worker_control_rejected_evidence (
@@ -4677,7 +4840,7 @@ async function openDatabase(request: OpenRequest): Promise<void> {
               }
             : undefined,
         contentMount,
-        serverWorkDataRoot: split?.owner === 'server-work' ? dataRoot : undefined,
+        serverOwnerDataRoot: split ? dataRoot : undefined,
         pending: [],
         publications: new Map(),
         preparations: new Set(),
@@ -4934,12 +5097,34 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       reply(failure(value.id, 'not-open'));
       return;
     }
+    const simulatorMutation =
+      (value.operation === 'backend-session' || value.operation === 'execution-attempt') &&
+      value.simulatorCoreIdentity !== undefined;
+    if (
+      (value.operation === 'execution-attempt' && value.input.kind === 'native-reconnect-arm') ||
+      (value.operation === 'vault' &&
+        (value.input.kind === 'reference-login-observe' ||
+          value.input.kind === 'thread-login-activate' ||
+          value.input.kind === 'thread-login-remove' ||
+          ((value.input.kind === 'reference-advance' || value.input.kind === 'receipt-create') &&
+            value.input.record.loginBinding?.replacement !== undefined) ||
+          (value.input.kind === 'reference-login-state' &&
+            'coreConfirmedQuarantine' in value.input.record &&
+            value.input.record.coreConfirmedQuarantine.binding.replacement !== undefined))) ||
+      (simulatorMutation && process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR !== '1')
+    ) {
+      // Mixed reconnect and Login decisions need the admitted Native and Core acknowledgements.
+      reply(failure(value.id, 'owner-recovery-required'));
+      return;
+    }
     const splitMutation =
       value.operation === 'communication-owner'
         ? 'communication'
         : value.operation === 'server-work-owner'
           ? 'server-work'
-          : value.operation === 'nanohost-owner'
+          : value.operation === 'nanohost-owner' ||
+              value.operation === 'worker-control-evidence' ||
+              simulatorMutation
             ? 'nanohost'
             : undefined;
     if (
@@ -4963,6 +5148,12 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     }
     if (owner.poisoned) {
       reply(failure(value.id, 'unavailable'));
+      return;
+    }
+    if (value.operation === 'backend-session' && !simulatorMutation) {
+      // A raw backend frame has no admitted Native writer. It cannot select Core attempt lanes.
+      const code = owner.scopeDb?.scope === 'core' ? 'owner-recovery-required' : 'precondition';
+      reply(failure(value.id, code));
       return;
     }
     if (
@@ -4990,6 +5181,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'communication-kernel' ||
       value.operation === 'nanohost-owner' ||
       value.operation === 'server-work-owner' ||
+      value.operation === 'nanohost-epoch-kernel' ||
       value.operation === 'repair-kernel' ||
       value.operation === 'server-work-kernel' ||
       value.operation === 'nanohost-transport' ||
@@ -5141,7 +5333,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 owner.sqlite,
                 value.mutation,
                 owner.contentMount,
-                owner.serverWorkDataRoot,
+                owner.serverOwnerDataRoot,
                 value.content
               );
             }

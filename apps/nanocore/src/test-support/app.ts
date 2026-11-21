@@ -12,9 +12,8 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { createTestAgentSetup, createTestGatewayConfig } from './agent-environment.js';
+import { createTestGatewayConfig } from './agent-environment.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './local-user.js';
-import { admitTestNativeEnvironment } from './native-environment.js';
 import { shutdownTestStoreWorker } from './store.js';
 
 export type { CreateAppOptions } from '../app.js';
@@ -66,13 +65,6 @@ export function createAppWithLocalIdentity(
  * @returns NanoCore app configured for deterministic unit tests.
  */
 export function prepareTestAppOptions(options: CreateAppOptions = {}): CreateAppOptions {
-  if (options.coreDb) {
-    admitTestNativeEnvironment(options.coreDb, createTestAgentSetup().manifest);
-    for (const manifest of options.agentManifests ??
-      options.runtimeConfigManager?.current().agentManifests ??
-      [])
-      admitTestNativeEnvironment(options.coreDb, manifest);
-  }
   const ownsRuntimeConfig = !options.runtimeConfigManager && !options.gatewayConfig;
   const defaultProviderRegistry = new ProviderRegistry([
     {

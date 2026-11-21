@@ -51,6 +51,7 @@ import {
 } from '../storage/artifacts/file-payload.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import {
   OPENKIT_WORK_TOOL_DEFINITIONS,
   WorkReadPeerArgsSchema,
@@ -268,25 +269,35 @@ export async function dispatchOpenkitWorkTool(
     }
   }
   if (toolId === 'work.peer.list' || toolId === 'work.peer.read') {
-    const peers = input.coreDb.sqlite
-      .prepare(`
+    const peers = requireNanoHostObservation(
+      input.coreDb,
+      (sqlite) =>
+        sqlite
+          .prepare(`
       SELECT peer.agent_session_runtime_binding_id AS bindingId,
              peer.agent_session_id AS agentSessionId, peer.workspace_id AS workspaceId,
              peer.thread_id AS threadId, peer_harness.adapter_id AS runtime
       FROM agent_session_runtime_bindings caller
       JOIN harness_instance_records caller_harness ON caller_harness.harness_instance_id = caller.harness_instance_id
+      JOIN sandbox_runtime_records physical ON physical.sandbox_runtime_id = caller_harness.sandbox_runtime_id
+      JOIN nanohost_runtime_targets target ON target.target_id = physical.runtime_target_id
       JOIN harness_instance_records peer_harness ON peer_harness.sandbox_runtime_id = caller_harness.sandbox_runtime_id
       JOIN agent_session_runtime_bindings peer ON peer.harness_instance_id = peer_harness.harness_instance_id
-      WHERE caller.agent_session_id = ? AND peer.agent_session_id <> caller.agent_session_id
+      WHERE caller.workspace_id = ? AND caller.thread_id = ? AND caller.agent_session_id = ?
+        AND caller.current_turn_id = ? AND caller.lifecycle_state = 'active' AND caller.current_attempt_id IS NOT NULL
+        AND target.ready=1 AND target.fresh_empty=1 AND target.predecessor_fenced=1
+        AND target.physical_epoch=physical.origin_physical_epoch
+        AND peer.agent_session_id <> caller.agent_session_id
       ORDER BY peer.agent_session_runtime_binding_id
     `)
-      .all(scope.agentSessionId) as Array<{
-      bindingId: string;
-      agentSessionId: string;
-      workspaceId: string;
-      threadId: string;
-      runtime: string;
-    }>;
+          .all(scope.workspaceId, scope.threadId, scope.agentSessionId, scope.turnId) as Array<{
+          bindingId: string;
+          agentSessionId: string;
+          workspaceId: string;
+          threadId: string;
+          runtime: string;
+        }>
+    );
     const handleFor = (bindingId: string) =>
       createHmac('sha256', peerHandleKey)
         .update(JSON.stringify([scope.turnId, scope.agentSessionId, bindingId]))
@@ -741,14 +752,19 @@ async function submitArtifact(
       turn.status !== 'running' ||
       turn.agentSessionId !== scope.agentSessionId ||
       turn.agentId !== environmentPackage.agent.agentId ||
-      getWorkerControlAcceptedFinalStatus(coreDb, {
-        agentSessionId: scope.agentSessionId,
-        packageSnapshotId: environmentPackage.snapshotId,
-        requestId: scope.requestId ?? null,
-        threadId: scope.threadId,
-        turnId: scope.turnId,
-        workspaceId: scope.workspaceId,
-      })
+      requireNanoHostObservation(coreDb, (sqlite) =>
+        getWorkerControlAcceptedFinalStatus(
+          { sqlite },
+          {
+            agentSessionId: scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            requestId: scope.requestId ?? null,
+            threadId: scope.threadId,
+            turnId: scope.turnId,
+            workspaceId: scope.workspaceId,
+          }
+        )
+      )
     )
       throw new WorkerControlGatewayError(
         'turn_not_active',

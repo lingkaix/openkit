@@ -1,22 +1,24 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { createCredentialOperationImplementations } from './credential-operations.js';
-import { createNanoHostOperationImplementations } from './nanohost-operations.js';
-import { admitNanoHostTransportConnection } from './nanohost-transport-admission.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
+import { createOpenKitAccessTokenSecret, hashOpenKitAccessTokenSecret } from './access-token.js';
+import { createCommunicationCredentialOperationImplementations } from './credential-operations.js';
+import {
+  createNanoHostOperationImplementations,
+  revokeAdmittedNanoHostInboundCredential,
+} from './nanohost-operations.js';
+import { admitNativeNanoHostTransportConnection } from './nanohost-transport-admission.js';
 import {
   abortNanoHostTransportRotation,
+  fenceNanoHostTransportAuthority,
   fenceNanoHostTransportOnTokenUnusable,
 } from './nanohost-transport-lifecycle.js';
 import transportRevision from './nanohost-transport-revision.json' with { type: 'json' };
@@ -24,8 +26,12 @@ import { createNanoHostTransportSessionAuthority } from './nanohost-transport-se
 import { deliverNanoHostTransportTokenToNamedSlot } from './nanohost-transport-sink.js';
 import {
   createNanoHostTransportTokenRecord,
+  enrollNanoHostTransportIdentity,
   getNanoHostTransportTokenRecord,
+  prepareNanoHostTransportWriter,
+  revokeNanoHostTransportTokenRecord,
   rotateNanoHostTransportTokenRecord,
+  submitNanoHostTransportDecommission,
   verifyNanoHostTransportTokenRecord,
 } from './nanohost-transport-token-store.js';
 
@@ -51,40 +57,52 @@ function openMigratedCoreDb(): CoreDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-lifecycle-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  coreDb.sqlite
-    .prepare(
-      `INSERT INTO nanohost_integration_identities (
-        identity_id, deployment_id, status, created_at
-      ) VALUES (?, ?, 'active', ?)`
-    )
-    .run(IDENTITY, DEPLOYMENT, '2026-08-08T00:00:00.000Z');
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
   return coreDb;
 }
 
-/** Records one current authenticated RuntimeTarget for lifecycle fencing assertions. */
-async function seedReadyRuntimeTarget(coreDb: CoreDb): Promise<void> {
-  const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+async function seedReadyRuntimeTarget(owner: ReturnType<typeof openNanoHostTestOwner>) {
+  const configured = {
     deploymentId: DEPLOYMENT,
     identityId: IDENTITY,
     observedAt: '2026-08-08T00:00:00.000Z',
     targetId: TARGET,
-  });
-  await upsertNanoHostRuntimeTarget(coreDb, {
-    ...allocated,
+  };
+  const target = await owner.transition({ kind: 'allocate', ...configured });
+  if (!target) throw new Error('Expected the admitted RuntimeTarget.');
+  await owner.transition({
+    kind: 'ready',
+    ...configured,
+    connectionGeneration: target.connectionGeneration,
     freshEmpty: true,
-    observedAt: '2026-08-08T00:00:01.000Z',
     physicalEpoch: PHYSICAL_EPOCH,
     predecessorFenced: true,
     ready: true,
   });
 }
 
-/** Asserts that transport loss removed the current durable readiness witness. */
-function expectRuntimeTargetUnready(coreDb: CoreDb): void {
-  expect(getNanoHostRuntimeTarget(coreDb, TARGET)).toMatchObject({
+function expectRuntimeTargetUnready(owner: ReturnType<typeof openNanoHostTestOwner>): void {
+  expect(getNanoHostRuntimeTarget(owner, TARGET)).toMatchObject({
+    connectionGeneration: 1,
     freshEmpty: false,
     physicalEpoch: null,
     ready: false,
+  });
+}
+
+function enrollFixtureOwner(owner: ReturnType<typeof openNanoHostTestOwner>, label: string) {
+  return enrollNanoHostTransportIdentity(owner.storage, {
+    deploymentId: DEPLOYMENT,
+    expiresAt: '2026-09-08T00:00:00.000Z',
+    now: new Date('2026-08-08T00:00:00.000Z'),
+    ownerNanoHostIdentityId: IDENTITY,
+    responsibleServerAdminActorId: testEntityId('usr', label),
+    secret: createOpenKitAccessTokenSecret(),
+    tokenId: testEntityId('nhtok', label),
   });
 }
 
@@ -138,91 +156,72 @@ function usableSlotCount(slots: ReturnType<typeof slotPair>): number {
 
 describe('NanoHost transport lifecycle (WP-2b R3)', () => {
   it('rotation_abort_clears_successor_and_keeps_predecessor_usable', async () => {
-    const coreDb = openMigratedCoreDb();
+    const native = openNanoHostTestOwner();
     const slots = slotPair();
     const authority = createNanoHostTransportSessionAuthority();
+    const predecessor = await enrollFixtureOwner(native, 'rotation-abort');
+    deliverNanoHostTransportTokenToNamedSlot({
+      deploymentId: DEPLOYMENT,
+      identityId: IDENTITY,
+      issuanceGeneration: 1,
+      secret: predecessor.secret,
+      sink: slots.A,
+      slot: 'A',
+      tokenId: predecessor.tokenId,
+      writeDisposition: 'replace',
+    });
+    const rotated = await rotateNanoHostTransportTokenRecord(native.storage, predecessor.tokenId, {
+      now: new Date('2026-08-08T01:00:00.000Z'),
+      overlapSeconds: 3600,
+    });
+    deliverNanoHostTransportTokenToNamedSlot({
+      deploymentId: DEPLOYMENT,
+      identityId: IDENTITY,
+      issuanceGeneration: 2,
+      secret: rotated!.secret,
+      sink: slots.B,
+      slot: 'B',
+      tokenId: rotated!.tokenId,
+      writeDisposition: 'replace',
+    });
 
-    try {
-      const predecessor = await createNanoHostTransportTokenRecord(coreDb, {
-        deploymentId: DEPLOYMENT,
-        expiresAt: '2026-09-08T00:00:00.000Z',
-        now: new Date('2026-08-08T00:00:00.000Z'),
-        ownerNanoHostIdentityId: IDENTITY,
-        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
-      });
-      deliverNanoHostTransportTokenToNamedSlot({
-        deploymentId: DEPLOYMENT,
-        identityId: IDENTITY,
-        issuanceGeneration: 1,
-        secret: predecessor.secret,
-        sink: slots.A,
-        slot: 'A',
-        tokenId: predecessor.tokenId,
-        writeDisposition: 'replace',
-      });
-      const rotated = await rotateNanoHostTransportTokenRecord(coreDb, predecessor.tokenId, {
-        now: new Date('2026-08-08T01:00:00.000Z'),
-        overlapSeconds: 3600,
-      });
-      deliverNanoHostTransportTokenToNamedSlot({
-        deploymentId: DEPLOYMENT,
-        identityId: IDENTITY,
-        issuanceGeneration: 2,
-        secret: rotated!.secret,
-        sink: slots.B,
-        slot: 'B',
-        tokenId: rotated!.tokenId,
-        writeDisposition: 'replace',
-      });
+    const aborted = await abortNanoHostTransportRotation(native.storage, authority, {
+      now: new Date('2026-08-08T01:10:00.000Z'),
+      predecessorTokenId: predecessor.tokenId,
+      successorSink: slots.B,
+      successorTokenId: rotated!.tokenId,
+    });
 
-      const aborted = await abortNanoHostTransportRotation(coreDb, authority, {
+    expect(aborted.predecessor.status).toBe('active');
+    expect(aborted.successor.status).toBe('revoked');
+    expect(
+      await verifyNanoHostTransportTokenRecord(native.storage, predecessor.secret, {
         now: new Date('2026-08-08T01:10:00.000Z'),
-        predecessorTokenId: predecessor.tokenId,
-        successorSink: slots.B,
-        successorTokenId: rotated!.tokenId,
-      });
-
-      expect(aborted.predecessor.status).toBe('active');
-      expect(aborted.successor.status).toBe('revoked');
-      expect(
-        await verifyNanoHostTransportTokenRecord(coreDb, predecessor.secret, {
-          now: new Date('2026-08-08T01:10:00.000Z'),
-        })
-      ).not.toBeNull();
-      expect(
-        await verifyNanoHostTransportTokenRecord(coreDb, rotated!.secret, {
-          now: new Date('2026-08-08T01:10:00.000Z'),
-        })
-      ).toBeNull();
-      expect(slotHoldsUsableMaterial(slots.A)).toBe(true);
-      expect(slotHoldsUsableMaterial(slots.B)).toBe(false);
-      expect(usableSlotCount(slots)).toBe(1);
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-    }
+      })
+    ).not.toBeNull();
+    expect(
+      await verifyNanoHostTransportTokenRecord(native.storage, rotated!.secret, {
+        now: new Date('2026-08-08T01:10:00.000Z'),
+      })
+    ).toBeNull();
+    expect(slotHoldsUsableMaterial(slots.A)).toBe(true);
+    expect(slotHoldsUsableMaterial(slots.B)).toBe(false);
+    expect(usableSlotCount(slots)).toBe(1);
   });
 
   it('revocation rejects reauthentication without creating process-local authority', async () => {
     const coreDb = openMigratedCoreDb();
+    const native = openNanoHostTestOwner();
     const authority = createNanoHostTransportSessionAuthority();
-
-    try {
-      await seedReadyRuntimeTarget(coreDb);
-      const issued = await createNanoHostTransportTokenRecord(coreDb, {
-        deploymentId: DEPLOYMENT,
-        expiresAt: '2026-09-08T00:00:00.000Z',
-        now: new Date('2026-08-08T00:00:00.000Z'),
-        ownerNanoHostIdentityId: IDENTITY,
-        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
-      });
-      const userId = ensureLocalUser(coreDb);
-      const operations = createCredentialOperationImplementations({
-        coreDb,
-        mode: 'server',
-        nanoHostSessionAuthority: authority,
-      });
-      const revoked = await operations['credential.revoke'](
+    await seedReadyRuntimeTarget(native);
+    const issued = await enrollFixtureOwner(native, 'revoked-reauthentication');
+    const userId = ensureLocalUser(coreDb);
+    const operations = createCommunicationCredentialOperationImplementations({
+      coreDb,
+      mode: 'server',
+    });
+    await expect(
+      operations['credential.revoke'](
         { kind: 'nanohost-transport', id: issued.tokenId },
         {
           kind: 'public',
@@ -230,98 +229,211 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
           actorRef: { kind: 'user', id: userId },
           scope: { kind: 'server' },
         }
-      );
-      expect(revoked.status).toBe('revoked');
-      expect(getNanoHostTransportTokenRecord(coreDb, issued.tokenId)?.status).toBe('revoked');
-      expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
-      expectRuntimeTargetUnready(coreDb);
-      expect(
-        await verifyNanoHostTransportTokenRecord(coreDb, issued.secret, {
-          now: new Date('2026-08-08T02:00:00.000Z'),
-        })
-      ).toBeNull();
-      expect(
-        await admitNanoHostTransportConnection(coreDb, authority, {
-          transportRevision: String(transportRevision),
-          physicalConnection: null,
-          secret: issued.secret,
-          now: new Date('2026-08-08T02:00:00.000Z'),
-        })
-      ).toEqual({ ok: false, reason: 'unauthorized' });
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-    }
+      )
+    ).rejects.toMatchObject({ status: 503 });
+    expect(getNanoHostTransportTokenRecord(native, issued.tokenId)?.status).toBe('active');
+    expect(getNanoHostRuntimeTarget(native, TARGET)?.ready).toBe(true);
+
+    const now = new Date('2026-08-08T02:00:00.000Z');
+    await revokeNanoHostTransportTokenRecord(native.storage, issued.tokenId, { now });
+    await fenceNanoHostTransportAuthority(native.storage, authority, IDENTITY, now.toISOString());
+    expect(getNanoHostTransportTokenRecord(native, issued.tokenId)?.status).toBe('revoked');
+    expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
+    expectRuntimeTargetUnready(native);
+    expect(
+      await verifyNanoHostTransportTokenRecord(native.storage, issued.secret, { now })
+    ).toBeNull();
+    expect(
+      await admitNativeNanoHostTransportConnection(native.storage, authority, {
+        transportRevision: String(transportRevision),
+        physicalConnection: null,
+        secret: issued.secret,
+        now,
+      })
+    ).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+
+  it('holds administrator revoke before contact and acknowledges Audit only after native fencing', async () => {
+    const nanoHost = openNanoHostTestOwner();
+    const sessionAuthority = createNanoHostTransportSessionAuthority();
+    const target = await nanoHost.transition({
+      kind: 'allocate',
+      deploymentId: DEPLOYMENT,
+      identityId: IDENTITY,
+      observedAt: '2026-08-08T00:00:00.000Z',
+      targetId: TARGET,
+    });
+    await nanoHost.transition({
+      kind: 'ready',
+      connectionGeneration: target!.connectionGeneration,
+      deploymentId: DEPLOYMENT,
+      identityId: IDENTITY,
+      observedAt: '2026-08-08T00:00:01.000Z',
+      targetId: TARGET,
+      predecessorFenced: true,
+      ready: true,
+      freshEmpty: true,
+      physicalEpoch: PHYSICAL_EPOCH,
+    });
+    const userId = testEntityId('usr', 'native-revoke-administrator');
+    const tokenId = testEntityId('nhtok', 'native-administrator-revoke');
+    const secret = createOpenKitAccessTokenSecret();
+    await nanoHost.storage.owner.transport({
+      kind: 'enroll',
+      record: {
+        tokenId,
+        tokenHash: hashOpenKitAccessTokenSecret(secret),
+        deploymentId: DEPLOYMENT,
+        expiresAt: '2030-08-08T01:00:00.000Z',
+        now: new Date('2026-08-08T00:00:00.000Z'),
+        ownerNanoHostIdentityId: IDENTITY,
+        responsibleServerAdminActorId: userId,
+      },
+    });
+    const binding = {
+      storage: { state: 'ready', value: nanoHost.storage },
+      sessionAuthority,
+    } as const;
+    let rechecks = 0;
+    const context = {
+      kind: 'public',
+      actor: { kind: 'local', userId },
+      actorRef: { kind: 'user', id: userId },
+      scope: { kind: 'server' },
+      recheckAdmission: async () => {
+        rechecks += 1;
+      },
+    } as const;
+    await expect(
+      revokeAdmittedNanoHostInboundCredential(binding, tokenId, context)
+    ).rejects.toMatchObject({ status: 503 });
+    expect(rechecks).toBe(0);
+    expect(getNanoHostTransportTokenRecord(nanoHost, tokenId)?.status).toBe('active');
+    expect(getNanoHostRuntimeTarget(nanoHost, TARGET)?.ready).toBe(true);
+
+    let audited = false;
+    await revokeAdmittedNanoHostInboundCredential(
+      {
+        ...binding,
+        async commitRevoke({ actor, expected }) {
+          expect(rechecks).toBe(1);
+          expect(actor).toEqual(context.actor);
+          expect(expected).toMatchObject({ tokenId, deploymentId: DEPLOYMENT, status: 'active' });
+          const record = await revokeNanoHostTransportTokenRecord(nanoHost.storage, tokenId);
+          return {
+            state: 'ready',
+            value: {
+              record: record!,
+              async acknowledgeAudit() {
+                expect(getNanoHostTransportTokenRecord(nanoHost, tokenId)?.status).toBe('revoked');
+                expect(getNanoHostRuntimeTarget(nanoHost, TARGET)?.ready).toBe(false);
+                audited = true;
+              },
+            },
+          };
+        },
+      },
+      tokenId,
+      context
+    );
+    expect(audited).toBe(true);
+    expect(
+      await admitNativeNanoHostTransportConnection(nanoHost.storage, sessionAuthority, {
+        transportRevision: String(transportRevision),
+        physicalConnection: null,
+        secret,
+      })
+    ).toEqual({ ok: false, reason: 'unauthorized' });
   });
 
   it('expiry rejects stale authentication without creating process-local authority', async () => {
-    const coreDb = openMigratedCoreDb();
+    const nanoHost = openNanoHostTestOwner();
     const authority = createNanoHostTransportSessionAuthority();
-
-    try {
-      await seedReadyRuntimeTarget(coreDb);
-      const issued = await createNanoHostTransportTokenRecord(coreDb, {
+    await nanoHost.transition({
+      kind: 'allocate',
+      deploymentId: DEPLOYMENT,
+      identityId: IDENTITY,
+      observedAt: '2026-08-08T00:00:00.000Z',
+      targetId: TARGET,
+    });
+    await nanoHost.transition({
+      kind: 'ready',
+      connectionGeneration: 1,
+      deploymentId: DEPLOYMENT,
+      identityId: IDENTITY,
+      observedAt: '2026-08-08T00:00:01.000Z',
+      targetId: TARGET,
+      predecessorFenced: true,
+      ready: true,
+      freshEmpty: true,
+      physicalEpoch: PHYSICAL_EPOCH,
+    });
+    const tokenId = testEntityId('nhtok', 'native-expiry');
+    const secret = createOpenKitAccessTokenSecret();
+    await nanoHost.storage.owner.transport({
+      kind: 'enroll',
+      record: {
+        tokenId,
+        tokenHash: hashOpenKitAccessTokenSecret(secret),
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-08-08T01:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: IDENTITY,
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
-      });
-      const fenced = await fenceNanoHostTransportOnTokenUnusable(coreDb, authority, {
-        identityId: IDENTITY,
-        now: new Date('2026-08-08T01:30:00.000Z'),
-        tokenId: issued.tokenId,
-      });
-      expect(fenced.usable).toBe(false);
-      expect(fenced.fenced).toBe(false);
-      expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
-      expectRuntimeTargetUnready(coreDb);
-      expect(
-        await admitNanoHostTransportConnection(coreDb, authority, {
-          transportRevision: String(transportRevision),
-          physicalConnection: null,
-          secret: issued.secret,
-          now: new Date('2026-08-08T01:30:00.000Z'),
-        })
-      ).toEqual({ ok: false, reason: 'unauthorized' });
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-    }
+      },
+    });
+    const now = new Date('2026-08-08T01:30:00.000Z');
+    const fenced = await fenceNanoHostTransportOnTokenUnusable(nanoHost.storage, authority, {
+      identityId: IDENTITY,
+      now,
+      tokenId,
+    });
+    expect(fenced).toEqual({ usable: false, fenced: false });
+    expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
+    expect(getNanoHostRuntimeTarget(nanoHost, TARGET)).toMatchObject({
+      connectionGeneration: 1,
+      freshEmpty: false,
+      physicalEpoch: null,
+      ready: false,
+    });
+    expect(
+      await admitNativeNanoHostTransportConnection(nanoHost.storage, authority, {
+        transportRevision: String(transportRevision),
+        physicalConnection: null,
+        secret,
+        now,
+      })
+    ).toEqual({ ok: false, reason: 'unauthorized' });
   });
 
   it('decommission revokes every token without fabricating a connection', async () => {
     const coreDb = openMigratedCoreDb();
+    const native = openNanoHostTestOwner();
     const authority = createNanoHostTransportSessionAuthority();
-
-    try {
-      await seedReadyRuntimeTarget(coreDb);
-      const first = await createNanoHostTransportTokenRecord(coreDb, {
+    await seedReadyRuntimeTarget(native);
+    const first = await enrollFixtureOwner(native, 'decommission');
+    const second = await createNanoHostTransportTokenRecord(native.storage, {
+      deploymentId: DEPLOYMENT,
+      expiresAt: '2026-09-08T00:00:00.000Z',
+      now: new Date('2026-08-08T00:30:00.000Z'),
+      ownerNanoHostIdentityId: IDENTITY,
+      responsibleServerAdminActorId: first.record.responsibleServerAdminActorId,
+    });
+    const userId = ensureLocalUser(coreDb);
+    const operations = createNanoHostOperationImplementations({
+      coreDb,
+      mode: 'server',
+      sessionAuthority: authority,
+      nanoHostConfig: {
+        identityId: IDENTITY,
         deploymentId: DEPLOYMENT,
-        expiresAt: '2026-09-08T00:00:00.000Z',
-        now: new Date('2026-08-08T00:00:00.000Z'),
-        ownerNanoHostIdentityId: IDENTITY,
-        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
-      });
-      const second = await createNanoHostTransportTokenRecord(coreDb, {
-        deploymentId: DEPLOYMENT,
-        expiresAt: '2026-09-08T00:00:00.000Z',
-        now: new Date('2026-08-08T00:30:00.000Z'),
-        ownerNanoHostIdentityId: IDENTITY,
-        responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
-      });
-      const userId = ensureLocalUser(coreDb);
-      const operations = createNanoHostOperationImplementations({
-        coreDb,
-        mode: 'server',
-        sessionAuthority: authority,
-        nanoHostConfig: {
-          identityId: IDENTITY,
-          deploymentId: DEPLOYMENT,
-          credentialSlots: slotPair(),
-        },
-      });
-      const result = await operations['nanohost.decommission'](
+        credentialSlots: slotPair(),
+      },
+      readNanoHostTarget: (id) =>
+        native.storage.owner.read((sqlite) => getNanoHostRuntimeTarget({ sqlite }, id)),
+    });
+    await expect(
+      operations['nanohost.decommission'](
         {},
         {
           kind: 'public',
@@ -329,26 +441,25 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
           actorRef: { kind: 'user', id: userId },
           scope: { kind: 'server' },
         }
-      );
-      expect(result).toMatchObject({ status: 'decommissioned', revokedTokenCount: 2 });
-      for (const tokenId of [first.tokenId, second.tokenId]) {
-        expect(getNanoHostTransportTokenRecord(coreDb, tokenId)?.status).toBe('revoked');
-      }
-      expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
-      expectRuntimeTargetUnready(coreDb);
+      )
+    ).rejects.toMatchObject({ status: 503 });
+    for (const issue of [first, second])
+      expect(getNanoHostTransportTokenRecord(native, issue.tokenId)?.status).toBe('active');
+
+    const now = new Date('2026-08-08T02:00:00.000Z');
+    const revoked = await submitNanoHostTransportDecommission(
+      await prepareNanoHostTransportWriter(native.storage),
+      { identityId: IDENTITY, deploymentId: DEPLOYMENT, now }
+    );
+    expect(revoked).toHaveLength(2);
+    await fenceNanoHostTransportAuthority(native.storage, authority, IDENTITY, now.toISOString());
+    for (const issue of [first, second]) {
+      expect(getNanoHostTransportTokenRecord(native, issue.tokenId)?.status).toBe('revoked');
       expect(
-        await verifyNanoHostTransportTokenRecord(coreDb, first.secret, {
-          now: new Date('2026-08-08T02:00:00.000Z'),
-        })
+        await verifyNanoHostTransportTokenRecord(native.storage, issue.secret, { now })
       ).toBeNull();
-      expect(
-        await verifyNanoHostTransportTokenRecord(coreDb, second.secret, {
-          now: new Date('2026-08-08T02:00:00.000Z'),
-        })
-      ).toBeNull();
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
     }
+    expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
+    expectRuntimeTargetUnready(native);
   });
 });

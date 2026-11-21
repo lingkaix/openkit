@@ -12,7 +12,7 @@ import type { CoreDb } from '../storage/db.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { closeTestCoreDb, createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
@@ -53,7 +53,7 @@ async function fixture() {
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: WORKSPACE_ID, ownerUserId: USER_ID });
   const setup = createTestAgentSetup();
-  admitTestNativeEnvironment(coreDb, setup.manifest);
+  const native = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   setup.manifest.workspace = {
     inputs: [{ id: 'repo', sourceRef: 'main-repo', access: 'read-write' }],
   };
@@ -109,6 +109,7 @@ async function fixture() {
   const resolve = (readRuntimeConfig: (() => typeof snapshot) | null = () => snapshot) =>
     resolveAgentEnvironmentPackage({
       coreDb,
+      readNanoHostEnvironment: native.value.owner.read,
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: setup,
       backend: { kind: 'openshell' },

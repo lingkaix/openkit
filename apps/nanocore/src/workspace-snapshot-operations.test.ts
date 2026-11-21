@@ -38,6 +38,10 @@ import { coreDbPath } from './storage/fs-layout.js';
 import * as captureProtection from './storage/workspace-capture-protection.js';
 import { nativeProductScope, readNativeProduct } from './storage/workspace-file-records.js';
 import { readRecoveryExecution } from './storage/workspace-recovery-journal.js';
+import {
+  openAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { type CreateAppOptions, createAppWithLocalIdentity } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -84,6 +88,7 @@ async function fixture(
   roots.push(dataRoot);
   const store = await createDemoStore({ dataRoot });
   const coreDb = createTestCoreDb(dataRoot);
+  const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
   const ownerId = ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ownerId });
   const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
@@ -94,6 +99,7 @@ async function fixture(
     coreDb,
     turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     fileAdmission,
+    nanoHostStorage,
     releaseIdentity,
   };
   const app = createAppWithLocalIdentity(appOptions);
@@ -438,6 +444,7 @@ describe('C-a composed snapshot App API', () => {
         ...defaultOptions,
         dataRoot: restartRoot,
         coreDb: reopenedCore,
+        nanoHostStorage: await reopenAdmittedTestNanoHost(reopenedCore),
         store: reopenedStore,
         turnExecutor: new SimulatedTurnExecutor({ coreDb: reopenedCore }),
         fileAdmission: new FileStorageAdmission(restartRoot, () => 0n),
@@ -1451,10 +1458,12 @@ describe('C-a composed snapshot App API', () => {
           ).toBe(true);
           await shutdownControlStoreWorkerClient();
           restoreWorkspaceRecoveryAdmission(f.coreDb);
+          const nanoHostStorage = await openAdmittedTestNanoHost(f.coreDb);
           f.store = new FsStore({ dataRoot: f.dataRoot });
           f.appOptions = {
             ...f.appOptions,
             store: f.store,
+            nanoHostStorage,
           };
           f.app = createAppWithLocalIdentity(f.appOptions);
           expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);

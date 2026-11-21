@@ -101,6 +101,7 @@ import {
   prepareKnowledgeRetrievalTraceRead,
   resolveWorkspaceKnowledgeRetrievalPages,
 } from '../storage/index-rebuild.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import { vaultCredentialWriterOf } from '../storage/vault-native-codecs.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import {
@@ -179,6 +180,7 @@ import {
 import { commandInputHash } from './idempotent-command.js';
 import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
 import { requireReleasedLoginPredecessor } from './nanohost-harness-records.js';
+import type { NanoHostEnvironmentRead } from './native-environment.js';
 import { selectThreadNativeResumeSource } from './native-resume-selection.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { listThreadPendingRequests, pendingRequestSystemActor } from './pending-requests.js';
@@ -1009,6 +1011,8 @@ export async function acceptPreparedWorkerTurnContextPackage(input: {
  * Options for the worker-governance-backed turn executor.
  */
 export interface WorkerGovernanceTurnExecutorOptions {
+  /** Admitted image-default read for the same NanoHost generation used at launch. */
+  readNanoHostEnvironment?: NanoHostEnvironmentRead | undefined;
   /** Same current Goal/Task scope reader as other Worker effects. */
   goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'];
   /** Same operation interception owner used by authenticated agent and public callers. */
@@ -1088,6 +1092,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   /** Configured four-operation boundary; the executor retains its existing preparation and closeout responsibility. */
   public readonly executionBackend: import('./execution-backend.js').ExecutionBackend;
   private readonly coreDb: CoreDb | null;
+  private readonly readNanoHostEnvironment: NanoHostEnvironmentRead | undefined;
   private readonly fileAdmission: FileStorageAdmission | undefined;
   private readonly createAgentSessionId: () => string;
   private readonly now: (() => string) | undefined;
@@ -1121,6 +1126,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       workspaceKnowledgeEditing: false,
     };
     this.coreDb = options.coreDb ?? null;
+    this.readNanoHostEnvironment = options.readNanoHostEnvironment;
     this.fileAdmission = options.fileAdmission;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => allocateEntityId('as'));
     this.now = options.now;
@@ -1931,7 +1937,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     if (choice?.kind === 'selected')
       return { ...choice, reuseWorkSlotRef: retainedStorage.workSlotRef };
     const binding = this.coreDb
-      ? getWorkerStorageBinding(this.coreDb, { storageRef: retainedStorage.storageRef })
+      ? requireNanoHostObservation(
+          this.coreDb,
+          (sqlite) =>
+            getWorkerStorageBinding({ sqlite }, { storageRef: retainedStorage.storageRef }),
+          this.readNanoHostEnvironment
+        )
       : null;
     if (!binding)
       throw new TurnStartValidationError(
@@ -2098,6 +2109,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         backend: { kind: 'openshell' },
         ...(this.readRuntimeConfig ? { readRuntimeConfig: this.readRuntimeConfig } : {}),
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
+        ...(this.readNanoHostEnvironment
+          ? { readNanoHostEnvironment: this.readNanoHostEnvironment }
+          : {}),
         requestId: input.requestId,
         turn: input.turn,
         turnInput: input.turnInput,
@@ -2118,7 +2132,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       workspaceIdForOwner(input.turn.owner),
       input.turn.threadId,
       this.coreDb,
-      responsibleUserIdForActor(input.turn.triggerActor)
+      responsibleUserIdForActor(input.turn.triggerActor),
+      this.readNanoHostEnvironment
     );
     const planned = resolvePackage(plannedWorkSlotRef);
     if (input.workerStorageChoice) return planned;
@@ -2175,6 +2190,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         503
       );
     await recheckAuthority();
+    if (input.loginReplacement && this.readNanoHostEnvironment)
+      throw new OperationError(
+        'credential_binding_unavailable',
+        'Admitted Login replacement storage is unavailable.',
+        503
+      );
     const coreDb = this.coreDb;
     const plan = getVaultInjectionPlan(coreDb, input.planId);
     if (
@@ -2569,7 +2590,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               coreDb,
               db,
               consumer,
-              input.policyProof.workspaceDocument
+              input.policyProof.workspaceDocument,
+              this.readNanoHostEnvironment
             );
           }
           const live = requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
@@ -3057,11 +3079,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       currentTurnId: string | null;
       currentAttemptId: string | null;
     };
-    const bindings = new Map<string, RevokedBinding>();
-    // The Sandbox is the containment boundary; its other bindings cannot survive its deletion.
-    for (const agentSessionId of new Set(agentSessionIds)) {
-      const rows = coreDb.sqlite
-        .prepare(`SELECT b.schema_version AS schemaVersion,
+    const { bindings, anchors } = requireNanoHostObservation(
+      coreDb,
+      (sqlite) => {
+        const bindings = new Map<string, RevokedBinding>();
+        // The Sandbox is the containment boundary; its other bindings cannot survive its deletion.
+        for (const agentSessionId of new Set(agentSessionIds)) {
+          const rows = sqlite
+            .prepare(`SELECT b.schema_version AS schemaVersion,
         h.schema_version AS harnessSchemaVersion,
         b.agent_session_id AS agentSessionId, b.current_turn_id AS currentTurnId,
         b.current_attempt_id AS currentAttemptId,
@@ -3074,15 +3099,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         WHERE s.sandbox_runtime_id IN (SELECT target.sandbox_runtime_id
           FROM agent_session_runtime_bindings source JOIN harness_instance_records target
             ON target.harness_instance_id=source.harness_instance_id WHERE source.agent_session_id=?)`)
-        .all(agentSessionId) as RevokedBinding[];
-      for (const row of rows) {
-        readRetainedV1(row, () => row);
-        readRetainedV1({ schemaVersion: row.harnessSchemaVersion }, () => row);
-        bindings.set(row.agentSessionId, row);
-      }
-    }
+            .all(agentSessionId) as RevokedBinding[];
+          for (const row of rows) {
+            readRetainedV1(row, () => row);
+            readRetainedV1({ schemaVersion: row.harnessSchemaVersion }, () => row);
+            bindings.set(row.agentSessionId, row);
+          }
+        }
+        return { bindings, anchors: listWorkerBackendSessions({ sqlite }) };
+      },
+      this.readNanoHostEnvironment
+    );
     const selectedSessions = new Set([...agentSessionIds, ...bindings.keys()]);
-    const anchors = listWorkerBackendSessions(coreDb);
     const cleanups = new Map<string, WorkerBackendSessionRecord>();
     for (const binding of bindings.values()) {
       // The creator owns this physical Sandbox; a later no-effect package owns no resident cleanup.
@@ -3241,11 +3269,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
     for (const [sandboxBindingRef, anchor] of cleanups) {
       const resident = () =>
-        coreDb.sqlite
-          .prepare(
-            'SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref=? AND origin_physical_epoch=?'
-          )
-          .get(sandboxBindingRef, anchor.originPhysicalEpoch);
+        requireNanoHostObservation(
+          coreDb,
+          (sqlite) =>
+            sqlite
+              .prepare(
+                'SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref=? AND origin_physical_epoch=?'
+              )
+              .get(sandboxBindingRef, anchor.originPhysicalEpoch),
+          this.readNanoHostEnvironment
+        );
       // An owned closeout may already have removed this exact resident through proved cleanup.
       if (resident())
         await this.backend.cleanupSession(
@@ -3512,6 +3545,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             }
           : {}),
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
+        ...(this.readNanoHostEnvironment
+          ? { readNanoHostEnvironment: this.readNanoHostEnvironment }
+          : {}),
         ...(this.now ? { now: this.now } : {}),
         providerCredentialSink: (credential) => providerCredentials.push(credential),
         credentialReceiptSink: (receipt) => credentialReceipts.push(receipt),
@@ -4369,14 +4405,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       this.backend.planSession(environmentPackage)
     );
     const turn = store.getTurnById(environmentPackage.scope.turnId);
-    const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
-      agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      requestId: environmentPackage.scope.requestId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    });
+    const accepted = requireNanoHostObservation(
+      this.coreDb,
+      (sqlite) =>
+        getWorkerControlAcceptedFinalStatus(
+          { sqlite },
+          {
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            requestId: environmentPackage.scope.requestId,
+            threadId: environmentPackage.scope.threadId,
+            turnId: environmentPackage.scope.turnId,
+            workspaceId: environmentPackage.scope.workspaceId,
+          }
+        ),
+      this.readNanoHostEnvironment
+    );
     if (!accepted) {
       throw new Error('Restart closeout requires the exact durable final status.');
     }
@@ -5038,14 +5082,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           }
         }
         const acceptedLiveEvents = this.coreDb
-          ? listWorkerControlAcceptedEvents(this.coreDb, {
-              agentSessionId: environmentPackage.scope.agentSessionId,
-              packageSnapshotId: environmentPackage.snapshotId,
-              requestId: environmentPackage.scope.requestId,
-              threadId: environmentPackage.scope.threadId,
-              turnId: environmentPackage.scope.turnId,
-              workspaceId: environmentPackage.scope.workspaceId,
-            })
+          ? requireNanoHostObservation(
+              this.coreDb,
+              (sqlite) =>
+                listWorkerControlAcceptedEvents(
+                  { sqlite },
+                  {
+                    agentSessionId: environmentPackage.scope.agentSessionId,
+                    packageSnapshotId: environmentPackage.snapshotId,
+                    requestId: environmentPackage.scope.requestId,
+                    threadId: environmentPackage.scope.threadId,
+                    turnId: environmentPackage.scope.turnId,
+                    workspaceId: environmentPackage.scope.workspaceId,
+                  }
+                ),
+              this.readNanoHostEnvironment
+            )
           : [];
         const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
         if (
@@ -6293,11 +6345,16 @@ export function workerStorageWorkSlotRef(
   workspaceId: string,
   threadId: string,
   coreDb: CoreDb | null,
-  responsibleUserId: string | null
+  responsibleUserId: string | null,
+  readNanoHost?: NanoHostEnvironmentRead
 ): string {
   if (choice?.kind !== 'selected') return workerStorageDefaultWorkSlotRef(workspaceId, threadId);
   const binding = coreDb
-    ? getWorkerStorageBinding(coreDb, { storageRef: choice.storageRef })
+    ? requireNanoHostObservation(
+        coreDb,
+        (sqlite) => getWorkerStorageBinding({ sqlite }, { storageRef: choice.storageRef }),
+        readNanoHost
+      )
     : null;
   if (!binding || binding.workspaceId !== workspaceId || !responsibleUserId) {
     throw new TurnStartValidationError(

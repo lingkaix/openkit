@@ -19,7 +19,6 @@ import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-author
 import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import {
   buildFilesystemWorkspaceChangeSet,
   createFilesystemSnapshotManifest,
@@ -47,10 +46,8 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
-import {
-  admitTestNativeEnvironment,
-  recordTestNativeRuntimeTarget,
-} from '../test-support/native-environment.js';
+import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb } from '../test-support/store.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
@@ -129,7 +126,6 @@ async function createNativeStageReviewFixture(name: string) {
   const assignedTurn = await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
   const requestId = '00000000-0000-4000-8000-000000000260';
   const agentSetup = createTestAgentSetup();
-  admitTestNativeEnvironment(coreDb, agentSetup.manifest);
   const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb,
     captureCoverage: { scope: 'server', value: 'off' },

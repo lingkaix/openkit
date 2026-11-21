@@ -1,6 +1,7 @@
 import { allocateEntityId } from '@openkit/protocol';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   getWorkerStorageBinding,
@@ -122,7 +123,9 @@ export async function reserveWorkerStorageAttachment(
   const { authorizeContributor, ...facts } = input;
   const snapshot = { ...structuredClone(facts), authorizeContributor };
   const { client, database } = await bindingWriter(coreDb);
-  const binding = getWorkerStorageBinding(coreDb, { storageRef: snapshot.storageRef });
+  const binding = requireNanoHostObservation(coreDb, (sqlite) =>
+    getWorkerStorageBinding({ sqlite }, { storageRef: snapshot.storageRef })
+  );
   if (!binding)
     throw new WorkerStorageBindingError('not_found', 'Worker storage association was not found.');
   const now = snapshot.now ?? new Date().toISOString();
@@ -138,7 +141,9 @@ export async function admitWorkerStorageContributor(
   const { authorizeContributor, ...facts } = input;
   const snapshot = { ...structuredClone(facts), authorizeContributor };
   const { client, database } = await bindingWriter(coreDb);
-  const binding = getWorkerStorageBinding(coreDb, { storageRef: snapshot.storageRef });
+  const binding = requireNanoHostObservation(coreDb, (sqlite) =>
+    getWorkerStorageBinding({ sqlite }, { storageRef: snapshot.storageRef })
+  );
   if (!binding)
     throw new WorkerStorageBindingError('not_found', 'Worker storage association was not found.');
   const now = new Date().toISOString();
@@ -220,7 +225,16 @@ export async function markWorkerStoragePurgePending(
     );
   // Bind the native comparison to the state observed before the caller's absence check.
   // A Scheduler admission committed during that check must invalidate purge.
-  const schedulerRows = workerStorageSchedulerRows(coreDb, snapshot.storageRef);
+  const binding = requireNanoHostObservation(coreDb, (sqlite) =>
+    getWorkerStorageBinding({ sqlite }, { storageRef: snapshot.storageRef })
+  );
+  if (!binding)
+    throw new WorkerStorageBindingError('not_found', 'Worker storage association was not found.');
+  const schedulerRows = workerStorageSchedulerRows(
+    coreDb,
+    snapshot.storageRef,
+    binding.workspaceId
+  );
   if (snapshot.hasSurvivingReferences())
     throw new WorkerStorageBindingError(
       'purge_blocked',

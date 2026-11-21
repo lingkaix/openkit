@@ -16,6 +16,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -64,10 +65,6 @@ import {
 import { OperationError, projectOperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
 import { raiseRecordedPendingRequest } from '../runtime/pending-request-flow.js';
 import { claimOrRefuseGrant, pendingRequestItemId } from '../runtime/pending-requests.js';
 import { startRecurringScheduleService } from '../runtime/recurring-schedule-service.js';
@@ -79,16 +76,18 @@ import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
 } from '../runtime/scheduler-dispatch-loop.js';
-import {
-  recordWorkerBackendSessionMaterializing,
-  transitionWorkerBackendSessionState,
-} from '../runtime/worker-backend-sessions.js';
+import { recordWorkerBackendSessionMaterializing } from '../runtime/worker-backend-session-records.js';
+import { createWorkerStorageBinding } from '../runtime/worker-storage-binding-records.js';
 import { recordWorkspaceApplyPlan } from '../runtime/workspace-apply-plans.js';
 import { recordWorkspaceApplyResult } from '../runtime/workspace-apply-results.js';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import {
+  openAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
@@ -119,6 +118,7 @@ import * as databaseOwner from './db.js';
 import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb, openWorkspaceReadDb } from './db.js';
 import { ensureLayout, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import * as migrationOwner from './migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from './nanohost-transport-owner.js';
 import {
   createWorkspaceBackup,
   readBlockers,
@@ -651,6 +651,7 @@ async function fixture() {
   const store = createTestStore({ dataRoot });
   const coreDb = openCoreDb(dataRoot);
   databaseHandles.push(coreDb);
+  await openAdmittedTestNanoHost(coreDb);
   const nativeWorkspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   await openTestNativeWorkspace(nativeWorkspaceDb);
   nativeWorkspaceDb.sqlite.close();
@@ -761,6 +762,86 @@ afterEach(async () => {
 });
 
 describe('C-a snapshot authoritative blockers', () => {
+  it('requires the original NanoHost owner before restore and stopped capture', async () => {
+    const f = await fixture();
+    const writer = getControlStoreWorkerClient();
+    const owner = await openAdmittedTestNanoHost(f.coreDb);
+    const runtimeTargetId = 'snapshot-resident-target';
+    const deploymentId = readDataRootLayoutMarker(f.dataRoot).deploymentId;
+    await expect(
+      transitionAdmittedNanoHostRuntimeTarget(owner.value, {
+        kind: 'allocate',
+        targetId: runtimeTargetId,
+        identityId: runtimeTargetId,
+        deploymentId,
+        observedAt: new Date().toISOString(),
+      })
+    ).resolves.toMatchObject({ state: 'ready' });
+    expect(
+      f.coreDb.sqlite.prepare('SELECT 1 FROM scheduler_execution_attempts').get()
+    ).toBeUndefined();
+    const path = databaseOwner.serverStoragePath(f.dataRoot, 'nanohost');
+    const sqlite = new Database(path, { fileMustExist: true });
+    let storageRef: string;
+    try {
+      storageRef = createWorkerStorageBinding(
+        { sqlite },
+        {
+          workspaceId,
+          deploymentId,
+          runtimeTargetId,
+          layout: {
+            family: null,
+            version: null,
+            uid: 1000,
+            gid: 1000,
+            workingDirectory: '/workspace',
+            platform: { os: 'linux', architecture: 'amd64' },
+            targets: [{ target: '/workspace' }],
+          },
+        }
+      ).storageRef;
+    } finally {
+      sqlite.close();
+    }
+    const inspect = () => readBlockers({ ...f, workspaceId, operation: 'restore' });
+    expect(inspect()).toContainEqual(
+      expect.objectContaining({
+        kind: 'worker-residency',
+        reason: 'cleanup-unproved',
+        reference: expect.objectContaining({ storageRef }),
+      })
+    );
+    await writer.closeServerOwner(f.dataRoot, 'nanohost');
+    const original = readFileSync(path);
+    const displaced = join(f.root, 'held-nanohost.sqlite');
+    const capture = () =>
+      createWorkspaceBackup({
+        ...f.input(),
+        source: { kind: 'stopped-data-root', dataRoot: f.dataRoot },
+        bundleRoot: join(f.root, 'stopped-capture'),
+      });
+    renameSync(path, displaced);
+    try {
+      expect(inspect()).toEqual([{ kind: 'unavailable', reason: 'unavailable', actions: [] }]);
+      await shutdownControlStoreWorkerClient();
+      await expect(capture()).rejects.toMatchObject({ code: 'source-unavailable' });
+      expect(existsSync(join(f.root, 'stopped-capture'))).toBe(false);
+      expect(existsSync(path)).toBe(false);
+      expect(readFileSync(displaced)).toEqual(original);
+    } finally {
+      renameSync(displaced, path);
+    }
+    await expect(capture()).resolves.toMatchObject({ disposition: 'sealed' });
+    await openAdmittedTestNanoHost(f.coreDb);
+    expect(inspect()).toContainEqual(
+      expect.objectContaining({
+        reason: 'cleanup-unproved',
+        reference: expect.objectContaining({ storageRef }),
+      })
+    );
+  });
+
   it('lists every live Turn and refuses without interrupting, waiting or accepting pins', async () => {
     const f = await fixture();
     const first = await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'First live work', {
@@ -992,6 +1073,7 @@ describe('C-a snapshot authoritative blockers', () => {
         expect(move.disposition).toBe('prepared');
         finishRecoveryExecution(f.coreDb, move.manifest.backupId, 'abandoned');
         abandonCapture(db, workspaceId, move.manifest.backupId);
+        await reopenAdmittedTestNanoHost(f.coreDb);
         // A fresh Store reads the stopped capture's retained Core scalar authority.
         source = {
           ...f.source,
@@ -1598,45 +1680,66 @@ describe('C-a additional owner families', () => {
       now,
     });
     const deploymentId = readDataRootLayoutMarker(f.dataRoot).deploymentId;
-    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
-      deploymentId,
-      identityId: 'snapshot-cleanup-fixture',
-      observedAt: now(),
-      targetId: 'snapshot-cleanup-target',
+    const native = await reopenAdmittedTestNanoHost(f.coreDb);
+    const targetId = 'snapshot-cleanup-target';
+    const target = { deploymentId, identityId: 'snapshot-cleanup-fixture', targetId };
+    await expect(
+      transitionAdmittedNanoHostRuntimeTarget(native.value, {
+        ...target,
+        kind: 'allocate',
+        observedAt: now(),
+      })
+    ).resolves.toMatchObject({ state: 'ready' });
+    await expect(
+      transitionAdmittedNanoHostRuntimeTarget(native.value, {
+        ...target,
+        kind: 'ready',
+        connectionGeneration: 1,
+        freshEmpty: true,
+        observedAt: now(),
+        physicalEpoch: 'a'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      })
+    ).resolves.toMatchObject({ state: 'ready' });
+    // The fixture creates its original backend anchor without performing a physical effect.
+    const nativeFixture = new Database(databaseOwner.serverStoragePath(f.dataRoot, 'nanohost'), {
+      fileMustExist: true,
     });
-    await upsertNanoHostRuntimeTarget(f.coreDb, {
-      ...target,
-      freshEmpty: true,
-      observedAt: now(),
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-    await recordWorkerBackendSessionMaterializing(f.coreDb, {
-      backendLineage: {
-        kind: 'reference',
-        imageRef: `registry.invalid/fixture@sha256:${'b'.repeat(64)}`,
-      },
-      backendVersion: 'fixture',
-      identity: {
-        agentSessionId,
-        backendKind: 'openshell',
-        backendSessionId: 'snapshot-cleanup-session',
-        deploymentId,
-        packageSnapshotId: 'aepsnap_cleanup_fixture',
-        runtimeTargetId: target.targetId,
-        stagingDirectoryRef: 'server/runtime/worker-backend-sessions/cleanup-fixture',
-        transientProviderInstanceId: null,
-      },
-      lineage: { workspaceId, threadId: DEMO_THREAD_ID, turnId: turn.id },
-      now,
-      sandboxBindingRef: 'lease-binding:cleanup-fixture',
-    });
-    await transitionWorkerBackendSessionState(f.coreDb, {
+    try {
+      recordWorkerBackendSessionMaterializing(
+        f.coreDb,
+        {
+          backendLineage: {
+            kind: 'reference',
+            imageRef: `registry.invalid/fixture@sha256:${'b'.repeat(64)}`,
+          },
+          backendVersion: 'fixture',
+          identity: {
+            agentSessionId,
+            backendKind: 'openshell',
+            backendSessionId: 'snapshot-cleanup-session',
+            deploymentId,
+            packageSnapshotId: 'aepsnap_cleanup_fixture',
+            runtimeTargetId: targetId,
+            stagingDirectoryRef: 'server/runtime/worker-backend-sessions/cleanup-fixture',
+            transientProviderInstanceId: null,
+          },
+          lineage: { workspaceId, threadId: DEMO_THREAD_ID, turnId: turn.id },
+          now,
+          sandboxBindingRef: 'lease-binding:cleanup-fixture',
+        },
+        { sqlite: nativeFixture }
+      );
+    } finally {
+      nativeFixture.close();
+    }
+    await native.value.owner.backendSession({
+      kind: 'transition',
       attemptId,
       fromState: 'materializing',
       toState: 'cleanup-pending',
-      now,
+      observedAt: now(),
     });
     await f.store.completeTurn(turn.id, { status: 'interrupted', completedAt: now() });
     expect(readBlockers({ ...f, workspaceId })).toEqual(
@@ -1649,17 +1752,19 @@ describe('C-a additional owner families', () => {
       ])
     );
     await refusal(f);
-    await transitionWorkerBackendSessionState(f.coreDb, {
+    await native.value.owner.backendSession({
+      kind: 'transition',
       attemptId,
       fromState: 'cleanup-pending',
       toState: 'physical-cleaned',
-      now,
+      observedAt: now(),
     });
-    await transitionWorkerBackendSessionState(f.coreDb, {
+    await native.value.owner.backendSession({
+      kind: 'transition',
       attemptId,
       fromState: 'physical-cleaned',
       toState: 'cleaned',
-      now,
+      observedAt: now(),
     });
     expect(
       readBlockers({ ...f, workspaceId }).filter((blocker) => blocker.kind === 'worker-residency')
@@ -2834,6 +2939,7 @@ describe('C-a capture and existing deletion ownership', () => {
     await shutdownControlStoreWorkerClient();
     const coreDb = openCoreDb(f.dataRoot);
     databaseHandles.push(coreDb);
+    await reopenAdmittedTestNanoHost(coreDb);
     const store = new FsStore({ dataRoot: f.dataRoot });
     const input = { ...f.input(), source: { ...f.source, coreDb, store } };
     expect(readBlockers({ coreDb, store, workspaceId }).length).toBeGreaterThan(0);
@@ -3102,6 +3208,7 @@ describe('C-b daily snapshot policy and retention', () => {
     const store = createTestStore({ dataRoot });
     const coreDb = openCoreDb(dataRoot);
     databaseHandles.push(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     const ownerId = ensureLocalUser(coreDb);
     const { id: workspaceId } = await store.createWorkspace('Automatic capture shutdown', {
       requestId: randomUUID(),
@@ -3278,6 +3385,7 @@ describe('C-b daily snapshot policy and retention', () => {
     const store = createTestStore({ dataRoot });
     const coreDb = openCoreDb(dataRoot);
     databaseHandles.push(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     const ownerId = ensureLocalUser(coreDb);
     const { id: workspaceId } = await store.createWorkspace('Automatic snapshot retention', {
       requestId: randomUUID(),
@@ -3731,13 +3839,14 @@ describe('C-a independent sealed generations', () => {
         f.coreDb.sqlite.close();
         const coreDb = openCoreDb(f.dataRoot);
         databaseHandles.push(coreDb);
+        await reopenAdmittedTestNanoHost(coreDb);
         source = {
           ...f.source,
           coreDb,
           store: new FsStore({ dataRoot: f.dataRoot }),
         };
       }
-      // Neither branch performs a product mutation or native open to warm the source.
+      // Neither branch warms the Workspace writer or performs a product mutation.
       const input = { ...f.input(), source };
       const db = bindWorkspaceSqlite(
         new Database(workspaceDbPath(f.dataRoot, workspaceId), {
@@ -5108,6 +5217,7 @@ describe('C-a independent sealed generations', () => {
     await shutdownControlStoreWorkerClient();
     const reopenedCore = openCoreDb(f.dataRoot);
     databaseHandles.push(reopenedCore);
+    await reopenAdmittedTestNanoHost(reopenedCore);
     const reopenedInput = {
       ...input,
       source: {
@@ -5488,6 +5598,7 @@ describe('C-a independent sealed generations', () => {
     expect(nextHold).not.toBeNull();
     (await nextHold!)();
     await shutdownControlStoreWorkerClient();
+    await reopenAdmittedTestNanoHost(f.coreDb);
     const db = openWorkspaceDb(f.dataRoot, workspaceId);
     try {
       expect(inspectCapture(db, workspaceId, input.backupId)).toMatchObject({
@@ -5572,6 +5683,7 @@ describe('C-a independent sealed generations', () => {
       await shutdownControlStoreWorkerClient();
       const reopenedCore = openCoreDb(f.dataRoot);
       databaseHandles.push(reopenedCore);
+      await reopenAdmittedTestNanoHost(reopenedCore);
       const reopenedStore = new FsStore({ dataRoot: f.dataRoot });
       const reopenedInput = {
         ...input,

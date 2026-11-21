@@ -35,20 +35,23 @@ import {
   type WorkspaceDb,
 } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { nanoHostStoreDescriptor } from '../storage/nanohost-store-descriptor.js';
 import { readStagedServerWork } from '../storage/server-work-intents.js';
 import { serverWorkStorageDescriptor } from '../storage/server-work-schema.js';
+import { reopenAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
-import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { openTestServerWork } from '../test-support/server-work-store.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import { cleanCancelledAdmissionTaskCheckpoints } from './cancelled-admission-checkpoint-cleanup.js';
 import {
   bindSchedulerExecutionAttemptSession,
@@ -82,6 +85,9 @@ async function createFixture(): Promise<{
   await expect(
     getControlStoreWorkerClient().provisionServerOwner(dataRoot, serverWorkStorageDescriptor)
   ).resolves.toEqual({ state: 'ready', owner: 'server-work' });
+  await expect(
+    getControlStoreWorkerClient().provisionServerOwner(dataRoot, nanoHostStoreDescriptor)
+  ).resolves.toEqual({ state: 'ready', owner: 'nanohost' });
   await shutdownControlStoreWorkerClient();
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   onTestFinished(async () => {
@@ -907,40 +913,81 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
   });
 
-  it('refuses a worker control record for the checkpoint Turn', async () => {
-    const fixture = await createFixture();
-    const identity = identityFor(fixture, 'tu_00000000-0000-7781-892a-3b253a33f2d9');
-    const requestId = '0190f4c8-0000-7000-8000-000000001002';
-    writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
-    fixture.coreDb.sqlite
-      .prepare(
-        `INSERT INTO worker_control_records (
-           workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id,
-           operation, record_key, sequence, record_json, accepted_at
-         ) VALUES (?, ?, ?, 'as_00000000-0000-736f-9643-8c3c704c2cce', 'aepsnap_control', ?, 'observe', 'key', 1, '{}', ?)`
-      )
-      .run(
-        fixture.workspaceId,
-        fixture.threadId,
-        identity.turnId,
-        requestId,
-        '2026-09-22T00:00:00.000Z'
+  it.each(['before inspection', 'after backup'] as const)(
+    'preserves the checkpoint when NanoHost evidence appears %s',
+    async (timing) => {
+      const fixture = await createFixture();
+      const identity = identityFor(fixture, 'tu_00000000-0000-7781-892a-3b253a33f2d9');
+      const requestId = '0190f4c8-0000-7000-8000-000000001002';
+      writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
+      await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+      const expected = getWorkerCheckpoint(
+        fixture.workspaceDb,
+        identity.workspaceId,
+        identity.threadId,
+        identity.turnId
       );
-    await closeFixture(fixture);
-
-    const result = await cleanCancelledAdmissionTaskCheckpoints({
-      apply: true,
-      backupRoot: fixture.backupRoot,
-      checkpoints: [identity],
-      dataRoot: fixture.dataRoot,
-    });
-
-    expect(result.rows).toEqual([
-      expect.objectContaining({ decision: 'refused', reason: 'runtime-evidence' }),
-    ]);
-    expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
-  });
+      expect(expected).not.toBeNull();
+      await closeFixture(fixture);
+      const postEvidence = () => {
+        const sqlite = new Database(serverStoragePath(fixture.dataRoot, 'nanohost'), {
+          fileMustExist: true,
+        });
+        try {
+          sqlite
+            .prepare(`INSERT INTO worker_control_records (
+            workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id,
+            operation, record_key, sequence, record_json, accepted_at
+          ) VALUES (?, ?, ?, 'as_00000000-0000-736f-9643-8c3c704c2cce', 'aepsnap_control', ?,
+            'observe', 'key', 1, '{}', '2026-09-22T00:00:00.000Z')`)
+            .run(fixture.workspaceId, fixture.threadId, identity.turnId, requestId);
+        } finally {
+          sqlite.close();
+        }
+      };
+      const clean = (apply: boolean) =>
+        cleanCancelledAdmissionTaskCheckpoints({
+          apply,
+          backupRoot: fixture.backupRoot,
+          checkpoints: [identity],
+          dataRoot: fixture.dataRoot,
+        });
+      if (timing === 'before inspection') {
+        postEvidence();
+        await expect(clean(true)).resolves.toMatchObject({
+          removedCount: 0,
+          backupRoot: null,
+          rows: [{ ...identity, decision: 'refused', reason: 'runtime-evidence' }],
+        });
+      } else {
+        await expect(clean(false)).resolves.toMatchObject({
+          rows: [{ ...identity, decision: 'removable', reason: 'cancelled-admission' }],
+        });
+        const backup = Database.prototype.backup;
+        const injected = vi
+          .spyOn(Database.prototype, 'backup')
+          .mockImplementationOnce(async function (
+            this: Database.Database,
+            ...args: Parameters<typeof backup>
+          ) {
+            const copied = await backup.apply(this, args);
+            postEvidence();
+            return copied;
+          });
+        try {
+          await expect(clean(true)).resolves.toMatchObject({
+            removedCount: 0,
+            backupRoot: fixture.backupRoot,
+            rows: [{ ...identity, decision: 'refused', reason: 'changed-before-delete' }],
+          });
+          expect(injected).toHaveBeenCalledTimes(1);
+        } finally {
+          injected.mockRestore();
+        }
+      }
+      expect(readCheckpoint(fixture.dataRoot, identity)).toEqual(expected);
+    }
+  );
 
   it('refuses an environment package bound to the checkpoint Turn', async () => {
     const fixture = await createFixture();
@@ -949,6 +996,16 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
     await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const sessionId = 'as_00000000-0000-78a3-a9bb-2860a6e89e42';
+    const agentSetup = createTestAgentSetup();
+    const sqlite = new Database(serverStoragePath(fixture.dataRoot, 'nanohost'), {
+      fileMustExist: true,
+    });
+    try {
+      admitTestNativeEnvironment({ sqlite }, agentSetup.manifest);
+    } finally {
+      sqlite.close();
+    }
+    const native = await reopenAdmittedTestNanoHost(fixture.coreDb);
     await recordAgentEnvironmentPackageSnapshot(fixture.workspaceDb, {
       createdAt: '2026-09-22T00:00:00.000Z',
       environmentPackage: AgentEnvironmentPackageSchema.parse(
@@ -983,8 +1040,10 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
             status: 'enabled',
           },
           agentSessionId: sessionId,
-          agentSetup: createTestAgentSetup(),
+          agentSetup,
           backend: { kind: 'openshell' },
+          captureCoverage: { scope: 'server', value: 'off' },
+          readNanoHostEnvironment: native.value.owner.read,
           requestId,
           triggerActor: ACTOR,
           turn: {

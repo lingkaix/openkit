@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { isMainThread } from 'node:worker_threads';
 import {
   type RuntimeConfigFileReadResponse,
   VAULT_OPERATION_DEFINITIONS,
@@ -47,6 +48,7 @@ import {
   type GoalTaskPolicyReadPort,
   readGoalTaskPolicyContext,
 } from '../runtime/goal-task-policy-context.js';
+import type { NanoHostEnvironmentRead } from '../runtime/native-environment.js';
 import { readVaultRequesterAuthority } from '../runtime/worker-credential-authority.js';
 import { getWorkerStorageBindingForSandbox } from '../runtime/worker-storage-binding-records.js';
 import type { SchedulerExecutionLineage } from '../scheduler-records.js';
@@ -60,6 +62,7 @@ import {
 } from '../storage/control-store-worker-client.js';
 import type { ControlPolicyGrant } from '../storage/control-store-worker-protocol.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import type { PermissionDecisionResult } from '../storage/schema/permission-decisions.js';
 import type {
   ControlVaultInput,
@@ -399,7 +402,8 @@ export class PolicyInterception {
     coreDb: CoreDb,
     db: WorkspaceDb,
     pkg: AgentEnvironmentPackage,
-    document: PolicyDocumentV1
+    document: PolicyDocumentV1,
+    readNanoHost?: NanoHostEnvironmentRead
   ): void {
     const workspaceId = pkg.scope.workspaceId;
     const userId = responsibleUserIdForActor(pkg.scope.triggerActor);
@@ -409,16 +413,23 @@ export class PolicyInterception {
       !currentWorkerLineageWorkspaceAuthority(coreDb, lineage, 'runtime.launch', true)
     )
       throw new ControlProductPreconditionError();
-    const rows = coreDb.sqlite
-      .prepare(`SELECT s.sandbox_binding_ref AS bindingRef FROM agent_session_runtime_bindings b
+    if (!isMainThread && !readNanoHost) throw new ControlProductPreconditionError();
+    const storage = requireNanoHostObservation(
+      coreDb,
+      (sqlite) => {
+        const rows = sqlite
+          .prepare(`SELECT s.sandbox_binding_ref AS bindingRef FROM agent_session_runtime_bindings b
       JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
       JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
       WHERE b.workspace_id=? AND b.thread_id=? AND b.agent_session_id=?`)
-      .all(workspaceId, pkg.scope.threadId, pkg.scope.agentSessionId);
-    const row = rows.length === 1 ? z.object({ bindingRef: z.string() }).parse(rows[0]) : null;
-    const storage = row
-      ? getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef: row.bindingRef })
-      : null;
+          .all(workspaceId, pkg.scope.threadId, pkg.scope.agentSessionId);
+        const row = rows.length === 1 ? z.object({ bindingRef: z.string() }).parse(rows[0]) : null;
+        return row
+          ? getWorkerStorageBindingForSandbox({ sqlite }, { sandboxBindingRef: row.bindingRef })
+          : null;
+      },
+      readNanoHost
+    );
     const workspace = readProduct(
       db.sqlite,
       { kind: 'workspace', workspaceId },

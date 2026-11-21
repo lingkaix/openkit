@@ -69,6 +69,7 @@ import {
   resumeWorkspaceRecoveryOwner,
 } from './storage/workspace-recovery-journal.js';
 import { finishWorkspaceRecoveryAtCore } from './storage/workspace-restore.js';
+import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
 import { recordTestAgentEnvironmentPackage } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -3528,6 +3529,32 @@ it.each(['retained', 'unreadable', 'already-removed-staging'])(
       phaseWrite.mockRestore();
       restoreRead?.();
       db?.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  }
+);
+
+it.each([true, false])(
+  'requires admitted empty Worker storage evidence before Workspace deletion (owner %s)',
+  async (admitted) => {
+    const f = await nativeDeletionRouteFixture();
+    try {
+      if (admitted) await openAdmittedTestNanoHost(f.coreDb);
+      const response = await f.invoke();
+      if (admitted) {
+        expect(response.status, await response.clone().text()).toBe(200);
+        expect(await response.json()).toMatchObject({ deletion: { phase: 'cleaned' } });
+      } else {
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({
+          code: 'recovery_required',
+          message: expect.stringMatching(/Worker storage absence cannot be proved/),
+        });
+        expect(f.store.getWorkspace(f.workspace.id).id).toBe(f.workspace.id);
+      }
+    } finally {
       await shutdownControlStoreWorkerClient();
       f.coreDb.sqlite.close();
       rmSync(f.dataRoot, { recursive: true, force: true });

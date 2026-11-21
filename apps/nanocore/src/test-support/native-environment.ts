@@ -5,30 +5,28 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
+import Database from 'better-sqlite3';
 import { afterAll } from 'vitest';
 import type { AgentManifest } from '../agents/manifest.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { ResolveAgentEnvironmentPackageInput } from '../runtime/agent-environment.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
+import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
 import {
   admitWorkerImageEnvironment,
+  insertWorkerImageSettlementInTransaction,
   readAdmittedWorkerImageEnvironment,
   readWorkerImageSettlement,
-  writeWorkerImageSettlement,
 } from '../runtime/worker-image-settlements-records.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, serverStoragePath } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { applyMigrations, applyServerOwnerJournal } from '../storage/migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
 import { materializeRuntimeImage } from '../worker-environments/worker-environment-preparation.js';
 
 /** Populates metadata-only fixtures through the raw record leaf; this does not prove native image publication. */
 export function admitTestNativeEnvironment(
-  coreDb: CoreDb,
+  owner: Pick<CoreDb, 'sqlite'>,
   manifest: Pick<AgentManifest, 'runtime'>,
   values: Record<string, string> = {},
   measuredDigest = `sha256:${'a'.repeat(64)}`
@@ -41,7 +39,7 @@ export function admitTestNativeEnvironment(
       : measuredDigest;
   const defaultsDigest = `sha256:${createHash('sha256').update(canonicalNativeEnvironment(values)).digest('hex')}`;
   const requestId = createHash('sha256').update(`native-test:${inputDigest}`).digest('hex');
-  const prior = readWorkerImageSettlement(coreDb, requestId);
+  const prior = readWorkerImageSettlement(owner, requestId);
   const candidate = {
     authoredArtifactId: prior?.authoredArtifactId ?? allocateEntityId('ar'),
     authoredArtifactVersion: 1 as const,
@@ -58,11 +56,33 @@ export function admitTestNativeEnvironment(
   // Prepared metadata reads must not acquire a Main writer beside active native Core work.
   if (
     isDeepStrictEqual(prior, settlement) &&
-    isDeepStrictEqual(readAdmittedWorkerImageEnvironment(coreDb, imageDigest), environment)
+    isDeepStrictEqual(readAdmittedWorkerImageEnvironment(owner, imageDigest), environment)
   )
     return;
-  writeWorkerImageSettlement(coreDb, settlement);
-  admitWorkerImageEnvironment(coreDb, candidate, environment);
+  owner.sqlite.transaction(() => {
+    insertWorkerImageSettlementInTransaction(owner, settlement);
+    admitWorkerImageEnvironment(owner, candidate, environment);
+  })();
+}
+
+/** Seeds synthetic image evidence in the shipped NanoHost file opened by the test's Worker. */
+export async function admitTestNativeEnvironmentForRoot(
+  coreDb: CoreDb,
+  manifest: Pick<AgentManifest, 'runtime'>,
+  values?: Record<string, string>,
+  measuredDigest?: string
+) {
+  const { openAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
+  const storage = await openAdmittedTestNanoHost(coreDb);
+  const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+    fileMustExist: true,
+  });
+  try {
+    admitTestNativeEnvironment({ sqlite }, manifest, values, measuredDigest);
+  } finally {
+    sqlite.close();
+  }
+  return storage;
 }
 
 /** A real migrated Core database for metadata-only tests that previously needed no image evidence. */
@@ -86,19 +106,33 @@ export function withTestPreparedNativeEnvironment<
   >,
 >(actual: T) {
   const fixtureDb = createTestNativeEnvironmentDb();
+  const nanoHostDb = new Database(':memory:');
+  afterAll(() => nanoHostDb.close());
+  applyServerOwnerJournal(nanoHostDb, 'nanohost', () => new Database(':memory:'));
+  const readFixtureEnvironment: NonNullable<
+    ResolveAgentEnvironmentPackageInput['readNanoHostEnvironment']
+  > = (query) => {
+    nanoHostDb.pragma('query_only = ON');
+    try {
+      return { state: 'ready', value: query(nanoHostDb) };
+    } finally {
+      nanoHostDb.pragma('query_only = OFF');
+    }
+  };
   const prepared = <
     I extends Pick<ResolveAgentEnvironmentPackageInput, 'agentSetup' | 'coreDb'> &
       Partial<
         Pick<
           ResolveAgentEnvironmentPackageInput,
-          'readRuntimeConfig' | 'workspaceDataSourceCatalog' | 'turn'
+          'readNanoHostEnvironment' | 'readRuntimeConfig' | 'workspaceDataSourceCatalog' | 'turn'
         >
       >,
   >(
     input: I
   ) => {
     const coreDb = input.coreDb ?? fixtureDb;
-    if (input.agentSetup?.manifest) admitTestNativeEnvironment(coreDb, input.agentSetup.manifest);
+    if (!input.readNanoHostEnvironment && input.agentSetup?.manifest)
+      admitTestNativeEnvironment({ sqlite: nanoHostDb }, input.agentSetup.manifest);
     // Other-contract source fixtures explicitly install their supplied catalog as current authority.
     // Tests of missing, changed or conditional authority call the production resolver directly.
     const readRuntimeConfig =
@@ -117,7 +151,12 @@ export function withTestPreparedNativeEnvironment<
               ],
             })
         : undefined);
-    return { ...input, coreDb, ...(readRuntimeConfig ? { readRuntimeConfig } : {}) };
+    return {
+      ...input,
+      coreDb,
+      readNanoHostEnvironment: input.readNanoHostEnvironment ?? readFixtureEnvironment,
+      ...(readRuntimeConfig ? { readRuntimeConfig } : {}),
+    };
   };
   return {
     ...actual,
@@ -146,20 +185,35 @@ export function withTestPreparedNativeEnvironment<
  * @returns The current target record; existing evidence is left untouched.
  */
 export async function recordTestNativeRuntimeTarget(coreDb: CoreDb, targetId = 'target_local') {
-  const existing = getNanoHostRuntimeTarget(coreDb, targetId);
-  if (existing) return existing;
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  const { openAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
+  const { value: storage } = await openAdmittedTestNanoHost(coreDb);
+  const existing = storage.owner.read((sqlite) => getNanoHostRuntimeTarget({ sqlite }, targetId));
+  if (existing.state !== 'ready') throw new Error(`NanoHost target read: ${existing.reason}`);
+  if (existing.value) return existing.value;
+  const allocated = await transitionAdmittedNanoHostRuntimeTarget(storage, {
+    kind: 'allocate',
     deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
     identityId: 'identity_local',
     observedAt: new Date().toISOString(),
     targetId,
   });
-  return await upsertNanoHostRuntimeTarget(coreDb, {
-    ...target,
+  if (allocated.state !== 'ready')
+    throw new Error(`NanoHost target allocation: ${allocated.reason}`);
+  if (!allocated.value) throw new Error('NanoHost target was not allocated.');
+  const { connectionGeneration, deploymentId, identityId } = allocated.value;
+  const ready = await transitionAdmittedNanoHostRuntimeTarget(storage, {
+    kind: 'ready',
+    connectionGeneration,
+    deploymentId,
+    identityId,
+    targetId,
     freshEmpty: true,
     observedAt: new Date().toISOString(),
     physicalEpoch: 'a'.repeat(64),
     predecessorFenced: true,
     ready: true,
   });
+  if (ready.state !== 'ready') throw new Error(`NanoHost target readiness: ${ready.reason}`);
+  if (!ready.value) throw new Error('NanoHost target readiness was not recorded.');
+  return ready.value;
 }

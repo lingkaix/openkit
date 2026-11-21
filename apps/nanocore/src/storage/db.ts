@@ -122,7 +122,7 @@ export async function withStoppedServerOwnerReadConnection<Value>(
     if (!(await inspectServerOwnerFile(dataRoot, owner)))
       throw new ServerOwnerAdmissionError('recovery-required');
     sqlite = openServerOwnerQueryOnly(serverStoragePath(dataRoot, owner));
-    assertCurrentServerOwnerSchema(sqlite, owner, () => openSqliteConnection(':memory:', {}));
+    assertCurrentServerOwnerConnection(sqlite, owner);
     return await read(sqlite);
   } finally {
     try {
@@ -298,11 +298,19 @@ export function openSupportedScopeReadOnlySqlite(
   return openOwnedSqlite(path, scope, { fileMustExist: true, readonly: true }, busyTimeoutMs);
 }
 
+/** Checks the exact shipped journal and schema on an already selected owner connection. */
+export function assertCurrentServerOwnerConnection(
+  sqlite: Database.Database,
+  owner: SplitStorageOwner
+): void {
+  assertCurrentServerOwnerSchema(sqlite, owner, () => openSqliteConnection(':memory:', {}));
+}
+
 /** Checks a private restore copy against its exact split owner's shipped journal and schema. */
 export function verifyServerOwnerRestoreCopy(path: string, owner: SplitStorageOwner): void {
   const sqlite = openSqliteConnection(path, { fileMustExist: true, readonly: true });
   try {
-    assertCurrentServerOwnerSchema(sqlite, owner, () => openSqliteConnection(':memory:', {}));
+    assertCurrentServerOwnerConnection(sqlite, owner);
   } finally {
     sqlite.close();
   }

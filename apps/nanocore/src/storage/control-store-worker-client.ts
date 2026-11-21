@@ -182,6 +182,7 @@ import type {
   ProjectWorkerBackendCleanupInput,
   WorkerBackendCleanupProjectionResult,
 } from '../runtime/worker-backend-cleanup-projection.js';
+import type { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import type { ControlWorkerRejectedEvidence } from '../runtime/worker-control-rejected-evidence-codecs.js';
 import { WorkerImageSettlementConflict } from '../runtime/worker-image-settlements-records.js';
 import {
@@ -286,6 +287,9 @@ import {
   isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
+  type NanoHostLocalBackendSessionInput,
+  type NanoHostLocalWorkerImageInput,
+  type NanoHostLocalWorkerStorageInput,
   type NanoHostOwnerMutation,
   type NanoHostOwnerMutationResult,
   type ServerOwnerDescriptor,
@@ -316,13 +320,23 @@ import type {
   ControlHarnessLifecycleResult,
 } from './harness-lifecycle-codecs.js';
 import { hasPendingUserMigrations, ServerOwnerAdmissionError } from './migrate.js';
-import type { NanoHostEpochPlacement } from './nanohost-epoch-invalidation.js';
+import {
+  type NanoHostEpochPlacement,
+  type NanoHostRuntimeTargetEpochKernel,
+  type NanoHostRuntimeTargetEpochStore,
+  transitionNanoHostRuntimeTarget,
+} from './nanohost-epoch-invalidation.js';
 import type { NanoHostRuntimeTargetTransition } from './nanohost-epoch-invalidation-codecs.js';
 import type {
+  inspectNanoHostRuntimeTargetTransition,
   prepareNanoHostRuntimeTargetTransition,
   readNanoHostEpochInvalidation,
   readPendingNanoHostEpochRetirement,
 } from './nanohost-epoch-invalidation-native.js';
+import type {
+  NanoHostEpochKernelInput,
+  NanoHostEpochKernelReply,
+} from './nanohost-epoch-kernel-codecs.js';
 import type { NanoHostStore } from './nanohost-port.js';
 import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 import type { ControlRemoteMcpAudit } from './remote-mcp-audit-codecs.js';
@@ -552,7 +566,17 @@ interface NanoHostOwnerReaders {
   readonly listNanoHostTransportTokenRecords: typeof listNanoHostTransportTokenRecords;
   readonly prepareNanoHostRuntimeTargetTransition: typeof prepareNanoHostRuntimeTargetTransition;
   readonly readNanoHostEpochInvalidation: typeof readNanoHostEpochInvalidation;
+  readonly inspectNanoHostRuntimeTargetTransition: typeof inspectNanoHostRuntimeTargetTransition;
+  readonly getWorkerBackendSession: typeof getWorkerBackendSession;
   readonly readPendingNanoHostEpochRetirement: typeof readPendingNanoHostEpochRetirement;
+}
+
+/** Serving composition supplies current proofs from the deciding owners immediately before posting. */
+interface NanoHostServingGate {
+  enabled(): boolean;
+  verifyImagePublication?(input: NanoHostLocalWorkerImageInput): boolean;
+  verifyWorkspaceHandoff?(session: ControlBackendSessionResult): boolean;
+  verifyStorageBinding?(input: NanoHostLocalWorkerStorageInput): boolean;
 }
 
 /** Private local methods for composition after owner and Core authority admission. */
@@ -562,13 +586,22 @@ interface NanoHostOwnerBinding
     'stageEpochInvalidation' | 'readEpochInvalidation' | 'settleEpochInvalidation'
   > {
   transport(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
+  harnessLifecycle(
+    input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
+  ): Promise<void>;
+  workerImage(input: NanoHostLocalWorkerImageInput): Promise<void>;
+  backendSession(input: NanoHostLocalBackendSessionInput): Promise<ControlBackendSessionResult>;
+  workerStorageBinding(input: NanoHostLocalWorkerStorageInput): Promise<WorkerStorageBinding>;
   prepareRuntimeTarget(
     input: ControlRuntimeTargetInput,
     occurrenceId: string
   ): Promise<StorageResult<'nanohost', NanoHostRuntimeTargetTransition>>;
-  runtimeTarget(
+  transitionRuntimeTarget(
+    kernel: NanoHostRuntimeTargetEpochKernel,
     original: NanoHostRuntimeTargetTransition
-  ): Promise<StorageResult<'nanohost', ControlRuntimeTargetResult>>;
+  ): Promise<StorageResult<'nanohost' | 'control-kernel', ControlRuntimeTargetResult>>;
+  /** Runs a synchronous projection on the captured query-only generation. */
+  read<Value>(query: (sqlite: Database.Database) => Value): StorageResult<'nanohost', Value>;
   beginEpochRetirement(placement: NanoHostEpochPlacement): Promise<StorageResult<'nanohost', void>>;
   readPendingEpochRetirement(): Promise<StorageResult<'nanohost', NanoHostEpochPlacement | null>>;
   listTransportTokens(): Promise<StorageResult<'nanohost', NanoHostTransportTokenRecord[]>>;
@@ -674,6 +707,12 @@ const communicationHeld = {
   reason: 'recovery-required',
 } as const;
 
+/** The file's canonical location and identity are checked against its acknowledged opening. */
+function readPhysicalDatabaseIdentity(path: string) {
+  const current = statSync(path);
+  return { path: realpathSync(path), identity: `${current.dev}:${current.ino}`, file: current };
+}
+
 /** A process-wide physical reservation, including a fresh scope awaiting native initialization. */
 interface Opening {
   readonly command: Omit<OpenCommand, 'operation'>;
@@ -690,6 +729,9 @@ interface Opening {
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
   communicationReader?: Database.Database;
+  nanoHostTargetTransition?: true;
+  nanoHostReader?: Promise<Database.Database>;
+  readNanoHost?: NanoHostOwnerBinding['read'];
   /** Request-local capture enrollment stays with this existing physical Workspace owner. */
   captureReads?: CaptureReadGeneration;
   /** The exact close owner excludes later OPEN/read acquisition, including after a failed attempt. */
@@ -775,6 +817,7 @@ interface Pending {
   readonly workspaceLeases: readonly WorkspaceMutationLease[];
   /** A forecast is resolved once within this request's existing slot. */
   physicalForecasted?: boolean;
+  readonly verifyNanoHostPost?: (mutation: NanoHostOwnerMutation) => boolean;
   /** Original owner capture; neither the supplier nor facts are sent back in a forecast decision. */
   readonly schemaApplicationFacts?: {
     readonly captured: ControlSchemaApplicationFacts;
@@ -2715,10 +2758,8 @@ class ControlStoreWorkerClient {
     const opening = this.appReadOpening(dataRoot, workspaceId, appId);
     if (!opening) return;
     const path = resolve(lightAppDbPath(dataRoot, workspaceId, appId));
-    const current = statSync(path);
     this.assertAppReadIdentity(opening, workspaceId, appId, {
-      path: realpathSync(path),
-      identity: `${current.dev}:${current.ino}`,
+      ...readPhysicalDatabaseIdentity(path),
       root: realpathSync(dataRoot),
       originalRoot: realpathSync(opening.command.dataRoot!),
     });
@@ -3030,13 +3071,31 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Observes only the acknowledged owner already selected for the live deployment. */
+  readAdmittedNanoHost<Value>(
+    dataRoot: string,
+    query: (sqlite: Database.Database) => Value
+  ): StorageResult<'nanohost', Value> {
+    const database = `server-owner:${serverStoragePath(dataRoot, 'nanohost')}`;
+    return (
+      this.openings.get(database)?.readNanoHost?.(query) ?? {
+        state: 'unavailable',
+        owner: 'nanohost',
+        reason: 'missing',
+      }
+    );
+  }
+
   /** Binds gated NanoHost methods through existing-only admission and one acknowledged opening. */
   async bindNanoHostOwner(
     dataRoot: string,
-    readers: NanoHostOwnerReaders
+    readers: NanoHostOwnerReaders,
+    gate: NanoHostServingGate
   ): Promise<StorageResult<'nanohost', NanoHostOwnerBinding>> {
     const { owner } = nanoHostStoreDescriptor;
+    const disabled = { state: 'unavailable', owner, reason: 'disabled' } as const;
     try {
+      if (!gate.enabled()) return disabled;
       const root = await realpath(dataRoot);
       const status = await this.openServerOwner(root, nanoHostStoreDescriptor);
       if (status.state !== 'ready') return status;
@@ -3051,20 +3110,66 @@ class ControlStoreWorkerClient {
       )
         throw new ServerOwnerAdmissionError('recovery-required');
 
-      const assertCurrent = () => {
+      const assertCurrent = (ownPendingWrite = false) => {
+        if (!gate.enabled()) throw new ControlStoreWorkerError('unavailable', 'not-committed');
         if (this.stopping || opening.host.failed || this.openings.get(database) !== opening)
           throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
         this.assertScopeProducerAdmission(database);
-        if (opening.nanoHostWritePending)
+        if (opening.nanoHostWritePending && !ownPendingWrite)
           throw new ControlStoreWorkerError('busy', 'not-committed');
       };
       assertCurrent();
-      const {
-        listNanoHostTransportTokenRecords,
-        prepareNanoHostRuntimeTargetTransition,
-        readNanoHostEpochInvalidation,
-        readPendingNanoHostEpochRetirement,
-      } = readers;
+      opening.nanoHostReader ??= this.openAcknowledgedServerOwnerReadDb(database, owner, opening);
+      const sqlite = await opening.nanoHostReader;
+      assertCurrent();
+
+      const readCurrent = <Value>(
+        query: (sqlite: Database.Database) => Value,
+        ownPendingWrite = false
+      ): Value => {
+        assertCurrent(ownPendingWrite);
+        const physical = readPhysicalDatabaseIdentity(opening.path);
+        if (
+          !sqlite.open ||
+          !physical.file.isFile() ||
+          physical.file.nlink !== 1 ||
+          physical.path !== opening.path ||
+          physical.identity !== opening.identity
+        )
+          throw new ServerOwnerAdmissionError('recovery-required');
+        return query(sqlite);
+      };
+      const read = <Value>(
+        query: (sqlite: Database.Database) => Value
+      ): StorageResult<'nanohost', Value> => {
+        try {
+          if (!gate.enabled()) return disabled;
+          return { state: 'ready', value: readCurrent(query) };
+        } catch (error) {
+          return serverOwnerUnavailable(owner, error);
+        }
+      };
+      opening.readNanoHost = read;
+      const verifyPost = (mutation: NanoHostOwnerMutation): boolean => {
+        assertCurrent(true);
+        switch (mutation.kind) {
+          case 'worker-image':
+            return gate.verifyImagePublication?.(mutation.input) === true;
+          case 'backend-session': {
+            if (mutation.input.kind !== 'handoff') return true;
+            const session = readCurrent(
+              (handle) =>
+                readers.getWorkerBackendSession({ sqlite: handle }, mutation.input.attemptId),
+              true
+            );
+            return session !== null && gate.verifyWorkspaceHandoff?.(session) === true;
+          }
+          case 'worker-storage-binding':
+            return gate.verifyStorageBinding?.(mutation.input) === true;
+          default:
+            return true;
+        }
+      };
 
       const write = async <Kind extends NanoHostOwnerMutation['kind']>(
         mutation: NanoHostOwnerMutation & { kind: Kind }
@@ -3072,12 +3177,19 @@ class ControlStoreWorkerClient {
         assertCurrent();
         opening.nanoHostWritePending = true;
         try {
-          const reply = (await this.request({
-            operation: 'nanohost-owner',
-            database,
-            openingRequestId,
-            mutation,
-          })) as Extract<Success, { operation: 'nanohost-owner' }>;
+          const reply = (await this.request(
+            { operation: 'nanohost-owner', database, openingRequestId, mutation },
+            undefined,
+            undefined,
+            false,
+            undefined,
+            [],
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            verifyPost
+          )) as Extract<Success, { operation: 'nanohost-owner' }>;
           return reply.result as Extract<NanoHostOwnerMutationResult, { kind: Kind }>;
         } catch (error) {
           if (
@@ -3085,11 +3197,60 @@ class ControlStoreWorkerClient {
             (error.commit === 'unknown' || error.code === 'integrity')
           )
             this.fail(opening.host);
+          if (
+            error instanceof ControlStoreWorkerError &&
+            error.domain?.operation === 'nanohost-owner'
+          ) {
+            const domain = error.domain;
+            switch (mutation.kind) {
+              case 'harness-lifecycle':
+                if (domain.code === 'harness_refused') {
+                  const refusal = new Error(domain.message, { cause: error });
+                  if (domain.exhaustedBound)
+                    Object.assign(refusal, {
+                      reasonCode: 'busy',
+                      exhaustedBound: domain.exhaustedBound,
+                    });
+                  throw refusal;
+                }
+                break;
+              case 'worker-image':
+                if (domain.code === 'unsupported_retained_format')
+                  throw new TypeError(domain.message, { cause: error });
+                if (domain.code === 'worker_image_conflict')
+                  throw new WorkerImageSettlementConflict();
+                break;
+              case 'backend-session':
+                if (domain.code === 'backend_session_refused') {
+                  const Constructor =
+                    domain.errorName === 'TypeError'
+                      ? TypeError
+                      : domain.errorName === 'SyntaxError'
+                        ? SyntaxError
+                        : Error;
+                  throw new Constructor(domain.message, { cause: error });
+                }
+                break;
+              case 'worker-storage-binding':
+                throw new WorkerStorageBindingError(
+                  domain.code as WorkerStorageBindingError['code'],
+                  domain.message
+                );
+            }
+          }
           throw error;
         } finally {
           delete opening.nanoHostWritePending;
         }
       };
+
+      const writeUnavailable = (error: unknown): StorageUnavailable<'nanohost'> =>
+        error instanceof ControlStoreWorkerError &&
+        error.code === 'unavailable' &&
+        error.commit === 'not-committed' &&
+        !gate.enabled()
+          ? disabled
+          : serverOwnerUnavailable(owner, error);
 
       const result = async <Value>(
         readOrWrite: () => Promise<Value>
@@ -3097,46 +3258,84 @@ class ControlStoreWorkerClient {
         try {
           return { state: 'ready', value: await readOrWrite() };
         } catch (error) {
-          return serverOwnerUnavailable(owner, error);
+          return writeUnavailable(error);
         }
       };
-      const read = <Value>(query: (sqlite: Database.Database) => Value) =>
-        result(async () => {
-          assertCurrent();
-          const sqlite = await this.openAcknowledgedServerOwnerReadDb(database, owner, opening);
+      const epoch: NanoHostRuntimeTargetEpochStore = {
+        beginEpochRetirement: (input) =>
+          result(async () => {
+            await write({ kind: 'begin-retirement', input });
+          }),
+        stageEpochInvalidation: (input) =>
+          result(async () => {
+            await write({ kind: 'stage-invalidation', input });
+          }),
+        settleEpochInvalidation: (input) =>
+          result(async () => {
+            await write({ kind: 'settle-invalidation', input });
+          }),
+        readEpochInvalidation: async (requestId) =>
+          read((handle) => readers.readNanoHostEpochInvalidation(handle, requestId)),
+        inspectRuntimeTargetTransition: async (original) => {
+          const inspected = read((handle) =>
+            readers.inspectNanoHostRuntimeTargetTransition(handle, original)
+          );
+          return inspected.state === 'ready' ? inspected.value : inspected;
+        },
+        mutateRuntimeTarget: async (original) => {
           try {
-            assertCurrent();
-            return query(sqlite);
-          } finally {
-            sqlite.close();
+            return (await write({ kind: 'runtime-target', input: original })).value;
+          } catch (error) {
+            return writeUnavailable(error);
           }
-        });
+        },
+      };
 
       return {
         state: 'ready',
         value: {
           transport: async (input) => (await write({ kind: 'transport', input })).value,
-          prepareRuntimeTarget: (input, occurrenceId) =>
-            read((sqlite) => prepareNanoHostRuntimeTargetTransition(sqlite, input, occurrenceId)),
-          runtimeTarget: async (original) =>
-            (await write({ kind: 'runtime-target', input: original })).value,
-          beginEpochRetirement: (input) =>
-            result(async () => {
-              await write({ kind: 'begin-retirement', input });
-            }),
-          stageEpochInvalidation: (input) =>
-            result(async () => {
-              await write({ kind: 'stage-invalidation', input });
-            }),
-          settleEpochInvalidation: (input) =>
-            result(async () => {
-              await write({ kind: 'settle-invalidation', input });
-            }),
-          readEpochInvalidation: (requestId) =>
-            read((sqlite) => readNanoHostEpochInvalidation(sqlite, requestId)),
-          readPendingEpochRetirement: () => read(readPendingNanoHostEpochRetirement),
-          listTransportTokens: () =>
-            read((sqlite) => listNanoHostTransportTokenRecords({ sqlite })),
+          harnessLifecycle: async (input) => {
+            await write({ kind: 'harness-lifecycle', input });
+          },
+          workerImage: async (input) => {
+            await write({ kind: 'worker-image', input });
+          },
+          backendSession: async (input) => (await write({ kind: 'backend-session', input })).value,
+          workerStorageBinding: async (input) =>
+            (await write({ kind: 'worker-storage-binding', input })).value,
+          prepareRuntimeTarget: async (input, occurrenceId) =>
+            read((handle) =>
+              readers.prepareNanoHostRuntimeTargetTransition(handle, input, occurrenceId)
+            ),
+          transitionRuntimeTarget: async (kernel, original) => {
+            if (!gate.enabled()) return disabled;
+            if (this.backupHold || opening.nanoHostTargetTransition)
+              return serverOwnerUnavailable(
+                owner,
+                new ControlStoreWorkerError('busy', 'not-committed')
+              );
+            opening.nanoHostTargetTransition = true;
+            try {
+              return await this.runOperation(
+                () => transitionNanoHostRuntimeTarget(epoch, kernel, original),
+                undefined,
+                database
+              );
+            } catch (error) {
+              return serverOwnerUnavailable(owner, error);
+            } finally {
+              delete opening.nanoHostTargetTransition;
+            }
+          },
+          beginEpochRetirement: epoch.beginEpochRetirement,
+          stageEpochInvalidation: epoch.stageEpochInvalidation,
+          settleEpochInvalidation: epoch.settleEpochInvalidation,
+          readEpochInvalidation: epoch.readEpochInvalidation,
+          readPendingEpochRetirement: async () => read(readers.readPendingNanoHostEpochRetirement),
+          listTransportTokens: async () =>
+            read((handle) => readers.listNanoHostTransportTokenRecords({ sqlite: handle })),
+          read,
         },
       };
     } catch (error) {
@@ -3151,6 +3350,86 @@ class ControlStoreWorkerClient {
     return () => {
       this.communicationProducerHold = false;
       for (const opening of this.openings.values()) opening.communicationRelayWake?.();
+    };
+  }
+
+  /** Supplies the exact Core reservation and receipt for a Native retirement, including boot. */
+  nanoHostEpochKernel(db: CoreDb): NanoHostRuntimeTargetEpochKernel {
+    const database = `core:${serverStoragePath(db.dataRoot, 'control-kernel')}`;
+    const unavailable = {
+      state: 'unavailable',
+      owner: 'control-kernel',
+      reason: 'recovery-required',
+    } as const;
+    const readOwnerIdentity = () => {
+      const path = serverStoragePath(db.dataRoot, 'nanohost');
+      const ownerKey = `server-owner:${path}`;
+      const opening = this.openings.get(ownerKey);
+      const admitted = this.operationContext.getStore();
+      return opening?.acknowledged &&
+        opening.command.serverOwner?.owner === 'nanohost' &&
+        !opening.host.failed &&
+        (!opening.retirement || (admitted?.active && admitted.reservation === ownerKey))
+        ? opening.identity
+        : undefined;
+    };
+    const post = async (
+      input: NanoHostEpochKernelInput
+    ): Promise<StorageResult<'control-kernel', NanoHostEpochKernelReply>> => {
+      const core = this.openings.get(database);
+      if (
+        !core?.acknowledged ||
+        core.path !== db.sqlite.name ||
+        core.command.initialize !== 'core' ||
+        core.openingRequestId === undefined ||
+        core.host.failed ||
+        core.retirement
+      )
+        return unavailable;
+      try {
+        const reply = await this.request({
+          operation: 'nanohost-epoch-kernel',
+          database,
+          openingRequestId: core.openingRequestId,
+          input,
+        });
+        if (reply.operation !== 'nanohost-epoch-kernel' || reply.result.kind !== input.kind)
+          return unavailable;
+        return { state: 'ready', value: reply.result };
+      } catch (error) {
+        return serverOwnerUnavailable('control-kernel', error);
+      }
+    };
+    return {
+      reserveHolderIntent: async (placement) => {
+        const identity = readOwnerIdentity();
+        if (!identity) return unavailable;
+        const result = await post({
+          kind: 'reserve',
+          placement,
+          ownerIdentity: identity,
+        });
+        if (result.state !== 'ready') return result;
+        if (result.value.kind !== 'reserve' || result.value.value.state !== 'settled')
+          return unavailable;
+        return { state: 'ready', value: result.value.value.receipt };
+      },
+      fenceNanoHostEpoch: async (intent) => {
+        const identity = readOwnerIdentity();
+        if (!identity) return unavailable;
+        const result = await post({ kind: 'fence', intent, ownerIdentity: identity });
+        if (result.state !== 'ready') return result;
+        return result.value.kind === 'fence'
+          ? { state: 'ready', value: result.value.value }
+          : unavailable;
+      },
+      inspectNanoHostEpochFence: async (intent) => {
+        const result = await post({ kind: 'inspect', intent });
+        if (result.state !== 'ready') return result;
+        return result.value.kind === 'inspect'
+          ? { state: 'ready', value: result.value.value }
+          : unavailable;
+      },
     };
   }
 
@@ -5000,7 +5279,25 @@ class ControlStoreWorkerClient {
     database: string,
     input: ControlWorkerRejectedEvidence
   ): Promise<void> {
-    await this.request({ operation: 'worker-control-evidence', database, input });
+    const core = this.openings.get(database);
+    const dataRoot = core?.command.dataRoot;
+    if (!core?.acknowledged || !dataRoot)
+      throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+    const native = `server-owner:${serverStoragePath(dataRoot, 'nanohost')}`;
+    const selected = this.openings.get(native);
+    if (!selected?.acknowledged || selected.readNanoHost?.(() => true).state !== 'ready')
+      throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+    await this.runOperation(
+      async () => {
+        await this.request({ operation: 'worker-control-evidence', database: native, input });
+      },
+      undefined,
+      native,
+      undefined,
+      undefined,
+      undefined,
+      selected.command
+    );
   }
 
   /** Publishes the exact existing presentation tuple under the native byte, Turn and FIFO accounts. */
@@ -6359,6 +6656,7 @@ class ControlStoreWorkerClient {
   async coreJournal(database: string, input: ControlCoreJournalInput): Promise<string | null> {
     this.assertAccepting();
     let release: (() => void) | undefined;
+    let nativeRead: Opening | undefined;
     try {
       input = structuredClone(input);
       const opening = this.openings.get(database);
@@ -6418,17 +6716,35 @@ class ControlStoreWorkerClient {
         release = this.enterScope(owner, workspaceId, 'capture') ?? undefined;
         if (!release) throw new ControlStoreWorkerError('busy', 'not-committed');
       }
+      const nativeDatabase = `server-owner:${serverStoragePath(opening.command.dataRoot, 'nanohost')}`;
+      if (input.kind === 'image-intent' || input.kind === 'containment-stop-outcome') {
+        const candidate = this.openings.get(nativeDatabase);
+        if (
+          candidate?.acknowledged &&
+          candidate.identity &&
+          candidate.command.serverOwner?.owner === 'nanohost' &&
+          !candidate.retirement &&
+          !candidate.host.failed &&
+          !candidate.nanoHostWritePending &&
+          !candidate.nanoHostTargetTransition &&
+          !this.backupHold
+        ) {
+          candidate.nanoHostWritePending = true;
+          nativeRead = candidate;
+        }
+      }
       return await this.runOperation(
         async () => {
           const reply = await this.request({
             operation: 'core-journal',
             database,
             input,
+            ...(nativeRead?.identity ? { nanoHostOwnerIdentity: nativeRead.identity } : {}),
           });
           return (reply as Extract<Success, { operation: 'core-journal' }>).result;
         },
         undefined,
-        undefined,
+        nativeRead ? nativeDatabase : undefined,
         undefined,
         undefined,
         owner && workspaceId && release ? { owner, workspaceId, release } : undefined
@@ -6448,6 +6764,7 @@ class ControlStoreWorkerClient {
       }
       throw error;
     } finally {
+      if (nativeRead) delete nativeRead.nanoHostWritePending;
       release?.();
     }
   }
@@ -6801,13 +7118,63 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** The packaged self-check borrows Core facts and writes through its acknowledged Native owner. */
+  private async runSimulatorNative<T>(
+    database: string,
+    operation: (native: string, simulatorCoreIdentity: string) => Promise<T>
+  ): Promise<T> {
+    const core = this.openings.get(database);
+    const dataRoot = core?.command.dataRoot;
+    const identity = core?.identity;
+    if (
+      process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR !== '1' ||
+      !core?.acknowledged ||
+      core.command.initialize !== 'core' ||
+      !dataRoot ||
+      !identity ||
+      core.host.failed
+    )
+      throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+    this.assertScopeProducerAdmission(database);
+    const native = `server-owner:${serverStoragePath(dataRoot, 'nanohost')}`;
+    const owner = this.openings.get(native);
+    if (!owner?.acknowledged || owner.readNanoHost?.(() => true).state !== 'ready')
+      throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+    const releaseCore = reserveMainScopeReadAcquisition(core.path);
+    owner.nanoHostWritePending = true;
+    try {
+      return await this.runOperation(
+        () => operation(native, identity),
+        undefined,
+        native,
+        undefined,
+        undefined,
+        undefined,
+        owner.command
+      );
+    } finally {
+      delete owner.nanoHostWritePending;
+      releaseCore();
+    }
+  }
+
   /** Commits one original backend-session tuple before its dependent effect or release. */
   async backendSession(
     database: string,
     input: ControlBackendSessionInput
   ): Promise<ControlBackendSessionResult> {
     try {
-      const reply = await this.request({ operation: 'backend-session', database, input });
+      const reply =
+        process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
+          ? await this.runSimulatorNative(database, (native, simulatorCoreIdentity) =>
+              this.request({
+                operation: 'backend-session',
+                database: native,
+                input,
+                simulatorCoreIdentity,
+              })
+            )
+          : await this.request({ operation: 'backend-session', database, input });
       return (reply as Extract<Success, { operation: 'backend-session' }>).result;
     } catch (error) {
       if (
@@ -6845,7 +7212,16 @@ class ControlStoreWorkerClient {
                 [preparationJson]
               );
             })()
-          : await this.request({ operation: 'execution-attempt', database, input });
+          : input.kind === 'simulator-final'
+            ? await this.runSimulatorNative(database, (native, simulatorCoreIdentity) =>
+                this.request({
+                  operation: 'execution-attempt',
+                  database: native,
+                  input,
+                  simulatorCoreIdentity,
+                })
+              )
+            : await this.request({ operation: 'execution-attempt', database, input });
       return (reply as Extract<Success, { operation: 'execution-attempt' }>).result;
     } catch (error) {
       if (
@@ -7200,6 +7576,12 @@ class ControlStoreWorkerClient {
     if (failed?.status === 'rejected') throw failed.reason;
   }
 
+  /** Releases the query-only NanoHost connection before the usual reader drain. */
+  private async closeNanoHostReader(opening: Opening): Promise<void> {
+    const reader = await opening.nanoHostReader?.catch(() => undefined);
+    if (reader?.open) reader.close();
+  }
+
   /** Closes one exact generation after its accepted preparation, children and readers finish. */
   async close(database: string, recovery?: ControlRecoveryNativeCall): Promise<void> {
     this.assertFrozenCall({ operation: 'close', database }, recovery);
@@ -7232,6 +7614,7 @@ class ControlStoreWorkerClient {
         await this.drainScopePublications(opening);
         if (opening) {
           if (opening.communicationReader?.open) opening.communicationReader.close();
+          await this.closeNanoHostReader(opening);
           closeWorkspaceProductReadHandles(opening.path);
           await drainMainScopeReadHandles([opening.path]);
           // Accepted ACK continuations can create an idle metadata reader before releasing their own.
@@ -7276,6 +7659,7 @@ class ControlStoreWorkerClient {
       try {
         await this.drainScopePublications(opening);
         if (opening) {
+          await this.closeNanoHostReader(opening);
           closeWorkspaceProductReadHandles(opening.path);
           await drainMainScopeReadHandles([opening.path]);
           // Accepted ACK continuations can create an idle metadata reader before releasing their own.
@@ -7442,7 +7826,11 @@ class ControlStoreWorkerClient {
         throw new ControlStoreWorkerError('unavailable', 'not-committed');
       }
     }
-    if (database === undefined && this.serverWorkProducers.size !== 0) {
+    if (
+      database === undefined &&
+      (this.serverWorkProducers.size !== 0 ||
+        [...this.openings.values()].some((opening) => opening.nanoHostTargetTransition))
+    ) {
       resumeCommunication?.();
       throw new ControlStoreWorkerError('busy', 'not-committed');
     }
@@ -7511,6 +7899,9 @@ class ControlStoreWorkerClient {
         for (const opening of this.openings.values()) {
           if (opening.communicationReader?.open) opening.communicationReader.close();
         }
+        await Promise.all(
+          [...this.openings.values()].map((opening) => this.closeNanoHostReader(opening))
+        );
         await drainMainScopeReadHandles([...this.openings.values()].map((opening) => opening.path));
         closeWorkspaceProductReadHandles();
         const shutdowns = await Promise.allSettled(
@@ -7554,7 +7945,8 @@ class ControlStoreWorkerClient {
     schemaApplicationFacts?: Pending['schemaApplicationFacts'],
     policyCall?: PolicyCall,
     publicationGuard?: ControlStorePublicationGuard,
-    schedulerWorkspaceId?: string
+    schedulerWorkspaceId?: string,
+    verifyNanoHostPost?: Pending['verifyNanoHostPost']
   ): Promise<Success> {
     if (publicationGuard?.signal.aborted)
       return Promise.reject(new ControlStoreWorkerError('precondition', 'not-committed'));
@@ -7890,6 +8282,7 @@ class ControlStoreWorkerClient {
           closeout,
           ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
           ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
+          ...(verifyNanoHostPost ? { verifyNanoHostPost } : {}),
           ...(policyCall ? { policyCall } : {}),
           ...(schedulerWorkspaceId === undefined ? {} : { schedulerWorkspaceId }),
           ...(publicationGuard && cancelUnposted
@@ -8071,6 +8464,21 @@ class ControlStoreWorkerClient {
             undefined,
             new ControlStoreWorkerError('precondition', 'not-committed')
           );
+        return;
+      }
+    }
+    if (entry.command.operation === 'nanohost-owner') {
+      try {
+        if (entry.verifyNanoHostPost?.(entry.command.mutation) !== true)
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+      } catch (error) {
+        this.complete(
+          entry.request.id,
+          undefined,
+          error instanceof ControlStoreWorkerError
+            ? error
+            : new ControlStoreWorkerError('precondition', 'not-committed')
+        );
         return;
       }
     }

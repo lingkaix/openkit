@@ -99,8 +99,6 @@
     "apps/nanocore/src/storage/knowledge-package/archive.ts\tfs:open\te9b9c49739ef7bfddf18b1f3686b506fd90d8b53366665b21a942390913328b7": 1,
     "apps/nanocore/src/storage/knowledge-package/archive.ts\tfs:writeFile\taa9c70b499fd05a21cd4d15e59017eb6314b895448fac982383b4084d1befda8": 1,
     "apps/nanocore/src/storage/layout-report.ts\tsqlite\te0d7b33bd7899e317582fda5b4fd4d0b69467578e359407866b8af6924223965": 1,
-    "apps/nanocore/src/storage/physical-epoch-cutover.ts\tsqlite\t39173f129a88e750cffa8ae38798b6ae92126b56cc24c9a8fd91e08e38d364c4": 1,
-    "apps/nanocore/src/storage/physical-epoch-cutover.ts\tsqlite\t3a1943b306fa74cea4e50e8d6061c34cf0bfe3cac5283337ce69248835a7c339": 1,
     "apps/nanocore/src/storage/workspace-backup-bundle.ts\tfs:chmod\t25b100a2f7b49c2804415f47ceee9755912dda49eb30d201268ae05056db5866": 1,
     "apps/nanocore/src/storage/workspace-backup-bundle.ts\tfs:open\tc9af380eef8d56acf6317b3178bbadef15b2ce2fea626df4aaf79d6aaf13f3fb": 1,
     "apps/nanocore/src/storage/workspace-backup-bundle.ts\tfs:write\ta6d51d2c6d3724937a9b0a124ede6dd8e9767e7d728aced179c024e4de3dc063": 1,
@@ -309,7 +307,7 @@
       "crossDirectoryImports": 20
     },
     "worker-runtime": {
-      "exports": 86,
+      "exports": 83,
       "crossDirectoryImports": 12
     }
   }

@@ -1,4 +1,5 @@
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -56,6 +57,7 @@ import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -89,6 +91,7 @@ import {
 } from './data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
+import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 import { serverWorkStorageDescriptor } from './server-work-schema.js';
 import { WORKSPACE_BACKUP_DATABASE_FORMATS } from './workspace-backup.js';
 import {
@@ -483,6 +486,9 @@ async function fixture(channelHistory = false, unfinished = false, longPage = fa
     workspaceIds: [workspaceId],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
+  await expect(
+    getControlStoreWorkerClient().provisionServerOwner(dataRoot, nanoHostStoreDescriptor)
+  ).resolves.toEqual({ state: 'ready', owner: 'nanohost' });
   core.sqlite.close();
   const db = openWorkspaceDb(dataRoot, workspaceId);
   try {
@@ -846,6 +852,7 @@ async function readmissionFixture(
   expect(interrupted).toBe(true);
   const core = openCoreDb(f.dataRoot);
   readmissionCleanups.push(() => core.sqlite.close());
+  await openAdmittedTestNanoHost(core);
   const lock = acquireDataRootLock(f.dataRoot, { bootId: randomUUID() });
   readmissionCleanups.push(() => lock.release());
   restoreWorkspaceRecoveryAdmission(core);

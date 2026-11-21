@@ -87,7 +87,6 @@ import { type AdmittedOperationContext, publicOperationActor } from '../operatio
 import { OperationError, projectOperationError } from '../operation-error.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import { readExecutionJournalRoot } from '../runtime/execution-journal.js';
-import { hasUnprovedNanoHostWorkspaceCleanup } from '../runtime/nanohost-attempt-records.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { hasWorkspaceMcpData, quiesceWorkspaceMcpData } from '../runtime/worker-mcp-capture.js';
@@ -127,10 +126,14 @@ import {
 } from './data-root-backup.js';
 import type { CoreDb } from './db.js';
 import {
+  assertCurrentServerOwnerConnection,
   bindCoreSqlite,
   bindWorkspaceSqlite,
+  inspectServerOwnerFile,
   openExistingCoreDbWithIntegrityCheck,
+  openServerOwnerReadConnection,
   openWorkspaceReadDb,
+  withStoppedServerOwnerReadConnection,
 } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { assertNativeBaseline, assertSupportedNativeLedger } from './migrate.js';
@@ -245,6 +248,74 @@ export function readBlockers(input: {
   return readWorkspaceBlockerFacts(input);
 }
 
+function readNativeWorkspaceObstructions(
+  core: CoreDb,
+  workspaceId: string,
+  requirePurged: boolean
+) {
+  const result = getControlStoreWorkerClient().readAdmittedNanoHost(core.dataRoot, (sqlite) =>
+    sqlite.transaction(() => {
+      const sessionIds = sqlite
+        .prepare(
+          "SELECT attempt_id FROM worker_backend_sessions WHERE workspace_id=? AND (state<>'cleaned' OR physical_cleaned_at IS NULL)"
+        )
+        .pluck()
+        .all(workspaceId) as string[];
+      const sessions = sessionIds.map((id) => {
+        const row = getWorkerBackendSession({ sqlite }, id);
+        if (!row) throw new Error('Missing physical session authority.');
+        return row;
+      });
+      const storage = (
+        sqlite
+          .prepare(
+            requirePurged
+              ? "SELECT storage_ref FROM worker_storage_bindings WHERE workspace_id=? AND state<>'purged'"
+              : "SELECT storage_ref FROM worker_storage_bindings WHERE workspace_id=? AND state NOT IN ('idle','purged')"
+          )
+          .pluck()
+          .all(workspaceId) as string[]
+      ).map((storageRef) => {
+        const binding = getWorkerStorageBinding({ sqlite }, { storageRef });
+        if (!binding) throw new Error('Missing storage authority.');
+        return binding;
+      });
+      const bindings = sqlite
+        .prepare(
+          'SELECT schema_version AS schemaVersion,agent_session_id AS id,thread_id AS threadId FROM agent_session_runtime_bindings WHERE workspace_id=?'
+        )
+        .all(workspaceId) as { schemaVersion: number; id: string; threadId: string }[];
+      for (const row of bindings) readRetainedV1(row, () => undefined);
+      // Core retains the liveness marker through K7. Only an exact cleaned Native tuple clears it.
+      const unproved = (
+        core.sqlite
+          .prepare(
+            "SELECT attempt_id FROM scheduler_execution_attempts WHERE workspace_id=? AND phase='closed' AND recovery_state='needs-evidence'"
+          )
+          .pluck()
+          .all(workspaceId) as string[]
+      ).some((id) => {
+        const attempt = requireSchedulerExecutionAttempt(core, id);
+        const session = getWorkerBackendSession({ sqlite }, id);
+        return (
+          !session ||
+          session.state !== 'cleaned' ||
+          session.physicalCleanedAt === null ||
+          session.workspaceId !== attempt.workspaceId ||
+          session.threadId !== attempt.threadId ||
+          session.turnId !== attempt.turnId ||
+          session.agentSessionId !== attempt.agentSessionId ||
+          session.packageSnapshotId !== attempt.inputRef
+        );
+      });
+      return { sessions, storage, bindings, unproved };
+    })()
+  );
+  if (result.state !== 'ready')
+    throw new Error('NanoHost Workspace cleanup evidence is unavailable.');
+  return result.value;
+}
+
 /** Reads the same obstruction facts for an exact selected recovery, without granting serving admission. */
 export function readWorkspaceRecoveryBlockers(
   input: Parameters<typeof readBlockers>[0],
@@ -294,21 +365,29 @@ export function readWorkspaceRecoveryBlockers(
         (row) => row.admission_id !== selected.admission?.admission_id
       ) ||
       (captureWorkerActive?.dataRoot === resolve(coreDb.dataRoot) &&
-        captureWorkerActive.workspaceId === workspaceId) ||
-      hasUnprovedNanoHostWorkspaceCleanup(coreDb, workspaceId)
+        captureWorkerActive.workspaceId === workspaceId)
     )
       return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
     // Absence is permitted only by the exact terminal deletion above. Surviving Core writers still block.
     for (const sql of [
       "SELECT 1 FROM scheduler_execution_attempts WHERE workspace_id=? AND phase<>'closed' LIMIT 1",
-      "SELECT 1 FROM worker_backend_sessions WHERE workspace_id=? AND (state<>'cleaned' OR physical_cleaned_at IS NULL) LIMIT 1",
-      "SELECT 1 FROM worker_storage_bindings WHERE workspace_id=? AND state<>'purged' LIMIT 1",
-      'SELECT 1 FROM agent_session_runtime_bindings WHERE workspace_id=? LIMIT 1',
       "SELECT 1 FROM scheduler_admission_entries WHERE workspace_id=? AND status IN ('queued','denied') LIMIT 1",
     ])
       if (coreDb.sqlite.prepare(sql).get(workspaceId))
         return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
-    return [];
+    try {
+      const native = readNativeWorkspaceObstructions(coreDb, workspaceId, true);
+      if (
+        native.unproved ||
+        native.sessions.length ||
+        native.storage.length ||
+        native.bindings.length
+      )
+        return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+      return [];
+    } catch {
+      return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+    }
   }
   const captureId = 'captureId' in selected ? selected.captureId : undefined;
   const current = readRecoveryExecution(
@@ -525,56 +604,51 @@ function readWorkspaceBlockerFacts(
         candidate.threadId
       );
     }
-    for (const id of coreIds(
-      `SELECT attempt_id FROM scheduler_execution_attempts a WHERE workspace_id=? AND (phase<>'closed' OR EXISTS (SELECT 1 FROM worker_backend_sessions b WHERE b.attempt_id=a.attempt_id AND (b.state<>'cleaned' OR b.physical_cleaned_at IS NULL)))`
-    )) {
+    const native = readNativeWorkspaceObstructions(
+      coreDb,
+      workspaceId,
+      input.operation !== undefined && input.operation !== 'capture'
+    );
+    const activeAttempts = coreIds(
+      "SELECT attempt_id FROM scheduler_execution_attempts WHERE workspace_id=? AND phase<>'closed'"
+    );
+    for (const id of new Set([
+      ...activeAttempts,
+      ...native.sessions.map(({ attemptId }) => attemptId),
+    ])) {
       const attempt = requireSchedulerExecutionAttempt(coreDb, id);
-      const session = getWorkerBackendSession(coreDb, id);
-      if (
-        attempt.phase !== 'closed' ||
-        (session && (session.state !== 'cleaned' || session.physicalCleanedAt === null))
-      )
-        add(
-          {
-            kind: 'worker-attempt',
-            reason: attempt.phase === 'closed' ? 'cleanup-unproved' : 'active-work',
-            reference: {
-              attemptId: id,
-              threadId: attempt.threadId,
-              turnId: attempt.turnId,
-              agentSessionId: attempt.agentSessionId,
-            },
-            actions:
-              attempt.phase !== 'closed' &&
-              turn(attempt.turnId) &&
-              !SEALED_TURN_TERMINALS[turn(attempt.turnId)!.status]
-                ? turnActions(attempt.threadId, attempt.turnId)
-                : [{ operationId: 'administration.cleanup-read', input: {} }],
+      add(
+        {
+          kind: 'worker-attempt',
+          reason: attempt.phase === 'closed' ? 'cleanup-unproved' : 'active-work',
+          reference: {
+            attemptId: id,
+            threadId: attempt.threadId,
+            turnId: attempt.turnId,
+            agentSessionId: attempt.agentSessionId,
           },
-          attempt.threadId
-        );
+          actions:
+            attempt.phase !== 'closed' &&
+            turn(attempt.turnId) &&
+            !SEALED_TURN_TERMINALS[turn(attempt.turnId)!.status]
+              ? turnActions(attempt.threadId, attempt.turnId)
+              : [{ operationId: 'administration.cleanup-read', input: {} }],
+        },
+        attempt.threadId
+      );
     }
-    if (
-      hasUnprovedNanoHostWorkspaceCleanup(coreDb, workspaceId) &&
-      !blockers.some((b) => b.kind === 'worker-attempt')
-    )
+    if (native.unproved && !blockers.some((blocker) => blocker.kind === 'worker-attempt'))
       unavailable = true;
-    for (const id of coreIds(
-      "SELECT attempt_id FROM worker_backend_sessions WHERE workspace_id=? AND (state<>'cleaned' OR physical_cleaned_at IS NULL)"
-    )) {
-      const session = getWorkerBackendSession(coreDb, id);
-      if (!session) throw new Error('Missing physical session authority.');
-      if (session.state !== 'cleaned' || session.physicalCleanedAt === null)
-        add(
-          {
-            kind: 'worker-residency',
-            reason: 'cleanup-unproved',
-            reference: { agentSessionId: session.agentSessionId },
-            actions: [{ operationId: 'administration.cleanup-read', input: {} }],
-          },
-          session.threadId ?? undefined
-        );
-    }
+    for (const session of native.sessions)
+      add(
+        {
+          kind: 'worker-residency',
+          reason: 'cleanup-unproved',
+          reference: { agentSessionId: session.agentSessionId },
+          actions: [{ operationId: 'administration.cleanup-read', input: {} }],
+        },
+        session.threadId ?? undefined
+      );
     for (const id of db
       .prepare(
         "SELECT id FROM control_agent_sessions WHERE workspace_id=? AND status IN ('created','initializing','busy')"
@@ -595,35 +669,17 @@ function readWorkspaceBlockerFacts(
           session.threadId ?? undefined
         );
     }
-    for (const id of coreIds(
-      input.operation === undefined || input.operation === 'capture'
-        ? "SELECT storage_ref FROM worker_storage_bindings WHERE workspace_id=? AND state NOT IN ('idle','purged')"
-        : "SELECT storage_ref FROM worker_storage_bindings WHERE workspace_id=? AND state<>'purged'"
-    )) {
-      const binding = getWorkerStorageBinding(coreDb, { storageRef: id });
-      if (!binding) throw new Error('Missing storage authority.');
-      if (
-        !['idle', 'purged'].includes(binding.state) ||
-        (input.operation !== undefined &&
-          input.operation !== 'capture' &&
-          binding.state !== 'purged')
-      )
-        add(
-          {
-            kind: 'worker-residency',
-            reason: 'cleanup-unproved',
-            reference: { storageRef: id },
-            actions: [{ operationId: 'administration.cleanup-read', input: {} }],
-          },
-          binding.currentThreadId ?? undefined
-        );
-    }
-    for (const row of coreDb.sqlite
-      .prepare(
-        'SELECT schema_version AS schemaVersion,agent_session_id AS id,thread_id AS threadId FROM agent_session_runtime_bindings WHERE workspace_id=?'
-      )
-      .all(workspaceId) as { schemaVersion: number; id: string; threadId: string }[]) {
-      readRetainedV1(row, () => undefined);
+    for (const binding of native.storage)
+      add(
+        {
+          kind: 'worker-residency',
+          reason: 'cleanup-unproved',
+          reference: { storageRef: binding.storageRef },
+          actions: [{ operationId: 'administration.cleanup-read', input: {} }],
+        },
+        binding.currentThreadId ?? undefined
+      );
+    for (const row of native.bindings) {
       add(
         {
           kind: 'worker-residency',
@@ -1295,8 +1351,30 @@ function parent(root: string) {
   }
 }
 
+/** Validates excluded NanoHost history before allowing the Workspace cut to proceed. */
+function validateNanoHostCaptureHistory(sqlite: Database.Database, workspaceId: string): void {
+  for (const id of sqlite
+    .prepare(
+      "SELECT attempt_id FROM worker_backend_sessions WHERE workspace_id=? AND state='cleaned' AND physical_cleaned_at IS NOT NULL"
+    )
+    .pluck()
+    .all(workspaceId) as string[])
+    getWorkerBackendSession({ sqlite: sqlite }, id);
+  for (const id of sqlite
+    .prepare(
+      "SELECT storage_ref FROM worker_storage_bindings WHERE workspace_id=? AND state IN ('idle','purged')"
+    )
+    .pluck()
+    .all(workspaceId) as string[])
+    getWorkerStorageBinding({ sqlite: sqlite }, { storageRef: id });
+}
+
 /** Validates inert retained history after the cut; it is not another live blocker census. */
-function validateCaptureHistory(dataRoot: string, workspaceId: string, coreRoot?: string): void {
+async function validateCaptureHistory(
+  dataRoot: string,
+  workspaceId: string,
+  coreRoot?: string
+): Promise<void> {
   // graph() already checked this private cut; no writes may intervene before this validator.
   const sqlite = new Database(join(dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite'), {
     readonly: true,
@@ -1341,20 +1419,18 @@ function validateCaptureHistory(dataRoot: string, workspaceId: string, coreRoot?
       .pluck()
       .all(workspaceId) as string[])
       requireSchedulerExecutionAttempt(core, id);
-    for (const id of coreSqlite
-      .prepare(
-        "SELECT attempt_id FROM worker_backend_sessions WHERE workspace_id=? AND state='cleaned' AND physical_cleaned_at IS NOT NULL"
-      )
-      .pluck()
-      .all(workspaceId) as string[])
-      getWorkerBackendSession(core, id);
-    for (const id of coreSqlite
-      .prepare(
-        "SELECT storage_ref FROM worker_storage_bindings WHERE workspace_id=? AND state IN ('idle','purged')"
-      )
-      .pluck()
-      .all(workspaceId) as string[])
-      getWorkerStorageBinding(core, { storageRef: id });
+    const native = await inspectServerOwnerFile(coreRoot, 'nanohost');
+    if (!native) throw new Error('Native Workspace history owner is unavailable.');
+    const nativeSqlite = await openServerOwnerReadConnection(coreRoot, 'nanohost', (identity) => {
+      if (identity !== `${native.dev}:${native.ino}`)
+        throw new Error('Native Workspace history owner changed.');
+    });
+    try {
+      assertCurrentServerOwnerConnection(nativeSqlite, 'nanohost');
+      validateNanoHostCaptureHistory(nativeSqlite, workspaceId);
+    } finally {
+      nativeSqlite.close();
+    }
     listRecoveryExecutions(core, workspaceId, 'terminal');
   } finally {
     coreSqlite.close();
@@ -2334,6 +2410,15 @@ async function captureWorkspaceBackup(
             consistency: verifiedParent.consistency,
           }
         : { kind: 'stopped-data-root' };
+    if (lock) {
+      try {
+        await withStoppedServerOwnerReadConnection(sourceRoot, 'nanohost', lock, (sqlite) =>
+          validateNanoHostCaptureHistory(sqlite, input.workspaceId)
+        );
+      } catch (error) {
+        failure(error, 'source-unavailable');
+      }
+    }
     const sourceWorkspace = join(sourceRoot, 'workspaces', input.workspaceId);
     if (!existsSync(join(sourceWorkspace, 'db/workspace.sqlite'))) refuse('workspace-unavailable');
     const output = resolve(input.bundleRoot);
@@ -2576,7 +2661,7 @@ async function captureWorkspaceBackup(
       if (copied.bytes !== entry.bytes) refuse('incomplete-closure');
     }
     const facts = graph(staging.container, input.workspaceId);
-    if (live) validateCaptureHistory(staging.container, input.workspaceId, sourceRoot);
+    if (live) await validateCaptureHistory(staging.container, input.workspaceId, sourceRoot);
     for (const { markers } of facts.formats)
       for (const [key, value] of Object.entries(markers))
         if (input.supportedDatabaseFormats[key] !== value) refuse('unsupported-format');

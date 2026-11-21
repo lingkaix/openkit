@@ -342,7 +342,7 @@ Assistant history export keeps the original trace and summary proofs. Ordinary i
 
 Default Provider configuration seeding replaces each template Vault placeholder with one independent canonical candidate before its first file publication. Existing files and their recorded references remain unchanged on later layout checks. Inactive examples carry only candidates and supply no Vault authority.
 
-The stopped Physical Epoch conversion allocates a canonical `drb` UUIDv7 before copying its external predecessor backup. Its manifest and report retain that allocation. Allocation failure preserves predecessor bytes and publishes no backup. Cold and hot backup writers admit supplied `drb` and `dep` identifiers before changing backup bytes. Run `src/storage/data-root-backup.test.ts` and `src/storage/physical-epoch-cutover.test.ts` for these boundaries.
+Cold and hot backup writers validate the supplied `drb` backup ID and `dep` deployment ID before they change backup bytes. Run `src/storage/data-root-backup.test.ts` for these checks.
 
 The deletion recovery exporter uses the existing current request/registry check from workspace-deletion-request.ts before collecting private history, then passes that internal context to the lower export writer for the same check. The context binds the original recovery owner and exact request-derived export identity; private Thread owners are preserved. Ordinary export keeps its existing administrator/audience check. No public recovery flag, new record or current membership substitute is added.
 

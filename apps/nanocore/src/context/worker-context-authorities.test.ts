@@ -8,6 +8,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -16,14 +17,16 @@ import {
   recordAgentEnvironmentPackageSnapshot,
   snapshotDigest,
 } from '../runtime/aep-snapshot-ledger.js';
+import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from '../workspace-materials.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import type { WorkerContextPackageSourceFile } from './worker-context-package.js';
@@ -69,8 +72,17 @@ describe('worker Context Package authority reader', () => {
         updatedAt: turn.startedAt!,
       });
       await store.updateTurn(turn.id, { agentSessionId: session.id });
+      const native = await openAdmittedTestNanoHost(coreDb);
+      const agentSetup = createTestAgentSetup();
+      const sqlite = new Database(serverStoragePath(dataRoot, 'nanohost'), { fileMustExist: true });
+      try {
+        admitTestNativeEnvironment({ sqlite }, agentSetup.manifest);
+      } finally {
+        sqlite.close();
+      }
       const environmentPackage = await resolveAgentEnvironmentPackage({
-        agentSetup: createTestAgentSetup(),
+        agentSetup,
+        readNanoHostEnvironment: native.value.owner.read,
         agentSessionId: session.id,
         backend: { kind: 'openshell' },
         captureCoverage: { scope: 'server', value: 'off' },

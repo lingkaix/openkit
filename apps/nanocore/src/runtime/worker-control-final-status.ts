@@ -6,6 +6,7 @@ import {
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import type { ControlWorkerFinalStatusCommand } from '../storage/worker-control-final-status-codecs.js';
 import type { ControlWorkerHeartbeatCommand } from '../storage/worker-control-heartbeat-codecs.js';
 import type {
@@ -129,11 +130,9 @@ export async function publishWorkerControlOperation(
       result.duplicate &&
       (payload.operation === 'artifact_notice' || payload.operation === 'supply_refresh_ack')
     ) {
-      record = readWorkerControlDuplicateReceipt(
-        db,
-        coordinates.lineage,
-        payload.operation,
-        payload.recordKey
+      const { operation, recordKey } = payload;
+      record = requireNanoHostObservation(db, (sqlite) =>
+        readWorkerControlDuplicateReceipt({ sqlite }, coordinates.lineage, operation, recordKey)
       );
     }
     return {
