@@ -28,6 +28,7 @@ import { controlStoreFor } from '../storage/control-store.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
+  ControlCoreIdleHarnessConsumptionInputSchema,
   ControlCoreImageResultSchema,
   ControlCoreNanoHostFinalDecisionSchema,
   ControlCoreNanoHostFinalInputSchema,
@@ -68,8 +69,10 @@ import { createVaultReference, revokeVaultReference } from '../vault/vault-refer
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { publishCoreJournal } from './core-journal-owner.js';
 import {
+  inspectCoreHarnessConsumption,
   readCoreHarnessConsumption,
   recordCoreHarnessConsumption,
+  recordCoreIdleHarnessConsumptionInDb,
 } from './core-journal-records.js';
 import {
   acceptSchedulerExecutionObservation,
@@ -2269,6 +2272,81 @@ describe('persisted execution journal contracts', () => {
     expect(() => commit(tuple, 'workspace:changed-consumer')).toThrow(
       'consumer acknowledgement replay conflicts'
     );
+  });
+
+  it('binds idle Harness consumption to its exact predecessor, Core occupancy and first clock', () => {
+    const { f, attempt } = schedulerGrantFixture();
+    const original = ControlCoreIdleHarnessConsumptionInputSchema.parse({
+      key: {
+        harnessBindingRef: 'idle-harness-binding',
+        operationId: 'b'.repeat(64),
+        sequence: 2,
+        resultFingerprint: 'a'.repeat(64),
+      },
+      consumer: {
+        workspaceId: attempt.workspaceId,
+        threadId: attempt.threadId,
+        agentSessionId: testEntityId('as', 'idle-consumption'),
+        agentSessionRuntimeBindingId: 'idle-agent-session-binding',
+      },
+      observedAt: '2026-11-20T08:00:01.000Z',
+    });
+    const { observedAt, ...verified } = original;
+    const readOriginal = vi.fn<() => typeof verified | null>(() => null);
+    const acknowledge = (input = original) =>
+      f.db.sqlite
+        .transaction(() => recordCoreIdleHarnessConsumptionInDb(f.db, input, readOriginal))
+        .immediate();
+    expect(() => acknowledge()).toThrow(
+      'Idle Harness consumption has no exact Native predecessor.'
+    );
+    expect(inspectCoreHarnessConsumption(f.db, verified.key)).toBeNull();
+    readOriginal.mockReturnValue({
+      ...verified,
+      consumer: {
+        ...verified.consumer,
+        agentSessionRuntimeBindingId: 'replaced-binding',
+      },
+    });
+    expect(() => acknowledge()).toThrow(
+      'Idle Harness consumption has no exact Native predecessor.'
+    );
+    expect(inspectCoreHarnessConsumption(f.db, verified.key)).toBeNull();
+    readOriginal.mockReturnValue(verified);
+    const accepted = acknowledge();
+    expect(accepted).toEqual({
+      state: 'applied',
+      receipt: {
+        key: verified.key,
+        consumer: canonicalJsonText(verified.consumer),
+        acknowledgedAt: observedAt,
+      },
+    });
+    f.reopen();
+    expect(acknowledge({ ...original, observedAt: '2026-11-20T08:00:02.000Z' })).toEqual({
+      state: 'inspect-original',
+      receipt: accepted.receipt,
+    });
+    const key = { ...verified.key, resultFingerprint: 'c'.repeat(64) };
+    readOriginal.mockReturnValue({ ...verified, key });
+    expect(() => acknowledge({ ...original, key })).toThrow(
+      'retained consumer acknowledgement conflicts'
+    );
+    readOriginal.mockReturnValue(verified);
+    bindSchedulerExecutionAttemptSession(f.db, {
+      attemptId: attempt.attemptId,
+      agentSessionId: verified.consumer.agentSessionId,
+    });
+    expect(() => acknowledge()).toThrow('Idle Harness consumption has a live Core attempt.');
+    markSchedulerExecutionAttemptClosing(f.db, {
+      attemptId: attempt.attemptId,
+      cause: 'turn-failed',
+    });
+    expect(() => acknowledge()).toThrow('Idle Harness consumption has a live Core attempt.');
+    expect(inspectCoreHarnessConsumption(f.db, verified.key)).toEqual({
+      consumer: accepted.receipt.consumer,
+      acknowledgedAt: observedAt,
+    });
   });
 
   it('keeps a nested unknown child immutable when the parent completes and late inspection is linked', async () => {

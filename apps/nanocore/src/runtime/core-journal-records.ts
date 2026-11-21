@@ -1,8 +1,13 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { canonicalJsonText } from '@openkit/protocol';
 import { z } from 'zod';
 import { commandInputHash } from '../storage/control-store-input.js';
-import { CoreJournalRefusal } from '../storage/core-journal-codecs.js';
+import {
+  type ControlCoreIdleHarnessConsumptionInput,
+  type CoreIdleHarnessConsumptionEvidence,
+  CoreJournalRefusal,
+} from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
@@ -139,7 +144,7 @@ function coreConsumptionExecutionId({
 }
 
 /** Reads validated Core progress without changing the original receiver result. */
-export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKey): string | null {
+export function inspectCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKey) {
   const executionId = coreConsumptionExecutionId(key);
   if (!db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id = ?').get(executionId))
     return null;
@@ -147,8 +152,11 @@ export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKe
   const root = readExecutionJournalRoot(db, execution);
   const step = readExecutionJournalInvocation(db, { execution, stepId: 'consume' });
   const consumer = step.control.authorityRefs[0];
+  const acknowledged = root.span.endTimeUnixNano;
   if (
     !consumer ||
+    acknowledged === null ||
+    acknowledged % 1_000_000n !== 0n ||
     root.definitionVersion !== CORE_HARNESS_CONSUME_EXECUTION_DEFINITION ||
     root.workId !== key.operationId ||
     root.phase !== 'closed' ||
@@ -168,7 +176,14 @@ export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKe
     })
   )
     throw new Error('NanoHost Harness retained consumer acknowledgement conflicts.');
-  return consumer;
+  return {
+    consumer,
+    acknowledgedAt: new Date(Number(acknowledged / 1_000_000n)).toISOString(),
+  };
+}
+
+export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKey): string | null {
+  return inspectCoreHarnessConsumption(db, key)?.consumer ?? null;
 }
 
 /** Commits local consumption inside the native Harness transaction, after its exact authority checks. */
@@ -216,6 +231,41 @@ export function recordCoreHarnessConsumption(
     terminalCause: null,
     exclusionRefs: [],
   });
+}
+
+/** Acknowledges the exact idle result on Core while the Native predecessor remains pinned. */
+export function recordCoreIdleHarnessConsumptionInDb(
+  db: CoreDb,
+  input: ControlCoreIdleHarnessConsumptionInput,
+  readOriginal: (
+    expected: CoreIdleHarnessConsumptionEvidence
+  ) => CoreIdleHarnessConsumptionEvidence | null
+) {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new CoreJournalRefusal('Idle Harness consumption requires the Core writer transaction.');
+  const { key, consumer, observedAt } = input;
+  const occupied = db.sqlite
+    .prepare(`SELECT 1 FROM scheduler_execution_attempts
+      WHERE agent_session_id=? AND (schema_version IS NOT 1 OR phase IS NOT 'closed') LIMIT 1`)
+    .get(consumer.agentSessionId);
+  if (occupied) throw new CoreJournalRefusal('Idle Harness consumption has a live Core attempt.');
+  const expected = { key, consumer };
+  if (!isDeepStrictEqual(readOriginal(expected), expected))
+    throw new CoreJournalRefusal('Idle Harness consumption has no exact Native predecessor.');
+
+  const original = inspectCoreHarnessConsumption(db, key);
+  const serialized = canonicalJsonText(consumer);
+  if (original) {
+    if (original.consumer !== serialized)
+      throw new CoreJournalRefusal('Idle Harness consumer acknowledgement replay conflicts.');
+    return { state: 'inspect-original', receipt: { key, ...original } } as const;
+  }
+  const now = new Date(observedAt ?? Date.now()).toISOString();
+  recordCoreHarnessConsumption(db, key, serialized, now);
+  return {
+    state: 'applied',
+    receipt: { key, consumer: serialized, acknowledgedAt: now },
+  } as const;
 }
 
 /** Settles the existing complete idle outcome plus linked consumption tuple on the deciding Core connection. */
