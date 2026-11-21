@@ -248,7 +248,7 @@ import type { NanoHostEpochPlacement } from './nanohost-epoch-invalidation.js';
 import {
   type NanoHostRuntimeTargetTransition,
   NanoHostRuntimeTargetTransitionSchema,
-} from './nanohost-epoch-invalidation-native.js';
+} from './nanohost-epoch-invalidation-codecs.js';
 import type { NanoHostEpochInvalidation, NanoHostEpochReceipt } from './nanohost-port.js';
 import {
   type ControlPrivateWorkspaceInput,
@@ -787,6 +787,31 @@ const nanoHostEpochReceipt = z.discriminatedUnion('disposition', [
   }),
 ]) satisfies z.ZodType<NanoHostEpochReceipt>;
 
+/** Build results and defaults whose writes complete in the NanoHost file. */
+export type NanoHostLocalWorkerImageInput =
+  | Extract<ControlWorkerImageInput, { kind: 'environment' }>
+  | {
+      readonly kind: 'settlement';
+      readonly value: Extract<ControlWorkerImageInput, { kind: 'settlement' }>['value'] & {
+        readonly operation: 'image.build';
+      };
+    };
+
+type BackendSessionTransition = Extract<ControlBackendSessionInput, { kind: 'transition' }>;
+
+/** Original backend tuples whose SQL writes and decisions are local to NanoHost. */
+export type NanoHostLocalBackendSessionInput =
+  | Extract<ControlBackendSessionInput, { kind: 'handoff' }>
+  | (BackendSessionTransition & {
+      readonly toState: Exclude<BackendSessionTransition['toState'], 'launching'>;
+    });
+
+/** Original storage tuples after the caller's governing decision. */
+export type NanoHostLocalWorkerStorageInput = Exclude<
+  ControlWorkerStorageInput,
+  { kind: 'purge-pending' }
+>;
+
 const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('transport'), input: ControlNanoHostTransportInputSchema }),
   z.strictObject({
@@ -796,6 +821,27 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('begin-retirement'), input: nanoHostEpochPlacement }),
   z.strictObject({ kind: z.literal('stage-invalidation'), input: nanoHostEpochIntent }),
   z.strictObject({ kind: z.literal('settle-invalidation'), input: nanoHostEpochReceipt }),
+  z.strictObject({
+    kind: z.literal('harness-lifecycle'),
+    input: ControlHarnessLifecycleInputSchema.nanoHostLocal,
+  }),
+  z.strictObject({
+    kind: z.literal('worker-image'),
+    input: ControlWorkerImageInputSchema.refine(
+      (input) => input.kind === 'environment' || input.value.operation === 'image.build'
+    ),
+  }),
+  z.strictObject({
+    kind: z.literal('backend-session'),
+    input: ControlBackendSessionInputSchema.refine(
+      (input) =>
+        input.kind === 'handoff' || (input.kind === 'transition' && input.toState !== 'launching')
+    ),
+  }),
+  z.strictObject({
+    kind: z.literal('worker-storage-binding'),
+    input: ControlWorkerStorageInputSchema.refine((input) => input.kind !== 'purge-pending'),
+  }),
 ]);
 
 /** Original local tuples posted only on a specific acknowledged NanoHost opening. */
@@ -804,7 +850,14 @@ export type NanoHostOwnerMutation =
   | { readonly kind: 'runtime-target'; readonly input: NanoHostRuntimeTargetTransition }
   | { readonly kind: 'begin-retirement'; readonly input: NanoHostEpochPlacement }
   | { readonly kind: 'stage-invalidation'; readonly input: NanoHostEpochInvalidation }
-  | { readonly kind: 'settle-invalidation'; readonly input: NanoHostEpochReceipt };
+  | { readonly kind: 'settle-invalidation'; readonly input: NanoHostEpochReceipt }
+  | {
+      readonly kind: 'harness-lifecycle';
+      readonly input: z.output<typeof ControlHarnessLifecycleInputSchema.nanoHostLocal>;
+    }
+  | { readonly kind: 'worker-image'; readonly input: NanoHostLocalWorkerImageInput }
+  | { readonly kind: 'backend-session'; readonly input: NanoHostLocalBackendSessionInput }
+  | { readonly kind: 'worker-storage-binding'; readonly input: NanoHostLocalWorkerStorageInput };
 
 const nanoHostTargetResultSchema = z.discriminatedUnion('state', [
   z.strictObject({ state: z.literal('ready'), value: ControlRuntimeTargetResultSchema }),
@@ -829,14 +882,32 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('begin-retirement'), value: z.null() }),
   z.strictObject({ kind: z.literal('stage-invalidation'), value: z.null() }),
   z.strictObject({ kind: z.literal('settle-invalidation'), value: z.null() }),
+  z.strictObject({ kind: z.literal('harness-lifecycle'), value: z.null() }),
+  z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),
+  z.strictObject({ kind: z.literal('backend-session'), value: ControlBackendSessionResultSchema }),
+  z.strictObject({
+    kind: z.literal('worker-storage-binding'),
+    value: ControlWorkerStorageResultSchema,
+  }),
 ]);
 
 /** Correlates the original tuple's local result with the covering FULL acknowledgement. */
-export type NanoHostOwnerMutationResult = z.infer<typeof nanoHostOwnerResultSchema>;
+export type NanoHostOwnerMutationResult =
+  | Exclude<z.infer<typeof nanoHostOwnerResultSchema>, { kind: 'worker-storage-binding' }>
+  | {
+      readonly kind: 'worker-storage-binding';
+      readonly value: import('../runtime/worker-storage-binding-records.js').WorkerStorageBinding;
+    };
 
-const nanoHostOwnerRefusalSchema = ControlRuntimeTargetRefusalSchema.extend({
-  operation: z.literal('nanohost-owner'),
-});
+const nanoHostOwnerOperation = { operation: z.literal('nanohost-owner') };
+/** Existing domain refusals on the captured NanoHost wire operation. */
+export const NanoHostOwnerRefusalSchema = z.union([
+  ControlRuntimeTargetRefusalSchema.extend(nanoHostOwnerOperation),
+  ControlHarnessLifecycleRefusalSchema.extend(nanoHostOwnerOperation),
+  ControlWorkerImageRefusalSchema.extend(nanoHostOwnerOperation),
+  ControlBackendSessionRefusalSchema.extend(nanoHostOwnerOperation),
+  ControlWorkerStorageRefusalSchema.extend(nanoHostOwnerOperation),
+]);
 
 /**
  * Trusted internal database-worker requests.
@@ -1266,7 +1337,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlCoreJournalRefusalSchema>
   | z.infer<typeof ControlWorkerImageRefusalSchema>
   | z.infer<typeof ControlRuntimeTargetRefusalSchema>
-  | z.infer<typeof nanoHostOwnerRefusalSchema>
+  | z.infer<typeof NanoHostOwnerRefusalSchema>
   | z.infer<typeof ControlBackendSessionRefusalSchema>
   | z.infer<typeof ControlHarnessLifecycleRefusalSchema>
   | z.infer<typeof ControlRecoveryTargetRegistrationRefusalSchema>
@@ -1765,7 +1836,7 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
   if (isRecord(value) && value.operation === 'worker-image')
     return ControlWorkerImageRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'nanohost-owner')
-    return nanoHostOwnerRefusalSchema.safeParse(value).success;
+    return NanoHostOwnerRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'runtime-target')
     return ControlRuntimeTargetRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'backend-session')
