@@ -3321,7 +3321,7 @@ class ControlStoreWorkerClient {
           mutation.kind === 'harness-lifecycle' ||
           mutation.kind === 'harness-turn-lifecycle' ||
           mutation.kind === 'recovery-classification' ||
-          (mutation.kind === 'worker-image' && mutation.input.kind === 'environment') ||
+          mutation.kind === 'worker-image' ||
           (mutation.kind === 'worker-storage-binding' && verifyStorageAttachment)
             ? 'target-stable-write'
             : true;
