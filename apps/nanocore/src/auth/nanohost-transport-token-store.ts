@@ -240,9 +240,15 @@ export async function createNanoHostTransportTokenRecord(
   return { record, secret, tokenId };
 }
 
+/** The original identity and first-token tuple, with only the credential hash. */
+export type NanoHostTransportEnrollment = Extract<
+  ControlNanoHostTransportInput,
+  { kind: 'enroll' }
+>;
+
 /** Shared enrollment submission; its caller has already distinguished native-open failure. */
 export async function submitNanoHostTransportEnrollment(
-  writer: PreparedNanoHostTransportWriter,
+  writer: { submit(input: NanoHostTransportEnrollment): Promise<ControlNanoHostTransportResult> },
   input: EnrollNanoHostTransportIdentityInput,
   actor?: Actor
 ): Promise<NanoHostTransportTokenIssueResult> {

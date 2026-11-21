@@ -871,6 +871,7 @@ const app = createApp({
   mode,
   nanoHostSessionDispatch,
   nanoHostStorage,
+  enableNanoHostEnrollment: true,
   nanohostTransportSessionAuthority,
   runtimeConfigManager,
   providerSubscriptionAccountManager,

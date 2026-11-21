@@ -401,7 +401,7 @@ async function killProcess(process: ChildProcessWithoutNullStreams): Promise<voi
 /**
  * Finds an available localhost TCP port.
  */
-async function findOpenPort(): Promise<number> {
+export async function findOpenPort(): Promise<number> {
   const { createServer } = await import('node:net');
 
   return await new Promise((resolvePort, reject) => {

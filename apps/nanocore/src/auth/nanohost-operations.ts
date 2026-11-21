@@ -27,6 +27,7 @@ import {
 } from './access-token-store.js';
 import type { Actor } from './identity.js';
 import {
+  type ControlNanoHostTransportResult,
   NANOHOST_TRANSPORT_ADMIN_REFUSAL,
   nanoHostTransportAdminFacts,
 } from './nanohost-transport-codecs.js';
@@ -47,10 +48,10 @@ import {
 } from './nanohost-transport-token.js';
 import {
   createNanoHostTransportTokenRecord,
-  type enrollNanoHostTransportIdentity,
   getNanoHostTransportTokenRecord,
   isNanoHostTransportIdentityActive,
   listNanoHostTransportTokenRecords,
+  type NanoHostTransportEnrollment,
   type NanoHostTransportTokenRecord,
   nanoHostTransportCommitState,
   prepareNanoHostTransportWriter,
@@ -61,6 +62,15 @@ import {
   submitNanoHostTransportEnrollment,
   submitNanoHostTransportRevocation,
 } from './nanohost-transport-token-store.js';
+
+/**
+ * Commits the exact enrollment tuple on the selected Native opening after a
+ * decisive Core administrator recheck ordered against issuance. A refusal
+ * carries the original Worker commit certainty.
+ */
+export type NanoHostAdministratorEnroll = (
+  input: NanoHostTransportEnrollment & { readonly actor: Actor }
+) => Promise<Extract<ControlNanoHostTransportResult, { kind: 'record' }>>;
 
 /** The worker orders staged Native revocation against the current Core administrator.
  * Its acknowledgement is for the exact original Native outcome, with the original Audit stage
@@ -260,6 +270,7 @@ export function createNanoHostOperationImplementations({
   nanoHostConfig,
   sessionAuthority,
   readNanoHostTarget,
+  nanoHostEnrollment,
 }: {
   readonly coreDb: CoreDb | undefined;
   readonly mode: CoreMode;
@@ -267,21 +278,25 @@ export function createNanoHostOperationImplementations({
     Partial<OpenKitNanoHostConfig>;
   readonly sessionAuthority?: NanoHostTransportSessionAuthority;
   readonly readNanoHostTarget?: NanoHostCoreReads['readTarget'];
+  readonly nanoHostEnrollment?: {
+    readonly storage: StorageResult<'nanohost', AdmittedNanoHostTransportStorage>;
+    readonly commitEnroll: NanoHostAdministratorEnroll;
+  };
 }) {
-  /** Preserves the domain's server-mode and storage availability boundary after primary admission. */
-  function requireNanoHostEnvironment(): void {
+  /** Preserves the server-mode boundary after primary admission. */
+  function requireNanoHostServerMode(): void {
     if (mode !== 'server')
       failure(
         'NanoHost transport administration is only available in server mode.',
         'nanohost_transport_admin_server_mode_required',
         404
       );
-    if (readNanoHostTarget || !coreDb)
-      failure(
-        'NanoHost transport token storage is unavailable.',
-        'nanohost_transport_storage_unavailable',
-        503
-      );
+  }
+
+  /** Holds the other administrator mutations until their deciding writers are joined. */
+  function requireNanoHostEnvironment(): void {
+    requireNanoHostServerMode();
+    if (readNanoHostTarget || nanoHostEnrollment || !coreDb) unavailableNanoHostTransportStorage();
   }
 
   /** Returns the configured NanoHost deployment or a fail-closed response. */
@@ -421,20 +436,26 @@ export function createNanoHostOperationImplementations({
 
   return {
     'nanohost.enroll': async (input, context) => {
-      const actor = context.actorRef;
-      requireNanoHostEnvironment();
+      requireNanoHostServerMode();
+      if (!coreDb || !nanoHostEnrollment || nanoHostEnrollment.storage.state !== 'ready')
+        return unavailableNanoHostTransportStorage();
 
+      const { storage, commitEnroll } = nanoHostEnrollment;
       const config = requireNanoHostConfig();
-      if (isNanoHostTransportIdentityActive(coreDb!, config.identityId, config.deploymentId)) {
+      const existingIdentity = storage.value.owner.read((sqlite) =>
+        isNanoHostTransportIdentityActive({ sqlite }, config.identityId, config.deploymentId)
+      );
+      if (existingIdentity.state !== 'ready') return unavailableNanoHostTransportStorage();
+      if (existingIdentity.value)
         return failure(
           'Configured NanoHost identity is already enrolled.',
           'nanohost_already_enrolled',
           409
         );
-      }
 
       try {
-        const actorUserId = actor.id;
+        const actorUserId = context.actorRef.id;
+        const requestActor = nanoHostTransportAdminFacts(publicOperationActor(context));
         const tokenId = allocateEntityId('nhtok');
         const secret = createOpenKitAccessTokenSecret();
         const sink = configuredSink(config, input.targetSlot);
@@ -448,22 +469,21 @@ export function createNanoHostOperationImplementations({
           tokenId,
           writeDisposition: 'exclusive-create',
         });
-        const requestActor = { ...publicOperationActor(context) };
-        let writer: Awaited<ReturnType<typeof prepareNanoHostTransportWriter>>;
+
         try {
-          writer = await prepareNanoHostTransportWriter(coreDb!);
           await context.recheckAdmission?.();
-          requireCurrentDeploymentAdmin(coreDb!, requestActor);
+          requireCurrentDeploymentAdmin(coreDb, requestActor);
           if (readNanoHostCredentialSlotTokenId(sink) !== tokenId)
             throw new Error('NanoHost enrollment slot changed before persistence.');
         } catch (error) {
           clearExactOwnedNanoHostCredentialSlot(sink, tokenId);
           throw error;
         }
-        let issued: Awaited<ReturnType<typeof enrollNanoHostTransportIdentity>>;
+
+        let issued: Awaited<ReturnType<typeof submitNanoHostTransportEnrollment>>;
         try {
           issued = await submitNanoHostTransportEnrollment(
-            writer,
+            { submit: (command) => commitEnroll({ ...command, actor: requestActor }) },
             {
               deploymentId: config.deploymentId,
               expiresAt: input.expiresAt,
@@ -471,8 +491,7 @@ export function createNanoHostOperationImplementations({
               responsibleServerAdminActorId: actorUserId,
               secret,
               tokenId,
-            },
-            requestActor
+            }
           );
         } catch (error) {
           // Only this credential stage's definite rollback proves that delivery is residue.
@@ -480,11 +499,22 @@ export function createNanoHostOperationImplementations({
             clearExactOwnedNanoHostCredentialSlot(sink, tokenId);
           throw error;
         }
+        const { record } = issued;
+        if (
+          record.tokenId !== tokenId ||
+          record.deploymentId !== config.deploymentId ||
+          record.ownerNanoHostIdentityId !== config.identityId ||
+          record.responsibleServerAdminActorId !== actorUserId ||
+          record.expiresAt !== input.expiresAt ||
+          record.predecessorTokenId !== null ||
+          record.status !== 'active'
+        )
+          return unavailableNanoHostTransportStorage();
 
         await recordNanoHostTransportLifecycleAuditEvent(
-          coreDb!,
+          coreDb,
           'nanohost.transport.enroll',
-          issued.record,
+          record,
           actorUserId
         );
 
@@ -492,7 +522,7 @@ export function createNanoHostOperationImplementations({
           credentialRef: config.credentialRef,
           deploymentId: config.deploymentId,
           identityId: config.identityId,
-          record: issued.record,
+          record,
           slotResult,
           targetSlot: input.targetSlot,
         });
@@ -770,6 +800,14 @@ export function createNanoHostOperationImplementations({
 /** Throws the same owned failure without an HTTP response or a transport dependency. */
 function failure(message: string, code: string, status: number): never {
   throw new OperationError(code, message, status);
+}
+
+function unavailableNanoHostTransportStorage(): never {
+  return failure(
+    'NanoHost transport token storage is unavailable.',
+    'nanohost_transport_storage_unavailable',
+    503
+  );
 }
 
 /** Preserves the existing public administrator refusal after new waits and the original operation failures. */

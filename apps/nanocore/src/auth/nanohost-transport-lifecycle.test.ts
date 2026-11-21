@@ -3,16 +3,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import { createOpenKitAccessTokenSecret, hashOpenKitAccessTokenSecret } from './access-token.js';
+import { requireCurrentDeploymentAdmin } from './access-token-store.js';
 import { createCommunicationCredentialOperationImplementations } from './credential-operations.js';
 import {
   createNanoHostOperationImplementations,
+  type NanoHostAdministratorEnroll,
   revokeAdmittedNanoHostInboundCredential,
 } from './nanohost-operations.js';
 import { admitNativeNanoHostTransportConnection } from './nanohost-transport-admission.js';
@@ -28,6 +34,7 @@ import {
   createNanoHostTransportTokenRecord,
   enrollNanoHostTransportIdentity,
   getNanoHostTransportTokenRecord,
+  isNanoHostTransportIdentityActive,
   prepareNanoHostTransportWriter,
   revokeNanoHostTransportTokenRecord,
   rotateNanoHostTransportTokenRecord,
@@ -153,6 +160,122 @@ function slotHoldsUsableMaterial(sink: { companionPath: string; secretPath: stri
 function usableSlotCount(slots: ReturnType<typeof slotPair>): number {
   return [slots.A, slots.B].filter(slotHoldsUsableMaterial).length;
 }
+
+it.each(['committed', 'not-committed', 'unknown'] as const)(
+  'enrolls the first named-slot credential with split RuntimeTarget and transport storage (%s)',
+  async (acknowledgement) => {
+    const coreDb = openMigratedCoreDb();
+    const admitted = await openAdmittedTestNanoHost(coreDb);
+    const storage = admitted.value;
+    const userId = ensureLocalUser(coreDb);
+    const slots = slotPair();
+    onTestFinished(() => rmSync(slots.root, { recursive: true, force: true }));
+    const expiresAt = '2030-08-08T01:00:00.000Z';
+    const sink = slots.A;
+    let rechecks = 0;
+    let submissions = 0;
+    // The fixture composes the real Core check and Native mutation. Production orders them in A2's Worker.
+    const commitEnroll: NanoHostAdministratorEnroll = async ({ actor, ...command }) => {
+      expect(rechecks).toBe(1);
+      requireCurrentDeploymentAdmin(coreDb, actor);
+      expect(actor.userId).toBe(userId);
+      expect(command.record.responsibleServerAdminActorId).toBe(userId);
+      expect(command.record.tokenHash).toBe(
+        hashOpenKitAccessTokenSecret(readFileSync(sink.secretPath, 'utf8'))
+      );
+      submissions += 1;
+      if (acknowledgement === 'not-committed')
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      const result = await storage.owner.transport(command);
+      if (result.kind !== 'record') throw new Error('Missing Native enrollment acknowledgement.');
+      if (acknowledgement === 'unknown')
+        throw new ControlStoreWorkerError('unavailable', 'unknown');
+      return result;
+    };
+    const operations = createNanoHostOperationImplementations({
+      coreDb,
+      mode: 'server',
+      nanoHostConfig: {
+        identityId: IDENTITY,
+        deploymentId: DEPLOYMENT,
+        credentialRef: 'fixture-nanohost-credential',
+        credentialSlots: slots,
+      },
+      readNanoHostTarget: (id) =>
+        storage.owner.read((sqlite) => getNanoHostRuntimeTarget({ sqlite }, id)),
+      nanoHostEnrollment: { storage: admitted, commitEnroll },
+    });
+    const context = {
+      kind: 'public',
+      actor: { kind: 'local', userId },
+      actorRef: { kind: 'user', id: userId },
+      scope: { kind: 'server' },
+      recheckAdmission: async () => {
+        rechecks += 1;
+      },
+    } as const;
+    const auditCount = () =>
+      coreDb.sqlite
+        .prepare(
+          "SELECT COUNT(*) FROM audit_events WHERE action = 'nanohost.transport.enroll' AND outcome = 'succeeded'"
+        )
+        .pluck()
+        .get();
+    const pending = operations['nanohost.enroll']({ expiresAt, targetSlot: 'A' }, context);
+    if (acknowledgement !== 'committed') {
+      await expect(pending).rejects.toMatchObject({ code: 'nanohost_enroll_failed' });
+      const retained = acknowledgement === 'unknown';
+      expect(submissions).toBe(1);
+      expect(existsSync(sink.secretPath)).toBe(retained);
+      expect(existsSync(sink.companionPath)).toBe(retained);
+      expect(
+        storage.owner.read((sqlite) =>
+          isNanoHostTransportIdentityActive({ sqlite }, IDENTITY, DEPLOYMENT)
+        )
+      ).toEqual({ state: 'ready', value: retained });
+      expect(auditCount()).toBe(0);
+      return;
+    }
+    const response = await pending;
+    expect(submissions).toBe(1);
+    expect(response.slotResult).toEqual({ slot: 'A', status: 'written', issuanceGeneration: 1 });
+    expect(response.record).toMatchObject({
+      ownerNanoHostIdentityId: IDENTITY,
+      deploymentId: DEPLOYMENT,
+      status: 'active',
+      predecessorTokenId: null,
+    });
+    const secret = readFileSync(sink.secretPath, 'utf8');
+    expect(JSON.stringify(response).includes(secret)).toBe(false);
+    expect(readFileSync(sink.companionPath, 'utf8')).toContain(
+      `token_id=${response.record.tokenId}\n`
+    );
+    expect(existsSync(slots.B.secretPath)).toBe(false);
+    expect(existsSync(slots.B.companionPath)).toBe(false);
+    expect(
+      storage.owner.read((sqlite) => ({
+        identity: isNanoHostTransportIdentityActive({ sqlite }, IDENTITY, DEPLOYMENT),
+        record: getNanoHostTransportTokenRecord({ sqlite }, response.record.tokenId),
+      }))
+    ).toEqual({ state: 'ready', value: { identity: true, record: response.record } });
+    expect(
+      coreDb.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_schema WHERE name IN ('nanohost_integration_identities', 'nanohost_transport_tokens')"
+        )
+        .all()
+    ).toEqual([]);
+    expect(auditCount()).toBe(1);
+    await expect(
+      operations['nanohost.token-issue']({ expiresAt, targetSlot: 'B' }, context)
+    ).rejects.toMatchObject({ code: 'nanohost_transport_storage_unavailable', status: 503 });
+    await expect(
+      operations['nanohost.enroll']({ expiresAt, targetSlot: 'B' }, context)
+    ).rejects.toMatchObject({ code: 'nanohost_already_enrolled', status: 409 });
+    expect(submissions).toBe(1);
+    expect(existsSync(slots.B.secretPath)).toBe(false);
+  }
+);
 
 describe('NanoHost transport lifecycle (WP-2b R3)', () => {
   it('rotation_abort_clears_successor_and_keeps_predecessor_usable', async () => {
