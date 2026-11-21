@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import {
@@ -32,11 +32,20 @@ it.each(['absent', 'empty'] as const)(
     const marker = await readFile(markerPath);
     if (fault === 'absent') await rm(database);
     else await writeFile(database, '');
+    const databaseFiles = (await readdir(dirname(database))).sort();
     await expect(
-      startNanoCoreHarness({ coreMode: 'server', dataRoot, seedDemoWorkspace: false })
-    ).rejects.toThrow(/Core database is missing/);
+      startNanoCoreHarness({ coreMode: 'server', dataRoot, seedDemoWorkspace: false }).then(
+        (unexpectedlyStarted) => {
+          harness = unexpectedlyStarted;
+          return unexpectedlyStarted;
+        }
+      )
+    ).rejects.toThrow(
+      /NanoCore exited before health check passed: [1-9][\s\S]*NanoCore boot failed during critical phase "data-root-admission": [^\n]*Follow the v0\.2\.0 Storage Reinstall procedure in docs\/cookbooks\/persistent-live-acceptance\.md#v020-storage-reinstall\./
+    );
     if (fault === 'absent') await expect(lstat(database)).rejects.toMatchObject({ code: 'ENOENT' });
     else expect(await readFile(database)).toEqual(Buffer.alloc(0));
+    expect((await readdir(dirname(database))).sort()).toEqual(databaseFiles);
     expect(await readFile(markerPath)).toEqual(marker);
   }
 );

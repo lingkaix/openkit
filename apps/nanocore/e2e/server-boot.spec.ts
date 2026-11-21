@@ -186,7 +186,7 @@ describe('nanocore e2e server boot', () => {
         return unexpectedlyStarted;
       })
     ).rejects.toThrow(
-      /NanoCore exited before health check passed: [1-9][\s\S]*data-root-admission[^\n]*file is not a database[^\n]*v0\.2\.0 Storage Reinstall/
+      /NanoCore exited before health check passed: [1-9][\s\S]*NanoCore boot failed during critical phase "data-root-admission": [^\n]*Follow the v0\.2\.0 Storage Reinstall procedure in docs\/cookbooks\/persistent-live-acceptance\.md#v020-storage-reinstall\./
     );
     await expect(fetch(`${baseUrl}/api/health`)).rejects.toThrow();
     expect(await readFile(databasePath)).toEqual(corruptBytes);
