@@ -397,14 +397,14 @@
           operation: request.operation,
           publicOrdinal: publicContext.getStore() ?? null,
         };
-        // One closed event-type discriminant identifies the real shutdown Audit. No
+        // One closed Audit action identifies the real shutdown Audit. No
         // Audit JSON, SQL, body, credential, content buffer or result is inspected.
         if (
           request.operation === 'boot-audit' &&
           request.input &&
-          ['boot.start', 'boot.outcome', 'boot.shutdown'].includes(request.input.eventType)
+          ['boot.start', 'boot.outcome', 'boot.shutdown'].includes(request.input.action)
         )
-          original.auditPhase = request.input.eventType;
+          original.auditPhase = request.input.action;
         original.requestSeq = emit({ kind: 'native-request', ...original });
         pending.set(key, original);
       }

@@ -97,7 +97,13 @@ export function createAdministrationConfigurationTools(
       name: 'administration.configuration.propose',
       description:
         'Publish an immutable registered Provider, Gateway, Policy or finite Worker Git-read candidate. Include the exact failed Turn for a Worker correction. This Tool never writes configuration.',
-      inputSchema: z.toJSONSchema(ProposeAdministrationConfigurationRequestSchema),
+      inputSchema: z.toJSONSchema(ProposeAdministrationConfigurationRequestSchema, {
+        override: ({ jsonSchema }) => {
+          // A string constant already constrains the type. Omit the redundant assertion in the model Tool.
+          if (jsonSchema.type === 'string' && typeof jsonSchema.const === 'string')
+            delete jsonSchema.type;
+        },
+      }),
       execute: async (value) => catalogResult(() => catalog.propose(value)),
     },
     {
