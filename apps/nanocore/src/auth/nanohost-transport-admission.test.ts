@@ -70,6 +70,7 @@ describe('NanoHost transport production admission', () => {
     const owner = {
       read: vi.fn(() => unavailable),
       transport: vi.fn(),
+      harnessLifecycle: vi.fn(),
       transitionRuntimeTarget: vi.fn(),
     };
     const kernel = {
