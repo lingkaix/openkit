@@ -6,17 +6,17 @@ import { expect, it, onTestFinished } from 'vitest';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
 import { resolvePublicNativeEnvironment } from '../runtime/native-environment.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { readAdmittedTestNanoHost } from './admitted-nanohost.js';
-import { createTestAgentSetup } from './agent-environment.js';
-import { recordTestExecutionAttempt } from './execution-attempt.js';
-import { ensureLocalUser } from './local-user.js';
+import { readAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
-} from './native-environment.js';
-import { schedulerFixtureInput } from './scheduler-admissions.js';
-import { createTestCoreDb, disposeTestStore } from './store.js';
+} from '../test-support/native-environment.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
 it('seeds Native image defaults and target evidence on the admitted owner', async () => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-test-native-owner-'));

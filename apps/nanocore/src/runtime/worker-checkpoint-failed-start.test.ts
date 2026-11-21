@@ -16,12 +16,22 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+  seedAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -153,11 +163,13 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   const setup = createTestAgentSetup({
     requiredCapabilities: provenance ? ['worker.runtime-provenance.v1'] : [],
   });
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const app = createApp({
     coreDb,
     dataRoot,
     store,
     turnExecutor: executor,
+    nanoHostStorage,
     agentManifests: [setup.manifest],
     openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
   });
@@ -183,7 +195,26 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   expect(accepted.status, await accepted.clone().text()).toBe(202);
   const body = await accepted.json();
   const turnId = body.turn.id as string;
-  await materialized.promise;
+  const refusedBeforeMaterialization = Promise.withResolvers<never>();
+  const observe = () => {
+    const current = store.getTurnById(turnId);
+    if (['failed', 'interrupted', 'cancelled'].includes(current.status))
+      refusedBeforeMaterialization.reject(
+        new Error(
+          `Turn ended before the fixture materializer ran: ${JSON.stringify(current.error)}`
+        )
+      );
+  };
+  const unsubscribe = store.addTurnListener(turnId, observe);
+  try {
+    observe();
+    await Promise.race([materialized.promise, refusedBeforeMaterialization.promise]);
+  } catch (error) {
+    fail.resolve();
+    throw error;
+  } finally {
+    unsubscribe();
+  }
   const publicationDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   // This late journal write follows all local terminal products inside the same native transaction.
   const removeRefusal = refuseNativeWrite(
@@ -257,9 +288,13 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     outcomeRef: null,
     fenceRef: null,
   });
-  const anchor = getWorkerBackendSession(coreDb, attempt.attemptId)!;
+  const anchor = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    getWorkerBackendSession({ sqlite }, attempt.attemptId)
+  )!;
   for (const state of ['cleanup-pending', 'physical-cleaned', 'cleaned'] as const) {
-    const current = getWorkerBackendSession(coreDb, attempt.attemptId)!;
+    const current = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, attempt.attemptId)
+    )!;
     if (current.state !== state)
       await transitionWorkerBackendSessionState(coreDb, {
         attemptId: attempt.attemptId,
@@ -267,12 +302,17 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
         toState: state,
       });
   }
-  expect(getWorkerBackendSession(coreDb, attempt.attemptId)!.workspaceHandoffState).toBe('pending');
+  expect(
+    readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, attempt.attemptId)
+    )!.workspaceHandoffState
+  ).toBe('pending');
   expect(store.getTurnById(turnId).status).toBe('running');
   expect(store.getAgentSession(attempt.agentSessionId!).status).toBe('created');
   await shutdownControlStoreWorkerClient();
   coreDb.sqlite.close();
   coreDb = openCoreDb(dataRoot);
+  await reopenAdmittedTestNanoHost(coreDb);
   store = new FsStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   const checkpoint = getWorkerCheckpoint(
@@ -537,7 +577,9 @@ describe('checkpoint-owned never-submitted failed start', () => {
         });
         const owners = JSON.stringify({
           attempt: f.coreDb.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').all(),
-          anchor: f.coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions').all(),
+          anchor: readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite.prepare('SELECT * FROM worker_backend_sessions').all()
+          ),
           package: readFileSync(
             join(
               dirname(dirname(f.workspaceDb.sqlite.name)),
@@ -581,7 +623,9 @@ describe('checkpoint-owned never-submitted failed start', () => {
         expect(
           JSON.stringify({
             attempt: f.coreDb.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').all(),
-            anchor: f.coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions').all(),
+            anchor: readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              sqlite.prepare('SELECT * FROM worker_backend_sessions').all()
+            ),
             package: readFileSync(
               join(
                 dirname(dirname(f.workspaceDb.sqlite.name)),
@@ -903,12 +947,6 @@ describe('checkpoint-owned never-submitted failed start', () => {
           reconnecting: ['phase', 'open'],
           unknown: ['disposition', 'unknown'],
           closing: ['phase', 'closing'],
-          heartbeat: ['last_accepted_heartbeat_at', '2026-10-09T00:00:00.000Z'],
-          sequence: ['last_worker_sequence', 1],
-          process: ['worker_process_key_hash', 'a'.repeat(64)],
-          'control-token': ['worker_control_token_hash', 'a'.repeat(64)],
-          'inference-token': ['worker_inference_token_hash', 'a'.repeat(64)],
-          'capability-token': ['worker_capability_token_hash', 'a'.repeat(64)],
           operation: ['operation_id', 'original-operation'],
           deadline: ['deadline', '2026-10-09T00:00:00.000Z'],
           outcome: ['outcome_ref', 'unproved'],
@@ -921,12 +959,31 @@ describe('checkpoint-owned never-submitted failed start', () => {
               `UPDATE scheduler_execution_attempts SET ${column[0]} = ? WHERE attempt_id = ?`
             )
             .run(column[1], attemptId);
-        if (gap === 'reconnecting')
-          sql
-            .prepare(
-              "UPDATE scheduler_execution_attempts SET recovery_state = 'awaiting-reconnect' WHERE attempt_id = ?"
-            )
-            .run(attemptId);
+        const livenessFaults: Partial<Record<typeof gap, [string, string | number]>> = {
+          heartbeat: ['lastAcceptedHeartbeatAt', '2026-10-09T00:00:00.000Z'],
+          sequence: ['lastWorkerSequence', 1],
+          process: ['workerProcessKeyHash', 'a'.repeat(64)],
+          reconnecting: ['recoveryState', 'awaiting-reconnect'],
+        };
+        const routeFaults: Partial<Record<typeof gap, string>> = {
+          'control-token': 'control',
+          'inference-token': 'inference',
+          'capability-token': 'capability',
+        };
+        const liveness = livenessFaults[gap];
+        const route = routeFaults[gap];
+        // The existing cleaned anchor carries any contradictory evidence for this never-submitted attempt.
+        if (liveness || route)
+          mutateAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            const field = liveness ? 'worker_recovery_json' : 'worker_route_binding_json';
+            const [key, value] = liveness ?? [route, 'a'.repeat(64)];
+            const change = sqlite
+              .prepare(`UPDATE worker_backend_sessions
+                SET ${field} = json_set(COALESCE(${field}, '{"version":1}'), ?, ?)
+                WHERE attempt_id = ?`)
+              .run(`$.${key}`, value, attemptId);
+            if (change.changes !== 1) throw new Error('Fixture requires its exact Native anchor.');
+          });
         if (gap === 'later' || gap === 'later-busy-equal-time') {
           const row = sql
             .prepare('SELECT * FROM scheduler_execution_attempts WHERE attempt_id = ?')
@@ -949,8 +1006,11 @@ describe('checkpoint-owned never-submitted failed start', () => {
             .run(...Object.values(row));
         }
         if (gap === 'binding') {
-          const anchor = getWorkerBackendSession(f.coreDb, attemptId)!;
-          await createNanoHostHarnessRuntime(f.coreDb, {
+          const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, attemptId)
+          )!;
+          const { value: nativeStorage } = await openAdmittedTestNanoHost(f.coreDb);
+          await createNanoHostHarnessRuntime(nativeStorage.owner, {
             adapterId: 'codex',
             adapterVersion: 'test',
             harnessBindingRef: 'harness-binding',
@@ -965,17 +1025,19 @@ describe('checkpoint-owned never-submitted failed start', () => {
             runtimeTargetId: anchor.runtimeTargetId,
             timestamp: f.attempt.createdAt,
           });
-          sql
-            .prepare(`INSERT INTO agent_session_runtime_bindings
+          await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            sqlite
+              .prepare(`INSERT INTO agent_session_runtime_bindings
         (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id, agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
         VALUES ('pending-binding', 'harness', ?, 'ws_00000000-0000-7000-8000-000000000001', ?, 'key', 1, 'pending', 'open', 1, 'clean', ?, ?, ?)`)
-            .run(
-              f.attempt.agentSessionId,
-              f.checkpoint.threadId,
-              f.attempt.createdAt,
-              f.attempt.createdAt,
-              `sha256:${'a'.repeat(64)}`
-            );
+              .run(
+                f.attempt.agentSessionId,
+                f.checkpoint.threadId,
+                f.attempt.createdAt,
+                f.attempt.createdAt,
+                `sha256:${'a'.repeat(64)}`
+              );
+          });
         }
         if (gap === 'native-handle')
           await f.store.updateAgentSession(f.attempt.agentSessionId!, {
@@ -1074,18 +1136,20 @@ describe('checkpoint-owned never-submitted failed start', () => {
           );
         }
         if (gap === 'accepted-final')
-          sql
-            .prepare(
-              `INSERT INTO worker_control_records (workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id, operation, record_key, record_json, accepted_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, ?, ?, ?, ?, 'final_status', 'original-final', '{}', ?)`
-            )
-            .run(
-              f.checkpoint.threadId,
-              f.turnId,
-              f.attempt.agentSessionId,
-              f.attempt.inputRef,
-              f.checkpoint.requestId,
-              f.attempt.createdAt
-            );
+          await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            sqlite
+              .prepare(
+                `INSERT INTO worker_control_records (workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id, operation, record_key, record_json, accepted_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, ?, ?, ?, ?, 'final_status', 'original-final', '{}', ?)`
+              )
+              .run(
+                f.checkpoint.threadId,
+                f.turnId,
+                f.attempt.agentSessionId,
+                f.attempt.inputRef,
+                f.checkpoint.requestId,
+                f.attempt.createdAt
+              );
+          });
         if (gap === 'gate-receipt') {
           await shutdownControlStoreWorkerClient();
           // Stopped private-history fault only; the real native admission must already own the original receipt.
@@ -1115,17 +1179,21 @@ describe('checkpoint-owned never-submitted failed start', () => {
           ).toBe(1);
         }
         if (gap === 'unclean-anchor')
-          sql
-            .prepare(
-              "UPDATE worker_backend_sessions SET state = 'cleanup-failed' WHERE attempt_id = ?"
-            )
-            .run(attemptId);
+          await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            sqlite
+              .prepare(
+                "UPDATE worker_backend_sessions SET state = 'cleanup-failed' WHERE attempt_id = ?"
+              )
+              .run(attemptId);
+          });
         if (gap === 'missing-physical-proof')
-          sql
-            .prepare(
-              'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
-            )
-            .run(attemptId);
+          await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            sqlite
+              .prepare(
+                'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
+              )
+              .run(attemptId);
+          });
         if (gap === 'missing-result-item')
           vi.spyOn(f.store, 'getTurnById').mockImplementation((id) => {
             const turn = f.store.getTurn(

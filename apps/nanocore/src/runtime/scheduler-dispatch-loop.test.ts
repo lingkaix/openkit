@@ -33,6 +33,7 @@ import {
   readPublishedTurnFileRecords,
 } from '../storage/workspace-file-records.js';
 import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
+import { readAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -43,7 +44,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
@@ -55,10 +56,7 @@ import { DeterministicAgentPreparationError } from './agent-preparation-error.js
 import * as attemptRecords from './execution-attempt-records.js';
 import * as attemptCommands from './execution-attempts.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
-import {
-  bindNanoHostAttemptPreparation,
-  resolveNanoHostAttemptTokenBinding,
-} from './nanohost-attempt-records.js';
+import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator';
 import { startProductTurn as executeProductTurn } from './product-turn-start.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
@@ -100,14 +98,14 @@ class RecordingTurnExecutor extends SimulatedTurnExecutor {
     super({ coreDb: fixtureCore });
     this.fixtureCore = fixtureCore;
     if (separateHandle) extraCoreHandles.push(fixtureCore);
-    admitTestNativeEnvironment(fixtureCore, agentManifest());
   }
   /** Completes the existing target owner before returning a scheduler-ready modeled executor. */
   public static async create(
     coreDb: ReturnType<typeof createMigratedCoreDb>,
     separateHandle = false
   ) {
-    const executor = new RecordingTurnExecutor(coreDb, separateHandle);
+    const executor = new this(coreDb, separateHandle);
+    await admitTestNativeEnvironmentForRoot(executor.fixtureCore, agentManifest());
     await recordTestNativeRuntimeTarget(executor.fixtureCore);
     return executor;
   }
@@ -226,12 +224,10 @@ class RecordingTurnExecutor extends SimulatedTurnExecutor {
         updatedAt: '2026-07-05T00:00:01.500Z',
       });
     }
-    bindNanoHostAttemptPreparation(this.fixtureCore, {
+    attemptRecords.finalizeSchedulerExecutionAttemptInput(this.fixtureCore, {
       attemptId: input.attemptId,
-      agentSessionId: input.prepared.agentSessionId,
       inputRef: `aepsnap_${input.preparation.turn.id}_${input.prepared.agentSessionId}`,
       bindingRef: `attempt-binding:${input.attemptId}`,
-      sessionCompatibilityKey: input.prepared.sessionCompatibilityKey,
     });
     return undefined;
   }
@@ -1738,7 +1734,7 @@ describe('scheduler dispatch loop', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const executor = new NativeCompletingTurnExecutor(coreDb);
+    const executor = await NativeCompletingTurnExecutor.create(coreDb);
     const manifest = agentManifest();
     const gate = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();
@@ -1849,7 +1845,7 @@ describe('scheduler dispatch loop', () => {
         workspaceId: DEMO_WORKSPACE_ID,
       });
       await seedLocalSchedulerTarget(coreDb);
-      const executor = new NativeCompletingTurnExecutor(coreDb);
+      const executor = await NativeCompletingTurnExecutor.create(coreDb);
       const manifest = agentManifest();
       const gate = Promise.withResolvers<void>();
       const entered = Promise.withResolvers<void>();
@@ -1975,7 +1971,7 @@ describe('scheduler dispatch loop', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const executor = new NativeCompletingTurnExecutor(coreDb);
+    const executor = await NativeCompletingTurnExecutor.create(coreDb);
     const manifest = agentManifest();
     const gate = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();
@@ -4330,11 +4326,10 @@ describe('scheduler dispatch loop', () => {
     });
     const turnExecutor = await RecordingTurnExecutor.create(coreDb);
     turnExecutor.startTurn = async (ownerStore, turnId, _input, context) => {
-      const lease = attemptRecords.recordSchedulerExecutionOperation(coreDb, {
-        attemptId: 'attempt_00000000-0000-7b13-9b8b-0f01dab3ae69',
-        operationId: 'cleanup-pending:original',
-        submission: true,
-      });
+      const lease = attemptRecords.requireSchedulerExecutionAttempt(
+        coreDb,
+        'attempt_00000000-0000-7b13-9b8b-0f01dab3ae69'
+      );
       if (!context?.agentSessionId) {
         throw new Error('Expected scheduler-owned AgentSession lineage.');
       }
@@ -4347,7 +4342,7 @@ describe('scheduler dispatch loop', () => {
           backendKind: 'openshell',
           backendSessionId: `openkit-${testEntityId('as', 'as_cleanup_pending')}`,
           deploymentId: target.deploymentId,
-          packageSnapshotId: lease.inputRef,
+          packageSnapshotId: lease.inputRef!,
           runtimeTargetId: target.targetId,
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/cleanup-pending',
           transientProviderInstanceId: null,
@@ -4357,7 +4352,12 @@ describe('scheduler dispatch loop', () => {
           turnId,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
-        sandboxBindingRef: lease.bindingRef,
+        sandboxBindingRef: lease.bindingRef!,
+      });
+      attemptRecords.recordSchedulerExecutionOperation(coreDb, {
+        attemptId: lease.attemptId,
+        operationId: 'cleanup-pending:original',
+        submission: true,
       });
       for (const [fromState, toState] of [
         ['materializing', 'materialized'],
@@ -4420,9 +4420,11 @@ describe('scheduler dispatch loop', () => {
       );
       expect(
         (
-          coreDb.sqlite
-            .prepare('SELECT state FROM worker_backend_sessions WHERE attempt_id = ?')
-            .get('attempt_00000000-0000-7b13-9b8b-0f01dab3ae69') as { state: string }
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare('SELECT state FROM worker_backend_sessions WHERE attempt_id = ?')
+              .get('attempt_00000000-0000-7b13-9b8b-0f01dab3ae69')
+          ) as { state: string }
         ).state
       ).toBe('cleanup-pending');
     } finally {

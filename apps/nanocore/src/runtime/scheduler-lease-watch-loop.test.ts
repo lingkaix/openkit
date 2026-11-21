@@ -4,9 +4,14 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import * as storage from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -18,6 +23,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
   markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
@@ -32,7 +38,6 @@ import {
   runSchedulerRecoveryMaintenance,
   runSchedulerRestartRecovery,
 } from './scheduler-restart-recovery.js';
-import * as backendSessions from './worker-backend-session-records.js';
 import {
   getWorkerBackendSession,
   recordWorkerBackendSessionMaterializing,
@@ -50,6 +55,7 @@ async function fixture() {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
+  const { value: native } = await openAdmittedTestNanoHost(coreDb);
   const executionBackend = new SimulatedTurnExecutor({ coreDb });
   const cleanupBackendSession = vi.fn(async () => {
     throw new Error('exact physical cleanup fault');
@@ -93,7 +99,6 @@ async function fixture() {
       bindingRef,
       sessionCompatibilityKey: 'c'.repeat(64),
       now: () => '2026-07-05T00:00:02.000Z',
-      ...(submitted ? { operationId: `original:${suffix}` } : {}),
     });
     if (anchored) {
       // AEP 293 and Scheduler 86 require the original immutable package before physical recovery.
@@ -130,6 +135,14 @@ async function fixture() {
         now: () => '2026-07-05T00:00:03.000Z',
       });
     }
+    if (submitted) {
+      recordSchedulerExecutionOperation(coreDb, {
+        attemptId,
+        operationId: `original:${suffix}`,
+        submission: true,
+        now: () => '2026-07-05T00:00:02.000Z',
+      });
+    }
     return {
       attemptId,
       sandboxBindingRef: bindingRef,
@@ -144,9 +157,11 @@ async function fixture() {
   };
   return {
     coreDb,
+    native,
     recovery,
     seed,
-    close: () => {
+    close: async () => {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     },
@@ -183,7 +198,11 @@ describe('Native attempt liveness and recovery', () => {
         errors: [expect.objectContaining({ errors: [fault] })],
       });
       expect(inspect).toHaveBeenCalledOnce();
-      expect(getWorkerBackendSession(f.coreDb, binding.attemptId)).toBeNull();
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, binding.attemptId)
+        )
+      ).toBeNull();
       expect(native).toHaveBeenCalledOnce();
       expect(checkpoints).toHaveBeenCalledOnce();
       expect(warn.mock.calls.map(([line]) => JSON.parse(line))).toEqual(
@@ -210,7 +229,7 @@ describe('Native attempt liveness and recovery', () => {
       await service.stop();
       inspect.mockRestore();
       warn.mockRestore();
-      f.close();
+      await f.close();
     }
   });
 
@@ -219,9 +238,20 @@ describe('Native attempt liveness and recovery', () => {
     async (boundary) => {
       const f = await fixture();
       const fault = new Error('/private/scan-canary secret-scan-canary');
+      const recovery = {
+        owner: f.native.owner,
+        close: f.native.owner.closeRecovery,
+        commit: f.native.owner.classifyRecovery,
+        cleanup: async () => {
+          throw new Error('The scan fault fixture must reach no physical cleanup.');
+        },
+        reconcileFinal: async () => {
+          throw new Error('The scan fault fixture must reach no final reconciliation.');
+        },
+      };
       const scan =
         boundary === 'native'
-          ? vi.spyOn(backendSessions, 'listWorkerBackendSessions').mockImplementation(() => {
+          ? vi.spyOn(recovery.owner, 'read').mockImplementation(() => {
               throw fault;
             })
           : vi.spyOn(storage, 'listExistingWorkspaceDatabaseScopes').mockImplementation(() => {
@@ -235,7 +265,13 @@ describe('Native attempt liveness and recovery', () => {
         clearInterval: () => {},
         runRecoveryMaintenance: {
           scheduler: async () => {},
-          native: () => runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.recovery),
+          native: () =>
+            runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
+              ...f.recovery,
+              ...(boundary === 'native'
+                ? { admittedNanoHostRecovery: { state: 'ready', value: recovery } }
+                : {}),
+            }),
           checkpoints:
             boundary === 'native'
               ? after
@@ -265,7 +301,7 @@ describe('Native attempt liveness and recovery', () => {
         await service.stop();
         scan.mockRestore();
         warn.mockRestore();
-        f.close();
+        await f.close();
       }
     }
   );
@@ -343,7 +379,7 @@ describe('Native attempt liveness and recovery', () => {
         expect(JSON.stringify(log.mock.calls)).not.toContain(path);
       } finally {
         log.mockRestore();
-        f.close();
+        await f.close();
       }
     }
   );
@@ -379,7 +415,7 @@ describe('Native attempt liveness and recovery', () => {
       expect(failures).toEqual([failure]);
     } finally {
       await service.stop();
-      f.close();
+      await f.close();
     }
   });
 
@@ -422,7 +458,7 @@ describe('Native attempt liveness and recovery', () => {
         lastWorkerSequence: 1,
       });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -474,7 +510,7 @@ describe('Native attempt liveness and recovery', () => {
         })
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -504,13 +540,17 @@ describe('Native attempt liveness and recovery', () => {
         fenceRef: null,
         operationId: 'original:anchored_startup',
       });
-      expect(getWorkerBackendSession(f.coreDb, binding.attemptId)).toMatchObject({
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, binding.attemptId)
+        )
+      ).toMatchObject({
         state: 'cleanup-failed',
         physicalCleanedAt: null,
       });
       expect(f.recovery.projectRecoveredTurn).not.toHaveBeenCalled();
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -547,7 +587,7 @@ describe('Native attempt liveness and recovery', () => {
         })
       ).toEqual({ status: 'rejected', reason: 'reconnect-required' });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 });
