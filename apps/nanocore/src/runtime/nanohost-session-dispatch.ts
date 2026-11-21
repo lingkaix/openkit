@@ -23,7 +23,10 @@ import { createScanner } from 'jsonc-parser';
 import { z } from 'zod';
 import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import type { AdmittedNanoHostTransportStorage } from '../auth/nanohost-transport-admission.js';
+import {
+  type AdmittedNanoHostTransportStorage,
+  transitionAdmittedNanoHostRuntimeTarget,
+} from '../auth/nanohost-transport-admission.js';
 import {
   isNanoHostPhysicalConnectionContext,
   type NanoHostTransportSessionAuthority,
@@ -1299,7 +1302,7 @@ export function createNanoHostSessionDispatch(
       };
       const native = runtimeTarget.nativeStorage;
       if (native) {
-        const applied = await native.owner.transitionRuntimeTarget(native.kernel, {
+        const applied = await transitionAdmittedNanoHostRuntimeTarget(native, {
           ...observation,
           kind: 'ready',
         });
