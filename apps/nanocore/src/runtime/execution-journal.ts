@@ -49,7 +49,7 @@ import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
 } from './nanohost-effect-identity.js';
-import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target.js';
+import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target-records.js';
 import type { WorkerBackendSessionRecord } from './worker-backend-session-records.js';
 
 /** Release-authored interpretation for the first existing administrative image-acquisition invocation. */
