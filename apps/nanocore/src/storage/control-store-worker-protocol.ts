@@ -852,19 +852,33 @@ const nanoHostRecoveryClassification = z.discriminatedUnion('kind', [
     classifiedAt: z.iso.datetime({ precision: 3 }),
   }),
   z.strictObject({ kind: z.literal('needs-evidence') }),
+  z.strictObject({
+    kind: z.literal('transition'),
+    toState: z.enum(['cleanup-pending', 'cleanup-failed', 'physical-cleaned']),
+    target: ControlRuntimeTargetResultSchema.unwrap().strict(),
+  }),
+  z.strictObject({ kind: z.literal('workspace-handoff') }),
+  z.strictObject({ kind: z.literal('finish-cleanup') }),
 ]);
 
-const nanoHostRecoveryClassificationInput = z.strictObject({
-  dataRoot: z.string().min(1),
-  coreIdentity: z.string().regex(/^\d+:\d+$/),
-  attemptId: z.string().min(1),
-  expectedPhase: z.enum(['open', 'closing']),
-  observationHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  expectedSession: ControlBackendSessionResultSchema,
-  expectedRecovery: NanoHostWorkerRecoveryState,
-  observedAt: z.iso.datetime({ precision: 3 }),
-  classification: nanoHostRecoveryClassification,
-});
+const nanoHostRecoveryClassificationInput = z
+  .strictObject({
+    dataRoot: z.string().min(1),
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
+    attemptId: z.string().min(1),
+    expectedPhase: z.enum(['open', 'closing']),
+    observationHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    expectedSession: ControlBackendSessionResultSchema,
+    expectedRecovery: NanoHostWorkerRecoveryState,
+    observedAt: z.iso.datetime({ precision: 3 }),
+    classification: nanoHostRecoveryClassification,
+  })
+  .refine(
+    ({ expectedPhase, classification }) =>
+      expectedPhase === 'closing' ||
+      classification.kind === 'arm-reconnect' ||
+      classification.kind === 'needs-evidence'
+  );
 
 const nanoHostPreparedImageResult = z.strictObject({
   settlement: WorkerImageSettlementSchema,
