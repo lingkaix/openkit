@@ -15,7 +15,7 @@ import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
 } from './nanohost-effect-identity.js';
-import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target.js';
+import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target-records.js';
 import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
 
