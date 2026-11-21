@@ -1368,6 +1368,47 @@ export function queueNanoHostHarnessOperation(
   }
 }
 
+/** Observes pending dispatch for one current Integration on the admitted Native reader. */
+export function hasQueuedNanoHostHarnessOperation(
+  owner: NanoHostHarnessDb,
+  sandboxIntegrationBindingRef: string
+): boolean {
+  return (
+    selectNanoHostHarnessDispatch(owner, sandboxIntegrationBindingRef).queuedHarnessId !== null
+  );
+}
+
+/** Selects the same queued slot for observation and deciding dispatch. */
+function selectNanoHostHarnessDispatch(
+  owner: NanoHostHarnessDb,
+  sandboxIntegrationBindingRef: string
+): {
+  readonly targetId: string;
+  readonly physicalEpoch: string;
+  readonly queuedHarnessId: string | null;
+} {
+  requireIdentity(sandboxIntegrationBindingRef, 'Sandbox Integration binding');
+  const selected = owner.sqlite
+    .prepare(
+      `SELECT s.runtime_target_id AS targetId, s.origin_physical_epoch AS physicalEpoch,
+              (SELECT h.harness_instance_id FROM harness_instance_records h
+               WHERE h.sandbox_runtime_id = s.sandbox_runtime_id AND h.operation_state = 'queued'
+               ORDER BY h.updated_at, h.harness_instance_id LIMIT 1) AS queuedHarnessId
+       FROM sandbox_runtime_records s WHERE s.sandbox_integration_binding_ref = ?`
+    )
+    .get(sandboxIntegrationBindingRef) as
+    | {
+        readonly targetId: string;
+        readonly physicalEpoch: string;
+        readonly queuedHarnessId: string | null;
+      }
+    | undefined;
+  if (!selected) {
+    throw new Error('NanoHost Sandbox Integration binding is missing or stale.');
+  }
+  return selected;
+}
+
 /**
  * Dispatches stored identity after current lineage and retained consumer proof checks.
  * Raw credentials are supplied by the caller only after its native child acknowledgement.
@@ -1378,36 +1419,16 @@ export function dispatchNanoHostHarnessOperation(
   admitted?: { readonly owner: NanoHostHarnessDb }
 ): NanoHostHarnessCommand | null {
   const owner = admitted?.owner ?? coreDb;
-  requireIdentity(input.sandboxIntegrationBindingRef, 'Sandbox Integration binding');
-
   try {
-    const integration = owner.sqlite
-      .prepare(
-        `SELECT sandbox_runtime_id AS sandboxRuntimeId, runtime_target_id AS targetId,
-                origin_physical_epoch AS physicalEpoch
-         FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?`
-      )
-      .get(input.sandboxIntegrationBindingRef) as
-      | {
-          readonly sandboxRuntimeId: string;
-          readonly targetId: string;
-          readonly physicalEpoch: string;
-        }
-      | undefined;
-    if (!integration) {
-      throw new Error('NanoHost Sandbox Integration binding is missing or stale.');
-    }
-    const harness = owner.sqlite
-      .prepare(
-        `SELECT *, schema_version AS schemaVersion FROM harness_instance_records
-         WHERE sandbox_runtime_id = ? AND operation_state = 'queued'
-         ORDER BY updated_at, harness_instance_id LIMIT 1`
-      )
-      .get(integration.sandboxRuntimeId) as HarnessRow | undefined;
-    if (!harness) {
+    const integration = selectNanoHostHarnessDispatch(owner, input.sandboxIntegrationBindingRef);
+    if (integration.queuedHarnessId === null) {
       return null;
     }
-    readRetainedV1(harness, () => harness);
+    const harness = requireHarnessForIntegration(
+      owner,
+      input.sandboxIntegrationBindingRef,
+      integration.queuedHarnessId
+    );
     const receipt = readRetainedHarnessResult(harness);
     if (
       receipt &&
