@@ -157,20 +157,27 @@ export function resolveAdmittedNanoHostFinalBinding(
   return live;
 }
 
+/** Resolves the only Native session named by the requested package and its pinned Core grant. */
+export function readOriginalNanoHostWorkerCoordinates(
+  coreDb: CoreDb,
+  sqlite: Database.Database,
+  input: Pick<Binding, 'sandboxBindingRef' | 'lineage'>
+): NanoHostWorkerCoordinates | null {
+  const session = getWorkerBackendSessionByPackage({ sqlite }, input.lineage.packageSnapshotId);
+  if (!session || session.sandboxBindingRef !== input.sandboxBindingRef) return null;
+  const original = readRetainedNanoHostSubmission(coreDb, session.attemptId);
+  return original && readNanoHostWorkerRouteBinding({ sqlite }, original.lease.grant)
+    ? original
+    : null;
+}
+
 function readBinding(
   coreDb: CoreDb,
   sqlite: Database.Database,
   input: WorkerControlTokenBindingInput
 ) {
-  const session = getWorkerBackendSessionByPackage({ sqlite }, input.lineage.packageSnapshotId);
-  if (!session || session.sandboxBindingRef !== input.sandboxBindingRef)
-    return { status: 'rejected', reason: 'binding-not-found' } as const;
-  const original = readRetainedNanoHostSubmission(coreDb, session.attemptId);
-  if (
-    !original ||
-    !readNanoHostWorkerRouteBinding({ sqlite }, original.lease.grant) ||
-    (input.token !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(input.token))
-  )
+  const original = readOriginalNanoHostWorkerCoordinates(coreDb, sqlite, input);
+  if (!original || (input.token !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(input.token)))
     return { status: 'rejected', reason: 'binding-not-found' } as const;
   return inspectNanoHostWorkerBinding(sqlite, original, {
     lineage: input.lineage,
