@@ -18,9 +18,12 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
 import type { JsonOperationId, LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { allocateEntityId, type Item, writeRetainedV1 } from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
+import type { ControlNanoHostTransportInput } from '../auth/nanohost-transport-codecs.js';
+import { listNanoHostTransportTokenRecords } from '../auth/nanohost-transport-token-store.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import {
@@ -59,10 +62,18 @@ import {
 import {
   CONTROL_WORKER_LIMITS,
   type ControlSqlStatement,
+  type ControlWorkerRequest,
 } from './control-store-worker-protocol.js';
 import { createDataRootAdminOperationImplementations } from './data-root-admin-operations.js';
 import * as dataRootBackup from './data-root-backup.js';
-import { bindCoreSqlite, openCoreDb, openUserDb, openUserReadDb, openWorkspaceDb } from './db.js';
+import {
+  bindCoreSqlite,
+  openCoreDb,
+  openUserDb,
+  openUserReadDb,
+  openWorkspaceDb,
+  serverStoragePath,
+} from './db.js';
 import {
   coreDbPath,
   ensureLayout,
@@ -72,6 +83,12 @@ import {
   workspaceDbPath,
 } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations, hasPendingUserMigrations } from './migrate.js';
+import {
+  readNanoHostEpochInvalidation,
+  readPendingNanoHostEpochRetirement,
+} from './nanohost-epoch-invalidation-native.js';
+import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
+import { storageReceipt, storageRequestId } from './storage-owner.js';
 import { advanceThreadReadReceipt, readThreadReadReceipt } from './thread-read-receipts.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
@@ -343,6 +360,347 @@ afterEach(async () => {
   interception.workers.length = 0;
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+const nanoHostReaders = {
+  listNanoHostTransportTokenRecords,
+  readNanoHostEpochInvalidation,
+  readPendingNanoHostEpochRetirement,
+};
+
+/** Uses the shipped journals and intercepts only the NanoHost file's real FULL commit. */
+async function nanoHostWorkerFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'control-nanohost-')));
+  roots.push(root);
+  ensureLayout(root);
+  const path = serverStoragePath(root, 'nanohost');
+  const database = `server-owner:${path}`;
+  const gate = new Int32Array(new SharedArrayBuffer(4 * (6 + path.length)));
+  interception.gate = gate.buffer as SharedArrayBuffer;
+  interception.point = 'after';
+  Atomics.store(gate, 2, 2);
+  Atomics.store(gate, 3, 1);
+  Atomics.store(gate, 4, path.length);
+  for (let index = 0; index < path.length; index++)
+    Atomics.store(gate, 5 + index, path.charCodeAt(index));
+  // Leave explicit provisioning outside the fault.
+  Atomics.store(gate, 0, 1);
+
+  const writer = getControlStoreWorkerClient();
+  client = writer;
+  const corePath = coreDbPath(root);
+  const coreKey = `core:${corePath}`;
+  await writer.open({
+    database: coreKey,
+    path: corePath,
+    create: true,
+    initialize: 'core',
+    productOwner: { kind: 'server' },
+    dataRoot: root,
+  });
+  await expect(writer.bindNanoHostOwner(root, nanoHostReaders)).resolves.toEqual({
+    state: 'unavailable',
+    owner: 'nanohost',
+    reason: 'missing',
+  });
+  expect(existsSync(path)).toBe(false);
+  await expect(writer.provisionServerOwner(root, nanoHostStoreDescriptor)).resolves.toEqual({
+    state: 'ready',
+    owner: 'nanohost',
+  });
+  await writer.closeServerOwner(root, 'nanohost');
+
+  const bound = await writer.bindNanoHostOwner(root, nanoHostReaders);
+  if (bound.state !== 'ready') throw new Error('Expected the existing NanoHost owner to bind.');
+  return { writer, root, path, database, gate, owner: bound.value, coreKey, corePath };
+}
+
+const nanoHostTarget = {
+  kind: 'allocate',
+  targetId: 'fixture-target',
+  identityId: 'fixture-identity',
+  deploymentId: 'fixture-deployment',
+  observedAt: '2026-11-21T00:00:00.000Z',
+} as const;
+const nanoHostReady = {
+  ...nanoHostTarget,
+  kind: 'ready',
+  connectionGeneration: 1,
+  predecessorFenced: true,
+  ready: true,
+  freshEmpty: true,
+  physicalEpoch: 'a'.repeat(64),
+} as const;
+const nanoHostPlacement = {
+  deploymentId: nanoHostTarget.deploymentId,
+  runtimeTargetId: nanoHostTarget.targetId,
+  physicalEpoch: nanoHostReady.physicalEpoch,
+  generation: '1',
+};
+const nanoHostOccurrence = {
+  deploymentId: nanoHostPlacement.deploymentId,
+  sourceOwner: 'nanohost',
+  verb: 'fence-vault-epoch',
+  occurrenceKey: 'fixture-original-retirement',
+} as const;
+const nanoHostFenceTarget = {
+  runtimeTargetId: nanoHostPlacement.runtimeTargetId,
+  physicalEpoch: nanoHostPlacement.physicalEpoch,
+  holderReceiptIds: ['holder-a', 'holder-b'],
+};
+const nanoHostIntent = {
+  ...nanoHostOccurrence,
+  requestId: storageRequestId(nanoHostOccurrence),
+  expectedGeneration: nanoHostPlacement.generation,
+  inputDigest: sha256CanonicalJson(nanoHostFenceTarget),
+  target: nanoHostFenceTarget,
+};
+const nanoHostReceipt = storageReceipt(nanoHostIntent, {
+  disposition: 'applied',
+  result: { fencedHolderReceiptIds: ['holder-b', 'holder-a'] },
+});
+const nanoHostHeld = { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+const nanoHostAck = { state: 'ready', value: undefined };
+
+describe('admitted NanoHost owner worker', () => {
+  it('ACKs local transport at FULL and leaves deciding administrator authority and both Audit tuples on Core', async () => {
+    const f = await nanoHostWorkerFixture();
+    const input: Extract<ControlNanoHostTransportInput, { kind: 'enroll' }> = {
+      kind: 'enroll',
+      record: {
+        tokenId: 'fixture-token',
+        tokenHash: `sha256:${'b'.repeat(64)}`,
+        ownerNanoHostIdentityId: nanoHostTarget.identityId,
+        deploymentId: nanoHostTarget.deploymentId,
+        responsibleServerAdminActorId: 'fixture-admin',
+        expiresAt: '2026-12-01T00:00:00.000Z',
+        now: new Date(nanoHostTarget.observedAt),
+      },
+    };
+    const precondition = { code: 'precondition', commit: 'not-committed' };
+    await expect(
+      f.owner.transport({ ...input, actor: { kind: 'local', userId: 'fixture-admin' } })
+    ).rejects.toMatchObject(precondition);
+    await expect(f.owner.listTransportTokens()).resolves.toEqual({ state: 'ready', value: [] });
+
+    Atomics.store(f.gate, 0, 0);
+    let acknowledged = false;
+    const enrollment = f.owner.transport(input).then((outcome) => {
+      acknowledged = true;
+      return outcome;
+    });
+    const drain = await (async () => {
+      try {
+        await waitForHold(f.gate);
+        expect(Atomics.load(f.gate, f.gate.length - 1)).toBe(2);
+        expect(acknowledged).toBe(false);
+        await expect(f.owner.listTransportTokens()).resolves.toEqual(nanoHostHeld);
+        let drained = false;
+        const captured = f.writer.pauseForDataRootBackup(f.database).then((resume) => {
+          drained = true;
+          return resume;
+        });
+        await expect(f.writer.runtimeTarget(f.coreKey, nanoHostTarget)).resolves.toMatchObject({
+          connectionGeneration: 1,
+        });
+        expect(drained).toBe(false);
+        return { captured };
+      } finally {
+        release(f.gate);
+      }
+    })();
+    const resume = await drain.captured;
+    resume();
+    const enrolled = await enrollment;
+    if (enrolled.kind !== 'record' || !enrolled.record)
+      throw new Error('Expected a committed NanoHost enrollment.');
+    expect(enrolled.record).toMatchObject({ tokenId: input.record.tokenId, status: 'active' });
+    expect(enrolled.record).not.toHaveProperty('tokenHash');
+    await expect(f.owner.listTransportTokens()).resolves.toEqual({
+      state: 'ready',
+      value: [enrolled.record],
+    });
+
+    await expect(
+      f.owner.transport({
+        kind: 'lifecycle-audit',
+        action: 'nanohost.transport.enroll',
+        record: enrolled.record,
+        actorUserId: null,
+      })
+    ).rejects.toMatchObject(precondition);
+    await expect(
+      f.owner.transport({
+        kind: 'decommission-audit',
+        identityId: nanoHostTarget.identityId,
+        deploymentId: nanoHostTarget.deploymentId,
+        actorUserId: 'fixture-admin',
+        newlyRevokedCount: 0,
+        retainedTokenCount: 1,
+        tokenLineage: '',
+      })
+    ).rejects.toMatchObject(precondition);
+    await expect(f.writer.runtimeTarget(f.database, nanoHostTarget)).rejects.toMatchObject(
+      precondition
+    );
+
+    const core = new Database(f.corePath, { readonly: true, fileMustExist: true });
+    try {
+      expect(core.prepare('SELECT count(*) FROM nanohost_transport_tokens').pluck().get()).toBe(0);
+      expect(
+        core.prepare('SELECT count(*) FROM nanohost_integration_identities').pluck().get()
+      ).toBe(0);
+      expect(core.prepare('SELECT count(*) FROM audit_events').pluck().get()).toBe(0);
+    } finally {
+      core.close();
+    }
+  });
+
+  it('holds a live epoch until exact applied coverage and rejects retired storage and target generations', async () => {
+    const f = await nanoHostWorkerFixture();
+    const postMessage = Worker.prototype.postMessage;
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    // A valid wire tuple with a different acknowledged OPEN id cannot mutate this file.
+    posted.mockImplementationOnce(function (this: NativeWorker, message: ControlWorkerRequest) {
+      if (message.operation !== 'nanohost-owner')
+        throw new Error('Expected a real NanoHost owner request.');
+      return postMessage.call(this, { ...message, openingRequestId: message.openingRequestId + 1 });
+    });
+    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
+      code: 'owner-recovery-required',
+      commit: 'not-committed',
+    });
+    posted.mockRestore();
+    await expect(f.owner.runtimeTarget(nanoHostTarget)).resolves.toMatchObject({
+      connectionGeneration: 1,
+      ready: false,
+    });
+    await expect(f.owner.runtimeTarget(nanoHostReady)).resolves.toMatchObject({
+      ready: true,
+      physicalEpoch: nanoHostPlacement.physicalEpoch,
+    });
+
+    const targetHeld = {
+      code: 'precondition',
+      commit: 'not-committed',
+      domain: { code: 'runtime_target_refused' },
+    };
+    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject(targetHeld);
+    await expect(f.owner.beginEpochRetirement(nanoHostPlacement)).resolves.toEqual(nanoHostAck);
+    await expect(f.owner.readPendingEpochRetirement()).resolves.toEqual({
+      state: 'ready',
+      value: nanoHostPlacement,
+    });
+    await expect(f.owner.readEpochInvalidation(nanoHostIntent.requestId)).resolves.toEqual({
+      state: 'ready',
+      value: null,
+    });
+    await expect(f.owner.stageEpochInvalidation(nanoHostIntent)).resolves.toEqual(nanoHostAck);
+    await expect(f.owner.readEpochInvalidation(nanoHostIntent.requestId)).resolves.toEqual({
+      state: 'ready',
+      value: nanoHostIntent,
+    });
+    const partialReceipt = storageReceipt(nanoHostIntent, {
+      disposition: 'applied',
+      result: { fencedHolderReceiptIds: ['holder-a'] },
+    });
+    await expect(f.owner.settleEpochInvalidation(partialReceipt)).resolves.toEqual(nanoHostHeld);
+    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject(targetHeld);
+    await expect(f.owner.settleEpochInvalidation(nanoHostReceipt)).resolves.toEqual(nanoHostAck);
+    await expect(
+      f.owner.settleEpochInvalidation({
+        ...nanoHostReceipt,
+        receiptDigest: 'divergent-receipt',
+      })
+    ).resolves.toEqual(nanoHostHeld);
+    await expect(f.owner.readPendingEpochRetirement()).resolves.toEqual({
+      state: 'ready',
+      value: null,
+    });
+    await expect(f.owner.runtimeTarget(nanoHostReady)).rejects.toMatchObject(targetHeld);
+    await expect(f.owner.runtimeTarget(nanoHostTarget)).resolves.toMatchObject({
+      connectionGeneration: 2,
+      ready: false,
+    });
+    await expect(f.owner.beginEpochRetirement(nanoHostPlacement)).resolves.toEqual(nanoHostHeld);
+
+    const closing = f.writer.closeServerOwner(f.root, 'nanohost');
+    await Promise.all([
+      expect(f.owner.readPendingEpochRetirement()).resolves.toEqual(nanoHostHeld),
+      expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
+        code: 'busy',
+        commit: 'not-committed',
+      }),
+      closing,
+    ]);
+    const reopened = await f.writer.bindNanoHostOwner(f.root, nanoHostReaders);
+    if (reopened.state !== 'ready')
+      throw new Error('Expected the retained NanoHost owner to reopen.');
+    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
+      code: 'owner-recovery-required',
+      commit: 'not-committed',
+    });
+    await expect(
+      reopened.value.runtimeTarget({
+        ...nanoHostReady,
+        connectionGeneration: 2,
+        physicalEpoch: 'c'.repeat(64),
+      })
+    ).resolves.toMatchObject({ connectionGeneration: 2, ready: true });
+    const core = new Database(f.corePath, { readonly: true, fileMustExist: true });
+    try {
+      expect(core.prepare('SELECT count(*) FROM nanohost_runtime_targets').pluck().get()).toBe(0);
+    } finally {
+      core.close();
+    }
+  });
+
+  it('holds a successor when the original local settlement commits but loses its ACK', async () => {
+    const f = await nanoHostWorkerFixture();
+    await f.owner.runtimeTarget(nanoHostTarget);
+    await f.owner.runtimeTarget(nanoHostReady);
+    await expect(f.owner.beginEpochRetirement(nanoHostPlacement)).resolves.toEqual(nanoHostAck);
+    await expect(f.owner.stageEpochInvalidation(nanoHostIntent)).resolves.toEqual(nanoHostAck);
+
+    Atomics.store(f.gate, 0, 0);
+    const settlement = f.owner.settleEpochInvalidation(nanoHostReceipt);
+    try {
+      await waitForHold(f.gate);
+      await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
+        code: 'busy',
+        commit: 'not-committed',
+      });
+      const read = new Database(f.path, { readonly: true, fileMustExist: true });
+      try {
+        const row = read
+          .prepare(
+            'SELECT connection_generation, vault_epoch_fence_json FROM nanohost_runtime_targets'
+          )
+          .get() as { connection_generation: number; vault_epoch_fence_json: string };
+        expect(row.connection_generation).toBe(1);
+        expect(JSON.parse(row.vault_epoch_fence_json).receipt).toEqual(nanoHostReceipt);
+      } finally {
+        read.close();
+      }
+      await interception.workers[1]!.terminate();
+    } finally {
+      release(f.gate);
+    }
+    await expect(settlement).resolves.toEqual(nanoHostHeld);
+    await expect(f.owner.readEpochInvalidation(nanoHostIntent.requestId)).resolves.toEqual(
+      nanoHostHeld
+    );
+    await expect(f.owner.runtimeTarget(nanoHostTarget)).rejects.toMatchObject({
+      code: 'owner-recovery-required',
+      commit: 'not-committed',
+    });
+    await expect(f.writer.bindNanoHostOwner(f.root, nanoHostReaders)).resolves.toEqual(
+      nanoHostHeld
+    );
+    await expect(f.writer.runtimeTarget(f.coreKey, nanoHostTarget)).resolves.toMatchObject({
+      connectionGeneration: 1,
+    });
+  });
 });
 
 describe('control writer parent admission', () => {

@@ -244,6 +244,8 @@ import {
   ControlHarnessLifecycleResultSchema,
 } from './harness-lifecycle-codecs.js';
 import { SPLIT_STORAGE_JOURNALS, type SplitStorageOwner } from './migrate.js';
+import type { NanoHostEpochPlacement } from './nanohost-epoch-invalidation.js';
+import type { NanoHostEpochInvalidation, NanoHostEpochReceipt } from './nanohost-port.js';
 import {
   type ControlPrivateWorkspaceInput,
   ControlPrivateWorkspaceInputSchema,
@@ -741,6 +743,76 @@ export interface ServerOwnerDescriptor<
   readonly owner: Owner;
 }
 
+// Validate the private wire shape here. The native handler validates the original
+// placement, request identity, input digest and receipt against retained state.
+const nanoHostEpochPlacement = z.strictObject({
+  deploymentId: z.string().min(1),
+  runtimeTargetId: z.string().min(1),
+  physicalEpoch: z.string().regex(/^[a-f0-9]{64}$/u),
+  generation: z.string().regex(/^[1-9][0-9]*$/u),
+}) satisfies z.ZodType<NanoHostEpochPlacement>;
+
+const nanoHostHolderIds = z.array(z.string().min(1));
+const nanoHostEpochIntent = z.strictObject({
+  deploymentId: nanoHostEpochPlacement.shape.deploymentId,
+  sourceOwner: z.literal('nanohost'),
+  verb: z.literal('fence-vault-epoch'),
+  occurrenceKey: z.string().min(1),
+  requestId: z.string().min(1),
+  expectedGeneration: nanoHostEpochPlacement.shape.generation,
+  inputDigest: z.string().min(1),
+  target: z.strictObject({
+    runtimeTargetId: nanoHostEpochPlacement.shape.runtimeTargetId,
+    physicalEpoch: nanoHostEpochPlacement.shape.physicalEpoch,
+    holderReceiptIds: nanoHostHolderIds,
+  }),
+}) satisfies z.ZodType<NanoHostEpochInvalidation>;
+
+const nanoHostReceiptFields = { intent: nanoHostEpochIntent, receiptDigest: z.string().min(1) };
+const nanoHostEpochReceipt = z.discriminatedUnion('disposition', [
+  z.strictObject({
+    ...nanoHostReceiptFields,
+    disposition: z.literal('applied'),
+    result: z.strictObject({ fencedHolderReceiptIds: nanoHostHolderIds }),
+  }),
+  z.strictObject({
+    ...nanoHostReceiptFields,
+    disposition: z.literal('refused'),
+    reason: z.string().min(1),
+  }),
+]) satisfies z.ZodType<NanoHostEpochReceipt>;
+
+const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('transport'), input: ControlNanoHostTransportInputSchema }),
+  z.strictObject({ kind: z.literal('runtime-target'), input: ControlRuntimeTargetInputSchema }),
+  z.strictObject({ kind: z.literal('begin-retirement'), input: nanoHostEpochPlacement }),
+  z.strictObject({ kind: z.literal('stage-invalidation'), input: nanoHostEpochIntent }),
+  z.strictObject({ kind: z.literal('settle-invalidation'), input: nanoHostEpochReceipt }),
+]);
+
+/** Original local tuples posted only on a specific acknowledged NanoHost opening. */
+export type NanoHostOwnerMutation =
+  | { readonly kind: 'transport'; readonly input: ControlNanoHostTransportInput }
+  | { readonly kind: 'runtime-target'; readonly input: ControlRuntimeTargetInput }
+  | { readonly kind: 'begin-retirement'; readonly input: NanoHostEpochPlacement }
+  | { readonly kind: 'stage-invalidation'; readonly input: NanoHostEpochInvalidation }
+  | { readonly kind: 'settle-invalidation'; readonly input: NanoHostEpochReceipt };
+
+const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('transport'), value: ControlNanoHostTransportResultSchema }),
+  z.strictObject({ kind: z.literal('runtime-target'), value: ControlRuntimeTargetResultSchema }),
+  z.strictObject({ kind: z.literal('begin-retirement'), value: z.null() }),
+  z.strictObject({ kind: z.literal('stage-invalidation'), value: z.null() }),
+  z.strictObject({ kind: z.literal('settle-invalidation'), value: z.null() }),
+]);
+
+/** Correlates the original tuple's local result with the covering FULL acknowledgement. */
+export type NanoHostOwnerMutationResult = z.infer<typeof nanoHostOwnerResultSchema>;
+
+const nanoHostOwnerRefusalSchema = ControlRuntimeTargetRefusalSchema.extend({
+  operation: z.literal('nanohost-owner'),
+});
+
 /**
  * Trusted internal database-worker requests.
  *
@@ -840,6 +912,11 @@ export type ControlWorkerCommand =
           readonly policyRead?: true;
         }
       | { readonly operation: 'nanohost-transport'; readonly input: ControlNanoHostTransportInput }
+      | {
+          readonly operation: 'nanohost-owner';
+          readonly openingRequestId: number;
+          readonly mutation: NanoHostOwnerMutation;
+        }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
       | {
@@ -1164,6 +1241,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlCoreJournalRefusalSchema>
   | z.infer<typeof ControlWorkerImageRefusalSchema>
   | z.infer<typeof ControlRuntimeTargetRefusalSchema>
+  | z.infer<typeof nanoHostOwnerRefusalSchema>
   | z.infer<typeof ControlBackendSessionRefusalSchema>
   | z.infer<typeof ControlHarnessLifecycleRefusalSchema>
   | z.infer<typeof ControlRecoveryTargetRegistrationRefusalSchema>
@@ -1242,6 +1320,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'recovery-safety';
       readonly result: ControlRecoverySafetyResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'nanohost-owner';
+      readonly result: NanoHostOwnerMutationResult;
     }
   | {
       readonly status: 'ok';
@@ -1656,6 +1739,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlCoreJournalRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'worker-image')
     return ControlWorkerImageRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'nanohost-owner')
+    return nanoHostOwnerRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'runtime-target')
     return ControlRuntimeTargetRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'backend-session')
@@ -1814,6 +1899,11 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'runtime-policy-publication')
     return RuntimePolicyPublicationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'vault') return ControlVaultResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'nanohost-owner')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      nanoHostOwnerResultSchema.safeParse(reply.result).success
+    );
   if (reply.operation === 'nanohost-transport')
     return ControlNanoHostTransportResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'better-auth')
@@ -2416,6 +2506,13 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     }
     return Buffer.byteLength(JSON.stringify(boundedInput)) <= CONTROL_PRODUCT_LIMITS.payloadBytes;
   }
+  if (value.operation === 'nanohost-owner')
+    return (
+      exactFields(value, [...scoped, 'openingRequestId', 'mutation']) &&
+      Number.isSafeInteger(value.openingRequestId) &&
+      (value.openingRequestId as number) >= 0 &&
+      nanoHostOwnerMutationSchema.safeParse(value.mutation).success
+    );
   if (value.operation === 'nanohost-transport')
     return (
       exactFields(value, [...scoped, 'input']) &&
