@@ -223,6 +223,10 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       bindingRef: sandboxBindingRef,
     });
     await seedSyntheticLocalSchedulerTarget(fixtureRoot);
+    const { reopenAdmittedTestNanoHost } = await import(
+      '../../nanocore/dist/test-support/admitted-nanohost.js'
+    );
+    await reopenAdmittedTestNanoHost(coreDb);
     const entered = Promise.withResolvers<void>();
     const simulator = new SimulatedTurnExecutor({ coreDb });
     const submit = simulator.submit.bind(simulator);
