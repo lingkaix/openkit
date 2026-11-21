@@ -7,6 +7,7 @@ import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
+import { createTestServerWorkStore } from './test-support/server-work-store.js';
 import { disposeTestStore } from './test-support/store.js';
 
 function createConfiguredProviderOptions(gateway: { enabled?: boolean } = {}) {
@@ -91,9 +92,11 @@ describe('LLM gateway policy controls', () => {
 
   it('records allowed gateway chat completion policy decisions', async () => {
     const coreDb = createTestCoreDb();
+    const provider = createConfiguredProviderOptions();
     const app = createApp({
-      ...createConfiguredProviderOptions(),
+      ...provider,
       coreDb,
+      store: await createTestServerWorkStore(coreDb, provider),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async (_provider, request) => ({
           id: 'chatcmpl_policy_allowed',

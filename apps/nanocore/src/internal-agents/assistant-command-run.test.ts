@@ -18,7 +18,6 @@ import {
 } from '../catalog/resource-catalog.js';
 import * as knowledgeOverview from '../context/knowledge-overview.js';
 import { compactWorkspaceEvidenceBundles, readWorkObservationBody } from '../evidence-bundles.js';
-import { FsStore } from '../lib/store.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { ModelCaptureError, withTurnModelCapture } from '../llm/model-capture.js';
 import type { OpenAICompatibleResponsesResponse } from '../llm/openai-compatible-client.js';
@@ -26,13 +25,14 @@ import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import * as retrievalKnowledge from '../retrieval-knowledge-adapter.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import * as workRecords from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -61,7 +61,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -112,7 +112,7 @@ async function fixture(selected = true, description?: string, history = false) {
   databases.push(coreDb);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Assistant command run');
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -1356,7 +1356,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
 
   it('propagates real append refusal as ModelCaptureError with zero dispatch', async () => {
     const f = await fixture();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     const nativeTurnBefore = f.workspaceDb.sqlite
       .prepare('SELECT * FROM control_turns WHERE id=?')
       .get(f.turn.id);
@@ -1379,7 +1379,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(
       f.workspaceDb.sqlite.prepare('SELECT * FROM control_turns WHERE id=?').get(f.turn.id)
     ).toEqual(nativeTurnBefore);
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     f.workspaceDb.sqlite.exec('DROP TRIGGER fail_assistant_environment_append');
     // Removing only the fault lets the same real capture owner commit, without a Provider effect.
     await expect(
@@ -1404,7 +1404,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
 
   it('rejects missing persisted capture admission before dispatch', async () => {
     const f = await fixture();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     const nativeTurnBefore = f.workspaceDb.sqlite
       .prepare('SELECT * FROM control_turns WHERE id=?')
       .get(f.turn.id) as { record_json: string };

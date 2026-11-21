@@ -14,8 +14,7 @@ import {
   internalContextSourceDigest,
   prepareInternalAgentContext,
 } from './internal-agents/rolling-context.js';
-import { FsStore } from './lib/store.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import type { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { readTurnRetrievalTraces } from './storage/retrieval-traces.js';
@@ -27,6 +26,8 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { createTestServerWorkStore } from './test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
@@ -47,12 +48,12 @@ async function deployment() {
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Portable context');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
   const app = createApp({ dataRoot, coreDb, store });
@@ -413,7 +414,7 @@ describe('Assistant conversation context portability', () => {
         .listThreadItems(source.workspace.id, source.thread.id)
         .filter((item) => item.type !== 'context-summary')
     ).toEqual(source.originals);
-    source.store = new FsStore({ dataRoot: source.dataRoot });
+    source.store = await createTestServerWorkStore(source.coreDb);
     const turn = await admit(source, source.workspace.id, source.thread.id);
     await message(source, turn, 'user-message', currentText);
     const request = context(source, turn, 16_000);

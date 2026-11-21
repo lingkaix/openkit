@@ -55,7 +55,6 @@ import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-gover
 import { prepareWorkerTurnContextPackage } from './runtime/worker-governance-turn-executor.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -75,6 +74,8 @@ import { recordTestNativeRuntimeTarget } from './test-support/native-environment
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { createTestQueueEntry } from './test-support/scheduler-admissions.js';
+import { createTestServerWorkStore } from './test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 // Storage 65: accepted queued work must not retain an invocation-owned Main reader.
@@ -234,7 +235,7 @@ async function fixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const initial = new FsStore({ dataRoot });
   const workspace = {
     ...createDemoWorkspaceForUser(LOCAL_USER_ID).workspace,
     id: allocateEntityId('ws'),
@@ -243,11 +244,12 @@ async function fixture(
     counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
   };
   const { timeline: thread } = await seedRetainedPersonalWorkspace(
-    store,
+    initial,
     LOCAL_USER_ID,
     workspace,
     privateThreadNames
   );
+  const store = await createTestServerWorkStore(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
   const old = await store.createTurn(workspace.id, thread.id, 'Private prior context.', {
     kind: 'user',
@@ -342,7 +344,7 @@ async function fixture(
     launches.mockRestore();
     if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const requestId = randomUUID();
@@ -769,7 +771,7 @@ describe('Assistant semantic Task handoff', () => {
       );
       expect(originalReceipt).not.toBeNull();
       if (restart) {
-        f.store = new FsStore({ dataRoot: f.dataRoot });
+        f.store = await createTestServerWorkStore(f.coreDb);
         f.app = f.makeApp(f.store);
         expect(
           f.store
@@ -1005,7 +1007,7 @@ describe('Assistant semantic Task handoff', () => {
       const gate = new Int32Array(queuedTaskReaders.gate!);
       queuedTaskReaders.updateCount();
       Atomics.store(gate, 0, 1);
-      await expect(shutdownControlStoreWorkerClient()).resolves.toBeUndefined();
+      await expect(shutdownTestStoreWorker()).resolves.toBeUndefined();
       expect(liveQueuedTaskWorkspaceReaders()).toEqual([]);
       expect(Atomics.load(gate, 1)).toBe(0);
       expect(Atomics.load(gate, 2)).toBeGreaterThan(0);

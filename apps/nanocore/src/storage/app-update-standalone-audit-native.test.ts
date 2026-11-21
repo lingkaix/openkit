@@ -442,6 +442,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'catalog.skill-remove.admit',
     'catalog.skill-select',
     'catalog.skill-select.admit',
+    'core.protocol.invalid_delta',
     'data_source_catalog.authority.update',
     'mcp.server.lifecycle.degraded',
     'mcp.server.lifecycle.failed',

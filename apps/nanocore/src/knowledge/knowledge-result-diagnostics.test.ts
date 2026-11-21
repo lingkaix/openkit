@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { call, calls, fixture, latestToolOutput } from '../test-support/knowledge-result.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
@@ -188,5 +188,5 @@ it('makes the actual Claim confidence refusal actionable without publishing', as
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
 });

@@ -11,10 +11,8 @@ import {
   saveMemoryPage,
 } from '../knowledge/memory-lifecycle.js';
 import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
-import { FsStore } from '../lib/store.js';
 import { threadReadable } from '../retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
@@ -25,6 +23,8 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readRetrievalTrace } from '../storage/retrieval-traces.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openAssistantTimeline } from './assistant-timeline.js';
 import { runInternalAgentLoop } from './internal-agent-loop.js';
@@ -49,7 +49,7 @@ async function fixture(selected = false, workspaceOwnerUserId?: string) {
     await closeRetrievalServices();
     userDb.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const actor = {
@@ -57,7 +57,7 @@ async function fixture(selected = false, workspaceOwnerUserId?: string) {
     userId,
   };
   const actorRef = { kind: 'user' as const, id: userId };
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Context source verification');
   if (workspaceOwnerUserId)
     coreDb.sqlite

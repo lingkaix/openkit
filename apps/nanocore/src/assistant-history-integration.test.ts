@@ -17,9 +17,9 @@ import {
   getRetrievalService,
   RetrievalService,
 } from './retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
 import {
@@ -32,6 +32,8 @@ import {
 } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
+import { createTestServerWorkStore } from './test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const PAST_QUERY = 'cedarneedle';
@@ -100,12 +102,12 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   onTestFinished(async () => {
     await closeRetrievalServices();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const initial = new FsStore({ dataRoot });
   const workspace = {
     ...createDemoWorkspaceForUser(LOCAL_USER_ID).workspace,
     id: allocateEntityId('ws'),
@@ -113,7 +115,10 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
     kind: 'general' as const,
     counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
   };
-  const retained = await seedRetainedPersonalWorkspace(store, LOCAL_USER_ID, workspace);
+  const retained = await seedRetainedPersonalWorkspace(initial, LOCAL_USER_ID, workspace);
+  const store = await createTestServerWorkStore(coreDb, {
+    gatewayConfig: createTestGatewayConfig({ logicalModelId: 'history-test' }),
+  });
   const past = retained.retained!;
   const otherWorkspace = await store.createWorkspace('Other history ownership');
   for (const entry of [workspace, otherWorkspace]) {

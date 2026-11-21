@@ -31,7 +31,6 @@ import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { pendingRequestItemId, readPendingRequest } from './runtime/pending-requests.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import {
   publishImmutableProductJson,
@@ -57,7 +56,15 @@ import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
-import { createTestStore, disposeTestStore } from './test-support/store.js';
+import {
+  createTestServerWorkDemoStore,
+  createTestServerWorkStore,
+} from './test-support/server-work-store.js';
+import {
+  createTestStore,
+  disposeTestStore,
+  shutdownTestStoreWorker,
+} from './test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -313,13 +320,13 @@ async function stoppedChatReplayCopy(
     scope: ReturnType<typeof nativeProductScope>
   ) => void | Promise<void>
 ) {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   if (source.coreDb.sqlite.open) source.coreDb.sqlite.close();
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-stopped-corruption-'));
   cpSync(source.dataRoot, dataRoot, { recursive: true });
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
@@ -328,7 +335,7 @@ async function stoppedChatReplayCopy(
   const app = createAppWithWorkspaceAuthority(
     await confirmContextDefaultsForApp({ ...options, coreDb, dataRoot, store })
   );
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   const scope = nativeProductScope(dataRoot, {
     kind: 'workspace',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -404,7 +411,7 @@ describe('quick chat app API', () => {
         coreDb.sqlite.close();
         rmSync(dataRoot, { recursive: true, force: true });
       });
-      const store = await createDemoStore({ dataRoot });
+      const store = await createTestServerWorkDemoStore(coreDb);
       await retainDemoSharedConversation(store);
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -739,7 +746,7 @@ describe('quick chat app API', () => {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
       onTestFinished(async () => {
-        await shutdownControlStoreWorkerClient();
+        await shutdownTestStoreWorker();
         coreDb.sqlite.close();
         rmSync(dataRoot, { recursive: true, force: true });
       });
@@ -997,7 +1004,7 @@ describe('quick chat app API', () => {
   it('scopes existing Worker targets to this conversation and preserves truthful availability', async () => {
     const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-worker-targets-'));
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       closeWorkspaceProductReadHandles(storeRoot);
       rmSync(storeRoot, { recursive: true, force: true });
     });
@@ -1140,7 +1147,7 @@ describe('quick chat app API', () => {
   it('rejects an administration Thread at the ordinary conversation entry', async () => {
     const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-administration-entry-'));
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       closeWorkspaceProductReadHandles(storeRoot);
       rmSync(storeRoot, { recursive: true, force: true });
     });
@@ -1181,7 +1188,7 @@ describe('quick chat app API', () => {
   it('falls back only to the configured default Worker when Assistant is unavailable', async () => {
     const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-default-worker-'));
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       closeWorkspaceProductReadHandles(storeRoot);
       rmSync(storeRoot, { recursive: true, force: true });
     });
@@ -1398,7 +1405,7 @@ describe('quick chat app API', () => {
     });
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    const store = await createTestServerWorkDemoStore(coreDb);
     await retainDemoSharedConversation(store);
     const otherThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -1509,7 +1516,7 @@ describe('quick chat app API', () => {
     );
 
     // Reconstruct the app and store so continuity cannot depend on their in-memory history.
-    const reloadedStore = new FsStore({ dataRoot });
+    const reloadedStore = await createTestServerWorkStore(coreDb);
     expect(
       reloadedStore.listThreadItems(
         'ws_00000000-0000-7000-8000-000000000001',
@@ -1674,7 +1681,7 @@ describe('quick chat app API', () => {
     ensureLocalUser(coreDb);
 
     try {
-      const store = await createDemoStore({ dataRoot });
+      const store = await createTestServerWorkDemoStore(coreDb);
       const workspace = await store.createWorkspace('Chat usage lineage');
       const thread = await store.createThread(workspace.id, 'Chat usage lineage');
       await retainSharedAssistantTurn(
@@ -2434,13 +2441,13 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-clarify-'));
     const coreDb = openCoreDb(dataRoot);
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    const store = await createTestServerWorkDemoStore(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -2783,7 +2790,7 @@ describe('quick chat app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    const store = await createTestServerWorkDemoStore(coreDb);
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private Goal discussion',
@@ -3006,7 +3013,7 @@ describe('quick chat app API', () => {
         if (coreDb.sqlite.open) coreDb.sqlite.close();
         rmSync(dataRoot, { recursive: true, force: true });
       });
-      const store = await createDemoStore({ dataRoot });
+      const store = await createTestServerWorkDemoStore(coreDb);
       const thread = await store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         'Private assistant',
@@ -3779,7 +3786,7 @@ describe('Assistant execution deadline', () => {
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
 });
 
 describe('personal Workspace mode', () => {

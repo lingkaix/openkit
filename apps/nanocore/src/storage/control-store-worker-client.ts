@@ -3734,6 +3734,7 @@ class ControlStoreWorkerClient {
         try {
           return { state: 'ready', value: await operation() };
         } catch (error) {
+          if (error instanceof ItemDeltaProtocolError) throw error;
           return serverOwnerUnavailable(owner, error);
         }
       };
@@ -8717,7 +8718,7 @@ class ControlStoreWorkerClient {
         value.id,
         undefined,
         value.commit === 'not-committed' && value.domain?.code === 'core.protocol.invalid_delta'
-          ? new ItemDeltaProtocolError(undefined, true)
+          ? new ItemDeltaProtocolError(undefined, entry.command.operation !== 'server-work-owner')
           : (entry.command.operation === 'products' || entry.command.operation === 'transition') &&
               value.commit === 'not-committed' &&
               value.domain &&

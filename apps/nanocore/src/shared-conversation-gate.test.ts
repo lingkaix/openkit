@@ -6,7 +6,6 @@ import { ConversationTargetCatalogSchema, type OperationId } from '@openkit/app-
 import { expect, it, onTestFinished } from 'vitest';
 import { ProviderRegistry } from './providers/registry.js';
 import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
@@ -14,6 +13,8 @@ import { createDemoStore, retainSharedAssistantTurn } from './test-support/demo-
 import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
+import { createTestServerWorkDemoStore } from './test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 
 async function request(
   app: { request: (...args: unknown[]) => Promise<Response> },
@@ -33,7 +34,7 @@ async function request(
 
 it('refuses a new shared Assistant conversation and keeps an existing one writable', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'shared-conversation-gate-'));
-  const store = await createDemoStore({ dataRoot });
+  const store = await createTestServerWorkDemoStore(dataRoot);
   const workspace = await store.createWorkspace('Team');
   const app = createAppWithWorkspaceAuthority(
     await confirmContextDefaultsForApp({
@@ -88,7 +89,7 @@ it('refuses a new shared Assistant conversation and keeps an existing one writab
     })
   );
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
 
@@ -228,7 +229,7 @@ it('does not treat a Worker handoff as an existing shared Assistant conversation
     })
   );
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const created = await request(app, 'thread.create', {

@@ -1,5 +1,4 @@
 // openkit-test-platform: posix
-// This L2 runner double proves native assembly and notebook effects, not model comprehension.
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,14 +14,15 @@ import type {
   KnowledgeManagerAgentRun,
   ServerKnowledgeManagerAgentRun,
 } from '../internal-agents/knowledge-manager-agent.js';
-import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+// This L2 runner double proves native assembly and notebook effects, not model comprehension.
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
@@ -114,7 +114,7 @@ async function fixture(scope: Scope, enabled = false) {
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Typed authoring', {
     requestId: randomUUID(),
     producer: actor,
@@ -284,7 +284,7 @@ async function fixture(scope: Scope, enabled = false) {
     workspaceDb.sqlite.close();
     userDb.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

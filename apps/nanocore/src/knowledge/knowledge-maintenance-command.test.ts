@@ -19,11 +19,12 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
@@ -42,7 +43,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'user' as const, id: userId };
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Maintenance command proof', {
     requestId: randomUUID(),
     producer: actor,
@@ -55,7 +56,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     await closeRetrievalServices();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const selectNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);

@@ -50,10 +50,7 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import {
-  ControlStoreWorkerError,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -80,6 +77,8 @@ import {
 } from '../test-support/prepared-agent-environment.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -140,7 +139,7 @@ async function retainCompletedTaskFixture(
   turnId: string,
   closeSession = true
 ): Promise<void> {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   const dataRoot = store.getDataRoot()!;
   const records = loadWorkspaceFileRecords(dataRoot).find(
     (entry) => entry.workspace.id === db.workspaceId
@@ -276,7 +275,7 @@ async function retainCompletedTaskFixture(
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
@@ -309,7 +308,7 @@ async function fixture(
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Goal Policy consumers');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const db = openWorkspaceDb(dataRoot, workspace.id);

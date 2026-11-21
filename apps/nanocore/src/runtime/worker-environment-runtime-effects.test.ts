@@ -5,11 +5,14 @@ import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { getLocalUserId } from '../auth/identity.js';
-import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
 import { disposeTestStore } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
@@ -85,10 +88,11 @@ describe('Worker environment runtime effects', () => {
     applyMigrations(coreDb);
     // Real Server history supplies provenance without inventing a Workspace or identity.
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
-    const store = new FsStore({ dataRoot: root });
-    const thread = await store.createServerThread(
+    const store = await createTestServerWorkStore(coreDb);
+    const thread = await createTestServerThread(
+      store,
+      coreDb,
       'Administrative image preparation',
-      undefined,
       'conversation'
     );
     const publicationTurn = await store.createServerTurn(
@@ -98,7 +102,7 @@ describe('Worker environment runtime effects', () => {
     );
     expect(getLocalUserId(coreDb)).toBe(actor.id);
     expect(
-      new FsStore({ dataRoot: root }).getServerTurn(thread.id, publicationTurn.id)
+      (await createTestServerWorkStore(coreDb)).getServerTurn(thread.id, publicationTurn.id)
     ).toMatchObject({
       id: publicationTurn.id,
       owner: { kind: 'server' },
@@ -197,10 +201,11 @@ describe('Worker environment runtime effects', () => {
     applyMigrations(coreDb);
     // Keep the same recorded caller when the controlled Host reports mismatch or failure.
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
-    const store = new FsStore({ dataRoot: root });
-    const thread = await store.createServerThread(
+    const store = await createTestServerWorkStore(coreDb);
+    const thread = await createTestServerThread(
+      store,
+      coreDb,
       'Administrative local image preparation',
-      undefined,
       'conversation'
     );
     const publicationTurn = await store.createServerTurn(
@@ -210,7 +215,7 @@ describe('Worker environment runtime effects', () => {
     );
     expect(getLocalUserId(coreDb)).toBe(actor.id);
     expect(
-      new FsStore({ dataRoot: root }).getServerTurn(thread.id, publicationTurn.id)
+      (await createTestServerWorkStore(coreDb)).getServerTurn(thread.id, publicationTurn.id)
     ).toMatchObject({
       id: publicationTurn.id,
       owner: { kind: 'server' },

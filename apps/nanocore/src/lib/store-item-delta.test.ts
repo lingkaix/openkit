@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { allocateEntityId, type Item, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
 import {
   closeTestCoreDb,
   createTestCoreDb,
@@ -168,10 +173,14 @@ describe('Item delta publication protocol', () => {
     expect(f.store.getTurnEventsForExport(f.turn.id)).toHaveLength(2);
   });
 
-  it('applies the same rule to the Server transcript and audits the refusal', async () => {
+  it.each(['ordinary', 'terminal'] as const)('audits %s Server delta refusal', async (kind) => {
     const f = await fixture();
-    const thread = await f.store.createServerThread('Server deltas');
-    const turn = await f.store.createServerTurn(thread.id, 'Work', actor);
+    const coreDb = createTestCoreDb(f.dataRoot);
+    onTestFinished(() => closeTestCoreDb(coreDb));
+    ensureLocalUser(coreDb);
+    const store = await createTestServerWorkStore(coreDb);
+    const thread = await createTestServerThread(store, coreDb, 'Server deltas');
+    const turn = await store.createServerTurn(thread.id, 'Work', actor);
     const item = {
       ...f.item,
       id: allocateEntityId('it'),
@@ -179,32 +188,53 @@ describe('Item delta publication protocol', () => {
       threadId: thread.id,
       turnId: turn.id,
     };
-    await f.store.createServerItem(item);
-    await expect(
-      f.store.persistServerTurnEvent(turn.id, {
-        threadId: thread.id,
-        turnId: turn.id,
-        event: 'item.delta',
-        data: {
-          type: 'item-delta',
-          itemId: item.id,
-          itemType: 'assistant-message',
-          deltaKind: 'indexed-text-delta',
-          partId: 'orphan',
-          delta: 'text',
-        },
-      })
-    ).rejects.toMatchObject({ code: 'core.protocol.invalid_delta' });
-    expect(f.store.getServerTurnTranscript(turn.id)).toEqual([]);
-    const coreDb = createTestCoreDb(f.dataRoot);
+    await store.createServerItem(item);
+    const retained = store.getServerTurnById(turn.id);
+    const event = {
+      threadId: thread.id,
+      turnId: turn.id,
+      event: 'item.delta',
+      data: {
+        type: 'item-delta',
+        itemId: item.id,
+        itemType: 'assistant-message',
+        deltaKind: 'indexed-text-delta',
+        partId: 'orphan',
+        delta: 'text',
+      },
+    } as const;
+    const attempt =
+      kind === 'terminal'
+        ? store.completeTurn(
+            turn.id,
+            { status: 'completed', completedAt: new Date().toISOString() },
+            { precedingEvents: [{ ...event, workspaceId: f.workspace.id }] }
+          )
+        : store.persistServerTurnEvent(turn.id, event);
+    await expect(attempt).rejects.toMatchObject({
+      code: 'core.protocol.invalid_delta',
+      status: 409,
+    });
+    expect(store.getServerTurnById(turn.id)).toEqual(retained);
+    expect(store.getServerTurnTranscript(turn.id)).toEqual([]);
     try {
       expect(
         listServerAuditEvents(coreDb).filter((event) => event.turnId === turn.id)
       ).toMatchObject([
         {
+          workspaceId: null,
+          threadId: thread.id,
+          turnId: turn.id,
+          itemId: null,
+          actor: null,
+          resource: null,
+          category: 'system',
           action: 'core.protocol.invalid_delta',
           errorCode: 'core.protocol.invalid_delta',
           protocolVersion: PROTOCOL_VERSION,
+          outcome: 'denied',
+          severity: 'warning',
+          summary: 'Item delta violates the declared Item protocol.',
         },
       ]);
     } finally {

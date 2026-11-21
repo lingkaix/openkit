@@ -1,26 +1,29 @@
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
-import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
-import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import {
-  prepareControlKnowledgeAuthorityTransfer,
-  readControlKnowledgeHead,
-} from './control-store-knowledge.js';
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import {
+  createTestCoreDb,
+  createTestStore,
+  disposeTestStore,
+  shutdownTestStoreWorker,
+} from '../test-support/store.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './db.js';
-import { applyNativeScopeMigrations, listAppliedNativeMigrationIds } from './migrate.js';
+import { withServerWorkProducer } from './server-work-command.js';
 import * as products from './workspace-file-records.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
@@ -131,9 +134,13 @@ describe('TB1 independent Thread-scoped behavior', () => {
     expect(after.slice(0, 5).map((row) => row.admissionOrder)).toEqual(keys);
   });
 
-  it('keeps Server Turn admission order through Core metadata updates and reopen', async () => {
-    const { dataRoot, store } = await fixture();
-    const thread = await store.createServerThread('Server admission behavior');
+  it('keeps Server Turn admission order through owner metadata updates and reopen', async () => {
+    const { dataRoot } = await fixture();
+    const coreDb = createTestCoreDb(dataRoot);
+    onTestFinished(() => coreDb.sqlite.close());
+    ensureLocalUser(coreDb);
+    const store = await createTestServerWorkStore(coreDb);
+    const thread = await createTestServerThread(store, coreDb, 'Server admission behavior');
     const first = await store.createServerTurn(thread.id, 'First', actor, null, {
       startedAt: '2026-11-08T12:00:00.000Z',
     });
@@ -144,7 +151,7 @@ describe('TB1 independent Thread-scoped behavior', () => {
     const second = await store.createServerTurn(thread.id, 'Second', actor, null, {
       startedAt: '2026-11-08T11:00:00.000Z',
     });
-    const scope = nativeProductScope(dataRoot, { kind: 'server' });
+    const scope = store.getServerWorkReadScope();
     const before = [...products.readNativeThreadTurnPages(scope, thread.id)].flat();
     await store.updateServerTurn(second.id, { configVersion: 4 });
     await store.completeTurn(second.id, {
@@ -155,24 +162,28 @@ describe('TB1 independent Thread-scoped behavior', () => {
       status: 'pending',
     });
     const retained = products.readNativeProduct(scope, 'turn', pending.id)!;
-    await getControlStoreWorkerClient().products(`core:${scope.path}`, {
-      products: [
-        {
-          kind: 'turn',
-          expectedRevision: retained.revision,
-          record: { ...retained.record, startedAt: null },
-        },
-      ],
-      entries: [],
-    });
+    const binding = store.getServerWorkBinding()!;
+    const applied = await withServerWorkProducer(binding, () =>
+      binding.owner.publishTurnProgress!(store.getServerTurnAdmission(pending.id), {
+        products: [
+          {
+            kind: 'turn',
+            expectedRevision: retained.revision,
+            record: { ...retained.record, startedAt: null },
+          },
+        ],
+        entries: [],
+      })
+    );
+    expect(applied.state).toBe('ready');
     const expected = [first.id, second.id, pending.id];
     expect(store.listServerThreadTurns(thread.id).map((turn) => turn.id)).toEqual(expected);
     const after = [...products.readNativeThreadTurnPages(scope, thread.id)].flat();
     expect(after.slice(0, 2).map((row) => row.admissionOrder)).toEqual(
       before.map((row) => row.admissionOrder)
     );
-    await shutdownControlStoreWorkerClient();
-    const reopened = createTestStore({ dataRoot });
+    await shutdownTestStoreWorker();
+    const reopened = await createTestServerWorkStore(coreDb);
     expect(reopened.listServerThreadTurns(thread.id).map((turn) => turn.id)).toEqual(expected);
     expect(reopened.listServerThreadTurns(thread.id)[2]?.startedAt).toBeNull();
   });

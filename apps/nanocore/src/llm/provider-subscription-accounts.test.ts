@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -30,17 +31,17 @@ import {
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
-import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import {
+  listServerCapabilityCalls,
+  listWorkspaceCapabilityCalls,
+} from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from '../config/runtime-config.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -54,6 +55,11 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import {
+  createTestServerWorkStore,
+  testServerWorkOptions,
+} from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { closeRevokedCredentialBindings } from '../vault/vault-operation-implementations.js';
@@ -290,7 +296,7 @@ const fixtures = new Set<ProviderSubscriptionFixture>();
 const extraTemporaryRoots = new Set<string>();
 
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -1134,6 +1140,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         coreDb: fixture.coreDb,
         providerSubscriptionAccountManager: fixture.manager,
         runtimeConfigManager: manager,
+        store: await createTestServerWorkStore(fixture.coreDb, manager),
         llmGatewayDispatcher: {
           createChatCompletion: dispatched,
         } as unknown as LLMGatewayProviderDispatcher,
@@ -4998,7 +5005,23 @@ async function createObservedInferenceRouteFixture(
     models: [{ id: providerModel.replace('openai-codex/', '') }],
   });
   models.setProvider({ ...faux.provider, auth: stock.auth });
-  const store = await createDemoStore({ dataRoot: fixture.dataRoot });
+  const gatewayConfig = {
+    schemaVersion: 1,
+    enabled: true,
+    defaultLogicalModelId: 'observed-tier',
+    logicalModels: [
+      {
+        id: 'observed-tier',
+        displayName: 'Observed',
+        contextManagement: [{ type: 'compaction', compactThreshold: 8000 }],
+        routes: [{ id: 'authored-primary', providerProfileId: 'observed-provider', providerModel }],
+      },
+    ],
+  };
+  const server = worker
+    ? undefined
+    : await testServerWorkOptions(fixture.coreDb, { gatewayConfig });
+  const store = await createDemoStore({ dataRoot: fixture.dataRoot, ...server });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -5079,21 +5102,7 @@ async function createObservedInferenceRouteFixture(
     store,
     providerSubscriptionAccountManager: fixture.manager,
     ...(workerControlGateway ? { workerControlGateway } : {}),
-    gatewayConfig: {
-      schemaVersion: 1,
-      enabled: true,
-      defaultLogicalModelId: 'observed-tier',
-      logicalModels: [
-        {
-          id: 'observed-tier',
-          displayName: 'Observed',
-          contextManagement: [{ type: 'compaction', compactThreshold: 8000 }],
-          routes: [
-            { id: 'authored-primary', providerProfileId: 'observed-provider', providerModel },
-          ],
-        },
-      ],
-    },
+    gatewayConfig,
     providerRegistry: new ProviderRegistry([
       {
         id: 'observed-provider',
@@ -5106,7 +5115,7 @@ async function createObservedInferenceRouteFixture(
     ]),
     llmGatewayDispatcher: new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() }),
   });
-  return { fixture, pair, handle, faux, app, turn, token, providerModel };
+  return { fixture, pair, handle, faux, app, turn, token, providerModel, server };
 }
 
 describe('inference route same-credential rejection', () => {
@@ -5134,11 +5143,15 @@ describe('inference route same-credential rejection', () => {
           const reject = async (_context: unknown, options: StreamOptions | undefined) => {
             // This controlled native source emits only a framing event before its classified rejection.
             // Invoke the installed pre-conversion hook so the Worker can prove its complete empty output.
+            const model = f.handle.models.getModel(
+              subscriptionProviderId,
+              f.providerModel.replace('openai-codex/', '')
+            )!;
+            if (!route.worker && subscriptionProviderId === 'openai-codex') {
+              // The faux source has no serializer. Preserve the final admission before contact.
+              await options?.onPayload?.({ model: model.id, input: 'Hello' }, model);
+            }
             if (route.worker) {
-              const model = f.handle.models.getModel(
-                subscriptionProviderId,
-                f.providerModel.replace('openai-codex/', '')
-              )!;
               await options?.onProviderStreamEvent?.(
                 subscriptionProviderId === 'openai-codex'
                   ? {
@@ -5254,6 +5267,12 @@ describe('inference route same-credential rejection', () => {
             // Codex native admission excludes public metadata; Worker scope supplies its durable attribution.
             if (!route.worker && subscriptionProviderId === 'openai-codex') {
               expect(calls).toHaveLength(0);
+              const serverCalls = listServerCapabilityCalls(
+                f.fixture.coreDb,
+                f.server?.serverWorkReader
+              );
+              expect(serverCalls).toHaveLength(2);
+              expect(serverCalls.map(({ status }) => status)).toEqual(['failed', 'failed']);
               return;
             }
             expect(calls).toHaveLength(2);
@@ -6266,7 +6285,7 @@ describe('Codex settings and manual reset public behavior', () => {
         { credit_id: 'soon-credit', redeem_request_id: redeemRequestId },
       ]);
     } finally {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       reopened.sqlite.close();
     }
   });

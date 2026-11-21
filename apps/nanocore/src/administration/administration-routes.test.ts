@@ -17,10 +17,7 @@ import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createProviderCredentialConfigured } from '../providers/vault-credential-resolver.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -28,6 +25,8 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
+import { createTestServerWorkDemoStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   ADMINISTRATION_TOOL_NAMES,
@@ -56,7 +55,7 @@ vi.mock('../internal-agents/profile-resolver.js', async (importOriginal) => {
 const openDatabases: CoreDb[] = [];
 
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const database of openDatabases.splice(0)) database.sqlite.close();
   profileResolverFixture.resolveInternalRoleProfile.mockReset();
   if (profileResolverFixture.actual) {
@@ -180,7 +179,7 @@ describe('administration conversation route', () => {
           const workspaceId = quickChatWorkspaceIdForUser(thread.privateOwnerUserId!);
           privateThreadId = thread.id;
           expect(store.listThreadTurns(workspaceId, thread.id)).toEqual([]);
-          await shutdownControlStoreWorkerClient();
+          await shutdownTestStoreWorker();
           const database = openWorkspaceDb(store.getDataRoot()!, workspaceId);
           closeDatabase = () => database.sqlite.close();
           const original = database.sqlite
@@ -487,7 +486,6 @@ describe('administration conversation route', () => {
       tokenWorkspaceIds: [],
       userId: 'usr_00000000-0000-7000-8000-000000000001',
     };
-    const store = await createDemoStore({ dataRoot });
     const providerProfile = {
       baseUrl: 'https://provider.invalid/v1',
       displayName: 'Provider',
@@ -528,6 +526,7 @@ describe('administration conversation route', () => {
       },
       providerRegistry: new ProviderRegistry([providerProfile]),
     });
+    const store = await createTestServerWorkDemoStore(coreDb, snapshot);
     const createResponses = vi
       .fn()
       .mockResolvedValueOnce({

@@ -18,14 +18,12 @@ import {
 } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createVaultProviderCredentialResolver } from '../providers/vault-credential-resolver.js';
-import {
-  ControlStoreWorkerError,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { openTestNativeWorkspace } from '../test-support/store.js';
+import { testServerWorkOptions } from '../test-support/server-work-store.js';
+import { openTestNativeWorkspace, shutdownTestStoreWorker } from '../test-support/store.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
@@ -109,7 +107,7 @@ describe('dispatchLogicalModel member selection', () => {
         consumerWorkspaceId: workspaceId,
       });
     } finally {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -642,7 +640,7 @@ async function gatewayVaultFixture(ids: readonly string[], model = 'model') {
 afterEach(async () => {
   for (const release of gatewayNativeReleases.splice(0)) release();
   while (gatewayNativeOperations.size) await Promise.all([...gatewayNativeOperations]);
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   vi.restoreAllMocks();
   for (const close of gatewayNativeFixtures.splice(0)) close();
 });
@@ -745,6 +743,7 @@ it.each(['acknowledged', 'native-exit'] as const)(
     registerLlmGatewayRoutes({
       app,
       coreDb: f.coreDb,
+      serverWork: (await testServerWorkOptions(f.coreDb, snapshot)).serverWork,
       llmGatewayDispatcher: dispatcher,
       providerCredentialConfigured: () => true,
       resolveGatewayProvider: resolve,
@@ -971,6 +970,7 @@ it.each([
     registerLlmGatewayRoutes({
       app,
       coreDb: f.coreDb,
+      serverWork: (await testServerWorkOptions(f.coreDb, snapshot)).serverWork,
       llmGatewayDispatcher: dispatcher,
       providerCredentialConfigured: () => true,
       resolveGatewayProvider: resolve,

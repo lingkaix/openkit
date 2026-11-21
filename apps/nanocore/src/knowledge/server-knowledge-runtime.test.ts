@@ -16,13 +16,17 @@ import {
 import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { readWorkObservations } from '../storage/work-observations.js';
+import { readControlWorkObservations } from '../storage/work-observations.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import {
+  createTestServerWorkStore,
+  testServerWorkOptions,
+} from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { KnowledgeNotebook } from './notebook.js';
 import {
   recoverServerKnowledgeManagerTurns,
@@ -37,10 +41,9 @@ it('executes a Server request on the configured role model with its own captured
   const userId = ensureLocalUser(coreDb);
   onTestFinished(async () => {
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const store = new FsStore({ dataRoot });
   const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
   const snapshot = createInMemoryRuntimeConfigSnapshot({
     dataRoot,
@@ -93,6 +96,8 @@ it('executes a Server request on the configured role model with its own captured
       },
     },
   });
+  const storeOptions = await testServerWorkOptions(coreDb, runtimeConfigManager);
+  const store = new FsStore(storeOptions);
   let calls = 0;
   const createResponses = vi.fn(
     async (
@@ -101,7 +106,10 @@ it('executes a Server request on the configured role model with its own captured
       context: Parameters<LLMGatewayProviderDispatcher['createResponses']>[2]
     ) => {
       expect(request.model).toBe('server-model');
-      context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
+      const admit = context?.transport?.finalRequestAdmission;
+      if (!admit) throw new Error('Server contact requires final transport admission.');
+      await admit({ payload: request, contextWindowTokens: 64_000, outputReserveTokens: 2_000 });
+      await context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
       const step = ++calls;
       const name =
         step === 1
@@ -183,7 +191,9 @@ it('executes a Server request on the configured role model with its own captured
   });
   expect(turn).not.toHaveProperty('workspaceId');
   expect(store.listWorkspaces()).toEqual([]);
-  const ledger = listServerCapabilityCalls(coreDb).filter((call) => call.turnId === turn.id);
+  const ledger = listServerCapabilityCalls(coreDb, storeOptions.serverWorkReader).filter(
+    (call) => call.turnId === turn.id
+  );
   expect(ledger).toHaveLength(3);
   expect(
     ledger.every(
@@ -195,9 +205,17 @@ it('executes a Server request on the configured role model with its own captured
     )
   ).toBe(true);
   expect(
-    listServerUsageRecords(coreDb).filter((usage) => usage.turnId === turn.id)
+    listServerUsageRecords(coreDb, storeOptions.serverWorkReader).filter(
+      (usage) => usage.turnId === turn.id
+    )
   ).not.toHaveLength(0);
-  expect(readWorkObservations(coreDb, { threadId: turn.threadId, turnId: turn.id })).toContainEqual(
+  expect(
+    readControlWorkObservations(
+      storeOptions.serverWorkReader.sqlite,
+      { kind: 'server' },
+      { threadId: turn.threadId, turnId: turn.id }
+    )
+  ).toContainEqual(
     expect.objectContaining({
       type: 'env.bound',
       payload: expect.objectContaining({ owner: { kind: 'server' } }),
@@ -241,11 +259,12 @@ it('executes a Server request on the configured role model with its own captured
       agentId: 'knowledge-manager',
     }
   );
-  const reopened = new FsStore({ dataRoot });
-  await recoverServerKnowledgeManagerTurns(reopened);
-  expect(reopened.getServerTurnById(next.id)).toMatchObject({
-    status: 'failed',
-    error: { code: 'recovery_required' },
+  const reopened = await createTestServerWorkStore(coreDb, runtimeConfigManager);
+  await expect(recoverServerKnowledgeManagerTurns(reopened)).resolves.toEqual({
+    state: 'unavailable',
+    owner: 'server-work',
+    reason: 'disabled',
   });
+  expect(reopened.getServerTurnById(next.id)).toEqual(next);
   expect(createResponses).toHaveBeenCalledTimes(3);
 }, 60_000);

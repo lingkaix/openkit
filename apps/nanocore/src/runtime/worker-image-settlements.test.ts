@@ -2,7 +2,7 @@ import { once } from 'node:events';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { getLocalUserId } from '../auth/identity.js';
@@ -10,16 +10,17 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
-import { FsStore } from '../lib/store.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
-import { openCoreDb } from '../storage/db.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb, serverStoragePath } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
@@ -64,7 +65,7 @@ describe('retained worker image settlement format', () => {
     let db = openCoreDb(root);
     onTestFinished(async () => {
       releaseCommit();
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       db.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     });
@@ -96,7 +97,7 @@ describe('retained worker image settlement format', () => {
     const before = db.sqlite.prepare('SELECT * FROM worker_image_settlements').all();
     await admitWorkerImageEnvironment(db, identity, environment);
     expect(db.sqlite.prepare('SELECT * FROM worker_image_settlements').all()).toEqual(before);
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     db.sqlite.close();
     db = openCoreDb(root);
     db.sqlite.pragma('query_only = ON');
@@ -110,7 +111,7 @@ describe('retained worker image settlement format', () => {
     let db = openCoreDb(root);
     onTestFinished(async () => {
       releaseCommit();
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       db.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     });
@@ -142,7 +143,7 @@ describe('retained worker image settlement format', () => {
     const db = openCoreDb(root);
     onTestFinished(async () => {
       releaseCommit();
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       db.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     });
@@ -187,7 +188,7 @@ async function preparationFixture() {
     client?.destroy();
     if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     releaseCommit();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     if (db.sqlite.open) db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -233,7 +234,7 @@ async function preparationFixture() {
       return createWorkerEnvironmentRuntimeEffects(dispatch, TEST_WORKER_RELEASE_IDENTITY);
     },
     async reopen() {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       db.sqlite.close();
       db = openCoreDb(root);
       dispatch = createNanoHostSessionDispatch({ coreDb: db, sessionAuthority: authority });
@@ -251,10 +252,11 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
     const f = await preparationFixture();
     // Bind real caller provenance through Server history without creating a Workspace database.
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(f.db) };
-    const store = new FsStore({ dataRoot: f.root });
-    const thread = await store.createServerThread(
+    const store = await createTestServerWorkStore(f.db);
+    const thread = await createTestServerThread(
+      store,
+      f.db,
       'Administrative image preparation',
-      undefined,
       'conversation'
     );
     const publicationTurn = await store.createServerTurn(
@@ -264,7 +266,7 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
     );
     expect(getLocalUserId(f.db)).toBe(actor.id);
     expect(
-      new FsStore({ dataRoot: f.root }).getServerTurn(thread.id, publicationTurn.id)
+      (await createTestServerWorkStore(f.db)).getServerTurn(thread.id, publicationTurn.id)
     ).toMatchObject({
       id: publicationTurn.id,
       owner: { kind: 'server' },
@@ -426,16 +428,23 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
       steps: f.db.sqlite.prepare('SELECT * FROM control_execution_steps').all(),
     }).toStrictEqual(originalJournalRows);
     expect(
-      readdirSync(f.root, { recursive: true }).filter((path) => String(path).endsWith('.sqlite'))
-    ).toEqual([join('server', 'db', 'core.sqlite')]);
+      readdirSync(f.root, { recursive: true })
+        .filter((path) => String(path).endsWith('.sqlite'))
+        .sort()
+    ).toEqual(
+      [
+        join('server', 'db', 'core.sqlite'),
+        relative(f.root, serverStoragePath(f.root, 'server-work')),
+      ].sort()
+    );
   });
 });
 
 it('rolls back the entire image receipt and journal tuple after a real later journal fault', async () => {
   const f = await preparationFixture();
   const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(f.db) };
-  const store = new FsStore({ dataRoot: f.root });
-  const thread = await store.createServerThread('Image tuple rollback', undefined, 'conversation');
+  const store = await createTestServerWorkStore(f.db);
+  const thread = await createTestServerThread(store, f.db, 'Image tuple rollback', 'conversation');
   const turn = await store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
   const prepared = f.effects.prepareImage({
     actor,
@@ -491,10 +500,11 @@ it('rolls back the entire image receipt and journal tuple after a real later jou
 it('refuses image intent after its queued current Core Epoch loses authority', async () => {
   const f = await preparationFixture();
   const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(f.db) };
-  const store = new FsStore({ dataRoot: f.root });
-  const thread = await store.createServerThread(
+  const store = await createTestServerWorkStore(f.db);
+  const thread = await createTestServerThread(
+    store,
+    f.db,
     'Queued image authority',
-    undefined,
     'conversation'
   );
   const turn = await store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
@@ -537,8 +547,8 @@ it('refuses image intent after its queued current Core Epoch loses authority', a
 it('abandons a cold accepted image natively and preserves unknown bytes through late-result rollback and reopen', async () => {
   const f = await preparationFixture();
   const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(f.db) };
-  const store = new FsStore({ dataRoot: f.root });
-  const thread = await store.createServerThread('Cold image exclusion', undefined, 'conversation');
+  const store = await createTestServerWorkStore(f.db);
+  const thread = await createTestServerThread(store, f.db, 'Cold image exclusion', 'conversation');
   const turn = await store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
   const abort = new AbortController();
   onTestFinished(() => abort.abort());
@@ -634,8 +644,8 @@ it('abandons a cold accepted image natively and preserves unknown bytes through 
 it('fences undelivered image cancellation before its native FULL reply and reopens exact cancelled bytes', async () => {
   const f = await preparationFixture();
   const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(f.db) };
-  const store = new FsStore({ dataRoot: f.root });
-  const thread = await store.createServerThread('Undelivered image', undefined, 'conversation');
+  const store = await createTestServerWorkStore(f.db);
+  const thread = await createTestServerThread(store, f.db, 'Undelivered image', 'conversation');
   const turn = await store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
   const abort = new AbortController();
   onTestFinished(() => {
@@ -695,10 +705,11 @@ it('fences undelivered image cancellation before its native FULL reply and reope
 it('retains one result-only image waiter when two recoveries join native abandonment', async () => {
   const f = await preparationFixture();
   const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(f.db) };
-  const store = new FsStore({ dataRoot: f.root });
-  const thread = await store.createServerThread(
+  const store = await createTestServerWorkStore(f.db);
+  const thread = await createTestServerThread(
+    store,
+    f.db,
     'Concurrent image recovery',
-    undefined,
     'conversation'
   );
   const turn = await store.createServerTurn(thread.id, 'Prepare the authored image.', actor);

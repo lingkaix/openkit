@@ -1,4 +1,3 @@
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { randomUUID } from 'node:crypto';
@@ -25,6 +24,8 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { createTestServerWorkStore } from './test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
@@ -51,7 +52,7 @@ async function fixture() {
       .run(userId, `${userId}@example.invalid`, now, now);
   const userId = userIds[0]!;
   const actor = { kind: 'session' as const, userId };
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Fresh Memory context');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const foreign = await store.createWorkspace('Other User context');
@@ -130,7 +131,7 @@ async function fixture() {
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {
@@ -164,7 +165,7 @@ describe('first private User Memory query', () => {
       inflightCommands: new WeakMap(),
     });
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });

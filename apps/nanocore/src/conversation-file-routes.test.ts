@@ -15,11 +15,9 @@ import { CONVERSATION_FILE_MEDIA_TYPE } from './conversation-file-body.js';
 import * as assistantCommandOwners from './internal-agents/assistant-command-run.js';
 import * as knowledgeOwners from './knowledge-operations.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import { FsStore } from './lib/store.js';
 import { getSchedulerPreparationClaims } from './runtime/scheduler-dispatch-loop.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
@@ -27,11 +25,7 @@ import { turnFilePayloadPath } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
-import {
-  createDemoStore,
-  DEMO_WORKSPACE_ID,
-  retainSharedAssistantTurn,
-} from './test-support/demo-store.js';
+import { DEMO_WORKSPACE_ID, retainSharedAssistantTurn } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import {
   ensureLocalUser,
@@ -39,11 +33,16 @@ import {
 } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
+import {
+  createTestServerWorkDemoStore,
+  createTestServerWorkStore,
+} from './test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   vi.restoreAllMocks();
   syncBuiltinESMExports();
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
@@ -98,7 +97,7 @@ async function fixture(availableBytes?: () => bigint) {
   cleanups.push(() => coreDb.sqlite.close());
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = await createDemoStore({ dataRoot });
+  const store = await createTestServerWorkDemoStore(coreDb);
   const workspaceId = DEMO_WORKSPACE_ID;
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId });
   const thread = await store.createThread(workspaceId, 'File input', undefined, 'conversation', {
@@ -933,8 +932,8 @@ describe('Turn-owned conversation originals', () => {
     expect(fileReplay.status).toBe(200);
     expect((await fileReplay.json()).turn.id).toBe(accepted.turn.id);
     expect(state.provider.createResponses).toHaveBeenCalledTimes(1);
-    await shutdownControlStoreWorkerClient();
-    const restarted = new FsStore({ dataRoot: state.dataRoot });
+    await shutdownTestStoreWorker();
+    const restarted = await createTestServerWorkStore(state.coreDb);
     expect(restarted.getTurnById(accepted.turn.id).fileInputs).toEqual(input.fileInputs);
     await restarted.updateThread(state.workspaceId, state.thread.id, { name: 'Retained inputs' });
     for (const [ordinal, part] of bytes.entries())

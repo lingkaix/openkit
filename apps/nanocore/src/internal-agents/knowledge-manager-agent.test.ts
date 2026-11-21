@@ -10,10 +10,14 @@ import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js
 import type { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { createTestStore } from '../test-support/store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import {
   createKnowledgeManagerTranscript,
   runKnowledgeManagerAgent,
@@ -23,7 +27,7 @@ import { internalContextDigest } from './rolling-context.js';
 
 const roots: string[] = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -31,7 +35,7 @@ afterEach(async () => {
 async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-agent-'));
   roots.push(dataRoot);
-  const store = createTestStore({ dataRoot });
+  const store = await createTestServerWorkStore(dataRoot);
   const workspace = await store.createWorkspace('Knowledge');
   const thread = await store.createThread(
     workspace.id,
@@ -277,7 +281,8 @@ it('rejects mismatched Knowledge Manager run owners before configuration, curren
   const f = await fixture();
   const coreDb = openCoreDb(f.store.getDataRoot()!);
   try {
-    const serverThread = await f.store.createServerThread('Server');
+    ensureLocalUser(coreDb);
+    const serverThread = await createTestServerThread(f.store, coreDb, 'Server');
     const serverTurn = await f.store.createServerTurn(serverThread.id, 'Question', f.actor, null, {
       agentId: 'knowledge-manager',
     });

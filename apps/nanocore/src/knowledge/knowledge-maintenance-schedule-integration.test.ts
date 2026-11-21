@@ -8,13 +8,14 @@ import { expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { createKnowledgeAnswerApp } from '../test-support/knowledge-agent.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { currentServerMaintenanceActor } from './server-knowledge-maintenance.js';
@@ -26,7 +27,7 @@ it('never borrows a stored administrator credential for scheduled Server mainten
   const userId = ensureLocalUser(coreDb);
   onTestFinished(async () => {
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   createOpenKitAccessTokenRecord(coreDb, {
@@ -50,7 +51,7 @@ it('never borrows a stored administrator credential for scheduled Server mainten
       },
     })
   );
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   let scan!: (instant: string) => Promise<void>;
   createApp({
     mode: 'server',
@@ -86,7 +87,7 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   const userId = ensureLocalUser(coreDb);
   onTestFinished(async () => {
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const store = new FsStore({ dataRoot });
@@ -219,7 +220,7 @@ it('stops bounded maintenance through the public Turn command before a late Prov
   onTestFinished(async () => {
     release.resolve();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const pending = app.request(

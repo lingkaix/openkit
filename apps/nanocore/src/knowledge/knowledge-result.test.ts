@@ -7,12 +7,12 @@ import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import type { AgentToolResult } from '../internal-agents/internal-agent-loop.js';
 import * as knowledgeManager from '../internal-agents/knowledge-manager-agent.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { call, calls, fixture, latestToolOutput } from '../test-support/knowledge-result.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { DEFAULT_NOTEBOOK_INDEX } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
@@ -906,5 +906,5 @@ it('Final-Tree Validation: same-author bounded link feedback permits one repair 
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
 });

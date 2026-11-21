@@ -37,7 +37,6 @@ import {
   readAuthorizedUserMemoryPages,
 } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
@@ -52,6 +51,8 @@ import {
 } from './storage/retrieval-traces.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
+import { createTestServerWorkStore } from './test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const aliceId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -70,7 +71,7 @@ async function fixture(imported = false) {
         "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at) VALUES (?, 'human', 'Memory owner', ?, 0, ?, ?)"
       )
       .run(userId, [userId, 'example.invalid'].join('@'), Date.now(), Date.now());
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const importedWorkspaceId = allocateEntityId('ws');
   const workspace = await (imported
     ? store.importWorkspaceSnapshot({
@@ -181,7 +182,7 @@ async function fixture(imported = false) {
     for (const user of users) user.writer.userDb.sqlite.close();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

@@ -5,7 +5,10 @@ import { vi } from 'vitest';
 import { collectionTableName, quoteIdent } from '../generative-kernel/native.js';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
 import { openExistingAppDb } from '../storage/app-db.js';
-import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
+import {
+  type ControlStoreProductReadHandle,
+  closeWorkspaceProductReadHandles,
+} from '../storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -61,6 +64,24 @@ export function createTestStore(options: FsStoreOptions = {}): FsStore {
   return new FsStore(options);
 }
 
+const serverWorkReaders = new Set<ControlStoreProductReadHandle>();
+
+/** Follows the current native owner lifetime, including an explicit fixture restart. */
+export function retainTestServerWorkReader(reader: ControlStoreProductReadHandle): () => void {
+  serverWorkReaders.add(reader);
+  return () => {
+    serverWorkReaders.delete(reader);
+    if (reader.sqlite.open) reader.close();
+  };
+}
+
+/** Releases fixture composition readers before the real writer drains its admitted handles. */
+export async function shutdownTestStoreWorker(): Promise<void> {
+  for (const reader of serverWorkReaders) if (reader.sqlite.open) reader.close();
+  serverWorkReaders.clear();
+  await shutdownControlStoreWorkerClient();
+}
+
 /**
  * Disposes a private Store fixture after its callers have joined work.
  * Supplied readonly snapshots close before native reader drain; setup writers close after that drain.
@@ -75,7 +96,7 @@ export async function disposeTestStore(
   for (const database of databases) {
     if (database.sqlite.open && database.sqlite.readonly) database.sqlite.close();
   }
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const database of databases) {
     if (database.sqlite.open) database.sqlite.close();
   }

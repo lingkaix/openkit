@@ -3348,10 +3348,12 @@ export class FsStore {
     progressItem?: ControlItemAppend
   ): Promise<T> {
     if (!this.dataRoot) return prepare(input);
+    const prepareAndAudit = (owned: I) =>
+      this.withItemDeltaRefusalAudit(owner, turns[0]!, () => prepare(owned));
     if (owner.kind === 'server') {
       const binding = this.getServerWorkBinding();
       if (!binding?.owner.publishTurnProgress) return Promise.reject(serverWorkUnavailable());
-      return withServerWorkProducer(binding, () => prepare(input));
+      return withServerWorkProducer(binding, () => prepareAndAudit(input));
     }
     const scope = this.nativeScope(owner);
     return getControlStoreWorkerClient().runTurnPublication(
@@ -3366,15 +3368,7 @@ export class FsStore {
       },
       turns,
       input,
-      async (owned) => {
-        try {
-          return await prepare(owned);
-        } catch (error) {
-          if (error instanceof ItemDeltaProtocolError && !error.audited)
-            await this.recordItemDeltaViolation(owner, turns[0]!);
-          throw error;
-        }
-      },
+      prepareAndAudit,
       closeoutCallId,
       progressItem
     );
@@ -6015,8 +6009,10 @@ export class FsStore {
     if (this.dataRoot && owner.kind === 'server') {
       const binding = this.getServerWorkBinding();
       if (!binding) throw serverWorkUnavailable();
-      return (await withServerWorkProducer(binding, () => this.completeTurnPublication(...args)))
-        .turn;
+      const result = await withServerWorkProducer(binding, () =>
+        this.withItemDeltaRefusalAudit(owner, args[0], () => this.completeTurnPublication(...args))
+      );
+      return result.turn;
     }
     return this.publishTurnMutation(owner, args[0], args, (owned) =>
       this.completeTurnPublication(...owned)
@@ -9237,15 +9233,50 @@ export class FsStore {
     );
   }
 
+  /** Waits for the redacted Audit when the publication path has not already recorded it. */
+  private async withItemDeltaRefusalAudit<T>(
+    owner: Turn['owner'],
+    turnId: string,
+    publish: () => Promise<T>
+  ): Promise<T> {
+    try {
+      return await publish();
+    } catch (error) {
+      if (error instanceof ItemDeltaProtocolError && !error.audited)
+        await this.recordItemDeltaViolation(owner, turnId);
+      throw error;
+    }
+  }
+
   /** Records a redacted refusal through the existing Audit writer before reporting the protocol error. */
   private async recordItemDeltaViolation(owner: Turn['owner'], turnId: string): Promise<void> {
     if (!this.dataRoot) return;
-    if (owner.kind === 'server') throw serverWorkUnavailable();
     const scope = this.nativeScope(owner);
     const head = readNativeProduct(scope, 'turn', turnId);
     if (!head) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     const turn = TurnReaderSchema.parse({ ...head.record, items: [] });
     const client = getControlStoreWorkerClient();
+    const event = prepareAuditEvent({
+      workspaceId: owner.kind === 'workspace' ? owner.workspaceId : null,
+      protocolVersion: PROTOCOL_VERSION,
+      threadId: turn.threadId,
+      turnId,
+      category: 'system',
+      action: 'core.protocol.invalid_delta',
+      errorCode: 'core.protocol.invalid_delta',
+      outcome: 'denied',
+      severity: 'warning',
+      summary: 'Item delta violates the declared Item protocol.',
+    });
+    if (owner.kind === 'server') {
+      const core = openCoreReadDb(this.dataRoot);
+      try {
+        await client.standaloneAudit(core, { stage: 'core.protocol.invalid_delta', event });
+      } finally {
+        core.sqlite.close();
+      }
+      return;
+    }
     const database = `workspace:${scope.path}`;
     await client.open({
       database,
@@ -9256,22 +9287,7 @@ export class FsStore {
       productOwner: owner,
       contentMount: scope.contentMount,
     });
-    await client.write(database, [
-      prepareAuditEventStatement(
-        prepareAuditEvent({
-          workspaceId: owner.kind === 'workspace' ? owner.workspaceId : null,
-          protocolVersion: PROTOCOL_VERSION,
-          threadId: turn.threadId,
-          turnId,
-          category: 'system',
-          action: 'core.protocol.invalid_delta',
-          errorCode: 'core.protocol.invalid_delta',
-          outcome: 'denied',
-          severity: 'warning',
-          summary: 'Item delta violates the declared Item protocol.',
-        })
-      ),
-    ]);
+    await client.write(database, [prepareAuditEventStatement(event)]);
   }
 
   /** Publishes a durable event synchronously after all awaited persistence and cleanup preparation. */

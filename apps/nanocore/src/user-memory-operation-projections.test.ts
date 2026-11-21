@@ -18,11 +18,11 @@ import {
 } from './knowledge/scoped-notebook-owner.js';
 import { runUserMemoryMaintenanceCommand } from './knowledge/user-memory-agent-maintenance.js';
 import { createOperationInvocation } from './operation-composition.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { createTestStore, disposeTestStore } from './test-support/store.js';
+import { createTestServerWorkStore } from './test-support/server-work-store.js';
+import { disposeTestStore, shutdownTestStoreWorker } from './test-support/store.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 
 /** Real authority, native invocation and delivery ledger; only the already tested role runner is injected. */
@@ -32,7 +32,7 @@ async function fixture() {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
-  const store = createTestStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   await ensureUserQuickChatWorkspace({ coreDb, store, userId });
   const workspace = await store.ensureQuickChatWorkspace(userId);
   const timeline = await openAssistantTimeline(store, workspace.id, userId, 'Private question');
@@ -138,7 +138,7 @@ async function fixture() {
     queryContext: { threadId: timeline.id, turnId: turn.id },
   };
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     workspaceDb.sqlite.close();
     userDb.sqlite.close();
     coreDb.sqlite.close();

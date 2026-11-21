@@ -8,12 +8,12 @@ import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
 import { internalContextSourceDigest } from '../internal-agents/rolling-context.js';
-import { FsStore } from '../lib/store.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -37,11 +37,11 @@ async function fixture(
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   onTestFinished(async () => {
-    await getControlStoreWorkerClient().shutdown();
+    await shutdownTestStoreWorker();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const actor = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
   const timestamp = new Date().toISOString();
   const workspaceId = allocateEntityId('ws');
@@ -318,10 +318,10 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
         .filter((path) => /(?:^|[/\\])(?:thread|turn)\.json$/.test(path as string))
         .sort();
       db.sqlite.exec('DROP TRIGGER reject_maintenance_receipt');
-      await getControlStoreWorkerClient().shutdown();
+      await shutdownTestStoreWorker();
       db.sqlite.close();
       db = f.dependencies.openWorkspace(f.workspace.id);
-      const reopened = new FsStore({ dataRoot: root });
+      const reopened = await createTestServerWorkStore(f.dependencies.coreDb);
       const afterReopen = reopened.listThreads(f.workspace.id).map((thread) => thread.id);
       expect(
         reopened.getCommandRequest('knowledge.maintain', f.input.requestId, scope, db)
@@ -342,9 +342,10 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
         turnsAfterReopen: turnsBefore,
       });
 
-      const result = await runKnowledgeMaintenanceCommand(f.dependencies, f.input);
+      const resumed = { ...f.dependencies, store: reopened };
+      const result = await runKnowledgeMaintenanceCommand(resumed, f.input);
       expect(result.outcome).toBe('published');
-      expect(await runKnowledgeMaintenanceCommand(f.dependencies, f.input)).toEqual(result);
+      expect(await runKnowledgeMaintenanceCommand(resumed, f.input)).toEqual(result);
       expect(f.run).toHaveBeenCalledTimes(1);
       expect(f.store.listThreads(f.workspace.id).map((thread) => thread.id)).toEqual([
         ...threadsBefore,

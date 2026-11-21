@@ -22,10 +22,11 @@ import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { testServerWorkOptions } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -56,7 +57,7 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
-  const store = new FsStore({ dataRoot });
+  let store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Editor deadline', {
     requestId: randomUUID(),
     producer: actor,
@@ -71,7 +72,7 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
     await closeRetrievalServices();
     userDb.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const repositoryPath =
@@ -163,6 +164,8 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
     dataRoot,
     initialSnapshot: snapshot,
   });
+  const options = await testServerWorkOptions(coreDb, runtimeConfigManager);
+  store = new FsStore(options);
   const updateTurn = async (
     input: Pick<MaintenanceRun, 'turn'>,
     patch: Parameters<FsStore['updateTurn']>[1]
@@ -221,6 +224,7 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
   const readTurn = (turnId: string) =>
     scope === 'server' ? store.getServerTurnById(turnId) : store.getTurnById(turnId);
   return {
+    serverWorkReader: options.serverWorkReader,
     dataRoot,
     store,
     workspace,
@@ -600,9 +604,12 @@ it('returns the owned timeout code in the Server maintenance summary without pub
   let providerSignal: AbortSignal | undefined;
   let callerSignal: AbortSignal | undefined;
   const createResponses = vi.fn<LLMGatewayProviderDispatcher['createResponses']>(
-    async (_provider, _request, context) => {
+    async (_provider, request, context) => {
       const signal = context?.transport?.signal;
-      if (!signal) throw new Error('Provider transport has no cancellation signal.');
+      const admit = context?.transport?.finalRequestAdmission;
+      if (!signal || !admit)
+        throw new Error('Server transport must admit contact and cancellation.');
+      await admit({ payload: request, contextWindowTokens: 64_000, outputReserveTokens: 2_000 });
       providerSignal = signal;
       dispatched.resolve();
       let abort!: () => void;
@@ -660,7 +667,6 @@ it('returns the owned timeout code in the Server maintenance summary without pub
   await vi.advanceTimersByTimeAsync(90_000);
   const result = await pending;
   const settledTurn = f.readTurn(result.turnId);
-  const settledCalls = listServerCapabilityCalls(f.dependencies.coreDb);
   expect(result.outcome).toBe('failed');
   expect.soft(result.summary).toContain('knowledge_manager_timeout');
   expect(settledTurn).toMatchObject({
@@ -677,17 +683,24 @@ it('returns the owned timeout code in the Server maintenance summary without pub
   ).toEqual([result]);
   expect(callerSignal?.aborted).toBe(false);
   expect(providerSignal?.aborted).toBe(true);
-  expect(settledCalls).toEqual([
-    expect.objectContaining({
-      status: 'timed-out',
-      turnId: result.turnId,
-    }),
-  ]);
+  // The Turn deadline can return while the original Gateway Call still awaits its Server ACK.
+  const readCalls = () => listServerCapabilityCalls(f.dependencies.coreDb, f.serverWorkReader);
+  await vi.waitFor(
+    () =>
+      expect(readCalls()).toEqual([
+        expect.objectContaining({
+          status: 'timed-out',
+          turnId: result.turnId,
+        }),
+      ]),
+    { timeout: 5000 }
+  );
+  const settledCalls = readCalls();
   response.resolve({ id: 'late-response', object: 'response', output: [] });
   await vi.advanceTimersByTimeAsync(0);
   expect(createResponses).toHaveBeenCalledTimes(1);
   expect(f.readTurn(result.turnId)).toEqual(settledTurn);
-  expect(listServerCapabilityCalls(f.dependencies.coreDb)).toEqual(settledCalls);
+  expect(readCalls()).toEqual(settledCalls);
   expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
   expect(f.notebook.readRevision(f.baseRevision).files['index.md']).toBe(f.overview);
 });

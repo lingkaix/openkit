@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { commandRequestKey } from '../lib/store.js';
 import {
@@ -19,15 +20,21 @@ import type {
 } from '../runtime/execution-step-journal.js';
 import { StoredGoalV1Schema } from '../runtime/goal-retained-v1.js';
 import { workerTurnTerminalPublication } from '../runtime/worker-turn-failure.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import { createTestCoreDb, shutdownTestStoreWorker } from '../test-support/store.js';
 import type { ControlProductContentMount } from './control-store-product-records.js';
 import type { ControlTerminalResult, ControlTerminalTransition } from './control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './db.js';
-import { coreDbPath, workspaceDbPath } from './fs-layout.js';
-import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import { openWorkspaceDb, serverStoragePath } from './db.js';
+import { workspaceDbPath } from './fs-layout.js';
+import { applyScopedMigrations } from './migrate.js';
 
 const ts = '2026-10-20T00:00:00.000Z';
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -76,7 +83,7 @@ function nativeBody(
       // No database is opened through its transport; the actual body remains on this thread.
       const p = await import(${JSON.stringify(compiled)});
       const handles = p;
-      const db = input.owner.kind === 'server' ? handles.openCoreDb(root) : handles.openWorkspaceDb(root, input.owner.workspaceId);
+      const db = handles.openWorkspaceDb(root, input.owner.workspaceId);
       try {
         if (mode === 'generic-entries') await p.prepareControlEntries(input.owner, mount, input.entries);
         const prepared = mode === 'generic-products' ? null : await p.prepareControlTerminal(db, prepareInput, mount);
@@ -115,19 +122,15 @@ function nativeBody(
 }
 
 /** Uses real scoped DDL and immutable digest bytes. No production writer guard is replaced. */
-function fixture(kind: 'server' | 'workspace' = 'server') {
+function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'terminal-owner-'));
-  const owner =
-    kind === 'server'
-      ? { kind: 'server' as const }
-      : { kind: 'workspace' as const, workspaceId: allocateEntityId('ws') };
-  const db = owner.kind === 'server' ? openCoreDb(root) : openWorkspaceDb(root, owner.workspaceId);
+  const owner = { kind: 'workspace' as const, workspaceId: allocateEntityId('ws') };
+  const db = openWorkspaceDb(root, owner.workspaceId);
   cleanups.push(() => {
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  if (db.scope === 'core') applyMigrations(db);
-  else applyScopedMigrations(db);
+  applyScopedMigrations(db);
   mkdirSync(join(root, 'content'));
   const mount = {
     root: join(root, 'content'),
@@ -144,7 +147,7 @@ function fixture(kind: 'server' | 'workspace' = 'server') {
     preview: 'Terminal result',
     status: 'active',
     entryPath: 'conversation',
-    visibility: kind === 'server' ? 'server' : 'workspace',
+    visibility: 'workspace',
     createdAt: ts,
     updatedAt: ts,
   };
@@ -161,33 +164,27 @@ function fixture(kind: 'server' | 'workspace' = 'server') {
     completedAt: ts,
     durationMs: 0,
     status: 'completed',
-    captureCoverage: { scope: kind === 'server' ? 'server' : 'workspace', value: 'on' },
+    captureCoverage: { scope: 'workspace', value: 'on' },
     annotation: { retained: true },
   };
-  if (owner.kind === 'workspace')
-    db.sqlite.prepare('INSERT INTO control_workspaces VALUES (?,1,1,?)').run(
-      owner.workspaceId,
-      JSON.stringify({
-        schemaVersion: 1,
-        id: owner.workspaceId,
-        kind: 'general',
-        status: 'active',
-        createdAt: ts,
-        updatedAt: ts,
-      })
-    );
+  db.sqlite.prepare('INSERT INTO control_workspaces VALUES (?,1,1,?)').run(
+    owner.workspaceId,
+    JSON.stringify({
+      schemaVersion: 1,
+      id: owner.workspaceId,
+      kind: 'general',
+      status: 'active',
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
   db.sqlite
     .prepare('INSERT INTO control_threads VALUES (?,?,?,1,1,?)')
-    .run(
-      threadId,
-      owner.kind === 'server' ? null : owner.workspaceId,
-      'active',
-      JSON.stringify(thread)
-    );
+    .run(threadId, owner.workspaceId, 'active', JSON.stringify(thread));
   const event = {
     schemaVersion: 1,
     protocolVersion: '1.0',
-    ...(owner.kind === 'server' ? { owner } : { workspaceId: owner.workspaceId }),
+    workspaceId: owner.workspaceId,
     threadId,
     turnId,
     requestId: null,
@@ -254,8 +251,7 @@ function content(f: ReturnType<typeof fixture>, value: unknown, path: string) {
 
 /** Supplies the original terminal command identity and local Audit, not a second terminal ledger. */
 function withCommand(f: ReturnType<typeof fixture>): ControlTerminalTransition {
-  const scope =
-    f.owner.kind === 'server' ? { coreId: 'server' } : { workspaceId: f.owner.workspaceId };
+  const scope = { workspaceId: f.owner.workspaceId };
   const requestId = randomUUID();
   return {
     ...f.input,
@@ -272,7 +268,7 @@ function withCommand(f: ReturnType<typeof fixture>): ControlTerminalTransition {
       },
       audit: {
         id: allocateEntityId('aud'),
-        workspaceId: f.owner.kind === 'server' ? null : f.owner.workspaceId,
+        workspaceId: f.owner.workspaceId,
         threadId: f.threadId,
         turnId: f.turnId,
         itemId: null,
@@ -500,7 +496,7 @@ function linkGoal(f: ReturnType<typeof fixture>) {
 
 /** Prepares a real Worker terminal/release journal without fabricating runtime or teardown evidence. */
 async function emptyEvidenceTerminal(status: 'failed' | 'cancelled' | 'interrupted' | 'completed') {
-  const f = fixture('workspace');
+  const f = fixture();
   if (f.db.scope !== 'workspace' || f.owner.kind !== 'workspace')
     throw new Error('Workspace fixture required');
   const db = f.db;
@@ -599,108 +595,135 @@ async function emptyEvidenceTerminal(status: 'failed' | 'cancelled' | 'interrupt
 }
 
 describe('complete native terminal owner', () => {
-  for (const kind of ['server', 'workspace'] as const) {
-    it(`keeps the complete ${kind} terminal rollback/receipt tuple and ordered close across asynchronous native preparation`, async () => {
-      const f = fixture(kind);
-      const client = getControlStoreWorkerClient();
-      cleanups.push(shutdownControlStoreWorkerClient);
-      const path =
-        f.owner.kind === 'server'
-          ? coreDbPath(f.root)
-          : workspaceDbPath(f.root, f.owner.workspaceId);
-      const database = `${kind === 'server' ? 'core' : 'workspace'}:${path}`;
-      const binding = {
-        database,
-        path,
-        dataRoot: f.root,
-        create: false,
-        initialize: kind === 'server' ? ('core' as const) : ('workspace' as const),
-        productOwner: f.owner,
-        contentMount: f.mount,
-      };
-      const input = withCommand(f);
-      f.db.sqlite.exec(
-        "CREATE TRIGGER refuse_terminal_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'terminal receipt refused'); END"
-      );
-      await client.open(binding);
-      const terminal = client.terminal(database, input);
-      const closed = client.close(database);
-      await expect(terminal).rejects.toMatchObject({
-        code: 'constraint',
-        commit: 'not-committed',
-        message: 'Control database writer operation failed.',
+  it(`keeps the complete Workspace terminal rollback/receipt tuple and ordered close across asynchronous native preparation`, async () => {
+    const f = fixture();
+    const client = getControlStoreWorkerClient();
+    cleanups.push(shutdownControlStoreWorkerClient);
+    const path = workspaceDbPath(f.root, f.owner.workspaceId);
+    const database = `workspace:${path}`;
+    const binding = {
+      database,
+      path,
+      dataRoot: f.root,
+      create: false,
+      initialize: 'workspace' as const,
+      productOwner: f.owner,
+      contentMount: f.mount,
+    };
+    const input = withCommand(f);
+    f.db.sqlite.exec(
+      "CREATE TRIGGER refuse_terminal_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'terminal receipt refused'); END"
+    );
+    await client.open(binding);
+    const terminal = client.terminal(database, input);
+    const closed = client.close(database);
+    await expect(terminal).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
+      message: 'Control database writer operation failed.',
+    });
+    await closed;
+    for (const table of [
+      'control_turns',
+      'control_product_entries',
+      'control_work_observations',
+      'idempotency_requests',
+      'audit_events',
+    ])
+      expect(f.db.sqlite.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+    f.db.sqlite.exec('DROP TRIGGER refuse_terminal_receipt');
+    await client.open(binding);
+    // Metadata creation is revision 1; the same-savepoint reap seals its observation feature at revision 2.
+    await expect(client.terminal(database, input)).resolves.toMatchObject({
+      turnId: f.turnId,
+      revision: 2,
+      replayed: false,
+      response: { kind: 'turn', id: f.turnId },
+      execution: null,
+      reap: { sequence: 1 },
+    });
+    await expect(client.terminal(database, input)).resolves.toMatchObject({
+      turnId: f.turnId,
+      revision: 2,
+      replayed: true,
+      reap: { sequence: 1 },
+    });
+    await client.close(database);
+    const cold = openWorkspaceDb(f.root, f.owner.workspaceId);
+    try {
+      expect(
+        cold.sqlite.prepare('SELECT status,revision FROM control_turns WHERE id=?').get(f.turnId)
+      ).toEqual({ status: 'completed', revision: 2 });
+      expect(
+        cold.sqlite.prepare('SELECT count(*) AS n FROM control_product_entries').get()
+      ).toEqual({ n: 1 });
+      expect(
+        cold.sqlite.prepare('SELECT count(*) AS n FROM control_work_observations').get()
+      ).toEqual({ n: 1 });
+      expect(cold.sqlite.prepare('SELECT count(*) AS n FROM idempotency_requests').get()).toEqual({
+        n: 1,
       });
-      await closed;
-      for (const table of [
-        'control_turns',
-        'control_product_entries',
-        'control_work_observations',
-        'idempotency_requests',
-        'audit_events',
-      ])
-        expect(f.db.sqlite.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
-      f.db.sqlite.exec('DROP TRIGGER refuse_terminal_receipt');
-      await client.open(binding);
-      // Metadata creation is revision 1; the same-savepoint reap seals its observation feature at revision 2.
-      await expect(client.terminal(database, input)).resolves.toMatchObject({
-        turnId: f.turnId,
-        revision: 2,
-        replayed: false,
-        response: { kind: 'turn', id: f.turnId },
-        execution: null,
-        reap: { sequence: 1 },
+      expect(cold.sqlite.prepare('SELECT count(*) AS n FROM audit_events').get()).toEqual({
+        n: 1,
       });
-      await expect(client.terminal(database, input)).resolves.toMatchObject({
-        turnId: f.turnId,
-        revision: 2,
-        replayed: true,
-        reap: { sequence: 1 },
-      });
-      await client.close(database);
-      const cold =
-        f.owner.kind === 'server'
-          ? openCoreDb(f.root)
-          : openWorkspaceDb(f.root, f.owner.workspaceId);
-      try {
-        expect(
-          cold.sqlite.prepare('SELECT status,revision FROM control_turns WHERE id=?').get(f.turnId)
-        ).toEqual({ status: 'completed', revision: 2 });
-        expect(
-          cold.sqlite.prepare('SELECT count(*) AS n FROM control_product_entries').get()
-        ).toEqual({ n: 1 });
-        expect(
-          cold.sqlite.prepare('SELECT count(*) AS n FROM control_work_observations').get()
-        ).toEqual({ n: 1 });
-        expect(cold.sqlite.prepare('SELECT count(*) AS n FROM idempotency_requests').get()).toEqual(
-          { n: 1 }
-        );
-        expect(cold.sqlite.prepare('SELECT count(*) AS n FROM audit_events').get()).toEqual({
-          n: 1,
-        });
-      } finally {
-        cold.sqlite.close();
-      }
-    }, 30_000);
-  }
+    } finally {
+      cold.sqlite.close();
+    }
+  }, 30_000);
 
-  it('drains accepted asynchronous terminal preparation in both native owners before shutdown acknowledgement', async () => {
-    const scopes = [fixture('server'), fixture('workspace')];
+  it('rolls back a refused Server terminal publication and settles the original after the fault clears', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'server-terminal-owner-'));
+    const core = createTestCoreDb(root);
+    cleanups.push(() => {
+      core.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+    cleanups.push(shutdownTestStoreWorker);
+    const actor = { kind: 'user' as const, id: ensureLocalUser(core) };
+    const store = await createTestServerWorkStore(core);
+    const thread = await createTestServerThread(store, core, 'Server terminal');
+    const turn = await store.createServerTurn(thread.id, 'Terminal publication', actor);
+    const db = new Database(serverStoragePath(root, 'server-work'), { fileMustExist: true });
+    cleanups.push(() => db.close());
+    const progress = () =>
+      db
+        .prepare(
+          'SELECT kind, sequence FROM control_product_entries WHERE turn_id=? ORDER BY kind, sequence'
+        )
+        .all(turn.id);
+    const initial = progress();
+    const patch = { status: 'completed' as const, completedAt: turn.startedAt! };
+    db.exec(
+      "CREATE TRIGGER refuse_server_terminal BEFORE UPDATE ON control_turns WHEN NEW.status='completed' BEGIN SELECT RAISE(ABORT, 'Server terminal refused'); END"
+    );
+    await expect(store.completeTurn(turn.id, patch)).rejects.toMatchObject({
+      code: 'operation_storage_unavailable',
+    });
+    expect(store.getServerTurnById(turn.id)).toEqual(turn);
+    expect(progress()).toEqual(initial);
+    db.exec('DROP TRIGGER refuse_server_terminal');
+    await expect(store.completeTurn(turn.id, patch)).resolves.toMatchObject({
+      id: turn.id,
+      status: 'completed',
+    });
+    expect(store.getServerTurnTranscript(turn.id)).toMatchObject([{ event: 'turn.completed' }]);
+  });
+
+  it('drains accepted asynchronous terminal preparation in independent Workspace owners before shutdown acknowledgement', async () => {
+    const scopes = [fixture(), fixture()];
     const client = getControlStoreWorkerClient();
     cleanups.push(shutdownControlStoreWorkerClient);
     const databases: string[] = [];
     for (const f of scopes) {
-      const path =
-        f.owner.kind === 'server'
-          ? coreDbPath(f.root)
-          : workspaceDbPath(f.root, f.owner.workspaceId);
-      const database = `${f.owner.kind === 'server' ? 'core' : 'workspace'}:${path}`;
+      const path = workspaceDbPath(f.root, f.owner.workspaceId);
+      const database = `workspace:${path}`;
       databases.push(database);
       await client.open({
         database,
         path,
         dataRoot: f.root,
         create: false,
-        initialize: f.owner.kind === 'server' ? 'core' : 'workspace',
+        initialize: 'workspace',
         productOwner: f.owner,
         contentMount: f.mount,
       });
@@ -726,7 +749,7 @@ describe('complete native terminal owner', () => {
   }, 30_000);
 
   it('commits the actual Workspace journal terminal, Task/Goal, evidence, reap and original receipt together without releasing physical exclusion', async () => {
-    const f = fixture('workspace');
+    const f = fixture();
     if (f.owner.kind !== 'workspace') throw new Error('Workspace fixture required');
     const goal = linkGoal(f);
     const journal = await terminalExecution(f);
@@ -1028,7 +1051,7 @@ describe('complete native terminal owner', () => {
     ).rejects.toThrow();
   });
   it('joins Task fact, Goal wake, receipt, event and reap to the caller rollback, then advances the Goal once', async () => {
-    const f = fixture('workspace');
+    const f = fixture();
     const goal = linkGoal(f);
     const input = withCommand(f);
     await expect(f.apply(input, 'rollback')).rejects.toThrow('outer rollback');
@@ -1078,7 +1101,7 @@ describe('complete native terminal owner', () => {
   it.each(['file', 'parent'] as const)(
     'refuses a new terminal reference when actual %s synchronization fails',
     async (target) => {
-      const f = fixture('workspace');
+      const f = fixture();
       const input = withCommand(f);
       const fault = target === 'file' ? join(f.mount.root, 'event.json') : f.mount.root;
       // Storage and DX Commit Rule require actual new bytes and their parent to be durable before reference.
@@ -1260,7 +1283,7 @@ describe('complete native terminal owner', () => {
     expect((await f.apply(input)).replayed).toBe(true);
   });
   it('joins runtime evidence metadata to rollback and keeps its immutable replay conflict', async () => {
-    const f = fixture('workspace');
+    const f = fixture();
     if (f.owner.kind !== 'workspace') throw new Error('Workspace fixture required');
     const record = terminalEvidence(f, 'No native execution');
     const input = { ...f.input, evidence: [record] };
@@ -1313,7 +1336,7 @@ describe('complete native terminal owner', () => {
   });
 
   it('composes Workspace service terminal with the actual observation owner without inventing execution', async () => {
-    const f = fixture('workspace');
+    const f = fixture();
     expect((await f.apply()).reap?.sequence).toBe(1);
     expect(f.db.sqlite.prepare('SELECT count(*) AS n FROM task_turn_terminal_facts').get()).toEqual(
       { n: 0 }

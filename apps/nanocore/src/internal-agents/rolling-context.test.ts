@@ -7,8 +7,8 @@ import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import {
   type AgentMessage,
   type AgentTool,
@@ -46,7 +46,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.useRealTimers();
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const root of roots.splice(0)) {
     closeWorkspaceProductReadHandles(root);
     rmSync(root, { recursive: true, force: true });
@@ -58,7 +58,7 @@ async function fixture(historyTurns = 8, durable = true, failedSource = false) {
   const dataRoot = durable ? mkdtempSync(join(tmpdir(), 'internal-rolling-context-')) : '';
   if (dataRoot) roots.push(dataRoot);
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
-  const store = createTestStore(dataRoot ? { dataRoot } : {});
+  const store = dataRoot ? await createTestServerWorkStore(dataRoot) : new FsStore();
   const workspace = await store.createWorkspace('Rolling context');
   const thread = await store.createThread(workspace.id, 'Conversation', undefined, 'conversation', {
     visibility: 'private',
@@ -233,7 +233,7 @@ describe('source-bound internal rolling context', () => {
       text(prepared.messages).indexOf('Decision 0:')
     );
     expect(prepared.messages.at(-1)).toEqual(currentMessage);
-    f.store = new FsStore({ dataRoot: f.dataRoot });
+    f.store = await createTestServerWorkStore(f.dataRoot);
     const restarted = input(f);
     expect((await prepareInternalAgentContext(restarted)).messages).toEqual(prepared.messages);
     expect(restarted.callProvider).not.toHaveBeenCalled();
@@ -381,7 +381,7 @@ describe('source-bound internal rolling context', () => {
           .digest('hex'),
       ])
     ).toEqual(retainedPayloads);
-    f.store = new FsStore({ dataRoot: f.dataRoot });
+    f.store = await createTestServerWorkStore(f.dataRoot);
     const restarted = input(f, { tools: [tool] });
     expect((await prepareInternalAgentContext(restarted)).messages).toEqual(prepared.messages);
     expect(restarted.callProvider).not.toHaveBeenCalled();

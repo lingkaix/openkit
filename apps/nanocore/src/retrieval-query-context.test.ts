@@ -1,7 +1,3 @@
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { createTestStore } from './test-support/store.js';
-import { corruptTestWorkspaceNotebookCommit } from './test-support/workspace-notebook-corruption.js';
-import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -51,7 +47,11 @@ import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { writeManagedThreadPolicyFixture } from './test-support/resource-policy.js';
+import { createTestServerWorkStore } from './test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
+import { corruptTestWorkspaceNotebookCommit } from './test-support/workspace-notebook-corruption.js';
+import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const ACTOR = {
@@ -69,7 +69,7 @@ const sourceDbs: CoreDb[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
   for (const db of sourceDbs.splice(0)) db.sqlite.close();
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -1091,7 +1091,7 @@ async function createFixture(
 ): Promise<Fixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-retrieval-context-${label}-`));
   testRoots.push(dataRoot);
-  const store = createTestStore({ dataRoot });
+  const store = await createTestServerWorkStore(dataRoot);
   const workspace = await (importedFrom
     ? store.importWorkspaceSnapshot({
         ...notebookImportFixture({

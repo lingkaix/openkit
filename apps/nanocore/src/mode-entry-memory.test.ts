@@ -11,13 +11,13 @@ import {
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { readMemoryPage } from './knowledge/memory-lifecycle.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openUserDb } from './storage/db.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import {
   assistantWiringFixture,
   skillModelObservations,
 } from './test-support/mode-entry-fixture.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 
 describe('#144 real Assistant command wiring', () => {
   it('uses actual Assistant Memory tell and ask with User publication, citations and separate role usage', async ({
@@ -209,5 +209,5 @@ describe('#144 real Assistant command wiring', () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   syncBuiltinESMExports();
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
 });

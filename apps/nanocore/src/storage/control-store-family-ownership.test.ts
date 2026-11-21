@@ -331,7 +331,11 @@ describe.each(['server', 'workspace'] as const)('prepared %s family ownership', 
     expect(reader.sqlite.inTransaction).toBe(false);
   });
 
-  it('prunes only its declared receipt partition in the worker and rolls it back with a refused tuple', async () => {
+  const rollbackCase =
+    kind === 'server'
+      ? 'preserves retained Core receipts when a retired product transition is refused'
+      : 'prunes only its declared receipt partition in the worker and rolls it back with a refused tuple';
+  it(rollbackCase, async () => {
     const f = fixture(kind);
     seedPartitions(f);
     const client = await openNative(f);
@@ -339,10 +343,12 @@ describe.each(['server', 'workspace'] as const)('prepared %s family ownership', 
     disposals.push(() => reader.close());
     const before = retainedRows(reader.sqlite);
     const input = admission(f);
-    // A conflicting product revision refuses the whole admission, including receipt maintenance.
-    input.products[0]!.expectedRevision = 1;
+    if (kind === 'workspace') {
+      // A conflicting product revision refuses the whole admission, including receipt maintenance.
+      input.products[0]!.expectedRevision = 1;
+    }
     await expect(client.transition('owned', input)).rejects.toMatchObject({
-      code: 'precondition',
+      ...(kind === 'workspace' && { code: 'precondition' }),
       commit: 'not-committed',
     });
 
@@ -352,7 +358,11 @@ describe.each(['server', 'workspace'] as const)('prepared %s family ownership', 
     ).toEqual(before);
   });
 
-  it('commits fresh native product metadata, original receipt, required Audit and pruning without a main writer', async () => {
+  const admissionCase =
+    kind === 'server'
+      ? 'keeps fresh Server product admission out of Core and leaves its receipts and Audit unchanged'
+      : 'commits fresh native product metadata, original receipt, required Audit and pruning without a main writer';
+  it(admissionCase, async () => {
     const f = fixture(kind);
     const partitions = seedPartitions(f);
     const input = admission(f);
@@ -417,6 +427,14 @@ describe.each(['server', 'workspace'] as const)('prepared %s family ownership', 
     const reader = openControlStoreProductReadHandle(f.db.sqlite.name, f.owner);
     disposals.push(() => reader.close());
     const before = retainedRows(reader.sqlite);
+    if (kind === 'server') {
+      await expect(client.transition('owned', input)).rejects.toMatchObject({
+        commit: 'not-committed',
+      });
+      expect(retainedRows(reader.sqlite)).toEqual(before);
+      expect(reader.sqlite.inTransaction).toBe(false);
+      return;
+    }
     await expect(client.transition('owned', input)).resolves.toEqual({
       replayed: false,
       response: input.receipt.response,

@@ -24,6 +24,8 @@ import { FsStore } from '../lib/store.js';
 import { commandInputHash, type InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -277,7 +279,7 @@ async function fixture(kind: Kind, fresh = false) {
     faults.readOnlyMain = false;
     vi.useRealTimers();
     vi.restoreAllMocks();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     if (userDb.sqlite.open) userDb.sqlite.close();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(root, { recursive: true, force: true });
@@ -1534,7 +1536,7 @@ it.each(['maintain', 'tell'] as const)(
     });
     const dependencies = {
       coreDb: f.coreDb,
-      store: f.input.store,
+      store: await createTestServerWorkStore(f.coreDb, f.input.runtimeConfigManager),
       runtimeConfigManager: f.input.runtimeConfigManager,
       inflightCommands: f.input.inflightCommands,
       pin: async () => {},

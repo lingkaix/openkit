@@ -3,9 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Worker as NativeWorker } from 'node:worker_threads';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
-import { listWorkspaceAuditEvents, prepareWorkspaceAuditEvent } from '../audit-events.js';
+import {
+  listWorkspaceAuditEvents,
+  prepareAuditEvent,
+  prepareWorkspaceAuditEvent,
+} from '../audit-events.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
   createCatalogOperationImplementations,
@@ -309,6 +313,7 @@ it('publishes the original Audit identity and timestamps without adding a receip
     'mcp.server.lifecycle.ready',
     'mcp.server.lifecycle.starting',
     'security.canary',
+    'core.protocol.invalid_delta',
   ]);
   const f = await fixture();
   f.queryOnly();
@@ -348,6 +353,27 @@ it('publishes the original Audit identity and timestamps without adding a receip
     )
   ).toEqual([event]);
   expect(f.rows(requestId).receipts).toEqual([]);
+});
+
+it('requires the current protocol version for Server delta refusal Audit', () => {
+  const stage = 'core.protocol.invalid_delta';
+  const event = prepareAuditEvent({
+    workspaceId: null,
+    threadId: allocateEntityId('th'),
+    turnId: allocateEntityId('tu'),
+    action: stage,
+    errorCode: stage,
+    outcome: 'denied',
+    severity: 'warning',
+    summary: 'Item delta violates the declared Item protocol.',
+  });
+  const accepts = (protocolVersion?: string) =>
+    ControlStandaloneAuditInputSchema.safeParse({
+      stage,
+      event: { ...event, protocolVersion },
+    }).success;
+  expect(accepts(PROTOCOL_VERSION)).toBe(true);
+  expect([accepts(), accepts('fixture-protocol-version')]).toEqual([false, false]);
 });
 
 it.each([

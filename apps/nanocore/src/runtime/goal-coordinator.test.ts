@@ -27,6 +27,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readGoalView } from './goal-owner.js';
@@ -36,7 +37,7 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const store = createTestStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Goal Knowledge');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   initializeScopedNotebook({

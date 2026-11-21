@@ -7,12 +7,12 @@ import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
@@ -24,7 +24,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const close of cleanup.splice(0)) await close();
 });
 
@@ -88,20 +88,6 @@ async function fixture(
   } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-effort-'));
-  const store = createTestStore({ dataRoot });
-  const workspace = await store.createWorkspace('Effort');
-  const thread = await store.createThread(workspace.id, 'Effort');
-  const turn = await store.createTurn(
-    workspace.id,
-    thread.id,
-    'Request',
-    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-    null,
-    {
-      captureCoverage: { scope: 'server', value: 'off' },
-      ...(options.turnEffort ? { reasoningEffort: options.turnEffort } : {}),
-    }
-  );
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -115,11 +101,6 @@ async function fixture(
       backendKind: 'encrypted-file',
     });
   }
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    workspaceId: workspace.id,
-  });
   cleanup.push(() => {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -209,6 +190,25 @@ async function fixture(
     writeFileSync(path, JSON.stringify(value));
   };
   const config = createRuntimeConfigManager({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb, config);
+  const workspace = await store.createWorkspace('Effort');
+  const thread = await store.createThread(workspace.id, 'Effort');
+  const turn = await store.createTurn(
+    workspace.id,
+    thread.id,
+    'Request',
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    null,
+    {
+      captureCoverage: { scope: 'server', value: 'off' },
+      ...(options.turnEffort ? { reasoningEffort: options.turnEffort } : {}),
+    }
+  );
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: workspace.id,
+  });
   const primary = fauxProvider({
     provider: options.nativeResponses ? 'openai-codex' : 'openai',
     api: 'openai-responses',

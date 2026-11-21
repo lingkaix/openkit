@@ -20,7 +20,7 @@ import {
   SseEventEnvelopeSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { prepareAuditEvent } from '../audit-events.js';
 import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
@@ -50,13 +50,19 @@ import {
   readNativeTurnHistory,
   readWorkspaceKnowledgeProposalInventory,
 } from '../storage/workspace-file-records.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import { createTestCoreDb, shutdownTestStoreWorker } from '../test-support/store.js';
 import { createThread as createThreadCommand } from '../thread-routes.js';
 import { commandRequestKey, FsStore } from './store.js';
 
 const roots: string[] = [];
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -529,10 +535,14 @@ describe('native Store authority and immutable closure', () => {
 
   it('finishes a Server service Turn through its original native owner', async () => {
     const f = fixture();
-    const thread = await f.store.createServerThread('Server terminal');
-    const turn = await f.store.createServerTurn(thread.id, 'Server input', actor);
+    const coreDb = createTestCoreDb(f.root);
+    onTestFinished(() => coreDb.sqlite.close());
+    ensureLocalUser(coreDb);
+    const store = await createTestServerWorkStore(coreDb);
+    const thread = await createTestServerThread(store, coreDb, 'Server terminal');
+    const turn = await store.createServerTurn(thread.id, 'Server input', actor);
     const item = message(turn, 'Server failure');
-    const result = await f.store.completeTurn(
+    const result = await store.completeTurn(
       turn.id,
       {
         status: 'failed',
@@ -542,13 +552,13 @@ describe('native Store authority and immutable closure', () => {
       { items: [item] }
     );
     expect(result).toMatchObject({ status: 'failed', items: [item] });
-    const events = f.store.getServerTurnTranscript(turn.id);
+    const events = store.getServerTurnTranscript(turn.id);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       event: 'turn.completed',
       data: { stopReason: 'error', turn: result },
     });
-    expect(new FsStore({ dataRoot: f.root }).getServerTurnById(turn.id)).toEqual(result);
+    expect((await createTestServerWorkStore(coreDb)).getServerTurnById(turn.id)).toEqual(result);
   });
 
   it('rereads SQL and every immutable revision after reopen, without mutable product files', async () => {
@@ -679,18 +689,22 @@ describe('native Store authority and immutable closure', () => {
       updatedAt: timestamp,
     });
     await f.store.updateAgentSession(session.id, { status: 'ready', message: 'Ready' });
-    const thread = await f.store.createServerThread('Server');
-    const turn = await f.store.createServerTurn(thread.id, 'Server input', actor);
-    const item = await f.store.createServerItem(message(turn, 'Server original'));
-    await f.store.updateServerItem(item.id, { text: 'Server changed' });
-    const event = await f.store.persistServerTurnEvent(turn.id, {
+    const coreDb = createTestCoreDb(f.root);
+    onTestFinished(() => coreDb.sqlite.close());
+    ensureLocalUser(coreDb);
+    const store = await createTestServerWorkStore(coreDb);
+    const thread = await createTestServerThread(store, coreDb, 'Server');
+    const turn = await store.createServerTurn(thread.id, 'Server input', actor);
+    const item = await store.createServerItem(message(turn, 'Server original'));
+    await store.updateServerItem(item.id, { text: 'Server changed' });
+    const event = await store.persistServerTurnEvent(turn.id, {
       event: 'item.created',
       threadId: thread.id,
       turnId: turn.id,
-      data: { type: 'item-created', item: f.store.getServerItemById(item.id) },
+      data: { type: 'item-created', item: store.getServerItemById(item.id) },
     });
-    f.store.emitServerTurnEvent(turn.id, event);
-    const reopened = new FsStore({ dataRoot: f.root });
+    store.emitServerTurnEvent(turn.id, event);
+    const reopened = await createTestServerWorkStore(coreDb);
     expect(reopened.getServerItemById(item.id)).toMatchObject({ text: 'Server changed' });
     expect(reopened.getServerTurnTranscript(turn.id)).toEqual([event]);
     expect(reopened.getAgentSession(session.id)).toMatchObject({

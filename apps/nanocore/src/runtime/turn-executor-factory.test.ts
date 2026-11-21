@@ -1,4 +1,11 @@
-import { schedulerFixtureInput, createTestQueueEntry } from '../test-support/scheduler-admissions.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import {
+  schedulerFixtureInput,
+  createTestQueueEntry,
+} from '../test-support/scheduler-admissions.js';
 import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -155,7 +162,7 @@ import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
-import { createTestUserDb } from '../test-support/store.js';
+import { createTestUserDb, shutdownTestStoreWorker } from '../test-support/store.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant, getVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import {
@@ -5591,10 +5598,11 @@ describe('createConfiguredTurnExecutor', () => {
       applyMigrations(coreDb);
       // Match the real preparation caller and the independent 3a provenance fixtures.
       const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
-      const publicationStore = new FsStore({ dataRoot: coreDb.dataRoot });
-      const publicationThread = await publicationStore.createServerThread(
+      const publicationStore = await createTestServerWorkStore(coreDb);
+      const publicationThread = await createTestServerThread(
+        publicationStore,
+        coreDb,
         'Host producer fixture preparation',
-        undefined,
         'conversation'
       );
       const publicationTurn = await publicationStore.createServerTurn(
@@ -5603,7 +5611,7 @@ describe('createConfiguredTurnExecutor', () => {
         actor
       );
       expect(
-        new FsStore({ dataRoot: coreDb.dataRoot }).getServerTurn(
+        (await createTestServerWorkStore(coreDb)).getServerTurn(
           publicationThread.id,
           publicationTurn.id
         )
@@ -5870,6 +5878,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       client?.destroy();
       if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+      await shutdownTestStoreWorker();
       pinCoreDb?.sqlite.close();
       for (const resident of residents) resident.coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });

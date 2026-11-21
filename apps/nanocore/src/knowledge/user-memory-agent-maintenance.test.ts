@@ -21,7 +21,6 @@ import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import {
@@ -30,6 +29,8 @@ import {
 } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
 import {
@@ -145,7 +146,7 @@ EOF`;
 }
 
 /** Real scoped persistence and virtual editor surround the bounded fake role runner. */
-function fixture(enabled = true) {
+async function fixture(enabled = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'user-memory-agent-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -156,7 +157,7 @@ function fixture(enabled = true) {
     .run(userId, 'User', 'user@example.invalid', Date.now(), Date.now());
   const userDb = openUserDb(dataRoot, userId);
   applyScopedMigrations(userDb);
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const requestActor = { kind: 'session', userId } as const;
   const settings = { enabled, reviewRequiredPageIds: [] as string[] };
   const run = vi.fn(async (run: KnowledgeManagerAgentRun) => {
@@ -233,7 +234,7 @@ function fixture(enabled = true) {
     signal: new AbortController().signal,
   };
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     userDb.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -250,7 +251,7 @@ function fixture(enabled = true) {
 }
 
 /** Exercises the real Gateway, configured model pin, compaction path and result loop with a fake external Provider. */
-function useFakeProvider(f: ReturnType<typeof fixture>) {
+function useFakeProvider(f: Awaited<ReturnType<typeof fixture>>) {
   const providerRegistry = new ProviderRegistry([
     {
       id: 'fixture',
@@ -360,7 +361,7 @@ describe('User-private bounded Memory maintenance', () => {
   ] as const)(
     'admits only exact unsuppressed User page citations through maintenance publication: %s',
     async (kind) => {
-      const f = fixture();
+      const f = await fixture();
       const first = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
       expect(first.outcome).toBe('published');
       const target = f.notebook().readRevision(first.notebookRevision).files['labels.md']!;
@@ -482,7 +483,7 @@ describe('User-private bounded Memory maintenance', () => {
   it.each(['exact', 'no-index-refs', 'frontmatter-only'] as const)(
     'retains strict publication validation and safe author feedback for %s retained script',
     async (mode) => {
-      const f = fixture();
+      const f = await fixture();
       let script = '';
       let feedback: unknown;
       let baseRevision: string | undefined;
@@ -567,7 +568,7 @@ describe('User-private bounded Memory maintenance', () => {
   );
 
   it('publishes an Agent candidate with explicit Source provenance and replays without another model run', async () => {
-    const f = fixture();
+    const f = await fixture();
     const provider = useFakeProvider(f);
     const result = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
     expect(result.outcome).toBe('published');
@@ -595,7 +596,7 @@ describe('User-private bounded Memory maintenance', () => {
     });
   });
   it('retains the exact candidate when disabled and publishes only after an actual self human decision', async () => {
-    const f = fixture(false);
+    const f = await fixture(false);
     const result = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
     expect(result.outcome).toBe('review-required');
     expect(f.notebook().publishedRevision()).not.toBe(result.candidateRevision);
@@ -675,7 +676,7 @@ describe('User-private bounded Memory maintenance', () => {
   });
 
   it('withholds suppressed pages and Source versions from later model/editor inputs', async () => {
-    const f = fixture();
+    const f = await fixture();
     const first = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
     const content = f.notebook().readRevision(first.notebookRevision).files['labels.md']!;
     const navigationMarker = 'FORGOTTEN_NAVIGATION_MARKER';
@@ -791,7 +792,7 @@ describe('User-private bounded Memory maintenance', () => {
   });
 
   it('checks current identity before native effects and never overwrites a newer notebook base', async () => {
-    const f = fixture();
+    const f = await fixture();
     const original = f.run.getMockImplementation()!;
     let current = '';
     f.run.mockImplementationOnce(async (run) => {
@@ -849,7 +850,7 @@ describe('User-private bounded Memory maintenance', () => {
   });
 
   it('skips a disabled schedule without a model and replays its retained outcome', async () => {
-    const f = fixture(false);
+    const f = await fixture(false);
     const input = { ...f.input, trigger: 'schedule' as const };
     const result = await runUserMemoryMaintenanceCommand(f.dependencies, input);
     expect(result.outcome).toBe('skipped');
@@ -877,7 +878,7 @@ it.each(['rejected', 'deferred'] as const)(
   async (decision) => {
     const { readFileSync } = await import('node:fs');
     const { createOperationInvocation } = await import('../operation-composition.js');
-    const f = fixture(false);
+    const f = await fixture(false);
     const pending = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
     expect(pending.outcome).toBe('review-required');
     const context = {
@@ -999,7 +1000,7 @@ it.each(['rejected', 'deferred'] as const)(
   async (decision) => {
     const { existsSync, readFileSync, unlinkSync } = await import('node:fs');
     const { createOperationInvocation } = await import('../operation-composition.js');
-    const f = fixture(false);
+    const f = await fixture(false);
     const pending = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
     expect(pending.outcome).toBe('review-required');
     const context = {
@@ -1099,7 +1100,7 @@ it.each(['rejected', 'deferred'] as const)(
 it.each(['rejected', 'deferred', 'accepted'] as const)(
   'User stale new %s decision preserves current publication and its exact reviewed tuple',
   async (decision) => {
-    const f = fixture(false);
+    const f = await fixture(false);
     const pending = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
     expect(pending.outcome).toBe('review-required');
     const context = {
@@ -1178,7 +1179,7 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
 it.each(['maintain', 'tell'] as const)(
   'retains the original %s User receipt before inference and never rewrites it after role failure',
   async (kind) => {
-    const f = fixture();
+    const f = await fixture();
     const { tellContent: _tellContent, ...maintenanceInput } = f.input;
     const input = kind === 'tell' ? f.input : maintenanceInput;
     const command = kind === 'tell' ? 'knowledge.tell' : 'knowledge.maintain';
@@ -1213,7 +1214,7 @@ it.each(['maintain', 'tell'] as const)(
         .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
         .get(input.requestId)
     ).toEqual(before);
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     const cold = openUserDb(f.coreDb.dataRoot, userId);
     try {
       expect(
@@ -1234,7 +1235,7 @@ it.each(['maintain', 'tell'] as const)(
 it.each(['maintain', 'tell'] as const)(
   'keeps acknowledged personal Workspace preparation without inference after a real %s User receipt INSERT fault',
   async (kind) => {
-    const f = fixture();
+    const f = await fixture();
     const { tellContent: _tellContent, ...maintenanceInput } = f.input;
     const input = kind === 'tell' ? f.input : maintenanceInput;
     const command = kind === 'tell' ? 'knowledge.tell' : 'knowledge.maintain';
@@ -1259,7 +1260,7 @@ it.each(['maintain', 'tell'] as const)(
       agentId: 'knowledge-manager',
       triggerActor: { kind: 'user', id: userId },
     });
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     const cold = openUserDb(f.coreDb.dataRoot, userId);
     try {
       expect(

@@ -5,13 +5,13 @@ import { join } from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
-import { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { publishTestWorkspaceNotebook } from '../test-support/workspace-notebook-publication.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -27,7 +27,7 @@ async function fixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Overview');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const thread = await store.createThread(workspace.id, 'Working agent');
@@ -36,7 +36,7 @@ async function fixture() {
   const app = createApp({ coreDb, dataRoot, store });
   onTestFinished(async () => {
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

@@ -5,8 +5,17 @@ import type { Item } from '@openkit/protocol';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { createTestStore } from '../test-support/store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import {
+  closeTestCoreDb,
+  createTestCoreDb,
+  createTestStore,
+  shutdownTestStoreWorker,
+} from '../test-support/store.js';
 import { createCompactingInternalAgentProvider } from './compacting-context.js';
 import { assertInternalAgentContextFits } from './gateway-provider.js';
 import {
@@ -40,7 +49,7 @@ async function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['ge
   if (!store) {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-compacting-context-'));
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       rmSync(dataRoot, { recursive: true, force: true });
     });
     store = createTestStore({ dataRoot });
@@ -382,11 +391,14 @@ it('uses the shared summary Item and exact current-run retrieval for a Server-ow
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-compacting-context-'));
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const store = createTestStore({ dataRoot });
-  const thread = await store.createServerThread('Server Knowledge maintenance');
+  const coreDb = createTestCoreDb(dataRoot);
+  onTestFinished(() => closeTestCoreDb(coreDb));
+  ensureLocalUser(coreDb);
+  const store = await createTestServerWorkStore(coreDb);
+  const thread = await createTestServerThread(store, coreDb, 'Server Knowledge maintenance');
   const turn = await store.createServerTurn(
     thread.id,
     'Maintain Server notebook.',
@@ -441,9 +453,10 @@ it('uses the shared summary Item and exact current-run retrieval for a Server-ow
   );
   expect(read.isError).not.toBe(true);
   expect(JSON.stringify(read)).toContain('Keep deployment paused.');
-  const other = await store.createServerThread(
+  const other = await createTestServerThread(
+    store,
+    coreDb,
     'Another Server purpose',
-    undefined,
     'administration'
   );
   const refused = await history.execute(

@@ -31,15 +31,24 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
-import { createTestCoreDb, createTestStore, disposeTestStore } from '../test-support/store.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import {
+  createTestCoreDb,
+  createTestStore,
+  disposeTestStore,
+  shutdownTestStoreWorker,
+} from '../test-support/store.js';
 import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { bindCoreSqlite, openSupportedScopeReadOnlySqlite, openWorkspaceReadDb } from './db.js';
+import { openWorkspaceReadDb, serverStoragePath } from './db.js';
 import { coreDbPath, workspaceDbPath } from './fs-layout.js';
-import { readWorkObservations } from './work-observations.js';
+import { readControlWorkObservations, readWorkObservations } from './work-observations.js';
 
 const observation = vi.hoisted(() => ({
   active: false,
@@ -301,9 +310,21 @@ it('keeps cold remote MCP and built-in Tool serving opens read-only while retain
   fence.assert();
 });
 
+/** Reads the fixture's bounded capture through its product owner. */
+function readObservedRows(
+  db: Parameters<typeof readWorkObservationBody>[0],
+  turn: { threadId: string; id: string }
+) {
+  const lineage = { threadId: turn.threadId, turnId: turn.id };
+  return db.scope === 'server-work'
+    ? readControlWorkObservations(db.sqlite, { kind: 'server' }, lineage)
+    : readWorkObservations(db, lineage);
+}
+
 it('opens unborrowed Workspace and Server model capture as readers before native retained publication', async () => {
   const f = await fixture();
-  const serverThread = await f.store.createServerThread('Server capture');
+  let serverStore = await createTestServerWorkStore(f.coreDb);
+  const serverThread = await createTestServerThread(serverStore, f.coreDb, 'Server capture');
   const actor = { kind: 'user' as const, id: f.userId };
   const workspaceTurn = await f.store.createTurn(
     f.workspace.id,
@@ -313,19 +334,21 @@ it('opens unborrowed Workspace and Server model capture as readers before native
     null,
     { captureCoverage: { scope: 'server', value: 'on' } }
   );
-  const serverTurn = await f.store.createServerTurn(
+  const serverTurn = await serverStore.createServerTurn(
     serverThread.id,
     'Server capture',
     actor,
     null,
     { captureCoverage: { scope: 'server', value: 'on' } }
   );
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   closeWorkspaceProductReadHandles(f.dataRoot);
   const fence = observeServingOpens([
     coreDbPath(f.dataRoot),
+    serverStoragePath(f.dataRoot, 'server-work'),
     workspaceDbPath(f.dataRoot, f.workspace.id),
   ]);
+  serverStore = await createTestServerWorkStore(f.coreDb);
   const expected: Array<{
     turn: typeof workspaceTurn | typeof serverTurn;
     rows: ReturnType<typeof readWorkObservations>;
@@ -335,7 +358,11 @@ it('opens unborrowed Workspace and Server model capture as readers before native
     const label = turn.owner.kind === 'server' ? 'server' : 'workspace';
     await throughFullCommit(() =>
       withTurnModelCapture(
-        { store: f.store, turn, environment: { systemPrompt: `Exact ${label} prompt`, tools: [] } },
+        {
+          store: turn.owner.kind === 'server' ? serverStore : f.store,
+          turn,
+          environment: { systemPrompt: `Exact ${label} prompt`, tools: [] },
+        },
         async (context) => {
           const capture = new ModelCapture(
             { ...context, corr: `first-${label}` },
@@ -346,10 +373,15 @@ it('opens unborrowed Workspace and Server model capture as readers before native
           await capture.event({ type: 'text_delta', delta: `Exact ${label} reply` });
           await capture.event({ type: 'done' });
           // These are public capture-owner input methods, not fabricated provider/business responses.
-          const rows = readWorkObservations(context.workspaceDb, {
-            threadId: turn.threadId,
-            turnId: turn.id,
-          });
+          const db =
+            turn.owner.kind === 'server'
+              ? {
+                  scope: 'server-work' as const,
+                  dataRoot: f.dataRoot,
+                  sqlite: serverStore.getServerWorkReadScope().sqlite,
+                }
+              : context.workspaceDb;
+          const rows = readObservedRows(db, turn);
           expect(rows[0]).toMatchObject({ type: 'env.bound', turnId: turn.id });
           const publications = rows.flatMap((row) =>
             (row.refs ?? [])
@@ -358,7 +390,7 @@ it('opens unborrowed Workspace and Server model capture as readers before native
           );
           expect(publications.length).toBeGreaterThan(0);
           const bodies = publications.map(({ row, ref }) =>
-            readWorkObservationBody(context.workspaceDb, {
+            readWorkObservationBody(db, {
               bundleId: ref.locator,
               threadId: turn.threadId,
               turnId: turn.id,
@@ -372,19 +404,21 @@ it('opens unborrowed Workspace and Server model capture as readers before native
       )
     );
   }
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   closeWorkspaceProductReadHandles(f.dataRoot);
   fence.stop();
+  serverStore = await createTestServerWorkStore(f.coreDb);
   for (const { turn, rows, bodies } of expected) {
     const db =
       turn.owner.kind === 'server'
-        ? bindCoreSqlite(
-            openSupportedScopeReadOnlySqlite(coreDbPath(f.dataRoot), 'core'),
-            f.dataRoot
-          )
+        ? {
+            scope: 'server-work' as const,
+            dataRoot: f.dataRoot,
+            sqlite: serverStore.getServerWorkReadScope().sqlite,
+          }
         : openWorkspaceReadDb(f.dataRoot, f.workspace.id);
     try {
-      expect(readWorkObservations(db, { threadId: turn.threadId, turnId: turn.id })).toEqual(rows);
+      expect(readObservedRows(db, turn)).toEqual(rows);
       const coldBodies = rows.flatMap((row) =>
         (row.refs ?? [])
           .filter((ref) => ref.edge === 'publication')
@@ -400,7 +434,7 @@ it('opens unborrowed Workspace and Server model capture as readers before native
       );
       expect(coldBodies).toEqual(bodies);
     } finally {
-      db.sqlite.close();
+      if (db.scope !== 'server-work') db.sqlite.close();
     }
   }
   fence.assert();

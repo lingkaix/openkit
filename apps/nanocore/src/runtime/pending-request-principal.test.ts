@@ -7,7 +7,6 @@ import {
 } from '../auth/access-token-store.js';
 import { listWorkspaceUsageRecords } from '../capability/usage-ledger.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
@@ -16,7 +15,7 @@ import {
 } from '../test-support/mode-entry-fixture.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createPendingRequestFixture } from '../test-support/pending-request.js';
-import { setTestTurnTriggerActor } from '../test-support/store.js';
+import { setTestTurnTriggerActor, shutdownTestStoreWorker } from '../test-support/store.js';
 import { getWorkspaceMember } from '../workspace-sharing.js';
 import { commandInputHash } from './idempotent-command.js';
 import { type PendingRequestRecord, pendingRequestItemId } from './pending-requests.js';
@@ -530,7 +529,7 @@ it('refuses a retained frozen principal mismatch at canonical validation before 
     release.resolve();
     publication.mockRestore();
     await completion;
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     restore?.();
   }
 });

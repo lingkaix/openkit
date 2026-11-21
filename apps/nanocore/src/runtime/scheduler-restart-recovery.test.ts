@@ -78,7 +78,12 @@ import {
   createTestQueueEntry,
   schedulerFixtureInput,
 } from '../test-support/scheduler-admissions.js';
-import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import {
+  createTestStore,
+  openTestNativeWorkspace,
+  shutdownTestStoreWorker,
+} from '../test-support/store.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
@@ -184,7 +189,7 @@ import {
 const fixtureDatabases: ReturnType<typeof openCoreDb>[] = [];
 let failedStartBaseRoot: string | undefined;
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   for (const coreDb of fixtureDatabases.splice(0)) {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(coreDb.dataRoot, { recursive: true, force: true });
@@ -1822,6 +1827,7 @@ describe('terminal failed-start product recovery', () => {
         f.threadId,
         LOCAL_USER_ID
       );
+      const assistantStore = await createTestServerWorkStore(f.coreDb);
       const executor = new SimulatedTurnExecutor({ coreDb: f.coreDb });
       const createResponses = vi.fn<PiAiGatewayClient['createResponses']>().mockResolvedValue({
         id: 'response_recovered_thread',
@@ -1841,7 +1847,7 @@ describe('terminal failed-start product recovery', () => {
         await confirmContextDefaultsForApp({
           coreDb: f.coreDb,
           dataRoot: f.dataRoot,
-          store: f.store,
+          store: assistantStore,
           turnExecutor: executor,
           agentManifests: [createTestAgentSetup().manifest],
           gatewayConfig: createTestGatewayConfig(),

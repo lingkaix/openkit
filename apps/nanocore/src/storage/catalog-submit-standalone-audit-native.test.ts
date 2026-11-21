@@ -470,6 +470,7 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'catalog.skill-remove.admit',
     'catalog.skill-select',
     'catalog.skill-select.admit',
+    'core.protocol.invalid_delta',
     'data_source_catalog.authority.update',
     'mcp.server.lifecycle.degraded',
     'mcp.server.lifecycle.failed',

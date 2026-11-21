@@ -1583,7 +1583,8 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'item'
     | 'event'
     | 'terminal'
-    | 'publication';
+    | 'publication'
+    | 'server-work-owner';
   readonly code: string;
   readonly message: string;
   readonly status: number;
@@ -2178,7 +2179,7 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'goal' || value.operation === 'capability') &&
         value.message === 'Unsupported retained record format.' &&
         value.status === 409)) &&
-    ((['event', 'products', 'transition', 'terminal', 'publication'].includes(
+    ((['event', 'products', 'transition', 'terminal', 'publication', 'server-work-owner'].includes(
       String(value.operation)
     ) &&
       value.code === 'core.protocol.invalid_delta' &&

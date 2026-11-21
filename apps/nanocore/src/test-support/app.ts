@@ -8,16 +8,14 @@ import type { Actor } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './agent-environment.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './local-user.js';
 import { admitTestNativeEnvironment } from './native-environment.js';
+import { shutdownTestStoreWorker } from './store.js';
 
 export type { CreateAppOptions } from '../app.js';
 
@@ -130,7 +128,7 @@ const workspaceAuthorityFixtures: Array<{
 // Callers release their owned readers before this helper drains only its entered App fixture.
 beforeEach(() => {
   onTestFinished(async () => {
-    if (fixtureNativeClient) await shutdownControlStoreWorkerClient();
+    if (fixtureNativeClient) await shutdownTestStoreWorker();
     fixtureNativeClient = undefined;
     for (const fixture of workspaceAuthorityFixtures.splice(0)) {
       if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();

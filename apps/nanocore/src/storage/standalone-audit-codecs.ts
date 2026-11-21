@@ -1,6 +1,7 @@
 import {
   AccessTokenIdSchema,
   AuditEventSchema,
+  PROTOCOL_VERSION,
   RequestIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
@@ -72,6 +73,7 @@ export const STANDALONE_AUDIT_STAGES = [
   'mcp.server.lifecycle.ready',
   'mcp.server.lifecycle.starting',
   'security.canary',
+  'core.protocol.invalid_delta',
 ] as const;
 /** One original prepared Audit, bound to its exact existing scope and admitted stage. */
 export const ControlStandaloneAuditInputSchema = z
@@ -88,6 +90,33 @@ export const ControlStandaloneAuditInputSchema = z
   .refine(({ workspaceId, stage, event, canaryLineage }) => {
     if (event.action !== stage || event.notebookAdmission !== undefined) return false;
     if (stage !== 'security.canary' && canaryLineage !== undefined) return false;
+    if (stage === 'core.protocol.invalid_delta')
+      return (
+        workspaceId === undefined &&
+        event.workspaceId === null &&
+        event.protocolVersion === PROTOCOL_VERSION &&
+        event.threadId !== null &&
+        event.turnId !== null &&
+        event.itemId === null &&
+        event.capabilityCallId === null &&
+        event.permissionDecisionId === null &&
+        event.vaultGrantId === null &&
+        event.requestId === null &&
+        event.actor === null &&
+        event.subject === null &&
+        event.agentId === null &&
+        event.agentSessionId === null &&
+        event.resource === null &&
+        event.resourceRevision === null &&
+        event.authentication === undefined &&
+        event.policyInvocation === undefined &&
+        event.policyWriteOutcome === undefined &&
+        event.category === 'system' &&
+        event.outcome === 'denied' &&
+        event.severity === 'warning' &&
+        event.errorCode === stage &&
+        event.summary === 'Item delta violates the declared Item protocol.'
+      );
     if (stage === 'security.canary')
       return (
         workspaceId === undefined &&

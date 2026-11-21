@@ -1,16 +1,27 @@
 // openkit-test-platform: posix
+
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
-import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
-import { createTestStore, disposeTestStore } from '../test-support/store.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import {
+  createTestCoreDb,
+  createTestStore,
+  disposeTestStore,
+  shutdownTestStoreWorker,
+} from '../test-support/store.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
+import { withServerWorkProducer } from './server-work-command.js';
 import {
   nativeProductScope,
   readNativeProduct,
@@ -31,10 +42,15 @@ describe('E9 native ingress and monotonic context facts', () => {
     it(`retains Core-supplied ${owner} ingress after native ACK and reopen`, async () => {
       const root = mkdtempSync(join(tmpdir(), 'e9-ingress-'));
       roots.push(root);
-      const store = createTestStore({ dataRoot: root });
+      const coreDb = createTestCoreDb(root);
+      onTestFinished(() => coreDb.sqlite.close());
+      if (owner === 'server') ensureLocalUser(coreDb);
+      const openStore = () =>
+        owner === 'server' ? createTestServerWorkStore(coreDb) : new FsStore({ dataRoot: root });
+      const store = await openStore();
       const thread =
         owner === 'server'
-          ? await store.createServerThread('Ingress storage boundary')
+          ? await createTestServerThread(store, coreDb, 'Ingress storage boundary')
           : await store.createThread(
               (await store.createWorkspace('Ingress owner')).id,
               'Ingress history'
@@ -71,8 +87,8 @@ describe('E9 native ingress and monotonic context facts', () => {
         else await store.createItem(input);
         ids.push(input.id);
       }
-      await shutdownControlStoreWorkerClient();
-      const reopened = new FsStore({ dataRoot: root });
+      await shutdownTestStoreWorker();
+      const reopened = await openStore();
       const retained =
         turn.owner.kind === 'server'
           ? reopened.getServerTurn(thread.id, turn.id)
@@ -93,8 +109,8 @@ describe('E9 native ingress and monotonic context facts', () => {
       } catch {
         // Inspect durable state below; no exception wording or private error body is an oracle.
       }
-      await shutdownControlStoreWorkerClient();
-      const finalStore = new FsStore({ dataRoot: root });
+      await shutdownTestStoreWorker();
+      const finalStore = await openStore();
       const final =
         turn.owner.kind === 'server'
           ? finalStore.getServerTurn(thread.id, turn.id)
@@ -107,10 +123,15 @@ describe('E9 native ingress and monotonic context facts', () => {
     it(`does not downgrade a ${owner} sessionless context after a native Tool-result publication`, async () => {
       const root = mkdtempSync(join(tmpdir(), 'e9-sessionless-'));
       roots.push(root);
-      const store = createTestStore({ dataRoot: root });
+      const coreDb = createTestCoreDb(root);
+      onTestFinished(() => coreDb.sqlite.close());
+      if (owner === 'server') ensureLocalUser(coreDb);
+      const openStore = () =>
+        owner === 'server' ? createTestServerWorkStore(coreDb) : new FsStore({ dataRoot: root });
+      const store = await openStore();
       const thread =
         owner === 'server'
-          ? await store.createServerThread('Sessionless influence')
+          ? await createTestServerThread(store, coreDb, 'Sessionless influence')
           : await store.createThread(
               (await store.createWorkspace('Context owner')).id,
               'Sessionless influence'
@@ -127,8 +148,8 @@ describe('E9 native ingress and monotonic context facts', () => {
               null,
               options
             );
-      await shutdownControlStoreWorkerClient();
-      const reopened = new FsStore({ dataRoot: root });
+      await shutdownTestStoreWorker();
+      const reopened = await openStore();
       const clear =
         turn.owner.kind === 'server'
           ? reopened.getServerTurn(thread.id, turn.id)
@@ -166,7 +187,10 @@ describe('E9 native ingress and monotonic context facts', () => {
         if (turn.owner.kind === 'server') await reopened.createServerItem(input);
         else await reopened.createItem(input);
       }
-      const scope = nativeProductScope(root, turn.owner);
+      const scope =
+        turn.owner.kind === 'server'
+          ? reopened.getServerWorkReadScope()
+          : nativeProductScope(root, turn.owner);
       expect(readNativeTurnHistory(scope, turn.id)?.turn).toMatchObject({
         externallyInfluenced: false,
       });
@@ -221,18 +245,24 @@ describe('E9 native ingress and monotonic context facts', () => {
         else record.externallyInfluenced = false;
         // Bypass the Store patch filter only after valid owner setup, using the existing native CAS.
         try {
-          await getControlStoreWorkerClient().products(
-            `${owner === 'server' ? 'core' : 'workspace'}:${scope.path}`,
-            {
-              products: [
-                {
-                  kind: 'turn',
-                  expectedRevision: previous.revision,
-                  record: writeRetainedV1(record),
-                },
-              ],
-            }
-          );
+          const draft = {
+            products: [
+              {
+                kind: 'turn' as const,
+                expectedRevision: previous.revision,
+                record: writeRetainedV1(record),
+              },
+            ],
+            entries: [],
+          };
+          if (owner === 'server') {
+            const binding = reopened.getServerWorkBinding()!;
+            await withServerWorkProducer(binding, () =>
+              binding.owner.publishTurnProgress!(reopened.getServerTurnAdmission(turn.id), draft)
+            );
+          } else {
+            await getControlStoreWorkerClient().products(`workspace:${scope.path}`, draft);
+          }
         } catch {
           // The observable requirement is retained true, not a private refusal code.
         }
@@ -243,8 +273,8 @@ describe('E9 native ingress and monotonic context facts', () => {
       if (turn.owner.kind === 'server')
         await reopened.updateServerTurn(turn.id, { configVersion: 3 });
       else await reopened.updateTurn(turn.id, { configVersion: 3 });
-      await shutdownControlStoreWorkerClient();
-      const finalStore = new FsStore({ dataRoot: root });
+      await shutdownTestStoreWorker();
+      const finalStore = await openStore();
       const final =
         turn.owner.kind === 'server'
           ? finalStore.getServerTurn(thread.id, turn.id)

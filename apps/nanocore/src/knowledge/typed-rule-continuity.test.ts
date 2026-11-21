@@ -1,5 +1,4 @@
 // openkit-test-platform: posix
-// L2 native continuity only: scripted model transport does not prove semantic or numerical use.
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,17 +14,18 @@ import {
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
-import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+// L2 native continuity only: scripted model transport does not prove semantic or numerical use.
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-agent.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
@@ -154,7 +154,7 @@ async function fixture() {
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Aster rule continuity', {
     requestId: randomUUID(),
     producer: actor,
@@ -257,7 +257,7 @@ async function fixture() {
     await closeRetrievalServices();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

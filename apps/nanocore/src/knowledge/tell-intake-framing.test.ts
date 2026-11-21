@@ -1,5 +1,6 @@
 // openkit-test-platform: posix
 // The runner double proves context assembly and native effects, not model comprehension.
+
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,17 +11,16 @@ import {
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
-import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { createTestStore, shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
@@ -96,7 +96,7 @@ async function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = '
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'user' as const, id: userId };
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const initialization = {
     requestId: randomUUID(),
     producer: actor,
@@ -104,7 +104,7 @@ async function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = '
   };
   const sourceRoot = mkdtempSync(join(tmpdir(), 'tell-intake-source-'));
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     closeWorkspaceProductReadHandles(sourceRoot);
     rmSync(sourceRoot, { recursive: true, force: true });
   });
@@ -189,7 +189,7 @@ async function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = '
     await closeRetrievalServices();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

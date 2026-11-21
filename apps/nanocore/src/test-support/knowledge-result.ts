@@ -11,7 +11,6 @@ import {
 } from '../config/runtime-config.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -19,7 +18,8 @@ import { createTestGatewayConfig } from './agent-environment.js';
 import { DEMO_WORKSPACE_ID, seedDemoWorkspace } from './demo-store.js';
 import { createKnowledgeAnswerApp } from './knowledge-agent.js';
 import { ensureLocalUser } from './local-user.js';
-import { createTestStore } from './store.js';
+import { createTestServerWorkStore } from './server-work-store.js';
+import { shutdownTestStoreWorker } from './store.js';
 
 /**
  * Real operation admission, notebooks and runtime; only Provider transport is replaced.
@@ -29,7 +29,7 @@ import { createTestStore } from './store.js';
  */
 export async function fixture(enableMaintenance = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-result-api-'));
-  const store = createTestStore({ dataRoot });
+  const store = await createTestServerWorkStore(dataRoot);
   await seedDemoWorkspace(store);
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -95,7 +95,7 @@ export async function fixture(enableMaintenance = false) {
   );
   onTestFinished(async () => {
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return { ...result, store, coreDb, dataRoot, userId };

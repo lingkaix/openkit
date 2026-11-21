@@ -1,25 +1,3 @@
-import { refuseScope } from '../bootstrap/readiness.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
-import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
-import { openCoreDb } from '../storage/db.js';
-import {
-  applyMigrations,
-  applyNativeScopeMigrations,
-  listAppliedNativeMigrationIds,
-} from '../storage/migrate.js';
-import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
-import { createPendingRequestFixture } from '../test-support/pending-request.js';
-import { createTestStore, disposeTestStore } from '../test-support/store.js';
-import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
-import {
-  captureWorkspaceSourceFixture,
-  readWorkspaceSourceFixture,
-} from '../test-support/workspace-source.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -49,20 +27,51 @@ import {
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { refuseScope } from '../bootstrap/readiness.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
+import { openCoreDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
+import {
+  applyMigrations,
+  applyNativeScopeMigrations,
+  listAppliedNativeMigrationIds,
+} from '../storage/migrate.js';
 import {
   discardAbandonedWorkspaceStaging,
   nativeProductScope,
   readNativeProductEntries,
 } from '../storage/workspace-file-records.js';
+import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgePageFixture } from '../test-support/knowledge-page.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
+import { createPendingRequestFixture } from '../test-support/pending-request.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import {
+  createTestCoreDb,
+  createTestStore,
+  disposeTestStore,
+  shutdownTestStoreWorker,
+} from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
+import {
+  captureWorkspaceSourceFixture,
+  readWorkspaceSourceFixture,
+} from '../test-support/workspace-source.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FsStore } from './store.js';
 
 // Reopen and corruption fixtures must not race a retained worker handle.
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
 });
 
 /** Reads existing canonical SQL through a separate fixture connection; never initializes storage. */
@@ -511,7 +520,10 @@ function recoveredProjection(store: FsStore, family: string, id: string): unknow
 describe('FsStore canonical reload', () => {
   it('reloads only the frozen recovered target and keeps its public admission closed', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-scoped-recovery-'));
-    let store = createTestStore({ dataRoot });
+    const serverCore = createTestCoreDb(dataRoot);
+    onTestFinished(() => serverCore.sqlite.close());
+    ensureLocalUser(serverCore);
+    let store = await createTestServerWorkStore(serverCore);
     const workspace = await store.createWorkspace('Recovered target');
     const thread = await store.createThread(workspace.id, 'Recovered history');
     const turn = await store.createTurn(workspace.id, thread.id, 'Original input', localActor);
@@ -529,9 +541,9 @@ describe('FsStore canonical reload', () => {
     const sibling = await store.createWorkspace('Healthy sibling');
     const siblingThread = await store.createThread(sibling.id, 'Sibling history');
     const siblingTurn = await store.createTurn(sibling.id, siblingThread.id, 'Sibling', localActor);
-    const serverThread = await store.createServerThread('Server history');
+    const serverThread = await createTestServerThread(store, serverCore, 'Server history');
     const serverTurn = await store.createServerTurn(serverThread.id, 'Server', localActor);
-    store = new FsStore({ dataRoot });
+    store = await createTestServerWorkStore(serverCore);
     const notifications: unknown[] = [];
     const stop = store.addTurnListener(siblingTurn.id, (event) => notifications.push(event));
     const stopServer = store.addServerTurnListener(serverTurn.id, () => {});
@@ -620,7 +632,7 @@ describe('FsStore canonical reload', () => {
       stop();
       stopServer();
       freeze.release();
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       rmSync(dataRoot, { recursive: true, force: true });
     });
     refuseScope(dataRoot, { scope: 'workspace', id: workspace.id, check: 'recovery' });

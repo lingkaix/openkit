@@ -1,5 +1,4 @@
 // openkit-test-platform: posix
-// Real native admission, Source publication, Storage and Notebook editor surround one role double.
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,14 +17,15 @@ import {
   type KnowledgeManagerAgentRun,
   pinKnowledgeManagerExecution,
 } from '../internal-agents/knowledge-manager-agent.js';
-import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+// Real native admission, Source publication, Storage and Notebook editor surround one role double.
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   type KnowledgeMaintenanceDependencies,
@@ -43,7 +43,7 @@ it('captures native Workspace tell during execution and publishes from the exact
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const workspace = await store.createWorkspace('Native Source maintenance');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
@@ -51,7 +51,7 @@ it('captures native Workspace tell during execution and publishes from the exact
   onTestFinished(async () => {
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const actor = { kind: 'agent' as const, id: 'knowledge-manager', responsibleUserId: userId };

@@ -18,9 +18,7 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
-import { FsStore } from '../lib/store.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createHttpTelemetryMiddleware, shutdownTelemetry, startTelemetry } from '../telemetry.js';
@@ -28,6 +26,11 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { queueTestPreparedHarnessOperation } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import {
   acknowledgeNanoHostHarnessResult,
@@ -1742,10 +1745,11 @@ describe('authoritative NanoHost session dispatch', () => {
     applyMigrations(coreDb);
     // Retain actual caller provenance before exercising the original storage fault.
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
-    const store = new FsStore({ dataRoot: coreDb.dataRoot });
-    const thread = await store.createServerThread(
+    const store = await createTestServerWorkStore(coreDb);
+    const thread = await createTestServerThread(
+      store,
+      coreDb,
       'Administrative image settlement',
-      undefined,
       'conversation'
     );
     const publicationTurn = await store.createServerTurn(
@@ -1755,7 +1759,7 @@ describe('authoritative NanoHost session dispatch', () => {
     );
     expect(getLocalUserId(coreDb)).toBe(actor.id);
     expect(
-      new FsStore({ dataRoot: coreDb.dataRoot }).getServerTurn(thread.id, publicationTurn.id)
+      (await createTestServerWorkStore(coreDb)).getServerTurn(thread.id, publicationTurn.id)
     ).toMatchObject({
       id: publicationTurn.id,
       owner: { kind: 'server' },
@@ -3000,8 +3004,13 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-image-acquire-retry-')));
     applyMigrations(coreDb);
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
-    const store = new FsStore({ dataRoot: coreDb.dataRoot });
-    const thread = await store.createServerThread('Image acquire retry', undefined, 'conversation');
+    const store = await createTestServerWorkStore(coreDb);
+    const thread = await createTestServerThread(
+      store,
+      coreDb,
+      'Image acquire retry',
+      'conversation'
+    );
     const publicationTurn = await store.createServerTurn(thread.id, 'Acquire one image.', actor);
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({
@@ -3553,7 +3562,7 @@ it('forwards the original Core close settlement clock once and no replacement cl
         .get(harnessInstanceId)
     ).toEqual({ completedAt: first.completedAt });
   } finally {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     await f?.close();
   }
 });

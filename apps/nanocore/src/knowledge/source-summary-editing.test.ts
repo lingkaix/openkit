@@ -23,13 +23,14 @@ import {
 import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
+import { openTestServerWork } from '../test-support/server-work-store.js';
+import { retainTestServerWorkReader, shutdownTestStoreWorker } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { prepareKnowledgeMaintenance } from './knowledge-agent-maintenance.js';
@@ -48,13 +49,13 @@ const retainedCleanup: Array<() => Promise<void>> = [];
 // Each case opens its own Store, databases and Git copy; audience and publication never leak.
 beforeAll(async () => {
   seed = await fixture(true);
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   seed.workspaceDb.sqlite.close();
   seed.coreDb.sqlite.close();
   linkedSeed = await fixture(false, seed, true);
   linkedSourceId = await captureRelatedSource(linkedSeed);
   linkedSeed.baseRevision = linkedSeed.notebook.publishedRevision();
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
   linkedSeed.workspaceDb.sqlite.close();
   linkedSeed.coreDb.sqlite.close();
 }, 120_000);
@@ -79,7 +80,9 @@ async function fixture(
   const coreDb = openCoreDb(dataRoot);
   if (initialize) applyMigrations(coreDb);
   const userId = initialize ? ensureLocalUser(coreDb) : seed.userId;
-  const store = new FsStore({ dataRoot });
+  const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+  const { reader, store } = await openTestServerWork(coreDb, runtimeConfigManager);
+  retainTestServerWorkReader(reader);
   const workspace = initialize
     ? await store.createWorkspace('Source description correction')
     : store.getWorkspace(baseline.workspace.id);
@@ -88,14 +91,13 @@ async function fixture(
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   if (initialize) applyScopedMigrations(workspaceDb);
   const cleanup = async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   };
   if (initialize || retain) retainedCleanup.push(cleanup);
   else onTestFinished(cleanup);
-  const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
   const app = createApp({ coreDb, dataRoot, store, runtimeConfigManager });
   const call = async (operation: string, input: Record<string, unknown>, targetApp = app) => {
     const { requestId, ...body } = input;

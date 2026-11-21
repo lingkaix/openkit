@@ -798,7 +798,15 @@ function domainRefusal(
 ): ControlWorkerDomainRefusal | undefined {
   if (
     error instanceof ItemDeltaProtocolError &&
-    ['event', 'products', 'transition', 'terminal', 'publication', 'pending'].includes(operation)
+    [
+      'event',
+      'products',
+      'transition',
+      'terminal',
+      'publication',
+      'pending',
+      'server-work-owner',
+    ].includes(operation)
   )
     return {
       operation: operation as
@@ -807,7 +815,8 @@ function domainRefusal(
         | 'transition'
         | 'terminal'
         | 'publication'
-        | 'pending',
+        | 'pending'
+        | 'server-work-owner',
       code: error.code,
       message: error.message,
       status: error.status,
@@ -5622,7 +5631,12 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               : domain
                 ? { ...failure(value.id, 'precondition'), domain }
                 : failure(value.id, failureCode(error, [value.id]), 'not-committed');
-            if (error instanceof ItemDeltaProtocolError && owner.productOwner && !owner.poisoned) {
+            if (
+              error instanceof ItemDeltaProtocolError &&
+              owner.productOwner &&
+              value.operation !== 'server-work-owner' &&
+              !owner.poisoned
+            ) {
               try {
                 const turn = error.turnId
                   ? readProduct(owner.sqlite, owner.productOwner, 'turn', error.turnId)

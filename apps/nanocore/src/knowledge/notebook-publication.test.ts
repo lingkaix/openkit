@@ -7,7 +7,6 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -18,6 +17,8 @@ import {
   currentNotebookRevision,
   decisionInput,
 } from '../test-support/knowledge-proposal-authority.js';
+import { testServerWorkOptions } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { parseOkfDocument, parseScopeKnowledgeSchema } from './okf.js';
@@ -30,12 +31,13 @@ async function fixture(initialFiles: Readonly<Record<string, string>> = {}) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-publisher-'));
   let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     closeWorkspaceProductReadHandles(dataRoot);
     if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const store = await createDemoStore({
+    ...(await testServerWorkOptions(dataRoot)),
     dataRoot,
     knowledge: Object.entries(initialFiles).map(([path, content]) => ({
       id: path.replace(/\.md$/, ''),

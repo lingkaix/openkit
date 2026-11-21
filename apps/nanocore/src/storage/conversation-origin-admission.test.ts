@@ -26,7 +26,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { assistantWiringFixture, conversationBody } from '../test-support/mode-entry-fixture.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import { disposeTestStore } from '../test-support/store.js';
+import { disposeTestStore, shutdownTestStoreWorker } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as schedulerOwners from './control-store-admission.js';
 import {
@@ -599,7 +599,7 @@ describe('existing Worker origin admission', () => {
           },
         ]);
       }
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       const cold = new FsStore({ dataRoot: f.dataRoot });
       const app = createAppWithWorkspaceAuthority({
         coreDb: f.coreDb,

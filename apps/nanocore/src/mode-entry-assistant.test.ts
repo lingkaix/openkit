@@ -26,7 +26,6 @@ import * as privateInvocationOwners from './operation-invocation.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import * as observationOwners from './storage/work-observations.js';
@@ -41,6 +40,7 @@ import {
 } from './test-support/mode-entry-fixture.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { workspaceMembershipDecisionFixture } from './test-support/resource-policy.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 import { getWorkspaceMember, removeWorkspaceMember } from './workspace-sharing.js';
 
 /** Revokes current private-recipient eligibility without changing immutable Thread ownership. */
@@ -1606,5 +1606,5 @@ describe('#144 real Assistant command wiring', () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   syncBuiltinESMExports();
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
 });

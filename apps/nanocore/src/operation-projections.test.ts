@@ -59,10 +59,7 @@ import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openExistingAppDb } from './storage/app-db.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -75,6 +72,8 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { remoteMcpInvocation } from './test-support/remote-mcp-invocation.js';
 import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
+import { createTestServerWorkDemoStore } from './test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from './test-support/store.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { resolveWorkspaceMembershipRelation } from './workspace-sharing.js';
@@ -427,13 +426,18 @@ describe('shared family contract', () => {
 
 /** Isolated domain authority shared by every projection in this invariant. */
 async function operationFixture(
-  options: Pick<CreateAppOptions, 'llmGatewayDispatcher' | 'mode'> = {}
+  options: Pick<CreateAppOptions, 'llmGatewayDispatcher' | 'mode'> & {
+    readonly serverWork?: true;
+  } = {}
 ) {
+  const { serverWork, ...appOptions } = options;
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-operation-slice-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = await createDemoStore({ dataRoot });
+  const store = serverWork
+    ? await createTestServerWorkDemoStore(coreDb)
+    : await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -473,7 +477,7 @@ async function operationFixture(
       return coordinator;
     });
   try {
-    const app = createApp({ coreDb, dataRoot, store, ...options });
+    const app = createApp({ coreDb, dataRoot, store, ...appOptions });
     for (const { value: coordinator } of coordinators.mock.results)
       await vi.mocked(coordinator.boot).mock.results[0]!.value;
     return { app, coreDb, store, command, appRecord, schema, mode: options.mode ?? 'local' };
@@ -1876,6 +1880,7 @@ describe('Goal definition projections', () => {
     });
     const f = await operationFixture({
       llmGatewayDispatcher: { createResponses: dispatch } as never,
+      serverWork: true,
     });
     try {
       const projections = await publicJourneyProjections(f);
@@ -1987,22 +1992,23 @@ describe('Goal definition projections', () => {
             })) as import('@openkit/app-api-schemas').GoalView
           ).cards
         ).toHaveLength(1);
-      } finally {
         release.resolve();
-        try {
-          await shutdownControlStoreWorkerClient();
-          const current = readGoalView(f.store, db, goal.goalId).goal!;
-          expect(current.consideredRevision).toBe(current.changeRevision);
-          for (const completed of f.store.listThreadTurns(goal.workspaceId, goal.threadId))
-            expect(completed).toMatchObject({ status: 'completed', error: null });
-        } finally {
-          db.sqlite.close();
-        }
+        await vi.waitFor(
+          () => {
+            const current = readGoalView(f.store, db, goal.goalId).goal!;
+            expect(current.consideredRevision).toBe(current.changeRevision);
+            for (const completed of f.store.listThreadTurns(goal.workspaceId, goal.threadId))
+              expect(completed).toMatchObject({ status: 'completed', error: null });
+          },
+          { timeout: 15_000 }
+        );
+      } finally {
+        db.sqlite.close();
       }
     } finally {
       release.resolve();
       try {
-        await shutdownControlStoreWorkerClient();
+        await shutdownTestStoreWorker();
       } finally {
         f.coreDb.sqlite.close();
       }
@@ -2496,7 +2502,7 @@ describe('#144 private native invocation and public exclusion', () => {
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  await shutdownTestStoreWorker();
 });
 
 /** The fixed-User definitions drive every public framing while Worker User entry remains unavailable. */
@@ -2743,7 +2749,7 @@ it('keeps human acquisition absent from the real Worker Tool surface before any 
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toEqual(beforeGrants);
   } finally {
     http.mockRestore();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     f.coreDb.sqlite.close();
   }
 });

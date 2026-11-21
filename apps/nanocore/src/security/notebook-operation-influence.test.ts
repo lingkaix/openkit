@@ -16,6 +16,10 @@ import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { remoteMcpInvocation } from '../test-support/remote-mcp-invocation.js';
 import {
+  createTestServerThread,
+  createTestServerWorkStore,
+} from '../test-support/server-work-store.js';
+import {
   createTestCoreDb,
   createTestWorkspaceDb,
   disposeTestStore,
@@ -33,7 +37,7 @@ async function fixture(externallyInfluenced?: boolean) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-operation-influence-'));
   const coreDb = createTestCoreDb(dataRoot);
   const userId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const readers: WorkspaceDb[] = [];
   onTestFinished(() => disposeTestStore(dataRoot, coreDb, ...readers));
   const workspace = await store.createWorkspace('Writing context');
@@ -405,7 +409,7 @@ it.each([false, true])(
   'resolves the native Server writing context (%s) and marks Server disclosure (#740)',
   async (externallyInfluenced) => {
     const f = await fixture(false);
-    const thread = await f.store.createServerThread('Server context');
+    const thread = await createTestServerThread(f.store, f.coreDb, 'Server context');
     const turn = await f.store.createServerTurn(
       thread.id,
       'Write',

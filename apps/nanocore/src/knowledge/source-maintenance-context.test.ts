@@ -1,5 +1,4 @@
 // openkit-test-platform: posix
-// Actual scoped Git, raw Storage and virtual editor surround only the bounded role double.
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,12 +11,13 @@ import type {
   KnowledgeManagerAgentRun,
   ServerKnowledgeManagerAgentRun,
 } from '../internal-agents/knowledge-manager-agent.js';
-import { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+// Actual scoped Git, raw Storage and virtual editor surround only the bounded role double.
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
 import { readUserKnowledgeSource } from './scoped-knowledge-sources.js';
@@ -38,7 +38,7 @@ const original = 'Remember this exact fact.\r\nThe release label is GREEN-ORBIT-
 const digest = `sha256:${createHash('sha256').update(Buffer.from(original)).digest('hex')}`;
 
 /** Real current owner, capture, retained Turn and publication; only external role reasoning is replaced. */
-function fixture(kind: 'user' | 'server') {
+async function fixture(kind: 'user' | 'server') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'source-maintenance-context-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -46,7 +46,7 @@ function fixture(kind: 'user' | 'server') {
   const userDb = kind === 'user' ? openUserDb(dataRoot, userId) : undefined;
   if (userDb) applyScopedMigrations(userDb);
   const actor = { kind: 'local' as const, userId };
-  const store = new FsStore({ dataRoot });
+  const store = await createTestServerWorkStore(coreDb);
   const scope = kind === 'user' ? { kind: 'user' as const, userId } : { kind: 'server' as const };
   const root =
     kind === 'user'
@@ -155,7 +155,7 @@ function fixture(kind: 'user' | 'server') {
     pin,
   };
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     userDb?.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -176,7 +176,7 @@ function fixture(kind: 'user' | 'server') {
 }
 
 /** The published pointer and actual original establish capture independently of any role call. */
-function captured(f: ReturnType<typeof fixture>) {
+function captured(f: Awaited<ReturnType<typeof fixture>>) {
   const revision = f.notebook.publishedRevision();
   const pointers = f.notebook.readSourcePointers(revision);
   expect(Object.keys(pointers)).toHaveLength(1);
@@ -211,7 +211,7 @@ function captured(f: ReturnType<typeof fixture>) {
 
 describe('canonical Source inputs to bounded maintenance', () => {
   it('captures User tell before fixing the actual editor base and replays without a second role run', async () => {
-    const f = fixture('user');
+    const f = await fixture('user');
     const dependencies: UserMemoryMaintenanceDependencies = {
       ...f.dependencies,
       userDb: f.userDb!,
@@ -271,7 +271,7 @@ describe('canonical Source inputs to bounded maintenance', () => {
   });
 
   it('awaits native Server Turn admission then delivers an existing Source only during execution', async () => {
-    const f = fixture('server');
+    const f = await fixture('server');
     const writer = { ...f.dependencies, actor: f.actor };
     const registered = await registerServerKnowledgeSource(writer, {
       requestId: randomUUID(),

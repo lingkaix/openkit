@@ -18,14 +18,14 @@ import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveUserMemory } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readRetrievalTrace } from '../storage/retrieval-traces.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestServerWorkStore } from '../test-support/server-work-store.js';
+import { shutdownTestStoreWorker } from '../test-support/store.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { askKnowledgeAgent } from './knowledge-agent.js';
 import { recordMemorySuppression, saveMemoryPage } from './memory-lifecycle.js';
@@ -84,7 +84,7 @@ async function fixture() {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(nativeTime);
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-tell-ask-'));
-  const store = createTestStore({ dataRoot });
+  const store = await createTestServerWorkStore(dataRoot);
   const coreDb = openCoreDb(dataRoot);
   const userId = ensureLocalUser(coreDb);
   const userDb = openUserDb(dataRoot, userId);
@@ -195,7 +195,7 @@ async function fixture() {
   };
   onTestFinished(async () => {
     await closeRetrievalServices();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     userDb.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });

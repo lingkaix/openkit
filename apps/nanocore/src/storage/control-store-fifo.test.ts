@@ -12,6 +12,10 @@ import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactReviewError, type ControlReviewCommandInput } from '../artifact-review-codecs.js';
 import { executeControlReviewCommand, getArtifactReview } from '../artifact-reviews.js';
+import {
+  createOpenKitAccessTokenSecret,
+  hashOpenKitAccessTokenSecret,
+} from '../auth/access-token.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
   createRuntimeConfigManager,
@@ -989,17 +993,11 @@ function policySource(
   return document;
 }
 
-/** Adds a real Core Turn to the unchanged existing asynchronous file-preparation fixture. */
+/** Adds an independent Core Policy writer to the native FIFO fixture. */
 async function publicationFixture(initialServerBindPort?: number) {
   const f = await fixture();
   const db = openCoreDb(f.root);
   policyDatabases.push(db);
-  const thread = await f.store.createServerThread('Policy publication predecessor');
-  const turn = await f.store.createServerTurn(thread.id, 'Publish this original Core Item.', actor);
-  const scope = nativeProductScope(f.root, { kind: 'server' });
-  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
-  readers.push(reader);
-  const coreLane: Lane = { turn, scope, database: `core:${scope.path}`, reader };
   const document = policySource(
     f,
     'A',
@@ -1034,7 +1032,7 @@ async function publicationFixture(initialServerBindPort?: number) {
   expect(policyDigest(loadedWorkspace[0]!.config.workspace.policy!.mediation)).toBe(
     policyDigest(EMPTY_POLICY_DOCUMENT)
   );
-  return { ...f, db, coreLane, manager, document, workspaceId };
+  return { ...f, db, manager, document, workspaceId };
 }
 
 describe('runtime Policy publication through the actual native FIFO', () => {
@@ -1071,7 +1069,7 @@ describe('runtime Policy publication through the actual native FIFO', () => {
     expect(ready).toBe(true);
   });
 
-  it('keeps close behind actual asynchronous Core preparation and observes both closed intervals', async () => {
+  it('keeps close behind a real Core FULL commit and observes both closed intervals', async () => {
     const f = await publicationFixture();
     const traffic = observePublicationTraffic(f.client);
     await f.manager.bindNativePolicyPublication(f.db);
@@ -1085,7 +1083,6 @@ describe('runtime Policy publication through the actual native FIFO', () => {
     traffic.frames.length = 0;
     traffic.faults.ack = 'close';
     traffic.faults.post = 'close';
-    const one = await f.entry(f.coreLane, 1);
     const sibling = await f.entry(f.lanes[1]!, 1);
     const initialSnapshot = f.manager.current();
     const documentB = policySource(f, 'B');
@@ -1093,17 +1090,27 @@ describe('runtime Policy publication through the actual native FIFO', () => {
       Promise.resolve(f.manager.reload({ mode: 'safe', dryRun: false }))
     );
     // Let the manager's actual inspect finish before delaying its original close frame.
-    // Otherwise that inspect barrier would wait for the held Item before close was posted.
+    // Otherwise that inspect barrier would wait for the held Core commit before close was posted.
     await vi.waitFor(() =>
       expect(
         traffic.frames.some((frame) => frame.action.kind === 'close' && !frame.forwarded)
       ).toBe(true)
     );
-    f.arm(one.input);
+    const retained = () => f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM server_settings').get();
+    const beforeCommit = retained();
+    Atomics.store(f.state, 0, 1);
+    Atomics.store(f.state, 6, 1);
     const first = retainPolicyWork(
-      f.send(f.coreLane, [one.input], () => traffic.events.push('predecessor-ack'))
+      f.client
+        .bootstrapEnsure(f.db, {
+          tokenHash: hashOpenKitAccessTokenSecret(createOpenKitAccessTokenSecret()),
+        })
+        .then((result) => {
+          traffic.events.push('predecessor-ack');
+          return result;
+        })
     );
-    await f.wait(3);
+    await f.wait(7);
     traffic.faults.post = 'activate';
     const close = traffic.frames.find(
       (frame) => frame.action.kind === 'close' && !frame.forwarded
@@ -1116,15 +1123,13 @@ describe('runtime Policy publication through the actual native FIFO', () => {
     expect(
       traffic.frames.filter((frame) => frame.action.kind === 'close' && frame.acknowledged)
     ).toEqual([]);
-    expect(f.coreLane.reader.entries(f.coreLane.turn.id, 'item')).toEqual([]);
-    release(4);
-    expect(await first).toEqual({ ok: true });
+    expect(retained()).toEqual(beforeCommit);
+    release(8);
+    expect(await first).toMatchObject({ issuedAt: expect.any(String) });
     await vi.waitFor(() =>
       expect(traffic.heldReplies.some((reply) => reply.kind === 'close')).toBe(true)
     );
-    expect(f.coreLane.reader.entries(f.coreLane.turn.id, 'item').map(({ id }) => id)).toEqual([
-      one.item.id,
-    ]);
+    expect(retained()).not.toEqual(beforeCommit);
     // Compare actual arrival order, not the delivery suppressed by this test's ACK hold.
     expect(traffic.events.indexOf('predecessor-ack')).toBeGreaterThanOrEqual(0);
     expect(traffic.events.indexOf('close-native-ack')).toBeGreaterThan(

@@ -39,7 +39,6 @@ import {
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
 } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
@@ -52,6 +51,8 @@ import { ensureLocalUser } from './local-user.js';
 import { createNativeTaskAdmissionFixture } from './native-task-admission.js';
 import { operationRequest } from './operation-request.js';
 import { asPiAiGatewayClientDouble } from './pi-ai-gateway-client-double.js';
+import { createTestServerWorkStore } from './server-work-store.js';
+import { shutdownTestStoreWorker } from './store.js';
 
 export const STORAGE_REF = 'wst_00000000-0000-7ac8-9f6c-13552db6aa87';
 export const SELECTED_CHOICE = {
@@ -123,7 +124,7 @@ export async function assistantWiringFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = await createDemoStore({ dataRoot });
+  let store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -274,6 +275,7 @@ export async function assistantWiringFixture(
     }),
   });
   runtimeConfigManager = await confirmContextDefaults(coreDb, store, runtimeConfigManager);
+  store = await createTestServerWorkStore(coreDb, runtimeConfigManager);
   const token = memberCredential
     ? createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: actorUserId,
@@ -338,7 +340,7 @@ export async function assistantWiringFixture(
         .filter((row) => row.type === 'env.bound'),
     dispatchCount: () => createResponses.mock.calls.length + createChatCompletion.mock.calls.length,
     close: async () => {
-      await shutdownControlStoreWorkerClient();
+      await shutdownTestStoreWorker();
       syncBuiltinESMExports();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -760,7 +762,7 @@ export const taskTerminalReplayCloseoutOwnership: (input: {
     if (recoveryOwners.clearWorkerCheckpointAfterTerminalState === collector)
       collector.mockRestore();
     await native.restore();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -994,7 +996,7 @@ export const independentTasksAdmissionOwnership: () => Promise<void> = async () 
     submitObservation.mockRestore();
     if (productOwners.observeTurnAdmission === admissions) admissions.mockRestore();
     await native.restore();
-    await shutdownControlStoreWorkerClient();
+    await shutdownTestStoreWorker();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }
