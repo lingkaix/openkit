@@ -57,6 +57,7 @@ import { executeGoalOperation, readGoalView } from './goal-owner.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { startProductTurn } from './product-turn-start.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
+import { QUALIFIED_STEER_PINS } from './turn-executor-factory.js';
 import { listThreadWorkerCheckpoints } from './worker-checkpoints.js';
 import * as workerTurnLoop from './worker-turn-loop.js';
 
@@ -170,7 +171,7 @@ it.each([
             ? { requiredCapabilities: ['trusted-worker-inference-relay'] }
             : {}
         ).manifest;
-        if (outcome === 'interrupted') manifest.runtime.version = '0.166.0';
+        if (outcome === 'interrupted') manifest.runtime.version = QUALIFIED_STEER_PINS.codex;
         admitTestNativeEnvironment(coreDb, manifest);
         await recordTestNativeRuntimeTarget(coreDb);
         const snapshot = createInMemoryRuntimeConfigSnapshot({

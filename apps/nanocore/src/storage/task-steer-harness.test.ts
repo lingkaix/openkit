@@ -22,7 +22,10 @@ import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-r
 import * as harnessOwner from '../runtime/nanohost-harness.js';
 import { taskSteerInputItemId } from '../runtime/task-steer.js';
 import { readTaskSteerState } from '../runtime/task-steer-receipt.js';
-import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
+import {
+  createConfiguredWorkerLifecycleRuntime,
+  QUALIFIED_STEER_PINS,
+} from '../runtime/turn-executor-factory.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
 import {
   createTestAgentSetup,
@@ -52,7 +55,12 @@ afterEach(async () => {
 });
 
 /** Uses the existing admission/restart peer for Core ordering, separately from real pinned runtime qualification. */
-async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
+async function fixture(
+  runtime: { adapter: string; version: string } = {
+    adapter: 'codex',
+    version: QUALIFIED_STEER_PINS.codex,
+  }
+) {
   const root = mkdtempSync(join(tmpdir(), 'task-steer-harness-'));
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
@@ -439,7 +447,7 @@ describe('Task steer through the existing native Harness slot', () => {
   );
 
   it('admits the qualified Pi pin through the same Core producer and completed receipt owner', async () => {
-    const f = await fixture({ adapter: 'pi', version: '1.4.0' });
+    const f = await fixture({ adapter: 'pi', version: QUALIFIED_STEER_PINS.pi });
     expect(await f.invoke('task.steer', f.input, f.context)).toMatchObject({
       delivery: 'accepted',
       turnId: f.input.turnId,

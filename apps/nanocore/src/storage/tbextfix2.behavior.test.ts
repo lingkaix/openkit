@@ -16,6 +16,7 @@ import {
 import { ProviderRegistry } from '../providers/registry.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { raiseRecordedPendingRequest } from '../runtime/pending-request-flow.js';
+import { QUALIFIED_STEER_PINS } from '../runtime/turn-executor-factory.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -61,7 +62,7 @@ async function liveWorkerFixture() {
     imageRef: `sha256:${'a'.repeat(64)}`,
     requiredCapabilities: ['trusted-worker-inference-relay'],
   }).manifest;
-  manifest.runtime.version = '0.166.0';
+  manifest.runtime.version = QUALIFIED_STEER_PINS.codex;
   admitTestNativeEnvironment(f.coreDb, manifest);
   const configuration = createInMemoryRuntimeConfigSnapshot({
     ...loadRuntimeConfig(f.root),

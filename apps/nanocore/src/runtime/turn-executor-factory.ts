@@ -308,6 +308,13 @@ import {
 } from './workspace-snapshot-chain.js';
 import { assertCurrentWorkspaceSources } from './workspace-source-admission.js';
 
+/**
+ * Exact shipped Worker pins whose native live steer passed the pinned adapter live-steer qualification.
+ * A harness pin bump re-runs that qualification and updates this list; `qualified-steer-pins.test.ts`
+ * fails while it differs from `containers/worker-runtimes/versions.json`. Other adapters stay unsupported.
+ */
+export const QUALIFIED_STEER_PINS = Object.freeze({ codex: '0.169.0', pi: '1.5.2' } as const);
+
 /** Exact V1 maximum for one raw NanoHost file export. */
 const NANO_HOST_FILE_EXPORT_MAX_BYTES = 256 * 1024 * 1024;
 /** Maximum raw value accepted for one process environment credential. */
@@ -6431,10 +6438,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   private hasQualifiedSteerPin(session: NanoHostBackendTurnSession): boolean {
+    const { adapterId, adapterVersion } = session.sharedHarness;
     return (
-      (session.sharedHarness.adapterId === 'codex' &&
-        session.sharedHarness.adapterVersion === '0.166.0') ||
-      (session.sharedHarness.adapterId === 'pi' && session.sharedHarness.adapterVersion === '1.4.0')
+      Object.hasOwn(QUALIFIED_STEER_PINS, adapterId) &&
+      QUALIFIED_STEER_PINS[adapterId as keyof typeof QUALIFIED_STEER_PINS] === adapterVersion
     );
   }
 

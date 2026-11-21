@@ -11,7 +11,10 @@ import {
 } from '../config/runtime-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { executeGoalOperation } from '../runtime/goal-owner.js';
-import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
+import {
+  createConfiguredWorkerLifecycleRuntime,
+  QUALIFIED_STEER_PINS,
+} from '../runtime/turn-executor-factory.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -39,7 +42,12 @@ afterEach(async () => {
 });
 
 /** Creates public product/configuration owners; native binding state is never seeded with SQL. */
-async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
+async function fixture(
+  runtime: { adapter: string; version: string } = {
+    adapter: 'codex',
+    version: QUALIFIED_STEER_PINS.codex,
+  }
+) {
   const root = mkdtempSync(join(tmpdir(), 'conversation-steer-availability-'));
   const coreDb = createTestCoreDb(root);
   cleanups.push(() => disposeTestStore(root, coreDb));
@@ -225,8 +233,8 @@ describe('Conversation target live-steer availability', () => {
   }, 30_000);
 
   it.each([
-    { adapter: 'codex', version: '0.166.0' },
-    { adapter: 'pi', version: '1.4.0' },
+    { adapter: 'codex', version: QUALIFIED_STEER_PINS.codex },
+    { adapter: 'pi', version: QUALIFIED_STEER_PINS.pi },
   ])(
     'projects the exact adopted $adapter $version live pin independently of ordinary busy availability',
     async (runtime) => {
@@ -275,7 +283,7 @@ describe('Conversation target live-steer availability', () => {
   );
 
   it('does not advertise or admit stored live work before this native lifecycle owner adopts it', async () => {
-    const f = await liveFixture({ adapter: 'codex', version: '0.166.0' });
+    const f = await liveFixture({ adapter: 'codex', version: QUALIFIED_STEER_PINS.codex });
     const cold = createConfiguredWorkerLifecycleRuntime({
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: f.coreDb,
@@ -313,7 +321,7 @@ describe('Conversation target live-steer availability', () => {
   }, 30_000);
 
   it('reports the actual occupied native slot as busy and clears that projection only after the real operation settles', async () => {
-    const f = await liveFixture({ adapter: 'codex', version: '0.166.0' });
+    const f = await liveFixture({ adapter: 'codex', version: QUALIFIED_STEER_PINS.codex });
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const accept = f.native.runtime.acceptNanoHostHarnessCommand.bind(f.native.runtime);
