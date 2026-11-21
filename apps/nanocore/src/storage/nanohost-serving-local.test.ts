@@ -19,6 +19,7 @@ import {
   ControlHarnessLifecycleInputSchema,
   NanoHostLocalHarnessLifecycleInputSchema,
 } from './harness-lifecycle-codecs.js';
+import { createNanoHostCoreReads } from './nanohost-core-reads.js';
 import { ControlWorkerImageInputSchema } from './worker-image-codecs.js';
 
 it('commits local Harness and image tuples without admitting mixed Core operations', async () => {
@@ -122,6 +123,22 @@ it('commits local Harness and image tuples without admitting mixed Core operatio
           ).immediate();
           for (const input of workerData.inputs) assert.equal(applyHarness(input), null);
           assert.throws(() => applyHarness(workerData.restore), /requires deciding Core authority/);
+          const setup = workerData.inputs[0];
+          for (const suffix of ['-later', '-accepting']) {
+            assert.equal(applyHarness({
+              ...setup,
+              harnessBindingRef: setup.harnessBindingRef + suffix,
+              harnessInstanceId: setup.harnessInstanceId + suffix,
+              sandboxBindingRef: setup.sandboxBindingRef + suffix,
+              sandboxIntegrationBindingRef: setup.sandboxIntegrationBindingRef + suffix,
+              sandboxRuntimeId: setup.sandboxRuntimeId + suffix,
+            }), null);
+          }
+          sqlite.transaction(() => {
+            sqlite.prepare(
+              "UPDATE sandbox_runtime_records SET drain_state='draining' WHERE sandbox_binding_ref IN (?, ?)"
+            ).run(setup.sandboxBindingRef, setup.sandboxBindingRef + '-later');
+          }).immediate();
           const applyImage = input => sqlite.transaction(() =>
             applyControlWorkerImage(owner, input)
           ).immediate();
@@ -167,6 +184,41 @@ it('commits local Harness and image tuples without admitting mixed Core operatio
         image.outcome
       );
       expect(readWorkerImageSettlement({ sqlite: reader }, acquisitionRequestId)).toBeNull();
+
+      const ready = <Value>(value: Value) => ({ state: 'ready', value }) as const;
+      const observations = createNanoHostCoreReads({ read: (query) => ready(query(reader)) });
+      expect(observations.readTarget(targetId)).toEqual(
+        ready(expect.objectContaining({ targetId, physicalEpoch, ready: true }))
+      );
+      expect(observations.readBackendSession({ attemptId: 'absent-attempt' })).toEqual(ready(null));
+      expect(observations.readBackendSession({ packageSnapshotId: 'absent-package' })).toEqual(
+        ready(null)
+      );
+      expect(observations.readResident('sandbox-binding')).toEqual(
+        ready({
+          binding: 'sandbox-binding',
+          origin: physicalEpoch,
+          target: targetId,
+          drain: 'draining',
+        })
+      );
+      expect(observations.readResident('absent-binding')).toEqual(ready(null));
+      expect(observations.listDrainingResidents(null, 1)).toEqual(
+        ready({
+          bindings: ['sandbox-binding'],
+          next: 'sandbox-binding',
+        })
+      );
+      expect(observations.listDrainingResidents('sandbox-binding', 1)).toEqual(
+        ready({
+          bindings: ['sandbox-binding-later'],
+          next: null,
+        })
+      );
+      const unavailable = { state: 'unavailable', owner: 'nanohost', reason: 'missing' } as const;
+      const held = createNanoHostCoreReads({ read: () => unavailable });
+      expect(held.readTarget(targetId)).toBe(unavailable);
+      expect(held.listDrainingResidents(null, 1)).toBe(unavailable);
       expect(reader.pragma('foreign_key_check')).toEqual([]);
     } finally {
       reader.close();
