@@ -7,7 +7,7 @@ import {
   responsibleUserIdForActor,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { sha256Hex } from '@openkit/protocol/digest';
+import { sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import { requireCurrentDeploymentAdmin } from '../auth/access-token-store.js';
 import {
@@ -27,7 +27,15 @@ import {
   readVaultRequesterAuthority,
 } from '../runtime/worker-credential-authority.js';
 import { isServerMcpGrant, isServerMcpReference } from '../vault/server-mcp-authority.js';
-import { recordControlCommandRequestRecordInDb } from './command-request-records.js';
+import {
+  insertNanoHostEpochFenceReservation,
+  inspectNanoHostEpochFenceReceipt,
+  readNanoHostEpochFenceRecord,
+  recordControlCommandRequestRecordInDb,
+  vaultEpochFenceOccurrence,
+  vaultEpochMayAuthorizeWriter,
+  writeNanoHostEpochFenceReceipt,
+} from './command-request-records.js';
 import {
   ControlProductPreconditionError,
   decode,
@@ -36,6 +44,8 @@ import {
 } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
+import type { NanoHostEpochInvalidation, NanoHostEpochReceipt } from './nanohost-port.js';
 import {
   NATIVE_THREAD_LOGIN_FEATURE,
   NativeThreadLoginSchema,
@@ -43,6 +53,7 @@ import {
 } from './native-thread-login.js';
 import { THREAD_REQUIRED_FEATURES } from './retained-work-events-v1.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
+import { type StorageDecision, storageRequestId } from './storage-owner.js';
 import {
   type AdvanceActiveVaultReferenceVersionInput,
   assertAllowedInjectionPaths,
@@ -63,6 +74,7 @@ import {
   type CreateVaultReferenceInput,
   type CreateVaultReferenceResult,
   type CreateVaultUseRecordInput,
+  decodeVaultCredentialWriterJson,
   getVaultGrant,
   getVaultInjectionPlan,
   getVaultInjectionReceipt,
@@ -81,6 +93,7 @@ import {
   requireVaultUseRecord,
   type VaultCredentialWriter,
   VaultCredentialWriterSchema,
+  type VaultEpochPlacement,
   VaultGrantNarrowingError,
   type VaultGrantRecord,
   type VaultInjectionPlanRecord,
@@ -792,7 +805,13 @@ function changeVaultCredentialWriter(
   const writer = vaultCredentialWriterOf(reference);
   if (writer.generation !== input.expectedGeneration) throw credentialFamilyBusy();
   if (input.action === 'delegate') {
-    if (writer.mode !== 'core' || getVaultInjectionReceipt(db, input.receiptId))
+    if (
+      writer.mode !== 'core' ||
+      getVaultInjectionReceipt(db, input.receiptId) ||
+      (input.placement &&
+        input.placement.deploymentId !== readDataRootLayoutMarker(db.dataRoot).deploymentId) ||
+      !vaultEpochMayAuthorizeWriter(db, input.placement)
+    )
       throw credentialFamilyBusy();
     writeVaultCredentialWriter(
       db,
@@ -802,6 +821,7 @@ function changeVaultCredentialWriter(
         mode: 'gateway',
         holder: input.receiptId,
         state: 'pending',
+        ...(input.placement && { placement: input.placement }),
       },
       input.now
     );
@@ -849,57 +869,141 @@ function settleVaultCredentialWriter(
           state: 'active',
         }
       : {
+          ...writer,
           generation: nextWriterGeneration(writer),
-          mode: 'gateway',
-          holder: receiptId,
           state: 'fenced',
         }
   );
 }
 
-/** Applies unproved receipt revocation cascades without granting Core material authority. */
-function fenceVaultCredentialWriterReceipts(
-  db: CoreDb,
-  receiptIds: ReadonlySet<string>
-): ReadonlySet<string> {
-  const holders = new Set<string>();
-  const references = new Set<string>();
-  for (const receiptId of receiptIds) {
-    const receipt = getVaultInjectionReceipt(db, receiptId);
-    const grant = receipt && getVaultGrant(db, receipt.grantId);
-    if (grant) references.add(grant.vaultReferenceId);
-  }
-  for (const referenceId of references) {
-    const reference = requireVaultReference(db, referenceId);
-    const writer = vaultCredentialWriterOf(reference);
-    if (writer.mode === 'gateway' && receiptIds.has(writer.holder)) {
-      settleVaultCredentialWriter(db, reference, writer.holder, 'fenced');
-      holders.add(writer.holder);
+/** A scoped epoch census includes reservations that have not written a delivery receipt yet. */
+function vaultEpochHolders(db: CoreDb, placement: VaultEpochPlacement) {
+  const rows = db.sqlite
+    .prepare(`SELECT reference_id AS referenceId, credential_writer_json AS writer
+    FROM vault_references WHERE credential_writer_json IS NOT NULL`)
+    .all() as {
+    referenceId: string;
+    writer: string;
+  }[];
+  const holders: { referenceId: string; holder: string }[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const writer = decodeVaultCredentialWriterJson(row.writer);
+    if (writer.mode === 'core') continue;
+    if (!writer.placement) {
+      if (writer.state !== 'fenced') return null;
+      continue;
     }
+    if (
+      writer.placement.deploymentId !== placement.deploymentId ||
+      writer.placement.runtimeTargetId !== placement.runtimeTargetId ||
+      writer.placement.physicalEpoch !== placement.physicalEpoch
+    )
+      continue;
+    if (writer.placement.generation !== placement.generation) {
+      if (writer.state !== 'fenced') return null;
+      continue;
+    }
+    if (seen.has(writer.holder)) return null;
+    seen.add(writer.holder);
+    holders.push({ referenceId: row.referenceId, holder: writer.holder });
   }
   return holders;
 }
 
-/** Settles holder receipts from one invalidated physical Epoch on the same Core transaction. */
+/** Closes writer admission and captures the exact census before NanoHost stages its final intent. */
+export function reserveVaultEpochFenceInDb(
+  db: CoreDb,
+  placement: VaultEpochPlacement,
+  completeHistory: boolean,
+  verifyRetiringPlacement: (original: VaultEpochPlacement) => boolean
+): StorageDecision<NanoHostEpochInvalidation> {
+  assertControlProductWriter(db.sqlite);
+  if (readDataRootLayoutMarker(db.dataRoot).deploymentId !== placement.deploymentId)
+    return { state: 'conflict' };
+  if (!verifyRetiringPlacement(placement)) return { state: 'unknown' };
+  const occurrence = vaultEpochFenceOccurrence(placement);
+  const requestId = storageRequestId(occurrence);
+  const existing = readNanoHostEpochFenceRecord(db, requestId);
+  if (existing.state === 'reserved') return { state: 'settled', receipt: existing.intent };
+  if (existing.state === 'settled') return { state: 'settled', receipt: existing.receipt.intent };
+  if (existing.state === 'unknown' || !completeHistory) return { state: 'unknown' };
+  let holders: ReturnType<typeof vaultEpochHolders>;
+  try {
+    holders = vaultEpochHolders(db, placement);
+  } catch {
+    return { state: 'unknown' };
+  }
+  if (!holders || holders.length > 4096 || !vaultEpochMayAuthorizeWriter(db, placement))
+    return { state: 'unknown' };
+  const target = {
+    runtimeTargetId: placement.runtimeTargetId,
+    physicalEpoch: placement.physicalEpoch,
+    holderReceiptIds: holders.map(({ holder }) => holder).sort(),
+  };
+  const intent = {
+    ...occurrence,
+    target,
+    requestId,
+    expectedGeneration: placement.generation,
+    inputDigest: sha256CanonicalJson(target),
+  };
+  insertNanoHostEpochFenceReservation(db, intent);
+  return { state: 'settled', receipt: intent };
+}
+
+/** Fences the exact complete predecessor set and retains the original epoch receipt in one Core commit. */
+export function fenceNanoHostEpochInDb(
+  db: CoreDb,
+  intent: NanoHostEpochInvalidation,
+  completeHistory: boolean,
+  verifyInvalidation: (original: NanoHostEpochInvalidation) => boolean
+): StorageDecision<NanoHostEpochReceipt> {
+  assertControlProductWriter(db.sqlite);
+  if (intent.deploymentId !== readDataRootLayoutMarker(db.dataRoot).deploymentId)
+    return { state: 'conflict' };
+  const prior = inspectNanoHostEpochFenceReceipt(db, intent, completeHistory);
+  if (prior.state !== 'absent') return prior;
+  const reservation = readNanoHostEpochFenceRecord(db, intent.requestId);
+  if (
+    intent.expectedGeneration === null ||
+    reservation.state !== 'reserved' ||
+    !verifyInvalidation(intent)
+  )
+    return { state: 'unknown' };
+  const placement = {
+    deploymentId: intent.deploymentId,
+    runtimeTargetId: intent.target.runtimeTargetId,
+    physicalEpoch: intent.target.physicalEpoch,
+    generation: intent.expectedGeneration,
+  };
+  let observed: ReturnType<typeof vaultEpochHolders>;
+  try {
+    observed = vaultEpochHolders(db, placement);
+  } catch {
+    return { state: 'unknown' };
+  }
+  const originalHolders = new Set(reservation.intent.target.holderReceiptIds);
+  if (!observed || observed.some(({ holder }) => !originalHolders.has(holder)))
+    return { state: 'unknown' };
+  const revoke =
+    db.sqlite.prepare(`UPDATE vault_injection_receipts SET revocation_status='stale-session'
+    WHERE receipt_id=? AND revocation_status='active'`);
+  for (const { referenceId, holder } of observed) {
+    settleVaultCredentialWriter(db, requireVaultReference(db, referenceId), holder, 'fenced');
+  }
+  for (const holder of originalHolders) revoke.run(holder);
+  return { state: 'settled', receipt: writeNanoHostEpochFenceReceipt(db, intent) };
+}
+
+/** The closed legacy RuntimeTarget path cannot make an independently verified epoch decision. */
 export function fenceVaultCredentialWritersForEpoch(
   db: CoreDb,
-  targetId: string,
-  physicalEpoch: string
-): void {
+  _targetId: string,
+  _physicalEpoch: string
+): never {
   assertControlProductWriter(db.sqlite);
-  const receipts = db.sqlite
-    .prepare(`SELECT r.receipt_id AS receiptId FROM vault_injection_receipts r
-      JOIN agent_session_runtime_bindings b ON b.agent_session_id = r.agent_session_id
-      JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
-      JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
-      WHERE s.runtime_target_id = ? AND s.origin_physical_epoch = ?`)
-    .all(targetId, physicalEpoch) as { receiptId: string }[];
-  const receiptIds = new Set(receipts.map((receipt) => receipt.receiptId));
-  const holders = fenceVaultCredentialWriterReceipts(db, receiptIds);
-  const revoke = db.sqlite.prepare(
-    "UPDATE vault_injection_receipts SET revocation_status='stale-session' WHERE receipt_id=? AND revocation_status='active'"
-  );
-  for (const receiptId of holders) revoke.run(receiptId);
+  throw new ControlProductPreconditionError();
 }
 
 /** Repeats the exact pending holder and current use authority in the receipt transaction. */
@@ -923,6 +1027,7 @@ function activateVaultCredentialWriter(
   }
   if (
     writer.state !== 'pending' ||
+    !vaultEpochMayAuthorizeWriter(db, writer.placement) ||
     writer.holder !== input.receiptId ||
     input.expectedVersion !== reference.currentVersion ||
     input.expectedWriterGeneration !== writer.generation ||

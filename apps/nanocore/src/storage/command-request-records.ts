@@ -1,7 +1,15 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { compareCodeUnits, readRetainedV1, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  canonicalIdentifierName,
+  compareCodeUnits,
+  PolicyDigestV1Schema,
+  readRetainedV1,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type Database from 'better-sqlite3';
+import { z } from 'zod';
 import { assertScopeAdmitted } from '../bootstrap/readiness.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import type {
@@ -33,15 +41,18 @@ import {
   bindCoreSqlite,
   bindWorkspaceSqlite,
   type CoreDb,
-  openCoreDb,
-  openUserDb,
   openUserReadDb,
-  openWorkspaceDb,
   type UserDb,
   type WorkspaceDb,
 } from './db.js';
 import { coreDbPath, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
-import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import { vaultEpochFenceOccurrence } from './nanohost-epoch-invalidation.js';
+import type { NanoHostEpochInvalidation, NanoHostEpochReceipt } from './nanohost-port.js';
+import { type StorageReceiptLookup, storageReceipt, storageRequestId } from './storage-owner.js';
+import {
+  NanoHostEpochInvalidationSchema,
+  type VaultEpochPlacement,
+} from './vault-native-codecs.js';
 
 /** Raw SQLite row for one command idempotency request. */
 type CommandRequestRow = {
@@ -120,6 +131,221 @@ export function recordControlCommandRequestRecordInDb(
   );
 }
 
+const permanentKernelScope = '{"coreId":"server"}';
+const ordinaryCommandRequestFilter =
+  "NOT (command_name = 'fence-vault-epoch' AND response_kind = 'storage-receipt' AND expires_at IS NULL)";
+
+type KernelRequestRow = Omit<CommandRequestRow, 'command' | 'responseKind'> & {
+  command: string;
+  responseKind: string;
+};
+
+function readKernelRequestRow(db: CoreDb, requestId: string): KernelRequestRow | undefined {
+  return db.sqlite.prepare(`${COMMAND_REQUEST_SELECT} WHERE request_key = ?`).get(requestId) as
+    | KernelRequestRow
+    | undefined;
+}
+
+function matchesKernelRequestRow(
+  row: KernelRequestRow,
+  intent: { verb: string; requestId: string; inputDigest: string },
+  responseId: string
+): boolean {
+  return (
+    row.command === intent.verb &&
+    row.responseKind === 'storage-receipt' &&
+    row.requestId === intent.requestId &&
+    row.key === intent.requestId &&
+    row.scopeJson === permanentKernelScope &&
+    row.inputHash === intent.inputDigest &&
+    row.responseId === responseId &&
+    row.expiresAt === null
+  );
+}
+
+function insertKernelRequest(
+  db: CoreDb,
+  intent: { verb: string; requestId: string; inputDigest: string },
+  responseId: string,
+  payload: unknown,
+  createdAt: string
+): void {
+  assertControlProductWriter(db.sqlite);
+  db.sqlite
+    .prepare(`INSERT INTO idempotency_requests
+      (schema_version, request_key, command_name, request_id, scope_json, input_hash,
+       response_kind, response_id, response_json, created_at, expires_at)
+      VALUES (1, ?, ?, ?, ?, ?, 'storage-receipt', ?, ?, ?, NULL)`)
+    .run(
+      intent.requestId,
+      intent.verb,
+      intent.requestId,
+      permanentKernelScope,
+      intent.inputDigest,
+      responseId,
+      canonicalIdentifierName(payload),
+      createdAt
+    );
+}
+
+export { vaultEpochFenceOccurrence } from './nanohost-epoch-invalidation.js';
+
+/** Reconnecting the same physical Epoch does not reopen the retired writer. */
+export function vaultEpochMayAuthorizeWriter(db: CoreDb, placement?: VaultEpochPlacement): boolean {
+  if (!placement) {
+    return (
+      db.sqlite
+        .prepare(
+          "SELECT 1 FROM idempotency_requests WHERE command_name='fence-vault-epoch' LIMIT 1"
+        )
+        .get() === undefined
+    );
+  }
+  const key = storageRequestId(vaultEpochFenceOccurrence(placement));
+  if (readKernelRequestRow(db, key)) return false;
+  return (
+    db.sqlite
+      .prepare(`SELECT 1 FROM idempotency_requests
+    WHERE command_name='fence-vault-epoch' AND response_id=?
+      AND (schema_version<>1 OR response_kind<>'storage-receipt' OR response_json IS NULL
+        OR json_extract(response_json, '$.intent.target.physicalEpoch') IS NULL
+        OR (json_extract(response_json, '$.intent.deploymentId')=?
+          AND json_extract(response_json, '$.intent.target.physicalEpoch')=?))
+    LIMIT 1`)
+      .get(placement.runtimeTargetId, placement.deploymentId, placement.physicalEpoch) === undefined
+  );
+}
+
+const retainedEpochReceiptSchema = z.strictObject({
+  intent: NanoHostEpochInvalidationSchema,
+  disposition: z.literal('applied'),
+  result: z.strictObject({
+    fencedHolderReceiptIds: NanoHostEpochInvalidationSchema.shape.target.shape.holderReceiptIds,
+  }),
+  receiptDigest: PolicyDigestV1Schema,
+});
+
+const reservedEpochFenceSchema = z.strictObject({
+  state: z.literal('reserved'),
+  intent: NanoHostEpochInvalidationSchema,
+});
+const retainedEpochFenceSchema = z.union([reservedEpochFenceSchema, retainedEpochReceiptSchema]);
+
+function parseEpochFenceIntent(input: unknown): NanoHostEpochInvalidation | null {
+  const parsed = NanoHostEpochInvalidationSchema.safeParse(input);
+  if (!parsed.success) return null;
+  const candidate = parsed.data;
+  const expected = vaultEpochFenceOccurrence({
+    deploymentId: candidate.deploymentId,
+    generation: candidate.expectedGeneration,
+    runtimeTargetId: candidate.target.runtimeTargetId,
+    physicalEpoch: candidate.target.physicalEpoch,
+  });
+  const digest = sha256CanonicalJson(candidate.target);
+  if (
+    expected.occurrenceKey !== candidate.occurrenceKey ||
+    candidate.requestId !== storageRequestId(expected) ||
+    (candidate.inputDigest !== digest && candidate.inputDigest !== `sha256:${digest}`) ||
+    canonicalIdentifierName(candidate.target.holderReceiptIds) !==
+      canonicalIdentifierName([...new Set(candidate.target.holderReceiptIds)].sort())
+  )
+    return null;
+  return candidate;
+}
+
+/** Reads the original, including its pre-fence hold, without making an effect decision. */
+export function readNanoHostEpochFenceRecord(
+  db: CoreDb,
+  requestId: string
+):
+  | { readonly state: 'absent' | 'unknown' }
+  | { readonly state: 'reserved'; readonly intent: NanoHostEpochInvalidation }
+  | { readonly state: 'settled'; readonly receipt: NanoHostEpochReceipt } {
+  const row = readKernelRequestRow(db, requestId);
+  if (!row) return { state: 'absent' };
+  try {
+    const retained = readRetainedV1(row, () =>
+      retainedEpochFenceSchema.parse(JSON.parse(row.responseJson ?? 'null'))
+    );
+    if (
+      !matchesKernelRequestRow(row, retained.intent, retained.intent.target.runtimeTargetId) ||
+      !parseEpochFenceIntent(retained.intent)
+    )
+      return { state: 'unknown' };
+    if ('state' in retained) return retained;
+    if (
+      canonicalIdentifierName(retained.result.fencedHolderReceiptIds) !==
+        canonicalIdentifierName(retained.intent.target.holderReceiptIds) ||
+      storageReceipt(retained.intent, { disposition: 'applied', result: retained.result })
+        .receiptDigest !== retained.receiptDigest
+    )
+      return { state: 'unknown' };
+    return { state: 'settled', receipt: retained };
+  } catch {
+    return { state: 'unknown' };
+  }
+}
+
+export function inspectNanoHostEpochFenceReceipt(
+  db: CoreDb,
+  input: NanoHostEpochInvalidation,
+  completeHistory: boolean
+): StorageReceiptLookup<NanoHostEpochReceipt> {
+  const intent = parseEpochFenceIntent(input);
+  if (!intent) return { state: 'conflict' };
+  const record = readNanoHostEpochFenceRecord(db, intent.requestId);
+  if (record.state === 'unknown') return record;
+  if (record.state === 'settled' || record.state === 'reserved') {
+    const original = record.state === 'settled' ? record.receipt.intent : record.intent;
+    if (canonicalIdentifierName(original) !== canonicalIdentifierName(intent))
+      return { state: 'conflict' };
+    if (record.state === 'settled') return record;
+  }
+  return { state: completeHistory ? 'absent' : 'unknown' };
+}
+
+/** Closes predecessor admission under the exact occurrence before publishing its census. */
+export function insertNanoHostEpochFenceReservation(
+  db: CoreDb,
+  input: NanoHostEpochInvalidation
+): void {
+  const intent = parseEpochFenceIntent(input);
+  if (!intent) throw new Error('NanoHost Epoch census is outside its original occurrence.');
+  insertKernelRequest(
+    db,
+    intent,
+    intent.target.runtimeTargetId,
+    {
+      state: 'reserved',
+      intent,
+    },
+    new Date().toISOString()
+  );
+}
+
+export function writeNanoHostEpochFenceReceipt(
+  db: CoreDb,
+  intent: NanoHostEpochInvalidation
+): NanoHostEpochReceipt {
+  const receipt = retainedEpochReceiptSchema.parse(
+    storageReceipt(intent, {
+      disposition: 'applied',
+      result: { fencedHolderReceiptIds: intent.target.holderReceiptIds },
+    })
+  );
+  assertControlProductWriter(db.sqlite);
+  const changed = db.sqlite
+    .prepare(`UPDATE idempotency_requests SET response_json=?
+    WHERE request_key=? AND response_kind='storage-receipt' AND response_json=?`)
+    .run(
+      canonicalIdentifierName(receipt),
+      intent.requestId,
+      canonicalIdentifierName({ state: 'reserved', intent })
+    );
+  if (changed.changes !== 1) throw new Error('NanoHost Epoch fence lost its original reservation.');
+  return receipt;
+}
+
 /** One row serializer on an actual scoped connection; command entry points retain authority, transaction and maintenance ownership. */
 export function writeCommandRequestRecordInDb(
   db: CommandRequestDb,
@@ -130,6 +356,8 @@ export function writeCommandRequestRecordInDb(
   const previous = db.sqlite
     .prepare(`${commandRequestSelect(db)} WHERE request_key = ?`)
     .get(record.key) as CommandRequestRow | undefined;
+  const previousCommand: string | undefined = previous?.command;
+  if (previousCommand === 'fence-vault-epoch') throw new ControlProductPreconditionError();
   if (previous && db.scope !== 'app') readRetainedV1(previous, () => undefined);
   let responseJson =
     response.conversationMetadata === undefined
@@ -265,9 +493,11 @@ export function getCommandRequestRecordFromDb(
   key: string,
   referenceTime: string
 ): CommandRequestRecord | null {
-  const row = db.sqlite.prepare(`${commandRequestSelect(db)} WHERE request_key = ?`).get(key) as
-    | CommandRequestRow
-    | undefined;
+  const row = db.sqlite
+    .prepare(
+      `${commandRequestSelect(db)} WHERE request_key = ? AND ${ordinaryCommandRequestFilter}`
+    )
+    .get(key) as CommandRequestRow | undefined;
 
   if (!row) {
     return null;
@@ -324,7 +554,7 @@ export function* readCommandRequestRecordPagesFromSqlite(
   for (;;) {
     const rows = sqlite
       .prepare(
-        `${COMMAND_REQUEST_SELECT}${afterKey === undefined ? '' : ' WHERE request_key > ?'} ORDER BY request_key ASC LIMIT 128`
+        `${COMMAND_REQUEST_SELECT} WHERE ${ordinaryCommandRequestFilter}${afterKey === undefined ? '' : ' AND request_key > ?'} ORDER BY request_key ASC LIMIT 128`
       )
       .all(...(afterKey === undefined ? [] : [afterKey])) as CommandRequestRow[];
     if (rows.length === 0) return;
@@ -368,7 +598,9 @@ export function readDurableCommandRequestRecords(dataRoot: string): DurableComma
           return { status: 'unreadable' };
         }
         const rows = sqlite
-          .prepare(`${COMMAND_REQUEST_SELECT} ORDER BY created_at ASC, request_key ASC`)
+          .prepare(
+            `${COMMAND_REQUEST_SELECT} WHERE ${ordinaryCommandRequestFilter} ORDER BY created_at ASC, request_key ASC`
+          )
           .all() as CommandRequestRow[];
         for (const row of rows) {
           records.push(mapCommandRequestRow(row));
@@ -507,7 +739,9 @@ export function listCommandRequestRecords(
     try {
       return (
         db.sqlite
-          .prepare(`${COMMAND_REQUEST_SELECT} ORDER BY created_at ASC, request_key ASC`)
+          .prepare(
+            `${COMMAND_REQUEST_SELECT} WHERE ${ordinaryCommandRequestFilter} ORDER BY created_at ASC, request_key ASC`
+          )
           .all() as CommandRequestRow[]
       )
         .map((row) => {
