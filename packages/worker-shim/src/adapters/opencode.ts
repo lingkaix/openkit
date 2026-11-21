@@ -749,8 +749,32 @@ async function supervise(
                 routes,
                 nativeModels
               );
+              const epochPath = join(directories.loopbackDir, 'config-epoch');
+              const epochBefore = configEpoch(epochPath);
               writeSecret(configPath, JSON.stringify(config));
               await rpc('location.reload catalog', client.location.reload());
+              // 2.3.0 loads the inline document before plugin setup copies this file into
+              // OPENKIT_OPENCODE_CONFIG. When a native provider is present, wait until that
+              // setup publishes the new epoch, then reload so the inline document is last.
+              if (nativeModels.length > 0) {
+                // Reload's boot scope can close before plugin setup. A resident read keeps
+                // the location alive until the epoch proves the inline layer was refreshed.
+                await rpc(
+                  'config.get protected catalog',
+                  client.config.get({ location: { directory: turn.workingDirectory } })
+                );
+                await waitForConfigEpoch(epochPath, epochBefore, setupDeadline);
+                await rpc('location.reload protected catalog', client.location.reload());
+                const refreshed = await rpc(
+                  'config.get protected catalog',
+                  client.config.get({ location: { directory: turn.workingDirectory } })
+                );
+                if (nativeProviderOverridesRoute(refreshed, configPath, routes)) {
+                  throw new Error(
+                    'OpenCode protected provider did not outrank the native configuration.'
+                  );
+                }
+              }
               boundRoutes = routeKey;
             }
             if (boundSupply === null) {
@@ -1706,6 +1730,54 @@ async function inspectNativeBindings(
     }
   }
   return { warnings: [...warnings].join(' '), models: [...models] };
+}
+
+/**
+ * A native document is the last writer of an admitted model when the inline layer was
+ * snapshotted before plugin setup refreshed it. The managed file and a pathless inline
+ * document are not native authors.
+ */
+function nativeProviderOverridesRoute(
+  entries: Awaited<ReturnType<OpenCodeClient['config']['get']>>,
+  configPath: string,
+  routes: readonly WorkerAdapterLlmRoute[]
+): boolean {
+  const lastPath = new Map<string, string | undefined>();
+  for (const entry of entries) {
+    if (entry.type !== 'document') continue;
+    const models = entry.info.providers?.[OPENCODE_PROVIDER_ID]?.models;
+    if (!models) continue;
+    for (const id of Object.keys(models)) lastPath.set(id, entry.path);
+  }
+  return routes.some((route) => {
+    if (!lastPath.has(route.model)) return false;
+    const path = lastPath.get(route.model);
+    return path !== undefined && path !== configPath;
+  });
+}
+
+function configEpoch(path: string): string {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+/** Waits until plugin setup republishes the inline layer within the preparation budget. */
+async function waitForConfigEpoch(
+  path: string,
+  previous: string,
+  deadline: LifecycleDeadline
+): Promise<void> {
+  for (;;) {
+    if (deadline.workRemainingMs() <= 0) {
+      throw new Error('OpenCode protected provider configuration was not refreshed.');
+    }
+    const epoch = configEpoch(path);
+    if (epoch !== '' && epoch !== previous) return;
+    await delay(deadline.workRemainingMs(20));
+  }
 }
 
 async function syncMcpServers(

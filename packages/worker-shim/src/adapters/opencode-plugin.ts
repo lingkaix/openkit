@@ -14,7 +14,10 @@ export default {
   id: 'openkit-loopback',
   async setup(ctx) {
     // Refresh the final native inline layer from the credential-free private configuration.
+    // The epoch is published only after that assignment. The adapter waits for it before the
+    // reload that has to outrank a native provider, because this process snapshots config first.
     process.env.OPENKIT_OPENCODE_CONFIG = readFileSync(join(root, '..', 'config', 'openkit.json'), 'utf8');
+    writeFileSync(join(root, 'config-epoch'), String(Date.now()) + ':' + Math.random(), { mode: 0o600 });
     const catalog = () => JSON.parse(readFileSync(join(root, '..', 'config', 'openkit.json'), 'utf8')).providers;
     const sdkPackage = '@opencode/ai/providers/openai-compatible';
     // The pin's Model.Info.default metadata, with only the current private overrides.
