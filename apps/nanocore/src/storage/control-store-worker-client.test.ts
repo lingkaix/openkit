@@ -1672,7 +1672,21 @@ describe('admitted NanoHost owner worker', () => {
             sqlite.prepare('SELECT attempt_id FROM worker_backend_sessions').all()
           )
         ).toEqual({ state: 'ready', value: [] });
-        await expect(f.writer.backendSession(f.coreKey, materializing)).resolves.toMatchObject({
+        if (!selfCheck) Atomics.store(f.gate, 0, 0);
+        const materialized = f.writer.backendSession(f.coreKey, materializing);
+        try {
+          if (!selfCheck) {
+            await waitForHold(f.gate);
+            expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+              state: 'ready',
+              value: { connectionGeneration: 1, ready: true, deploymentId },
+            });
+            expect(f.owner.read(() => true)).toMatchObject({ state: 'unavailable' });
+          }
+        } finally {
+          release(f.gate);
+        }
+        await expect(materialized).resolves.toMatchObject({
           attemptId: attempt.attemptId,
           state: 'materializing',
         });
@@ -1707,6 +1721,10 @@ describe('admitted NanoHost owner worker', () => {
             f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend })
           ).resolves.toMatchObject({ state: 'materialized', workspaceHandoffState: 'complete' });
           expectNanoHostTablesAbsent(f.corePath, 'worker_backend_sessions');
+          await f.writer.closeServerOwner(f.root, 'nanohost');
+          expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+            state: 'unavailable',
+          });
           return;
         }
         await f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend });
@@ -2646,6 +2664,9 @@ describe('admitted NanoHost owner worker', () => {
     const settlement = f.owner.settleEpochInvalidation(nanoHostReceipt);
     try {
       await waitForHold(f.gate);
+      expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+        state: 'unavailable',
+      });
       await expect(
         f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, successor)
       ).resolves.toEqual(nanoHostHeld);
