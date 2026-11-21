@@ -884,6 +884,11 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
     ),
   }),
   z.strictObject({
+    kind: z.literal('backend-session-materialize'),
+    input: ControlBackendSessionInputSchema.refine((input) => input.kind === 'materializing'),
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
+  }),
+  z.strictObject({
     kind: z.literal('recovery-classification'),
     input: nanoHostRecoveryClassificationInput,
   }),
@@ -906,6 +911,11 @@ export type NanoHostOwnerMutation =
     }
   | { readonly kind: 'worker-image'; readonly input: NanoHostLocalWorkerImageInput }
   | { readonly kind: 'backend-session'; readonly input: NanoHostLocalBackendSessionInput }
+  | {
+      readonly kind: 'backend-session-materialize';
+      readonly input: Extract<ControlBackendSessionInput, { kind: 'materializing' }>;
+      readonly coreIdentity: string;
+    }
   | {
       readonly kind: 'recovery-classification';
       readonly input: z.infer<typeof nanoHostRecoveryClassificationInput>;
@@ -938,6 +948,10 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('harness-lifecycle'), value: z.null() }),
   z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),
   z.strictObject({ kind: z.literal('backend-session'), value: ControlBackendSessionResultSchema }),
+  z.strictObject({
+    kind: z.literal('backend-session-materialize'),
+    value: ControlBackendSessionResultSchema,
+  }),
   z.strictObject({
     kind: z.literal('recovery-classification'),
     value: ControlBackendSessionResultSchema,

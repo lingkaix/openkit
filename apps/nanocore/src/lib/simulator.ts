@@ -26,7 +26,7 @@ import {
 } from '../runtime/agent-environment.js';
 import {
   acceptSchedulerExecutionObservation,
-  bindNanoHostAttemptPreparation,
+  bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithFence,
   finalizeSchedulerExecutionAttemptInput,
   markSchedulerExecutionAttemptClosing,
@@ -446,13 +446,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           : {}),
       });
     if (this.coreDb) {
-      await bindNanoHostAttemptPreparation(this.coreDb, {
+      const binding = {
         attemptId: input.attemptId,
         agentSessionId: input.prepared.agentSessionId,
         inputRef: `aepsnap_${input.preparation.turn.id}_${input.prepared.agentSessionId}`,
         bindingRef: `attempt-binding:${input.attemptId}`,
-        sessionCompatibilityKey: input.prepared.sessionCompatibilityKey,
-      });
+      };
+      await bindSchedulerExecutionAttemptSession(this.coreDb, binding);
+      await finalizeSchedulerExecutionAttemptInput(this.coreDb, binding);
       const lease = this.coreDb.sqlite
         .prepare(
           `SELECT workspace_id AS workspaceId, thread_id AS threadId,

@@ -167,11 +167,21 @@ it('owns the accepted execution attempt lifecycle while the Main Core handle is 
   });
   expect(attempt.preparationInputJson).not.toContain('retainedContext');
   expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('admitted');
-  await bindSchedulerExecutionAttemptSession(db, {
+  const binding = {
     attemptId: attempt.attemptId,
     agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
+  };
+  const firstBinding = await bindSchedulerExecutionAttemptSession(db, {
+    ...binding,
     now: () => '2026-11-01T00:00:01.000Z',
   });
+  await shutdownControlStoreWorkerClient();
+  expect(
+    await bindSchedulerExecutionAttemptSession(db, {
+      ...binding,
+      now: () => '2026-11-01T00:00:01.500Z',
+    })
+  ).toEqual(firstBinding);
   await finalizeSchedulerExecutionAttemptInput(db, {
     attemptId: attempt.attemptId,
     inputRef: 'input-owner-1',

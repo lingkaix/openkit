@@ -386,6 +386,7 @@ export function bindSchedulerExecutionAttemptSession(
         )
       )
         throw new ExecutionAttemptRefusal('Selected AgentSession has an unresolved writer.');
+      if (attempt.agentSessionId === input.agentSessionId) return attempt;
       const updated = coreDb.sqlite
         .prepare(`UPDATE scheduler_execution_attempts SET agent_session_id = ?
     WHERE attempt_id = ? AND phase = 'open' AND agent_session_id IS ?`)
