@@ -38,6 +38,11 @@ import {
   prepareWorkerTurnJournalIntents,
   WorkerGovernanceTurnExecutor,
 } from '../runtime/worker-governance-turn-executor.js';
+import {
+  createWorkerStorageBinding,
+  getWorkerStorageBinding,
+  workerStorageSchedulerRows,
+} from '../runtime/worker-storage-binding-records.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -185,8 +190,18 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
       const sqlite = new Database(workerData.path, { fileMustExist: true });
       sqlite.pragma('synchronous = FULL');
       try {
-        const [native, heartbeat, final, harness, db, record] = await modules;
+        const [native, heartbeat, final, harness, db, record, storage] = await modules;
         const result = sqlite.transaction(() => {
+          if (command.kind === 'storage-purge') {
+            const coreDb = db.openCoreReadDb(command.dataRoot);
+            try {
+              return coreDb.sqlite.transaction(() =>
+                storage.applyControlWorkerStorageBinding({ sqlite }, command.input, { coreDb })
+              )();
+            } finally {
+              coreDb.sqlite.close();
+            }
+          }
           if (command.kind === 'submit')
             return native.applyNanoHostWorkerSubmission(sqlite, command.input);
           if (['dispatch', 'pinned-heartbeat', 'pinned-record'].includes(command.kind)) {
@@ -235,6 +250,7 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
           new URL('../../dist/storage/harness-lifecycle-native.js', import.meta.url).href,
           new URL('../../dist/storage/db.js', import.meta.url).href,
           new URL('../../dist/storage/worker-control-record-native.js', import.meta.url).href,
+          new URL('../../dist/storage/worker-storage-binding-native.js', import.meta.url).href,
         ],
       },
     }
@@ -1147,3 +1163,134 @@ it.each(['completed', 'lost-result', 'contradictory-result'] as const)(
     ).toBe(true);
   }
 );
+
+it('keeps a physical cleanup receipt fenced until the original Workspace handoff completes', async () => {
+  const f = await fixture();
+  f.owner.setup((sqlite) =>
+    sqlite
+      .prepare(
+        "UPDATE worker_backend_sessions SET workspace_handoff_state = 'pending' WHERE attempt_id = ?"
+      )
+      .run(attemptId)
+  );
+  const target = getNanoHostRuntimeTarget(f.owner, targetId)!;
+  const closing = { ...lease, attempt: { ...lease.attempt, phase: 'closing' as const } };
+  const expected = () => {
+    const { session, proof } = f.read();
+    return {
+      lease: closing,
+      expectedSession: session,
+      expectedRecovery: proof,
+      observedAt: classifiedAt,
+    };
+  };
+  await f.mutate({ ...expected(), kind: 'transition', toState: 'cleanup-pending', target });
+  await f.mutate({ ...expected(), kind: 'transition', toState: 'physical-cleaned', target });
+  await expect(f.mutate({ ...expected(), kind: 'finish-cleanup' })).rejects.toThrow(
+    'Workspace handoff'
+  );
+  expect(f.read().session.state).toBe('physical-cleaned');
+  await f.mutate({ ...expected(), kind: 'workspace-handoff' });
+  await expect(f.mutate({ ...expected(), kind: 'finish-cleanup' })).resolves.toMatchObject({
+    state: 'cleaned',
+  });
+  await f.owner.reopen();
+  expect(readNanoHostPhysicalCleanupReceipt(f.owner.sqlite, closing, target)).toMatchObject({
+    observedAt: classifiedAt,
+  });
+});
+
+it('compares the current Core Scheduler rows before purging the exact Native association', async () => {
+  const f = await fixture();
+  const root = mkdtempSync(join(tmpdir(), 'openkit-m2-purge-'));
+  const core = openCoreDb(root);
+  onTestFinished(() => disposeTestStore(root, core));
+  applyMigrations(core);
+  const userId = ensureLocalUser(core);
+  recordWorkspaceOwnerMembership({
+    coreDb: core,
+    workspaceId,
+    ownerUserId: userId,
+    now: new Date(created),
+  });
+  let storageRef = '';
+  f.owner.setup((sqlite) => {
+    storageRef = createWorkerStorageBinding(
+      { sqlite },
+      {
+        deploymentId,
+        runtimeTargetId: targetId,
+        workspaceId,
+        now: created,
+        layout: {
+          family: 'openkit-worker',
+          version: '1',
+          uid: 1000,
+          gid: 1000,
+          workingDirectory: '/workspace',
+          platform: { architecture: 'amd64', os: 'linux' },
+          targets: [{ target: '/workspace' }],
+        },
+      }
+    ).storageRef;
+  });
+  const idle = getWorkerStorageBinding(f.owner, { storageRef })!;
+  const earlier = workerStorageSchedulerRows(core, storageRef, workspaceId);
+  expect(earlier).toEqual([]);
+  const mark = () =>
+    f.send({
+      kind: 'storage-purge',
+      dataRoot: root,
+      input: {
+        kind: 'purge-pending',
+        storageRef,
+        expectedRevision: idle.revision,
+        schedulerRows: earlier,
+        now: created,
+      },
+    });
+  const entry = createSchedulerAdmissionEntry(core, {
+    queueEntryId: 'after-purge-absence',
+    backendId: 'nanohost',
+    triggerActor: { kind: 'user', id: userId },
+    workspaceId,
+    threadId,
+    turnId,
+    inputRef: schedulerFixtureInput(workspaceId, turnId, 'Retain the exact Worker storage.'),
+    requestedAgentId: 'agent_worker',
+    workerStorageChoice: {
+      kind: 'selected',
+      expectedRevision: idle.revision,
+      storageRef,
+      purpose: 'work',
+      goalId: null,
+      taskId: null,
+    },
+  });
+  expect(workerStorageSchedulerRows(core, storageRef, workspaceId)).toHaveLength(1);
+  await expect(mark()).rejects.toMatchObject({ code: 'purge_blocked' });
+  expect(getWorkerStorageBinding(f.owner, { storageRef })).toEqual(idle);
+  core.sqlite
+    .prepare('DELETE FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+    .run(entry.queueEntryId);
+  await expect(mark()).resolves.toMatchObject({
+    state: 'purge-pending',
+    revision: idle.revision + 1,
+  });
+  await f.send({
+    kind: 'storage-purge',
+    dataRoot: root,
+    input: {
+      kind: 'purge-settle',
+      storageRef,
+      expectedRevision: idle.revision + 1,
+      outcome: 'unknown',
+      now: classifiedAt,
+    },
+  });
+  await f.owner.reopen();
+  expect(getWorkerStorageBinding(f.owner, { storageRef })).toMatchObject({
+    state: 'unknown',
+    revision: idle.revision + 2,
+  });
+});

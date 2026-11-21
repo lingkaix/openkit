@@ -255,6 +255,8 @@ export function applyNanoHostRecoveryMutation(
       (input.kind === 'retire-orphan' && attempt.phase !== 'closed')
     )
       throw new Error('NanoHost recovery has no completed physical cleanup.');
+    if (session.workspaceHandoffState !== 'complete')
+      throw new Error('NanoHost recovery Workspace handoff is incomplete.');
     const target = getNanoHostRuntimeTarget(owner, session.runtimeTargetId);
     if (!target || !readNanoHostPhysicalCleanupReceipt(sqlite, input.lease, target))
       throw new Error('NanoHost recovery physical cleanup receipt is unavailable.');

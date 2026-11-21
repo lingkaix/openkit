@@ -1690,61 +1690,25 @@ export function settleNanoHostHarnessOperation(
     ) {
       throw new Error('NanoHost Harness result does not match the dispatched operation.');
     }
-    if (harness.operation === 'session.close') {
-      if (
-        !harness.command_body_json ||
-        sha256Hex(harness.command_body_json) !== harness.command_fingerprint
-      )
-        throw new Error('NanoHost close command fingerprint conflicts before Core consumption.');
-      const closeBody = readJsonObject(harness.command_body_json);
-      requireDurableHarnessBody('session.close', closeBody);
-      requireSha256(harness.operation_id, 'recorded close operation identity');
+    const closing = harness.operation === 'session.close';
+    const command = closing ? requireHarnessCloseCommand(harness) : null;
+    const consumerContext = command
+      ? readHarnessConsumerContext(owner, harness, command)
+      : undefined;
+    if (command) {
+      const key = idleHarnessConsumptionKey(harness, input.result);
+      const consumer = idleHarnessConsumer(coreDb, owner, harness, command);
+      if (admittedOwner) {
+        if (readCoreHarnessConsumption(coreDb, key) !== consumer)
+          throw new Error('NanoHost idle close requires its original Core deciding writer.');
+      } else if (consumer !== null) {
+        recordCoreHarnessConsumption(coreDb, key, consumer, input.timestamp);
+      }
     }
-    const consumerContext =
-      harness.operation === 'session.close'
-        ? readHarnessConsumerContext(owner, harness)
-        : undefined;
-    // An idle AgentSession close is Core binding lifecycle work, not historical Turn work.
-    // Consume its exact receipt in this same physical-state/capacity transaction before ACK.
-    const command =
-      harness.operation === 'session.close' && harness.command_body_json
-        ? readJsonObject(harness.command_body_json)
-        : null;
-    const idleConsumerReceipt = command
-      ? readNanoHostIdleCloseAuthority(
-          coreDb,
-          {
-            harnessInstanceId: harness.harness_instance_id,
-            harnessBindingRef: harness.harness_binding_ref,
-            agentSessionId: requireIdentity(command.agentSessionId, 'close AgentSession'),
-            agentSessionRuntimeBindingId: requireIdentity(
-              command.agentSessionRuntimeBindingId,
-              'close binding'
-            ),
-          },
-          owner
-        )
-      : null;
-    if (admittedOwner && idleConsumerReceipt !== null)
-      throw new Error('NanoHost idle close requires its original Core deciding writer.');
     const resultJson = canonicalJson({
       ...input.result,
       ...(consumerContext ? { consumerContext } : {}),
     });
-    if (idleConsumerReceipt !== null)
-      recordCoreHarnessConsumption(
-        coreDb,
-        {
-          harnessBindingRef: harness.harness_binding_ref,
-          operationId: input.result.operationId,
-          sequence: input.result.sequence,
-          resultFingerprint: sha256Hex(
-            canonicalJson(input.result as unknown as Record<string, unknown>)
-          ),
-        },
-        canonicalJson(idleConsumerReceipt),
-        input.timestamp
-      );
     if (
       input.result.disposition === 'refused' &&
       input.result.body.reasonCode === 'cleanup_required'
@@ -2348,6 +2312,77 @@ export function readNanoHostIdleCloseAuthority(
     threadId: requireIdentity(binding.threadId, 'idle Thread'),
     agentSessionId: binding.agentSessionId,
     agentSessionRuntimeBindingId: input.agentSessionRuntimeBindingId,
+  };
+}
+
+/** Inspects the original dispatched idle close before the pinned Core writer acknowledges it. */
+export function inspectNanoHostIdleCloseConsumption(
+  coreDb: CoreDb,
+  input: SettleNanoHostHarnessOperationInput,
+  owner: NanoHostHarnessDb
+) {
+  const incoming = HarnessResultEnvelopeReaderSchema.parse(input.result);
+  const harness = requireHarnessForIntegration(
+    owner,
+    input.sandboxIntegrationBindingRef,
+    incoming.harnessInstanceId
+  );
+  if (
+    harness.operation !== 'session.close' ||
+    harness.operation_state !== 'dispatched' ||
+    harness.operation_id !== incoming.operationId ||
+    harness.operation_sequence !== incoming.sequence
+  )
+    return null;
+  const command = requireHarnessCloseCommand(harness);
+  const result = requireHarnessResult('session.close', incoming, harness.max_active_turns);
+  const consumer = idleHarnessConsumer(coreDb, owner, harness, command);
+  return consumer === null ? null : { key: idleHarnessConsumptionKey(harness, result), consumer };
+}
+
+/** Validates the close command retained by the same dispatch slot. */
+function requireHarnessCloseCommand(harness: HarnessRow) {
+  if (
+    !harness.command_body_json ||
+    sha256Hex(harness.command_body_json) !== harness.command_fingerprint
+  )
+    throw new Error('NanoHost close command fingerprint conflicts before Core consumption.');
+  const command = requireDurableHarnessBody(
+    'session.close',
+    readJsonObject(harness.command_body_json)
+  );
+  requireSha256(harness.operation_id, 'recorded close operation identity');
+  return command;
+}
+
+function idleHarnessConsumer(
+  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
+  harness: HarnessRow,
+  command: Readonly<Record<string, unknown>>
+): string | null {
+  const receipt = readNanoHostIdleCloseAuthority(
+    coreDb,
+    {
+      harnessInstanceId: harness.harness_instance_id,
+      harnessBindingRef: harness.harness_binding_ref,
+      agentSessionId: requireIdentity(command.agentSessionId, 'close AgentSession'),
+      agentSessionRuntimeBindingId: requireIdentity(
+        command.agentSessionRuntimeBindingId,
+        'close binding'
+      ),
+    },
+    owner
+  );
+  return receipt === null ? null : canonicalJson(receipt);
+}
+
+function idleHarnessConsumptionKey(harness: HarnessRow, result: NanoHostHarnessResult) {
+  return {
+    harnessBindingRef: harness.harness_binding_ref,
+    operationId: result.operationId,
+    sequence: result.sequence,
+    resultFingerprint: sha256Hex(canonicalJson(result as unknown as Record<string, unknown>)),
   };
 }
 
