@@ -18,7 +18,7 @@ import {
   readAdmittedWorkerImageEnvironment,
   readWorkerImageSettlement,
 } from '../runtime/worker-image-settlements-records.js';
-import { type CoreDb, openCoreDb, serverStoragePath } from '../storage/db.js';
+import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyServerOwnerJournal } from '../storage/migrate.js';
 import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
@@ -72,17 +72,10 @@ export async function admitTestNativeEnvironmentForRoot(
   values?: Record<string, string>,
   measuredDigest?: string
 ) {
-  const { openAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
-  const storage = await openAdmittedTestNanoHost(coreDb);
-  const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
-    fileMustExist: true,
-  });
-  try {
-    admitTestNativeEnvironment({ sqlite }, manifest, values, measuredDigest);
-  } finally {
-    sqlite.close();
-  }
-  return storage;
+  const { seedAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
+  return seedAdmittedTestNanoHost(coreDb, (sqlite) =>
+    admitTestNativeEnvironment({ sqlite }, manifest, values, measuredDigest)
+  );
 }
 
 /** A real migrated Core database for metadata-only tests that previously needed no image evidence. */
@@ -182,9 +175,20 @@ export function withTestPreparedNativeEnvironment<
  * Records explicit fresh Native target evidence for a simulated consumer fixture.
  * @param coreDb Caller-owned migrated Core database and deployment.
  * @param targetId Fixture target identity, never a production default.
+ * @param options Original fixture identity, epoch and observation clocks when specified.
  * @returns The current target record; existing evidence is left untouched.
  */
-export async function recordTestNativeRuntimeTarget(coreDb: CoreDb, targetId = 'target_local') {
+export async function recordTestNativeRuntimeTarget(
+  coreDb: CoreDb,
+  targetId = 'target_local',
+  options: {
+    readonly deploymentId?: string;
+    readonly identityId?: string;
+    readonly allocationAt?: string;
+    readonly readyAt?: string;
+    readonly physicalEpoch?: string;
+  } = {}
+) {
   const { openAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
   const { value: storage } = await openAdmittedTestNanoHost(coreDb);
   const existing = storage.owner.read((sqlite) => getNanoHostRuntimeTarget({ sqlite }, targetId));
@@ -192,9 +196,9 @@ export async function recordTestNativeRuntimeTarget(coreDb: CoreDb, targetId = '
   if (existing.value) return existing.value;
   const allocated = await transitionAdmittedNanoHostRuntimeTarget(storage, {
     kind: 'allocate',
-    deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
-    identityId: 'identity_local',
-    observedAt: new Date().toISOString(),
+    deploymentId: options.deploymentId ?? readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+    identityId: options.identityId ?? 'identity_local',
+    observedAt: options.allocationAt ?? new Date().toISOString(),
     targetId,
   });
   if (allocated.state !== 'ready')
@@ -208,8 +212,8 @@ export async function recordTestNativeRuntimeTarget(coreDb: CoreDb, targetId = '
     identityId,
     targetId,
     freshEmpty: true,
-    observedAt: new Date().toISOString(),
-    physicalEpoch: 'a'.repeat(64),
+    observedAt: options.readyAt ?? new Date().toISOString(),
+    physicalEpoch: options.physicalEpoch ?? 'a'.repeat(64),
     predecessorFenced: true,
     ready: true,
   });
