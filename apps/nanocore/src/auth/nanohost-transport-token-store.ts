@@ -117,6 +117,9 @@ export interface NanoHostTransportTokenRecord {
 /** Verified durable NanoHost transport Token record. */
 export type VerifiedNanoHostTransportTokenRecord = NanoHostTransportTokenRecord;
 
+type NanoHostTransportReadDb = { readonly sqlite: Pick<CoreDb['sqlite'], 'prepare'> };
+type TransportVerificationOptions = { channel?: string; now?: Date; source?: string };
+
 /** Opens the existing Core native owner; callers retain this distinct pre-submission stage. */
 export async function prepareNanoHostTransportWriter(
   coreDb: CoreDb
@@ -251,11 +254,22 @@ export async function enrollNanoHostTransportIdentity(
 export async function verifyNanoHostTransportTokenRecord(
   coreDb: CoreDb,
   secret: string,
-  options: { channel?: string; now?: Date; source?: string } = {}
+  options: TransportVerificationOptions = {}
 ): Promise<VerifiedNanoHostTransportTokenRecord | null> {
+  const input = prepareNanoHostTransportVerification(coreDb, secret, options);
+  if (!input) return null;
+  return nativeResult(await commitNanoHostTransportStage(coreDb, input), 'record').record;
+}
+
+/** Prepares the hash-only writer tuple from the exact admitted token and active identity. */
+export function prepareNanoHostTransportVerification(
+  owner: NanoHostTransportReadDb,
+  secret: string,
+  options: TransportVerificationOptions = {}
+): Extract<ControlNanoHostTransportInput, { kind: 'verify' }> | null {
   if (!isOpenKitAccessTokenSecret(secret)) return null;
   const tokenHash = hashOpenKitAccessTokenSecret(secret);
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare('SELECT * FROM nanohost_transport_tokens WHERE token_hash = ?')
     .get(tokenHash) as NanoHostTransportTokenRow | undefined;
   if (
@@ -263,7 +277,7 @@ export async function verifyNanoHostTransportTokenRecord(
     !verifyOpenKitAccessTokenSecret(secret, row.token_hash) ||
     row.token_type !== NANOHOST_TRANSPORT_TOKEN_TYPE ||
     row.scope !== NANOHOST_TRANSPORT_TOKEN_SCOPE ||
-    !isNanoHostTransportIdentityActive(coreDb, row.owner_nanohost_identity_id, row.deployment_id) ||
+    !isNanoHostTransportIdentityActive(owner, row.owner_nanohost_identity_id, row.deployment_id) ||
     !evaluateNanoHostTransportTokenUsability(
       {
         expiresAt: row.expires_at,
@@ -274,15 +288,7 @@ export async function verifyNanoHostTransportTokenRecord(
     ).usable
   )
     return null;
-  return nativeResult(
-    await commitNanoHostTransportStage(coreDb, {
-      kind: 'verify',
-      tokenHash,
-      ...options,
-      ...explicitClock(options.now),
-    }),
-    'record'
-  ).record;
+  return { kind: 'verify', tokenHash, ...options, ...explicitClock(options.now) };
 }
 
 /** Revokes one Token in native SQL; repeated/missing results retain their original full-row semantics. */
@@ -428,12 +434,12 @@ export async function recordNanoHostTransportAudit(
 
 /** Existing Main read; this function has no mutation or post-ACK reconstruction. */
 export function isNanoHostTransportIdentityActive(
-  coreDb: CoreDb,
+  owner: NanoHostTransportReadDb,
   identityId: string,
   deploymentId: string
 ): boolean {
   return Boolean(
-    coreDb.sqlite
+    owner.sqlite
       .prepare(
         `SELECT 1 FROM nanohost_integration_identities
          WHERE identity_id = ? AND deployment_id = ? AND status = 'active'`
@@ -449,10 +455,10 @@ export type NanoHostTransportTokenReader = () => StorageResult<
 >;
 
 /** Reads the redacted inventory on the caller's already admitted owner handle. */
-export function listNanoHostTransportTokenRecords(db: {
-  readonly sqlite: Pick<CoreDb['sqlite'], 'prepare'>;
-}): NanoHostTransportTokenRecord[] {
-  const rows = db.sqlite
+export function listNanoHostTransportTokenRecords(
+  owner: NanoHostTransportReadDb
+): NanoHostTransportTokenRecord[] {
+  const rows = owner.sqlite
     .prepare(`SELECT token_id, owner_nanohost_identity_id, token_type, scope, deployment_id,
       status, issued_at, expires_at, revoked_at, predecessor_token_id,
       rotation_overlap_expires_at, responsible_server_admin_actor_id,
@@ -465,10 +471,10 @@ export function listNanoHostTransportTokenRecords(db: {
 
 /** Existing Main read; this function has no mutation or post-ACK reconstruction. */
 export function getNanoHostTransportTokenRecord(
-  coreDb: CoreDb,
+  owner: NanoHostTransportReadDb,
   tokenId: string
 ): NanoHostTransportTokenRecord | null {
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare('SELECT * FROM nanohost_transport_tokens WHERE token_id = ?')
     .get(tokenId) as NanoHostTransportTokenRow | undefined;
 

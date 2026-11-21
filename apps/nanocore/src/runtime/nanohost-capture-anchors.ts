@@ -1,10 +1,10 @@
 import { readRetainedV1 } from '@openkit/protocol';
-import type { CoreDb } from '../storage/db.js';
+import type Database from 'better-sqlite3';
 import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identity.js';
 import { requireStoredNanoHostPhysicalEpoch } from './nanohost-runtime-target.js';
 import type { WorkerBackendSessionRecord } from './worker-backend-session-records.js';
 
-/** Core identity projection only; optional historical backend metadata is read after capture presence. */
+/** Native identity projection; optional historical backend metadata is read after capture presence. */
 type NanoHostCaptureAnchorHint = Pick<
   WorkerBackendSessionRecord,
   | 'attemptId'
@@ -19,10 +19,10 @@ type NanoHostCaptureAnchorHint = Pick<
 
 /** Joins original backend identities to one current physical Sandbox lifetime without opening a Workspace. */
 export function readNanoHostWorkspaceCaptureAnchors(
-  coreDb: CoreDb,
+  owner: { readonly sqlite: Database.Database },
   sandboxBindingRef: string
 ): NanoHostCaptureAnchorHint[] {
-  const anchors = coreDb.sqlite
+  const anchors = owner.sqlite
     .prepare(`SELECT schema_version AS schemaVersion, attempt_id AS attemptId,
       workspace_id AS workspaceId, package_snapshot_id AS packageSnapshotId,
       backend_session_id AS backendSessionId, runtime_target_id AS runtimeTargetId,
@@ -40,7 +40,7 @@ export function readNanoHostWorkspaceCaptureAnchors(
       throw new Error('Workspace capture backend identity is invalid.');
   }
   const original = anchors.find((anchor) => anchor.sandboxBindingRef === sandboxBindingRef);
-  const residents = coreDb.sqlite
+  const residents = owner.sqlite
     .prepare(`SELECT sandbox_runtime_id AS id,
       sandbox_binding_ref AS binding, runtime_target_id AS target,
       origin_physical_epoch AS epoch, sandbox_compatibility_key AS compatibility
@@ -73,7 +73,7 @@ export function readNanoHostWorkspaceCaptureAnchors(
   const sessions = resident
     ? new Set(
         (
-          coreDb.sqlite
+          owner.sqlite
             .prepare(`SELECT b.agent_session_id AS id
       FROM agent_session_runtime_bindings b JOIN harness_instance_records h
         ON h.harness_instance_id=b.harness_instance_id WHERE h.sandbox_runtime_id=?`)
