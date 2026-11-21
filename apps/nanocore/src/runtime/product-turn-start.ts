@@ -40,7 +40,10 @@ import {
 import { frameControlScalarText } from '../storage/control-store-input.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { ExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
-import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
+import {
+  findWorkspaceQueueInputRef,
+  readWorkspaceQueueInput,
+} from '../storage/workspace-queue-inputs.js';
 import { assertRunSkillSelectionsIncluded } from './agent-environment.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
@@ -69,8 +72,8 @@ interface StartProductTurnInput
   readonly coreDb?: CoreDb;
   /** Parsed protocol turn-start request. */
   readonly input: Extract<z.infer<typeof SubmitTurnInputRequestSchema>, { input: string }>;
-  /** Exact precommitted Worker outcome manifest, when the Pending owner already froze it. */
-  readonly inputRef?: WorkInputRef;
+  /** The Pending owner already froze the exact Worker outcome manifest for this Turn. */
+  readonly frozenOutcomeBatch?: true;
   /** Exact actor that triggered this scheduler admission. */
   readonly triggerActor: ActorRef;
   /** Known native entry cause, separate from actor identity and unavailable to model input. */
@@ -317,9 +320,29 @@ export async function startProductTurn(input: StartProductTurnInput) {
       threadId: input.input.threadId,
       turnId,
     };
+    let frozenInputRef: WorkInputRef | null = null;
+    if (input.frozenOutcomeBatch) {
+      try {
+        const root = input.store.getDataRoot();
+        if (root && root === input.coreDb.dataRoot) {
+          frozenInputRef = findWorkspaceQueueInputRef(root, inputScope, {
+            inputId: turnId,
+            originalInvocationId: turnId,
+          });
+        }
+      } catch {
+        // The admitted Workspace could not prove the original delivery input.
+      }
+      if (!frozenInputRef)
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The original outcome batch is unavailable.',
+          409
+        );
+    }
     const selected = findSchedulerAdmissionForStart(input.coreDb, { queueEntryId, turnId });
     let replayDigest: string | undefined;
-    if (selected && !input.inputRef) {
+    if (selected && !frozenInputRef) {
       try {
         replayDigest = frameControlScalarText(input.input.input).digest;
       } catch (error) {
@@ -329,8 +352,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
     if (
       selected &&
       (selected.queueEntryId !== queueEntryId ||
-        (input.inputRef
-          ? !isDeepStrictEqual(input.inputRef, selected.inputRef)
+        (frozenInputRef
+          ? !isDeepStrictEqual(frozenInputRef, selected.inputRef)
           : replayDigest !== `sha256:${selected.inputRef.digest}`))
     )
       throw new TurnStartValidationError(
@@ -340,14 +363,14 @@ export async function startProductTurn(input: StartProductTurnInput) {
       );
     const inputRef =
       selected?.inputRef ??
-      input.inputRef ??
+      frozenInputRef ??
       (await stageSchedulerStartInput(
         input.coreDb.dataRoot,
         inputScope,
         input.input.requestId,
         input.input.input
       ).catch(refuseWorkspaceInputStaging));
-    const originalAvailable = input.inputRef
+    const originalAvailable = frozenInputRef
       ? readFrozenSchedulerInput(input.coreDb.dataRoot, inputScope, inputRef) !== null
       : !selected ||
         readWorkspaceQueueInput(input.coreDb.dataRoot, inputScope, inputRef)

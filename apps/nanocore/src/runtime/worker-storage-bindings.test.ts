@@ -15,11 +15,12 @@ import {
 } from '../scheduler-records.js';
 import { admitCoreScheduler } from '../storage/control-store-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { stageSchedulerStartInput } from './scheduler-input-staging.js';
 import { workerStorageWorkSlotRef } from './worker-governance-turn-executor.js';
 import {
   activateWorkerStorageAttachment,
@@ -239,6 +240,20 @@ describe('Worker storage bindings', () => {
         now: NOW,
         storageRef: reserved.storageRef,
       });
+      const requestId = 'request-purge-reference-race';
+      const turnId = testEntityId('tu', 'purge-reference-race');
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+      try {
+        applyScopedMigrations(workspaceDb);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      const inputRef = await stageSchedulerStartInput(
+        coreDb.dataRoot,
+        { workspaceId, threadId, turnId },
+        requestId,
+        'Preserve the selected Worker storage.'
+      );
       blocker = openCoreDb(coreDb.dataRoot);
       blocker.sqlite.exec('BEGIN IMMEDIATE');
       const posted = new Promise<void>((resolve) => {
@@ -249,14 +264,14 @@ describe('Worker storage bindings', () => {
         entry: {
           backendId: 'nanohost',
           queueEntryId: purgeRace.queueEntryId,
-          requestId: 'request-purge-reference-race',
+          requestId,
           requestedAgentId: 'agent_worker',
           timestamp: NOW,
           triggerActor: { kind: 'user', id: userId },
           workspaceId,
           threadId,
-          turnId: testEntityId('tu', 'purge-reference-race'),
-          turnInput: 'Preserve the selected Worker storage.',
+          turnId,
+          inputRef,
           workerStorageChoice: {
             kind: 'selected',
             storageRef: idle.storageRef,

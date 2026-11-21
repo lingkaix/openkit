@@ -277,7 +277,6 @@ import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import type { StorageResult, StorageUnavailable } from './storage/storage-owner.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
-import { findWorkspaceQueueInputRef } from './storage/workspace-queue-inputs.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
@@ -2600,25 +2599,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       )
         return;
       const workspaceId = workspaceIdForOwner(turn.owner);
-      const root = store.getDataRoot();
-      let inputRef: ReturnType<typeof findWorkspaceQueueInputRef> = null;
-      try {
-        if (root && root === options.coreDb?.dataRoot) {
-          inputRef = findWorkspaceQueueInputRef(
-            root,
-            { workspaceId, threadId: turn.threadId, turnId: turn.id },
-            { inputId: turn.id, originalInvocationId: turn.id }
-          );
-        }
-      } catch {
-        // The admitted Workspace could not prove the original delivery input.
-      }
-      if (!inputRef)
-        throw new TurnStartValidationError(
-          'recovery_required',
-          'The original outcome batch is unavailable.',
-          409
-        );
       const identity = createHash('sha256')
         .update(JSON.stringify([workspaceId, turn.threadId, turn.id]))
         .digest('hex');
@@ -2634,7 +2614,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           workspaceId,
           threadId: turn.threadId,
         },
-        inputRef,
+        frozenOutcomeBatch: true,
         requestedAgentId: turn.agentId,
         reservedTurnId: turn.id,
         onTurnCreated: () => admitted.resolve(),
