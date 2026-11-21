@@ -281,6 +281,7 @@ import {
   readPendingNanoHostEpochRetirement,
 } from './storage/nanohost-epoch-invalidation-native.js';
 import type { AdmittedNanoHostTransportStorage } from './storage/nanohost-transport-owner.js';
+import { resolveAdmittedNanoHostWorkerBinding } from './storage/nanohost-worker-binding.js';
 import { readServerCallUsageIds } from './storage/server-work-call.js';
 import {
   type ServerWorkCommandBinding,
@@ -617,7 +618,8 @@ export interface CreateAppOptions {
  * Creates the default worker-control gateway for one app instance.
  *
  * @param coreDb Optional server-scope database used for durable execution attempt binding checks.
- * @param onFinalStatusCommitted Optional restart-only closeout observer.
+ * @param _onFinalStatusCommitted Optional restart-only closeout observer for the deciding writer.
+ * @param nanoHostStorage Acknowledged owner shared with boot and the Worker runtime.
  * @returns Worker-control gateway.
  */
 export function createDefaultWorkerControlGateway(
@@ -626,25 +628,40 @@ export function createDefaultWorkerControlGateway(
   nanoHostStorage?: NanoHostAppStorage
 ): WorkerControlGateway {
   if (!coreDb) return new WorkerControlGateway();
-  const gateway = new HeldWorkerControlGateway();
-  if (nanoHostStorage?.state !== 'ready') return gateway;
-  const hydration = rebuildWorkerControlGatewaySessions(
-    coreDb,
-    gateway,
-    nanoHostStorage.value.owner.read
-  );
+  if (
+    nanoHostStorage?.state !== 'ready' ||
+    nanoHostStorage.value.dataRoot !== resolve(coreDb.dataRoot)
+  )
+    return new HeldWorkerControlGateway();
+  const { owner } = nanoHostStorage.value;
+  const gateway = new WorkerControlGateway({
+    ...heldWorkerControlPublications,
+    resolveTokenBinding(input) {
+      const binding = owner.read((sqlite) =>
+        resolveAdmittedNanoHostWorkerBinding(coreDb, sqlite, input)
+      );
+      if (binding.state !== 'ready') return requireWorkerControlStorage();
+      return binding.value;
+    },
+  });
+  const hydration = rebuildWorkerControlGatewaySessions(coreDb, gateway, owner.read);
   return hydration.state === 'ready' ? gateway : new HeldWorkerControlGateway();
 }
 
-/** Native observations may hydrate before the live deciding owner is wired. */
+// Route-token registration is local. Publishing a Worker observation still needs its deciding writer.
+const heldWorkerControlPublications = {
+  resolveFinalStatusTokenBinding: requireWorkerControlStorage,
+  publishHeartbeat: requireWorkerControlStorage,
+  publishControlOperation: requireWorkerControlStorage,
+  publishFinalStatus: requireWorkerControlStorage,
+};
+
+/** Holds registration and all Worker operations when the admitted owner is unavailable. */
 class HeldWorkerControlGateway extends WorkerControlGateway {
   constructor() {
     super({
+      ...heldWorkerControlPublications,
       resolveTokenBinding: requireWorkerControlStorage,
-      resolveFinalStatusTokenBinding: requireWorkerControlStorage,
-      publishHeartbeat: requireWorkerControlStorage,
-      publishControlOperation: requireWorkerControlStorage,
-      publishFinalStatus: requireWorkerControlStorage,
     });
   }
 

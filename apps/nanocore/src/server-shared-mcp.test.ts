@@ -6,7 +6,12 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { serve } from '@hono/node-server';
-import { resolveWorkspaceMcpServer, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
+import {
+  redactAgentEnvironmentPackageSnapshot,
+  resolveWorkspaceMcpServer,
+  type WorkspaceMcpServerCatalog,
+} from '@openkit/config-schema';
+import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from './app.js';
@@ -34,24 +39,28 @@ import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-le
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
   acceptSchedulerExecutionObservation,
+  markSchedulerExecutionAttemptClosing,
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
-import { bindNanoHostAttemptRouteTokenHashes } from './runtime/nanohost-attempt-records.js';
 import { listThreadPendingRequests, readPendingRequest } from './runtime/pending-requests.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { users } from './storage/schema/index.js';
+import {
+  openAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
-import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
-import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { submitTestNanoHostWorkerLease } from './test-support/nanohost-worker-lease.js';
+import { admitTestNativeEnvironmentForRoot } from './test-support/native-environment.js';
 import { createNativeCommandTurn } from './test-support/native-task-admission.js';
 import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { getVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
@@ -184,7 +193,12 @@ async function fixture() {
       ]),
     }),
   });
-  const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
+  const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
+  const workerControlGateway = createDefaultWorkerControlGateway(
+    coreDb,
+    undefined,
+    nanoHostStorage
+  );
   const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
   cleanups.push(() => workerMcpGateway.close());
   let sessionUserId: string | null = null;
@@ -195,6 +209,7 @@ async function fixture() {
     mode: 'server',
     runtimeConfigManager: manager,
     vaultUnlockState,
+    nanoHostStorage,
     workerControlGateway,
     workerMcpGateway,
     auth: {
@@ -255,13 +270,14 @@ async function fixture() {
       'Call echo',
       { kind: 'user', id: FIXTURE_LOCAL_USER_ID }
     );
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const pkg = await resolveAgentEnvironmentPackage({
       coreDb,
       agentSetup: setup,
       agentSessionId: testEntityId('as', `shared-mcp-${turn.id}`),
       backend: { kind: 'openshell' },
       captureCoverage: { scope: 'server', value: 'off' },
+      readNanoHostEnvironment: nanoHostStorage.value.owner.read,
       requestId: commandRequestId,
       turn,
       triggerActor: turn.triggerActor,
@@ -301,26 +317,10 @@ async function fixture() {
       requestedAgentId: pkg.agent.agentId,
     });
     const bindingRef = `binding_${turn.id}`;
-    const attempt = recordTestExecutionAttempt(coreDb, {
-      entry: admission,
-      attemptId: testEntityId('attempt', `shared-mcp-${turn.id}`),
-      agentSessionId: pkg.scope.agentSessionId,
-      inputRef: pkg.snapshotId,
-      bindingRef,
-      sessionCompatibilityKey: 'shared-mcp-fixture',
-      operationId: randomUUID(),
-      now: () => new Date().toISOString(),
-    });
     const registration = workerControlGateway.registerSession(pkg, {
       sandboxBindingRef: bindingRef,
     });
-    bindNanoHostAttemptRouteTokenHashes(coreDb, {
-      attemptId: attempt.attemptId,
-      sandboxBindingRef: bindingRef,
-      workerControlTokenHash: registration.workerControlTokenHash,
-      workerInferenceTokenHash: registration.workerInferenceTokenHash,
-      workerCapabilityTokenHash: registration.workerCapabilityTokenHash,
-    });
+    const attempt = submitTestNanoHostWorkerLease(coreDb, admission, bindingRef, registration);
     expect(
       acceptSchedulerExecutionObservation(coreDb, {
         ...schedulerExecutionCorrelation(attempt),
@@ -356,6 +356,8 @@ async function fixture() {
     return {
       pkg,
       workspaceId,
+      attemptId: attempt.attemptId,
+      registration,
       call: (message: string) => invokeMcp('tools/call', { name: 'echo', arguments: { message } }),
       list: () => invokeMcp('tools/list', {}),
     };
@@ -718,6 +720,102 @@ it('reaches the existing Workspace Gateway with real registered capability token
 });
 
 describe('Server-shared MCP through governed Worker routes', () => {
+  it('authenticates the restored capability only while its exact lease is live', async () => {
+    const f = await fixture();
+    await sharedSetup(f);
+    const worker = await f.worker(f.workspaces[0]!.id);
+    await shutdownControlStoreWorkerClient();
+    const storage = await reopenAdmittedTestNanoHost(f.coreDb);
+    const gateway = createDefaultWorkerControlGateway(f.coreDb, undefined, storage);
+    const authenticate = () =>
+      gateway.authenticatePackageToken(`Bearer ${worker.registration.workerCapabilityToken}`, {
+        tokenFamily: 'capability',
+      });
+
+    expect(gateway.getSessionSnapshot(worker.pkg.snapshotId)).not.toBeNull();
+    expect(authenticate()).toEqual(redactAgentEnvironmentPackageSnapshot(worker.pkg));
+    expect(() =>
+      gateway.authenticatePackageToken(`Bearer ${worker.registration.workerInferenceToken}`, {
+        tokenFamily: 'capability',
+      })
+    ).toThrow(expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 }));
+
+    const { scope, snapshotId } = worker.pkg;
+    const request = {
+      authorization: `Bearer ${worker.registration.token}`,
+      lineage: {
+        workspaceId: scope.workspaceId,
+        threadId: scope.threadId,
+        turnId: scope.turnId,
+        agentSessionId: scope.agentSessionId,
+        packageSnapshotId: snapshotId,
+        requestId: scope.requestId,
+      },
+      sequence: 0,
+    };
+    const held = expect.objectContaining({
+      code: 'worker_observation_storage_unavailable',
+      status: 503,
+    });
+    expect(() =>
+      gateway.recordHeartbeat({
+        ...request,
+        body: { status: 'starting', processKeyHash: 'a'.repeat(43) },
+        operation: 'heartbeat',
+        schemaVersion: 2,
+      })
+    ).toThrow(held);
+    await expect(
+      gateway.recordArtifactNotice({
+        ...request,
+        artifact: { title: 'Held artifact', path: 'artifact.txt' },
+      })
+    ).rejects.toThrow(held);
+    await expect(
+      gateway.recordFinalStatus({ ...request, status: 'completed', stopReason: 'completed' })
+    ).rejects.toThrow(held);
+    expect(gateway.getSessionSnapshot(snapshotId)).toMatchObject({
+      artifacts: [],
+      events: [],
+      heartbeat: null,
+    });
+
+    // A process-local token and the live Core grant cannot replace the admitted route tuple.
+    const native = new Database(serverStoragePath(f.dataRoot, 'nanohost'), {
+      fileMustExist: true,
+    });
+    try {
+      const previous = native
+        .prepare(
+          'SELECT worker_route_binding_json FROM worker_backend_sessions WHERE attempt_id = ?'
+        )
+        .pluck()
+        .get(worker.attemptId);
+      const retain = native.prepare(
+        'UPDATE worker_backend_sessions SET worker_route_binding_json = ? WHERE attempt_id = ?'
+      );
+      retain.run(null, worker.attemptId);
+      expect(authenticate).toThrow(
+        expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 })
+      );
+      retain.run(previous, worker.attemptId);
+    } finally {
+      native.close();
+    }
+
+    markSchedulerExecutionAttemptClosing(f.coreDb, {
+      attemptId: worker.attemptId,
+      cause: 'turn-cancelled',
+    });
+    expect(authenticate).toThrow(
+      expect.objectContaining({ code: 'worker_control_lease_not_live', status: 403 })
+    );
+    await shutdownControlStoreWorkerClient();
+    expect(authenticate).toThrow(held);
+    const unavailable = createDefaultWorkerControlGateway(f.coreDb, undefined, storage);
+    expect(() => unavailable.registerSession(worker.pkg)).toThrow(held);
+  });
+
   it('does not activate a saved Workspace MCP declaration when the admitted Workspace catalog is absent', async () => {
     const f = await fixture();
     const workspaceId = f.workspaces[0]!.id;
