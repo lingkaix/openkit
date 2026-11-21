@@ -99,16 +99,6 @@ export const controlExecutionSteps = sqliteTable(
       .where(
         sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'core-workspace-recovery/v1'`
       ),
-    // Core-only receiver progress: one acknowledgement per exact binding and operation tuple.
-    uniqueIndex('control_execution_steps_harness_consumption_idx')
-      .on(
-        sql`json_extract(${table.invocationJson}, '$.carriage.bindingRef')`,
-        sql`json_extract(${table.invocationJson}, '$.carriage.requestId')`,
-        sql`json_extract(${table.invocationJson}, '$.carriage.sequence')`
-      )
-      .where(
-        sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'core-harness-consume/v1'`
-      ),
     // The original writer clock locates admitted targets independently of decision-row presence.
     index('control_execution_steps_containment_clock_idx')
       .on(sql`CAST(json_extract(${table.invocationJson}, '$.clock.admittedUnixNano') AS INTEGER)`)
@@ -119,12 +109,14 @@ export const controlExecutionSteps = sqliteTable(
       .on(table.state)
       .where(sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'containment'
         AND json_extract(${table.controlJson}, '$.kind') = 'fence'`),
-    // Core-only: pending residents address originals without scanning history.
-    index('control_execution_steps_idle_resident_idx')
-      .on(sql`json_extract(${table.invocationJson}, '$.carriage.bindingRef')`)
-      .where(sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'core-idle-cleanup/v1'
-        AND json_extract(${table.invocationJson}, '$.carriage.operation') IN ('bridge.close', 'sandbox.delete')
-        AND json_extract(${table.controlJson}, '$.kind') <> 'consume-receipt'`),
+    // Scoped history reads address the original operation without scanning other bindings.
+    index('control_execution_steps_scope_operation_idx')
+      .on(
+        sql`json_extract(${table.invocationJson}, '$.carriage.bindingRef')`,
+        sql`json_extract(${table.controlJson}, '$.definitionVersion')`,
+        sql`json_extract(${table.invocationJson}, '$.carriage.operation')`
+      )
+      .where(sql`json_extract(${table.invocationJson}, '$.carriage.bindingRef') IS NOT NULL`),
     foreignKey({
       columns: [table.executionId, table.parentStepId],
       foreignColumns: [table.executionId, table.stepId],

@@ -1,5 +1,10 @@
 import type { ActorRef, WorkOwner } from '@openkit/protocol';
 import type { RepairCallOutcome } from '../storage/control-kernel-port.js';
+import type {
+  KernelExecutionEvidence,
+  KernelExecutionGrant,
+  KernelInputStep,
+} from '../storage/control-kernel-proof-codecs.js';
 
 /** Owner-qualified existing execution identity; this reference grants no authority. */
 export interface ExecutionJournalRef {
@@ -82,10 +87,16 @@ export interface ExecutionInvocationCarriage {
   readonly requestId: string;
   readonly sequence: number | null;
   readonly bindingRef: string | null;
+  /** Exact original scheduler operation grant retained before effects can begin. */
+  readonly kernelGrant?: KernelExecutionGrant | undefined;
   /** Bounded terminal usage joined to the original repair Call and Audit by the kernel step. */
   readonly repairTerminal?:
     | { readonly version: 1; readonly outcome: RepairCallOutcome }
     | undefined;
+  /** Versioned kernel-only input obligation or linked proof on the original step. */
+  readonly kernelInput?: KernelInputStep | undefined;
+  /** Verified local or backend evidence retained independently on the original execution. */
+  readonly kernelEvidence?: KernelExecutionEvidence | undefined;
 }
 
 /** Original local clock anchor; a missing process witness after restart cannot authorize a fresh allowance. */

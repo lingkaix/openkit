@@ -488,8 +488,12 @@ CREATE TABLE `scheduler_execution_attempts` (
   `worker_process_key_hash` text,
   `worker_control_token_hash` text,
   `worker_inference_token_hash` text,
-  `worker_capability_token_hash` text
-, `schema_version` integer DEFAULT 1 NOT NULL);
+  `worker_capability_token_hash` text,
+  `schema_version` integer DEFAULT 1 NOT NULL,
+  CONSTRAINT `scheduler_execution_attempts_admission_scope_fk`
+    FOREIGN KEY (`queue_entry_id`, `workspace_id`, `thread_id`, `turn_id`)
+    REFERENCES `scheduler_admission_entries` (`queue_entry_id`, `workspace_id`, `thread_id`, `turn_id`)
+);
 --> statement-breakpoint
 CREATE TABLE `server_settings` (
   `key` text PRIMARY KEY NOT NULL,
@@ -888,10 +892,6 @@ CREATE UNIQUE INDEX `control_execution_steps_recovery_stage_idx`
 ON `control_execution_steps` (json_extract(`invocation_json`, '$.carriage.requestId'), json_extract(`invocation_json`, '$.carriage.sequence'))
 WHERE json_extract(`control_json`, '$.definitionVersion') = 'core-workspace-recovery/v1';
 --> statement-breakpoint
-CREATE UNIQUE INDEX `control_execution_steps_harness_consumption_idx`
-ON `control_execution_steps` (json_extract(`invocation_json`, '$.carriage.bindingRef'), json_extract(`invocation_json`, '$.carriage.requestId'), json_extract(`invocation_json`, '$.carriage.sequence'))
-WHERE json_extract(`control_json`, '$.definitionVersion') = 'core-harness-consume/v1';
---> statement-breakpoint
 CREATE INDEX `control_executions_containment_recent_idx`
 ON `control_executions` (CAST(json_extract(`span_json`, '$.startTimeUnixNano') AS INTEGER))
 WHERE `definition_version` = 'containment';
@@ -906,11 +906,13 @@ ON `control_execution_steps` (`state`)
 WHERE json_extract(`control_json`, '$.definitionVersion') = 'containment'
 AND json_extract(`control_json`, '$.kind') = 'fence';
 --> statement-breakpoint
-CREATE INDEX `control_execution_steps_idle_resident_idx`
-ON `control_execution_steps` (json_extract(`invocation_json`, '$.carriage.bindingRef'))
-WHERE json_extract(`control_json`, '$.definitionVersion') = 'core-idle-cleanup/v1'
-  AND json_extract(`invocation_json`, '$.carriage.operation') IN ('bridge.close', 'sandbox.delete')
-  AND json_extract(`control_json`, '$.kind') <> 'consume-receipt';
+CREATE INDEX `control_execution_steps_scope_operation_idx`
+ON `control_execution_steps` (
+  json_extract(`invocation_json`, '$.carriage.bindingRef'),
+  json_extract(`control_json`, '$.definitionVersion'),
+  json_extract(`invocation_json`, '$.carriage.operation')
+)
+WHERE json_extract(`invocation_json`, '$.carriage.bindingRef') IS NOT NULL;
 --> statement-breakpoint
 CREATE INDEX `control_execution_steps_inspection_idx` ON `control_execution_steps` (`inspected_execution_id`, `inspected_step_id`, `execution_id`, `ordinal`);
 --> statement-breakpoint
@@ -1003,6 +1005,8 @@ CREATE INDEX `sandbox_runtime_records_target_idx` ON `sandbox_runtime_records` (
 CREATE UNIQUE INDEX `scheduler_admission_entries_non_terminal_turn_idx` ON `scheduler_admission_entries` (`turn_id`) WHERE `status` IN ('queued','admitted');
 --> statement-breakpoint
 CREATE INDEX `scheduler_admission_entries_queue_idx` ON `scheduler_admission_entries` (`status`,`enqueued_at`);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `scheduler_admission_entries_attempt_scope_idx` ON `scheduler_admission_entries` (`queue_entry_id`,`workspace_id`,`thread_id`,`turn_id`);
 --> statement-breakpoint
 CREATE INDEX `scheduler_admission_entries_workspace_idx` ON `scheduler_admission_entries` (`workspace_id`,`status`,`enqueued_at`);
 --> statement-breakpoint

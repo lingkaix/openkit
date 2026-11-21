@@ -1,6 +1,6 @@
 import type { ReasoningEffort } from '@openkit/protocol';
 import { writeRetainedV1 } from '@openkit/protocol';
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Durable scheduler admission statuses. */
 export type SchedulerAdmissionStatus = 'queued' | 'admitted' | 'denied' | 'cancelled' | 'expired';
@@ -61,6 +61,12 @@ export const schedulerAdmissionEntries = sqliteTable(
   },
   (table) => [
     index('scheduler_admission_entries_queue_idx').on(table.status, table.enqueuedAt),
+    uniqueIndex('scheduler_admission_entries_attempt_scope_idx').on(
+      table.queueEntryId,
+      table.workspaceId,
+      table.threadId,
+      table.turnId
+    ),
     index('scheduler_admission_entries_workspace_idx').on(
       table.workspaceId,
       table.status,

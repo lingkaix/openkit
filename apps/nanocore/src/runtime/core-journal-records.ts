@@ -130,9 +130,17 @@ interface HarnessConsumptionKey {
   readonly resultFingerprint: string;
 }
 
+function coreConsumptionExecutionId({
+  harnessBindingRef,
+  operationId,
+  sequence,
+}: HarnessConsumptionKey): string {
+  return `consume-receipt:${commandInputHash([harnessBindingRef, operationId, sequence])}`;
+}
+
 /** Reads validated Core progress without changing the original receiver result. */
 export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKey): string | null {
-  const executionId = `harness-consume:${commandInputHash(key)}`;
+  const executionId = coreConsumptionExecutionId(key);
   if (!db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id = ?').get(executionId))
     return null;
   const execution = { owner: { kind: 'server' as const }, executionId };
@@ -179,7 +187,7 @@ export function recordCoreHarnessConsumption(
   const fingerprint = commandInputHash({ ...key, consumer });
   const intent = localCoreJournalIntent({
     definitionVersion: CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
-    executionId: `harness-consume:${commandInputHash(key)}`,
+    executionId: coreConsumptionExecutionId(key),
     stepId: 'consume',
     workId: key.operationId,
     fingerprint,

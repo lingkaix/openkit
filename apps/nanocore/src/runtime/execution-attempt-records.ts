@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   allocateEntityId,
   readRetainedV1,
@@ -12,6 +13,7 @@ import {
   type CoreSchedulerQueueEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import type { ExecutionGrant } from '../storage/control-kernel-port.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb } from '../storage/db.js';
 import {
@@ -24,9 +26,24 @@ import type {
   ExecutionOperationDisposition,
   ExecutionReleaseProof,
 } from './execution-backend.js';
+import {
+  admitKernelSchedulerGrantInDb,
+  kernelSchedulerGrantClockAllowsOperation,
+  kernelSchedulerScopeIsHeld,
+  readKernelSchedulerGrantInDb,
+} from './execution-journal.js';
+import type { ExecutionJournalIntent } from './execution-step-journal.js';
 
 /** The production execution authority budget, fixed once at native submission. */
 export const EXECUTION_ATTEMPT_BUDGET_MS = 7_200_000;
+
+/** Neither external adapter has qualified input processing or a fence for this release. */
+const heldExternalBackends = new Set(['openai-agents', 'e2b', 'e2b-mock']);
+
+function requireQualifiedSchedulerBackend(backendId: string): void {
+  if (heldExternalBackends.has(backendId))
+    throw new ExecutionAttemptRefusal('Execution backend effects are unavailable.');
+}
 
 /** Generic durable attempt projection deliberately excludes NanoHost proof fields. */
 export type SchedulerExecutionAttemptRecord = z.infer<typeof AttemptSchema>;
@@ -144,6 +161,7 @@ export function createSchedulerExecutionAttempt(
   return coreDb.sqlite
     .transaction(() => {
       const entry = requireSchedulerAdmissionEntry(coreDb, input.entry.queueEntryId);
+      requireQualifiedSchedulerBackend(entry.backendId);
       if (
         entry.status !== 'queued' ||
         entry.backendId !== input.entry.backendId ||
@@ -151,6 +169,16 @@ export function createSchedulerExecutionAttempt(
       ) {
         throw new ExecutionAttemptRefusal('The exact queued admission is no longer dispatchable.');
       }
+      const storage = entry.workerStorageChoice;
+      if (
+        kernelSchedulerScopeIsHeld(coreDb, [
+          `workspace:${entry.workspaceId}`,
+          `thread:${entry.threadId}`,
+          `turn:${entry.turnId}`,
+          ...(storage?.kind === 'selected' ? [storage.storageRef] : []),
+        ])
+      )
+        throw new ExecutionAttemptRefusal('Execution placement has an unresolved writer.');
       coreDb.sqlite
         .prepare(`INSERT INTO scheduler_execution_attempts
       (attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
@@ -189,24 +217,36 @@ export function bindSchedulerExecutionAttemptSession(
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
-  const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
-  if (
-    attempt.phase !== 'open' ||
-    (attempt.agentSessionId !== null && attempt.agentSessionId !== input.agentSessionId)
-  )
-    throw new ExecutionAttemptRefusal('Attempt AgentSession ownership changed.');
-  const updated = coreDb.sqlite
-    .prepare(`UPDATE scheduler_execution_attempts SET agent_session_id = ?, updated_at = ?
+  return coreDb.sqlite
+    .transaction(() => {
+      const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+      if (
+        attempt.phase !== 'open' ||
+        (attempt.agentSessionId !== null && attempt.agentSessionId !== input.agentSessionId)
+      )
+        throw new ExecutionAttemptRefusal('Attempt AgentSession ownership changed.');
+      if (
+        kernelSchedulerScopeIsHeld(
+          coreDb,
+          [`session:${input.agentSessionId}`, input.agentSessionId],
+          attempt.attemptId
+        )
+      )
+        throw new ExecutionAttemptRefusal('Selected AgentSession has an unresolved writer.');
+      const updated = coreDb.sqlite
+        .prepare(`UPDATE scheduler_execution_attempts SET agent_session_id = ?, updated_at = ?
     WHERE attempt_id = ? AND phase = 'open' AND agent_session_id IS ?`)
-    .run(
-      input.agentSessionId,
-      input.now?.() ?? new Date().toISOString(),
-      attempt.attemptId,
-      attempt.agentSessionId
-    );
-  if (updated.changes !== 1)
-    throw new ExecutionAttemptRefusal('Attempt lost its AgentSession binding race.');
-  return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+        .run(
+          input.agentSessionId,
+          input.now?.() ?? new Date().toISOString(),
+          attempt.attemptId,
+          attempt.agentSessionId
+        );
+      if (updated.changes !== 1)
+        throw new ExecutionAttemptRefusal('Attempt lost its AgentSession binding race.');
+      return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+    })
+    .immediate();
 }
 
 /** Publishes the immutable finalized package and compatible binding before native submission. */
@@ -257,6 +297,7 @@ export function recordSchedulerExecutionOperation(
     throw new ExecutionAttemptRefusal('Backend operation identity is required before an effect.');
   const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
   const entry = requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
+  requireQualifiedSchedulerBackend(attempt.backendId);
   const timestamp = input.now?.() ?? new Date().toISOString();
   if (
     attempt.phase !== 'open' ||
@@ -294,6 +335,8 @@ export function recordSchedulerExecutionOperation(
 export function schedulerExecutionCorrelation(
   attempt: SchedulerExecutionAttemptRecord
 ): ExecutionBackendCorrelation {
+  // Agents API cancellation targets the session's current Turn, which may be a successor.
+  requireQualifiedSchedulerBackend(attempt.backendId);
   if (!attempt.operationId)
     throw new ExecutionAttemptRefusal('Attempt has no outstanding operation identity.');
   return {
@@ -303,6 +346,95 @@ export function schedulerExecutionCorrelation(
     inputRef: attempt.inputRef,
     operationId: attempt.operationId,
   };
+}
+
+/** Core decides the original operation and its qualified generation in the same savepoint. */
+export function recordSchedulerExecutionGrantInDb(
+  coreDb: CoreDb,
+  input: Parameters<typeof recordSchedulerExecutionOperation>[1] & {
+    readonly generation: string;
+    readonly proposal: ExecutionJournalIntent;
+  },
+  verifyCurrentPlacement: (original: ExecutionGrant) => boolean
+): { readonly state: 'admitted-now' | 'inspect-original'; readonly grant: ExecutionGrant } {
+  if (!coreDb.sqlite.inTransaction)
+    throw new ExecutionAttemptRefusal('Execution grant requires the Core writer transaction.');
+  const execution = {
+    owner: { kind: 'server' as const },
+    executionId: input.attemptId,
+  };
+  return coreDb.sqlite.transaction(() => {
+    const currentAttempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+    const entry = requireSchedulerAdmissionEntry(coreDb, currentAttempt.queueEntryId);
+    if (
+      !isDeepStrictEqual(input.proposal.control.actor, entry.triggerActor) ||
+      input.proposal.execution.fingerprint !== entry.inputHash
+    )
+      throw new ExecutionAttemptRefusal('Execution grant conflicts with the admitted work.');
+    const original = readKernelSchedulerGrantInDb(coreDb, execution, input.operationId);
+    if (original) {
+      if (
+        original.generation !== input.generation ||
+        (input.submission === true && original.deadline === null) ||
+        admitKernelSchedulerGrantInDb(
+          coreDb,
+          input.proposal,
+          original,
+          () => false,
+          input.submission
+        ).state !== 'settled'
+      )
+        throw new ExecutionAttemptRefusal('Execution grant conflicts with its original operation.');
+      return { state: 'inspect-original', grant: original } as const;
+    }
+    const timestamp = input.now?.() ?? new Date().toISOString();
+    const currentMs = Date.parse(timestamp);
+    const startedMs = Date.parse(currentAttempt.createdAt);
+    const deadlineMs =
+      currentAttempt.deadline === null
+        ? startedMs + EXECUTION_ATTEMPT_BUDGET_MS
+        : Date.parse(currentAttempt.deadline);
+    if (!(currentMs >= startedMs && currentMs < deadlineMs))
+      throw new ExecutionAttemptRefusal('Original execution clock is unavailable or expired.');
+    const now = BigInt(currentMs) * 1_000_000n;
+    const proposalDeadline = input.proposal.control.deadlineUnixNano;
+    if (
+      (proposalDeadline !== null && now >= proposalDeadline) ||
+      (currentAttempt.operationId !== null &&
+        !kernelSchedulerGrantClockAllowsOperation(
+          coreDb,
+          execution,
+          currentAttempt.deadline !== null,
+          now,
+          BigInt(deadlineMs) * 1_000_000n
+        ))
+    )
+      throw new ExecutionAttemptRefusal('Original execution clock is unavailable or expired.');
+    const attempt = recordSchedulerExecutionOperation(coreDb, { ...input, now: () => timestamp });
+    const coordinates = {
+      ...schedulerExecutionCorrelation(attempt),
+      execution,
+      turnId: attempt.turnId,
+      generation: input.generation,
+    };
+    const grant: ExecutionGrant = attempt.deadline
+      ? { ...coordinates, deadline: attempt.deadline }
+      : {
+          ...coordinates,
+          deadline: null,
+          preparationStep: { execution, stepId: input.proposal.stepId },
+        };
+    const decision = admitKernelSchedulerGrantInDb(
+      coreDb,
+      input.proposal,
+      grant,
+      verifyCurrentPlacement,
+      input.submission
+    );
+    if (decision.state !== 'settled')
+      throw new ExecutionAttemptRefusal('The original execution grant is unavailable.');
+    return { state: 'admitted-now', grant: decision.receipt } as const;
+  })();
 }
 
 /** Rejects missing, stale, or contradictory observations without changing held exclusion. */

@@ -1,6 +1,15 @@
 import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
-import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import {
+  check,
+  foreignKey,
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
+import { schedulerAdmissionEntries } from './scheduler-admission-entries.js';
 
 /** Execution authority has exactly these three durable phases. */
 export type SchedulerExecutionAttemptPhase = 'open' | 'closing' | 'closed';
@@ -58,6 +67,16 @@ export const schedulerExecutionAttempts = sqliteTable(
     workerCapabilityTokenHash: text('worker_capability_token_hash'),
   },
   (table) => [
+    foreignKey({
+      name: 'scheduler_execution_attempts_admission_scope_fk',
+      columns: [table.queueEntryId, table.workspaceId, table.threadId, table.turnId],
+      foreignColumns: [
+        schedulerAdmissionEntries.queueEntryId,
+        schedulerAdmissionEntries.workspaceId,
+        schedulerAdmissionEntries.threadId,
+        schedulerAdmissionEntries.turnId,
+      ],
+    }),
     check(
       'scheduler_execution_attempts_phase_check',
       sql`${table.phase} IN ('open', 'closing', 'closed')`

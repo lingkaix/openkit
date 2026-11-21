@@ -141,9 +141,14 @@ const terminalAccountingCorruptions: ReadonlyArray<{
 }> = [
   {
     apply: (coreDb, suffix) => {
-      coreDb.sqlite
-        .prepare('DELETE FROM scheduler_admission_entries WHERE queue_entry_id = ?')
-        .run(`queue_${suffix}`);
+      coreDb.sqlite.pragma('foreign_keys = OFF');
+      try {
+        coreDb.sqlite
+          .prepare('DELETE FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+          .run(`queue_${suffix}`);
+      } finally {
+        coreDb.sqlite.pragma('foreign_keys = ON');
+      }
     },
     expectedError: /admission/i,
     name: 'missing admission',

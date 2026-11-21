@@ -19,15 +19,29 @@ import {
   prepareAuditEventStatement,
 } from '../audit-events.js';
 import type {
+  ExecutionGrant,
+  ExecutionProofIntent,
+  ExecutionProofReceipt,
   RepairCallInspection,
   RepairCallIntent,
   RepairCallOutcome,
   RepairCallReservation,
+  SelectedExecutionInput,
 } from '../storage/control-kernel-port.js';
+import {
+  type KernelExecutionEvidence,
+  KernelExecutionEvidenceSchema,
+  KernelExecutionProofIntentSchema,
+  KernelGrantStepSchema,
+  KernelInputProofSchema,
+  KernelInputStepSchema,
+  SelectedKernelInputSchema,
+} from '../storage/control-kernel-proof-codecs.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import {
   type StorageDecision,
+  type StorageReceiptLookup,
   storageReceipt,
   storageRequestId,
 } from '../storage/storage-owner.js';
@@ -65,6 +79,9 @@ export const CORE_CONTAINMENT_EXECUTION_DEFINITION = 'containment';
 
 /** Kernel-only governed model-call lineage and single-Call accounting. */
 export const CORE_REPAIR_EXECUTION_DEFINITION = 'core-repair/v1';
+
+/** The Core control half of a durable scheduler attempt and its independent input obligations. */
+export const CORE_SCHEDULER_EXECUTION_DEFINITION = 'core-scheduler-attempt/v1';
 
 /** Observed Core identity/revision; selection must reread its owning rows before advancement. */
 export interface ExecutionCandidate {
@@ -329,6 +346,7 @@ const definition = z.enum([
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
   CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
   CORE_REPAIR_EXECUTION_DEFINITION,
+  CORE_SCHEDULER_EXECUTION_DEFINITION,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 ]);
 const controlSchema = z.object({
@@ -393,9 +411,12 @@ const invocationSchema = z.object({
     requestId: text,
     sequence: count.nullable(),
     bindingRef: text.nullable(),
+    kernelGrant: KernelGrantStepSchema.optional(),
     repairTerminal: z
       .strictObject({ version: z.literal(1), outcome: repairOutcomeSchema })
       .optional(),
+    kernelInput: KernelInputStepSchema.optional(),
+    kernelEvidence: KernelExecutionEvidenceSchema.optional(),
   }),
   clock: z.object({ processWitness: text, admittedUnixNano: nano, admittedMonotonicNano: nano }),
 });
@@ -627,7 +648,8 @@ function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
         value === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION ||
         value === CORE_CONTAINMENT_EXECUTION_DEFINITION ||
         value === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION ||
-        value === CORE_REPAIR_EXECUTION_DEFINITION
+        value === CORE_REPAIR_EXECUTION_DEFINITION ||
+        value === CORE_SCHEDULER_EXECUTION_DEFINITION
       : value === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION;
   if (!admitted) throw new Error('Execution definition conflicts with its physical owner.');
 }
@@ -699,7 +721,16 @@ function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
     throw new Error('Workspace execution step has no admitted producer.');
   }
   const invocation = decode(invocationSchema, row.invocation_json);
-  requireRepairExecutionCarriage(root.definitionVersion, control, invocation.carriage);
+  if (
+    invocation.carriage.kernelInput &&
+    (root.definitionVersion !== CORE_SCHEDULER_EXECUTION_DEFINITION ||
+      (invocation.carriage.kernelInput.kind === 'input-obligation'
+        ? control.kind !== 'admit'
+        : control.kind !== 'observe' && control.kind !== 'consume-receipt'))
+  )
+    throw new Error('Input proof is outside its Core scheduler step.');
+
+  requireKernelExecutionCarriage(root.definitionVersion, control, invocation.carriage);
   const span = decode(spanSchema, row.span_json);
   if (
     control.invocationId !== row.invocation_id ||
@@ -837,8 +868,6 @@ export function createExecutionStepJournalReader(
   };
 }
 
-const verifiedKernelStep = Symbol('verified-kernel-step');
-
 /**
  * Persists one immutable intent before any queue or external wait in the caller's owning transaction.
  * @param db Existing owning Core or Workspace connection inside its write transaction.
@@ -846,6 +875,8 @@ const verifiedKernelStep = Symbol('verified-kernel-step');
  * @returns Retained invocation; an identical repeat does not renew its clock or revision.
  * @throws For changed identity/input, closed authority, malformed values or absent transaction.
  */
+const verifiedKernelStep = Symbol('verified-kernel-step');
+
 export function writeExecutionJournalIntent(
   db: CoreDb | WorkspaceDb,
   input: ExecutionJournalIntent,
@@ -859,11 +890,24 @@ export function writeExecutionJournalIntent(
   const span = spanSchema.parse(input.span);
   if (
     (admission.definitionVersion === CORE_REPAIR_EXECUTION_DEFINITION ||
+      input.carriage.kernelGrant ||
+      input.carriage.kernelInput ||
+      input.carriage.kernelEvidence ||
+      (admission.definitionVersion === CORE_SCHEDULER_EXECUTION_DEFINITION &&
+        control.kind === 'release') ||
       input.carriage.repairTerminal) &&
     authority !== verifiedKernelStep
   )
     throw new Error('A kernel proof step requires its verifying native writer.');
-  requireRepairExecutionCarriage(admission.definitionVersion, control, input.carriage);
+  if (
+    input.carriage.kernelInput &&
+    (admission.definitionVersion !== CORE_SCHEDULER_EXECUTION_DEFINITION ||
+      (input.carriage.kernelInput.kind === 'input-obligation'
+        ? control.kind !== 'admit'
+        : control.kind !== 'observe' && control.kind !== 'consume-receipt'))
+  )
+    throw new Error('Input proof is outside its Core scheduler step.');
+  requireKernelExecutionCarriage(admission.definitionVersion, control, input.carriage);
   const rootSpan = spanSchema.parse(admission.span);
   definition.parse(admission.definitionVersion);
   requireDefinition(db, admission.definitionVersion);
@@ -941,6 +985,9 @@ export function writeExecutionJournalIntent(
         'inspect-cleanup',
         'consume-receipt',
         ...(db.scope === 'workspace' ? ['release'] : []),
+        ...(admission.definitionVersion === CORE_SCHEDULER_EXECUTION_DEFINITION
+          ? ['observe', 'fence', 'release', 'terminal-publication', 'collect']
+          : []),
       ].includes(control.kind)) ||
     root.workId !== admission.workId ||
     root.fingerprint !== admission.fingerprint ||
@@ -1017,6 +1064,8 @@ export function writeExecutionJournalIntent(
   return readExecutionJournalInvocation(db, ref);
 }
 
+const verifiedKernelRelease = Symbol('verified-core-scheduler-release');
+
 /**
  * Ends exactly one intent and advances its root inside the existing receipt-owning transaction.
  * @param db Existing owning Core or Workspace connection inside its write transaction.
@@ -1026,7 +1075,8 @@ export function writeExecutionJournalIntent(
  */
 export function settleExecutionJournalStep(
   db: CoreDb | WorkspaceDb,
-  input: ExecutionJournalSettlement
+  input: ExecutionJournalSettlement,
+  releaseAuthority?: typeof verifiedKernelRelease
 ): EndedExecutionStep {
   requireWriter(db, input.ref.execution);
   const stored = storedStep(db, input.ref);
@@ -1054,6 +1104,16 @@ export function settleExecutionJournalStep(
   }
   const outputRefs = z.array(text).parse(input.outputRefs);
   const exclusionRefs = z.array(text).parse(input.exclusionRefs);
+  const scheduler = stored.root.definitionVersion === CORE_SCHEDULER_EXECUTION_DEFINITION;
+  if (scheduler && stored.root.phase === 'closing' && input.nextPhase === 'open')
+    throw new Error('A closing Core scheduler execution cannot reopen.');
+  if (
+    scheduler &&
+    (input.nextPhase === 'closed' ||
+      stored.root.exclusionRefs.some((ref) => !exclusionRefs.includes(ref))) &&
+    releaseAuthority !== verifiedKernelRelease
+  )
+    throw new Error('Core scheduler holds require their independently verified release.');
   const hasUnknown =
     outcome === 'unknown' ||
     db.sqlite
@@ -1108,6 +1168,7 @@ export function settleExecutionJournalStep(
   if (
     hasUnknown &&
     !qualifiedRelease &&
+    releaseAuthority !== verifiedKernelRelease &&
     (input.nextPhase === 'closed' ||
       stored.root.exclusionRefs.some((ref) => !exclusionRefs.includes(ref)))
   ) {
@@ -1155,7 +1216,7 @@ export function settleExecutionJournalStep(
     )
     .run(
       input.nextPhase,
-      input.terminalCause,
+      scheduler ? (stored.root.terminalCause ?? input.terminalCause) : input.terminalCause,
       encodeExecutionJournalValue(exclusionRefs),
       encodeExecutionJournalValue(rootSpan),
       input.ref.execution.executionId,
@@ -1165,7 +1226,7 @@ export function settleExecutionJournalStep(
   return endedStep(db, input.ref);
 }
 
-function requireRepairExecutionCarriage(
+function requireKernelExecutionCarriage(
   definitionVersion: string,
   control: ExecutionStepControl,
   carriage: ExecutionJournalIntent['carriage']
@@ -1178,13 +1239,322 @@ function requireRepairExecutionCarriage(
         control.kind !== 'terminal-publication'))
   )
     throw new Error('Repair outcome is outside its original kernel step.');
+  const grant = carriage.kernelGrant?.grant;
+  if (
+    grant &&
+    (definitionVersion !== CORE_SCHEDULER_EXECUTION_DEFINITION ||
+      carriage.kernelInput !== undefined ||
+      carriage.kernelEvidence !== undefined ||
+      control.kind !== 'admit' ||
+      control.invocationId !== grant.operationId ||
+      control.operationId !== grant.operationId ||
+      control.attemptId !== grant.attemptId ||
+      control.workId !== grant.turnId)
+  )
+    throw new Error('Execution grant is outside its original deciding step.');
+  const evidence = carriage.kernelEvidence;
+  if (!evidence) return;
+  const kind =
+    evidence.kind === 'handoff'
+      ? evidence.handoff.kind === 'terminal-publication'
+        ? 'terminal-publication'
+        : 'collect'
+      : evidence.kind === 'submission'
+        ? 'observe'
+        : 'fence';
+  if (
+    definitionVersion !== CORE_SCHEDULER_EXECUTION_DEFINITION ||
+    carriage.kernelInput !== undefined ||
+    control.kind !== kind
+  )
+    throw new Error('Execution evidence is outside its deciding step.');
+}
+
+/** Verifies the complete original execution evidence before it can contribute to a decision. */
+function inspectKernelExecutionEvidence(
+  db: CoreDb,
+  intent: ExecutionProofIntent,
+  completeHistory: boolean
+): StorageReceiptLookup<ExecutionProofReceipt> {
+  if (
+    !KernelExecutionProofIntentSchema.safeParse(intent).success ||
+    intent.requestId !== storageRequestId(intent)
+  )
+    return { state: 'conflict' };
+  const entry = db.sqlite
+    .prepare('SELECT execution_id, step_id FROM control_execution_steps WHERE invocation_id=?')
+    .get(intent.requestId) as { execution_id: string; step_id: string } | undefined;
+  if (!entry) return { state: completeHistory ? 'absent' : 'unknown' };
+  const step = { execution: intent.target.execution, stepId: intent.requestId };
+  if (entry.execution_id !== step.execution.executionId || entry.step_id !== step.stepId)
+    return { state: 'conflict' };
+  const observed = storedStep(db, step);
+  const saved = observed.invocation.carriage.kernelEvidence;
+  if (!saved || !isDeepStrictEqual(saved.intent, intent)) return { state: 'conflict' };
+  const digest = sha256CanonicalJson(saved.kind === 'handoff' ? saved.handoff : saved.proof);
+  const receipt = storageReceipt(intent, { disposition: 'applied', result: { step } });
+  if (
+    observed.row.state !== 'completed' ||
+    (intent.inputDigest !== digest && intent.inputDigest !== `sha256:${digest}`) ||
+    !isDeepStrictEqual(observed.control.outputRefs, [receipt.receiptDigest])
+  )
+    return { state: 'unknown' };
+  return { state: 'settled', receipt };
+}
+
+/** Records an exact submission finding, fence or work-owned handoff in its deciding transaction. */
+export function commitKernelExecutionEvidenceInDb(
+  db: CoreDb,
+  proposal: ExecutionJournalIntent,
+  evidence: KernelExecutionEvidence,
+  completeHistory: boolean,
+  verifyEvidence: (original: KernelExecutionEvidence) => boolean,
+  applySubmission?: (original: Extract<KernelExecutionEvidence, { kind: 'submission' }>) => boolean
+): StorageDecision<ExecutionProofReceipt> {
+  const parsed = KernelExecutionEvidenceSchema.safeParse(evidence);
+  if (!parsed.success) return { state: 'conflict' };
+  const retained = parsed.data;
+  const { intent } = retained;
+  requireWriter(db, intent.target.execution);
+  const digest = sha256CanonicalJson(
+    retained.kind === 'handoff' ? retained.handoff : retained.proof
+  );
+  const root = readRoot(db, intent.target.execution);
+  if (
+    root.definitionVersion !== CORE_SCHEDULER_EXECUTION_DEFINITION ||
+    root.workId !== intent.target.turnId ||
+    intent.expectedGeneration !== intent.target.generation ||
+    !isDeepStrictEqual(
+      readKernelSchedulerGrantInDb(db, root.ref, intent.target.operationId),
+      intent.target
+    ) ||
+    (intent.inputDigest !== digest && intent.inputDigest !== `sha256:${digest}`) ||
+    !isDeepStrictEqual(proposal.execution.ref, root.ref) ||
+    proposal.control.attemptId !== intent.target.attemptId ||
+    proposal.control.operationId !== intent.target.operationId ||
+    proposal.control.retryPermitted
+  )
+    return { state: 'conflict' };
+  if (
+    retained.kind === 'fence' &&
+    (retained.proof.fence.backendId !== intent.target.backendId ||
+      intent.sourceOwner !== intent.target.backendId ||
+      new Set(retained.proof.coveredScopeRefs).size !== retained.proof.coveredScopeRefs.length)
+  )
+    return { state: 'conflict' };
+  if (
+    retained.kind === 'submission' &&
+    (intent.sourceOwner !== intent.target.backendId ||
+      (retained.proof.evidence !== null &&
+        retained.proof.evidence.backendId !== intent.target.backendId))
+  )
+    return { state: 'conflict' };
+  requireKernelExecutionCarriage(root.definitionVersion, proposal.control, {
+    ...proposal.carriage,
+    kernelEvidence: retained,
+  });
+  const prior = inspectKernelExecutionEvidence(db, intent, completeHistory);
+  if (prior.state !== 'absent') return prior;
+  if (root.phase === 'closed' || !verifyEvidence(retained)) return { state: 'unknown' };
+  if (retained.kind === 'submission' && !applySubmission?.(retained)) return { state: 'unknown' };
+  const step = { execution: root.ref, stepId: intent.requestId };
+  const receipt = storageReceipt(intent, { disposition: 'applied', result: { step } });
+  commitKernelDecisionStep(
+    db,
+    {
+      ...proposal,
+      stepId: step.stepId,
+      control: { ...proposal.control, invocationId: step.stepId, fingerprint: `sha256:${digest}` },
+      carriage: { ...proposal.carriage, kernelEvidence: retained },
+    },
+    [receipt.receiptDigest]
+  );
+  return { state: 'settled', receipt };
+}
+
+/** A still-writable scope survives logical attempt closure and blocks new placement. */
+export function kernelSchedulerScopeIsHeld(
+  db: CoreDb,
+  scopes: readonly string[],
+  exceptExecutionId: string | null = null
+): boolean {
+  return (
+    db.sqlite
+      .prepare(`SELECT 1 FROM control_executions AS execution, json_each(execution.exclusion_refs_json) AS hold
+      WHERE execution.definition_version = ?
+        AND execution.id IS NOT ?
+        AND hold.value IN (SELECT value FROM json_each(?))
+      LIMIT 1`)
+      .get(CORE_SCHEDULER_EXECUTION_DEFINITION, exceptExecutionId, JSON.stringify(scopes)) !==
+    undefined
+  );
+}
+
+/** Separately verified operations can cover the same original placement and generation. */
+function sameKernelAttemptPlacement(left: ExecutionGrant, right: ExecutionGrant): boolean {
+  return (
+    left.attemptId === right.attemptId &&
+    left.turnId === right.turnId &&
+    left.backendId === right.backendId &&
+    left.generation === right.generation &&
+    left.inputRef === right.inputRef &&
+    left.bindingRef === right.bindingRef &&
+    isDeepStrictEqual(left.execution, right.execution)
+  );
+}
+
+/** Uses committed evidence from both owners to remove only the original proved holds. */
+export function releaseKernelExecutionScopesInDb(
+  db: CoreDb,
+  proposal: ExecutionJournalIntent,
+  grant: ExecutionGrant,
+  expectedRevision: number,
+  verifyDrainAndRevocation: (original: ExecutionGrant) => boolean
+): StorageDecision<ExecutionStepRef> {
+  requireWriter(db, grant.execution);
+  const root = readRoot(db, grant.execution);
+  if (
+    root.definitionVersion !== CORE_SCHEDULER_EXECUTION_DEFINITION ||
+    root.workId !== grant.turnId ||
+    !isDeepStrictEqual(readKernelSchedulerGrantInDb(db, root.ref, grant.operationId), grant) ||
+    !isDeepStrictEqual(proposal.execution.ref, grant.execution) ||
+    proposal.control.kind !== 'release' ||
+    proposal.control.attemptId !== grant.attemptId ||
+    proposal.control.operationId !== grant.operationId ||
+    proposal.control.retryPermitted ||
+    proposal.carriage.kernelGrant !== undefined ||
+    proposal.carriage.kernelInput !== undefined ||
+    proposal.carriage.kernelEvidence !== undefined
+  )
+    return { state: 'conflict' };
+  const fingerprint = kernelDecisionFingerprint([proposal, grant, expectedRevision]);
+  const ref = { execution: root.ref, stepId: proposal.stepId };
+  if (
+    db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id = ? AND step_id = ?')
+      .get(root.ref.executionId, proposal.stepId)
+  ) {
+    const original = storedStep(db, ref);
+    return original.row.state === 'completed' &&
+      original.control.kind === 'release' &&
+      original.control.fingerprint === fingerprint
+      ? { state: 'settled', receipt: ref }
+      : { state: 'conflict' };
+  }
+  if (root.phase !== 'closing' || root.revision !== expectedRevision) return { state: 'conflict' };
+  // Cancellation or acceptance cannot discharge the original input consumption obligation.
+  const admitted = db.sqlite
+    .prepare(`SELECT step_id AS stepId FROM control_execution_steps
+    WHERE execution_id=? AND json_extract(invocation_json, '$.carriage.kernelInput.kind')='input-obligation'`)
+    .all(root.ref.executionId) as { stepId: string }[];
+  if (
+    admitted.some(({ stepId }) => {
+      const disposition = inspectKernelInputDisposition(db, { execution: root.ref, stepId });
+      return disposition !== 'consumed' && disposition !== 'non-submission';
+    })
+  )
+    return { state: 'unknown' };
+  const recorded = db.sqlite
+    .prepare(`SELECT step_id AS stepId FROM control_execution_steps
+    WHERE execution_id=? AND state='completed'
+      AND json_extract(invocation_json, '$.carriage.kernelEvidence.kind') IS NOT NULL
+    ORDER BY ordinal`)
+    .all(root.ref.executionId) as { stepId: string }[];
+  const scopes = new Set<string>();
+  const fencesByOperation = new Map<string, Set<string>>();
+  const handoffs = new Set<string>();
+  const usedReceipts: string[] = [];
+  for (const { stepId } of recorded) {
+    const step = storedStep(db, { execution: root.ref, stepId });
+    const evidence = step.invocation.carriage.kernelEvidence;
+    if (!evidence || !sameKernelAttemptPlacement(evidence.intent.target, grant)) continue;
+    const receipt = inspectKernelExecutionEvidence(db, evidence.intent, false);
+    if (receipt.state !== 'settled') return { state: 'unknown' };
+    usedReceipts.push(receipt.receipt.receiptDigest);
+    if (evidence.kind === 'fence') {
+      const operation = evidence.intent.target.operationId;
+      const covered = fencesByOperation.get(operation) ?? new Set<string>();
+      for (const scope of evidence.proof.coveredScopeRefs) {
+        scopes.add(scope);
+        covered.add(scope);
+      }
+      fencesByOperation.set(operation, covered);
+    } else if (evidence.kind === 'handoff') handoffs.add(evidence.handoff.kind);
+  }
+  const surviving = root.exclusionRefs.filter((scope) => !scopes.has(scope));
+  // An intent can still publish after this decision. Apply the same scope check before it settles.
+  const unresolved = db.sqlite
+    .prepare(
+      "SELECT step_id AS stepId FROM control_execution_steps WHERE execution_id=? AND state IN ('intent', 'unknown')"
+    )
+    .all(root.ref.executionId) as { stepId: string }[];
+  if (
+    handoffs.size !== 4 ||
+    surviving.length === root.exclusionRefs.length ||
+    (surviving.length === 0 && root.openSteps.length !== 0) ||
+    unresolved.some(({ stepId }) => {
+      const { control } = storedStep(db, { execution: root.ref, stepId });
+      const scope = control.target?.allocationRef ?? control.target?.targetId;
+      const fence =
+        control.operationId === null ? undefined : fencesByOperation.get(control.operationId);
+      if (scope === undefined)
+        return root.exclusionRefs.some((ref) => scopes.has(ref) && !fence?.has(ref));
+      return !surviving.includes(scope) && !fence?.has(scope);
+    }) ||
+    !verifyDrainAndRevocation(grant)
+  )
+    return { state: 'unknown' };
+  const step = writeExecutionJournalIntent(
+    db,
+    { ...proposal, control: { ...proposal.control, fingerprint } },
+    undefined,
+    verifiedKernelStep
+  );
+  const afterIntent = readRoot(db, grant.execution);
+  const end = step.clock.admittedUnixNano;
+  const start = proposal.span.startTimeUnixNano;
+  settleExecutionJournalStep(
+    db,
+    {
+      ref: step.ref,
+      expectedExecutionRevision: afterIntent.revision,
+      state: 'completed',
+      outputRefs: usedReceipts,
+      nextPhase: surviving.length === 0 ? 'closed' : 'closing',
+      exclusionRefs: surviving,
+      terminalCause: root.terminalCause,
+      span: {
+        ...proposal.span,
+        endTimeUnixNano: end < start ? start : end,
+        status: { code: 'OK' },
+      },
+    },
+    verifiedKernelRelease
+  );
+  return { state: 'settled', receipt: step.ref };
+}
+
+type KernelInputProof = z.infer<typeof KernelInputProofSchema>;
+
+function kernelInputObligationId(selected: SelectedExecutionInput): string {
+  return `input:${sha256CanonicalJson([
+    selected.input.owner,
+    selected.input.inputId,
+    selected.grant.attemptId,
+    selected.grant.generation,
+  ])}`;
+}
+
+function kernelDecisionFingerprint(value: unknown): string {
+  return `sha256:${sha256CanonicalJson(JSON.parse(encodeExecutionJournalValue(value)))}`;
 }
 
 /** Commits the local decision step. Physical effect authorization stays with the original operation CAS. */
 function commitKernelDecisionStep(
   db: CoreDb,
   proposal: ExecutionJournalIntent,
-  outputRefs: readonly string[]
+  outputRefs: readonly string[],
+  additionalScopes: readonly string[] = []
 ): ExecutionStepRef {
   const admitted = writeExecutionJournalIntent(db, proposal, undefined, verifiedKernelStep);
   const root = readRoot(db, admitted.ref.execution);
@@ -1202,9 +1572,379 @@ function commitKernelDecisionStep(
     },
     nextPhase: root.phase,
     terminalCause: root.terminalCause,
-    exclusionRefs: root.exclusionRefs,
+    exclusionRefs: [...new Set([...root.exclusionRefs, ...additionalScopes])],
   });
   return admitted.ref;
+}
+
+function readRetainedKernelSchedulerGrant(
+  db: CoreDb,
+  execution: ExecutionJournalRef,
+  operationId: string
+): {
+  readonly grant: ExecutionGrant;
+  readonly stepId: string;
+  readonly requestDigest: string;
+  readonly submission: boolean;
+} | null {
+  const row = db.sqlite
+    .prepare(
+      'SELECT step_id AS stepId FROM control_execution_steps WHERE execution_id=? AND invocation_id=?'
+    )
+    .get(execution.executionId, operationId) as { stepId: string } | undefined;
+  if (!row) return null;
+  const ref = { execution, stepId: row.stepId };
+  const step = storedStep(db, ref);
+  const retained = step.invocation.carriage.kernelGrant;
+  if (
+    !retained ||
+    !isDeepStrictEqual(retained.grant.execution, execution) ||
+    step.row.state !== 'completed' ||
+    step.control.fingerprint !== kernelDecisionFingerprint(retained) ||
+    (retained.grant.deadline === null && !isDeepStrictEqual(retained.grant.preparationStep, ref))
+  )
+    return null;
+  return { ...retained, stepId: row.stepId };
+}
+
+/** Reads only the grant retained by the original native operation. It supplies no new authority. */
+export function readKernelSchedulerGrantInDb(
+  db: CoreDb,
+  execution: ExecutionJournalRef,
+  operationId: string
+): ExecutionGrant | null {
+  return readRetainedKernelSchedulerGrant(db, execution, operationId)?.grant ?? null;
+}
+
+/** Check the retained anchor for another effect without renewing its original deadline. */
+export function kernelSchedulerGrantClockAllowsOperation(
+  db: CoreDb,
+  execution: ExecutionJournalRef,
+  submitted: boolean,
+  now: bigint,
+  deadline: bigint
+): boolean {
+  const first = db.sqlite
+    .prepare(`
+    SELECT invocation_id AS operationId FROM control_execution_steps
+    WHERE execution_id = ? AND json_extract(invocation_json, '$.carriage.kernelGrant.submission') = ?
+    ORDER BY ordinal LIMIT 1
+  `)
+    .get(execution.executionId, submitted ? 1 : 0) as { operationId: string } | undefined;
+  const original = first && readRetainedKernelSchedulerGrant(db, execution, first.operationId);
+  if (!original) return false;
+  const { control, invocation } = storedStep(db, { execution, stepId: original.stepId });
+  const { clock } = invocation;
+  const expiry =
+    original.grant.deadline === null &&
+    control.deadlineUnixNano !== null &&
+    control.deadlineUnixNano < deadline
+      ? control.deadlineUnixNano
+      : deadline;
+  if (now < clock.admittedUnixNano || now >= expiry) return false;
+  if (clock.processWitness !== processWitness) return true;
+  const elapsed = process.hrtime.bigint() - clock.admittedMonotonicNano;
+  return elapsed >= 0n && clock.admittedUnixNano + elapsed < expiry;
+}
+
+/** Retains one grant in the native transaction that decides access to the original operation. */
+export function admitKernelSchedulerGrantInDb(
+  db: CoreDb,
+  proposal: ExecutionJournalIntent,
+  grant: ExecutionGrant,
+  verifyCurrentOperation: (original: ExecutionGrant) => boolean,
+  submission = false
+): StorageDecision<ExecutionGrant> {
+  const requestDigest = kernelDecisionFingerprint(proposal);
+  const retained = KernelGrantStepSchema.safeParse({
+    version: 1,
+    grant,
+    requestDigest,
+    submission,
+  });
+  if (!retained.success) return { state: 'conflict' };
+  const ref = { execution: grant.execution, stepId: proposal.stepId };
+  const { control, execution } = proposal;
+  requireWriter(db, ref.execution);
+  if (
+    !isDeepStrictEqual(execution.ref, ref.execution) ||
+    execution.definitionVersion !== CORE_SCHEDULER_EXECUTION_DEFINITION ||
+    execution.workId !== grant.turnId ||
+    control.kind !== 'admit' ||
+    control.attemptId !== grant.attemptId ||
+    control.operationId !== grant.operationId ||
+    control.invocationId !== grant.operationId ||
+    control.retryPermitted ||
+    (grant.deadline === null && !isDeepStrictEqual(grant.preparationStep, ref))
+  )
+    return { state: 'conflict' };
+  const original = readRetainedKernelSchedulerGrant(db, ref.execution, grant.operationId);
+  if (original)
+    return original.stepId === ref.stepId &&
+      original.requestDigest === requestDigest &&
+      original.submission === submission &&
+      isDeepStrictEqual(original.grant, retained.data.grant)
+      ? { state: 'settled', receipt: original.grant }
+      : { state: 'conflict' };
+  if (
+    kernelSchedulerScopeIsHeld(db, execution.exclusionRefs, ref.execution.executionId) ||
+    !verifyCurrentOperation(retained.data.grant)
+  )
+    return { state: 'unknown' };
+  commitKernelDecisionStep(
+    db,
+    {
+      ...proposal,
+      control: { ...control, fingerprint: kernelDecisionFingerprint(retained.data) },
+      carriage: { ...proposal.carriage, kernelGrant: retained.data },
+    },
+    [],
+    execution.exclusionRefs
+  );
+  return { state: 'settled', receipt: retained.data.grant };
+}
+
+/** Records one obligation for the exact input before contact. An identical admission inspects. */
+export function admitKernelInputInDb(
+  db: CoreDb,
+  proposal: ExecutionJournalIntent,
+  selected: SelectedExecutionInput,
+  verifyCurrentSelection: (original: SelectedExecutionInput) => boolean
+): StorageDecision<ExecutionStepRef> {
+  const parsed = SelectedKernelInputSchema.safeParse(selected);
+  if (!parsed.success) return { state: 'conflict' };
+  const grant = selected.grant;
+  const fingerprint = `sha256:${sha256CanonicalJson(parsed.data)}`;
+  requireWriter(db, grant.execution);
+  const root = readRoot(db, grant.execution);
+  const ref = { execution: grant.execution, stepId: kernelInputObligationId(selected) };
+  const previous = db.sqlite
+    .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+    .get(ref.execution.executionId, ref.stepId);
+  if (previous) {
+    const original = storedStep(db, ref);
+    const fact = original.invocation.carriage.kernelInput;
+    if (fact?.kind !== 'input-obligation' || !isDeepStrictEqual(fact.selected, parsed.data))
+      return { state: 'conflict' };
+    return original.row.state === 'completed' && original.control.fingerprint === fingerprint
+      ? { state: 'settled', receipt: ref }
+      : { state: 'unknown' };
+  }
+  if (
+    root.definitionVersion !== CORE_SCHEDULER_EXECUTION_DEFINITION ||
+    root.workId !== grant.turnId ||
+    root.phase !== 'open' ||
+    !isDeepStrictEqual(proposal.execution.ref, grant.execution) ||
+    proposal.control.kind !== 'admit' ||
+    proposal.control.attemptId !== grant.attemptId ||
+    proposal.control.operationId !== grant.operationId ||
+    proposal.control.retryPermitted ||
+    !isDeepStrictEqual(
+      readKernelSchedulerGrantInDb(db, grant.execution, grant.operationId),
+      grant
+    ) ||
+    !verifyCurrentSelection(parsed.data)
+  )
+    return { state: 'unknown' };
+  return {
+    state: 'settled',
+    receipt: commitKernelDecisionStep(
+      db,
+      {
+        ...proposal,
+        stepId: ref.stepId,
+        control: {
+          ...proposal.control,
+          invocationId: ref.stepId,
+          fingerprint,
+        },
+        carriage: {
+          ...proposal.carriage,
+          kernelInput: { version: 1, kind: 'input-obligation', selected: parsed.data },
+        },
+      },
+      []
+    ),
+  };
+}
+
+/** Looks up the exact deciding observation without reopening the original input. */
+export function inspectKernelInputProofInDb(
+  db: CoreDb,
+  intent: ExecutionProofIntent,
+  completeHistory: boolean
+): StorageReceiptLookup<ExecutionProofReceipt> {
+  const parsed = KernelExecutionProofIntentSchema.safeParse(intent);
+  if (!parsed.success || intent.requestId !== storageRequestId(intent))
+    return { state: 'conflict' };
+  const step = { execution: intent.target.execution, stepId: intent.requestId };
+  const previous = db.sqlite
+    .prepare('SELECT execution_id FROM control_execution_steps WHERE invocation_id = ?')
+    .get(intent.requestId) as { execution_id: string } | undefined;
+  if (!previous) return { state: completeHistory ? 'absent' : 'unknown' };
+  if (previous.execution_id !== step.execution.executionId) return { state: 'conflict' };
+  const stored = storedStep(db, step);
+  const receipt = storageReceipt(intent, { disposition: 'applied', result: { step } });
+  const saved = stored.invocation.carriage.kernelInput;
+  if (saved?.kind !== 'input-proof' || !isDeepStrictEqual(saved.intent, parsed.data))
+    return { state: 'conflict' };
+  const proofDigest = sha256CanonicalJson(saved.proof);
+  if (
+    (saved.intent.inputDigest !== proofDigest &&
+      saved.intent.inputDigest !== `sha256:${proofDigest}`) ||
+    stored.control.fingerprint !== `sha256:${proofDigest}` ||
+    stored.row.state !== 'completed' ||
+    stored.row.inspected_execution_id !== saved.proof.obligation.execution.executionId ||
+    stored.row.inspected_step_id !== saved.proof.obligation.stepId ||
+    !isDeepStrictEqual(stored.control.outputRefs, [receipt.receiptDigest])
+  )
+    return { state: 'unknown' };
+  return { state: 'settled', receipt };
+}
+
+/** The wire intent alone does not select a proof kind. Inspect the original deciding step. */
+export function inspectKernelProofReceipt(
+  db: CoreDb,
+  intent: ExecutionProofIntent,
+  completeHistory: boolean
+): StorageReceiptLookup<ExecutionProofReceipt> {
+  if (
+    !KernelExecutionProofIntentSchema.safeParse(intent).success ||
+    intent.requestId !== storageRequestId(intent)
+  )
+    return { state: 'conflict' };
+  const original = db.sqlite
+    .prepare(`SELECT execution_id AS executionId, step_id AS stepId
+    FROM control_execution_steps WHERE invocation_id=?`)
+    .get(intent.requestId) as { executionId: string; stepId: string } | undefined;
+  if (!original) return { state: completeHistory ? 'absent' : 'unknown' };
+  if (
+    original.executionId !== intent.target.execution.executionId ||
+    original.stepId !== intent.requestId
+  )
+    return { state: 'conflict' };
+  try {
+    const step = storedStep(db, { execution: intent.target.execution, stepId: original.stepId });
+    if (step.invocation.carriage.kernelInput?.kind === 'input-proof')
+      return inspectKernelInputProofInDb(db, intent, false);
+    if (step.invocation.carriage.kernelEvidence)
+      return inspectKernelExecutionEvidence(db, intent, false);
+    return { state: 'conflict' };
+  } catch {
+    return { state: 'unknown' };
+  }
+}
+
+/** Persists bounded proof linked to the original input. The native caller verifies the evidence owner. */
+export function commitKernelInputProofInDb(
+  db: CoreDb,
+  proposal: ExecutionJournalIntent,
+  intent: ExecutionProofIntent,
+  proof: KernelInputProof,
+  completeHistory: boolean,
+  verifyEvidence: (original: KernelInputProof, received: ExecutionGrant) => boolean
+): StorageDecision<ExecutionProofReceipt> {
+  requireWriter(db, intent.target.execution);
+  const parsed = KernelInputProofSchema.safeParse(proof);
+  const digest = parsed.success ? sha256CanonicalJson(parsed.data) : null;
+  if (
+    digest === null ||
+    (intent.inputDigest !== digest && intent.inputDigest !== `sha256:${digest}`) ||
+    intent.expectedGeneration !== proof.selected.grant.generation ||
+    !isDeepStrictEqual(proof.selected.grant, intent.target)
+  )
+    return { state: 'conflict' };
+  const prior = inspectKernelInputProofInDb(db, intent, completeHistory);
+  if (prior.state !== 'absent') return prior;
+  const original = storedStep(db, proof.obligation);
+  const fact = original.invocation.carriage.kernelInput;
+  if (
+    fact?.kind !== 'input-obligation' ||
+    original.row.state !== 'completed' ||
+    !isDeepStrictEqual(fact.selected, proof.selected) ||
+    !isDeepStrictEqual(intent.target.execution, proof.obligation.execution) ||
+    !isDeepStrictEqual(proposal.execution.ref, proof.obligation.execution) ||
+    !isDeepStrictEqual(proposal.inspectedStep, proof.obligation) ||
+    (proposal.control.kind !== 'observe' &&
+      !(
+        proposal.control.kind === 'consume-receipt' &&
+        proof.kind === 'intake' &&
+        proof.finding === 'consumed'
+      )) ||
+    proposal.control.attemptId !== intent.target.attemptId ||
+    proposal.control.operationId !== intent.target.operationId ||
+    proposal.control.retryPermitted ||
+    (proof.evidence !== null &&
+      ('backendId' in proof.evidence
+        ? proof.evidence.backendId !== intent.target.backendId ||
+          intent.sourceOwner !== intent.target.backendId
+        : !isDeepStrictEqual(proof.evidence.owner, fact.selected.input.owner)))
+  )
+    return { state: 'conflict' };
+  // The verifier checks the committed submit deadline and the original preparation capability.
+  if (!verifyEvidence(proof, intent.target)) return { state: 'unknown' };
+  const step = { execution: proposal.execution.ref, stepId: intent.requestId };
+  const receipt = storageReceipt(intent, { disposition: 'applied', result: { step } });
+  commitKernelDecisionStep(
+    db,
+    {
+      ...proposal,
+      stepId: step.stepId,
+      control: {
+        ...proposal.control,
+        invocationId: intent.requestId,
+        fingerprint: `sha256:${digest}`,
+      },
+      carriage: {
+        ...proposal.carriage,
+        kernelInput: { version: 1, kind: 'input-proof', intent, proof },
+      },
+    },
+    [receipt.receiptDigest]
+  );
+  return { state: 'settled', receipt };
+}
+
+/** Derives the strongest retained finding for one input. A later unknown never weakens it. */
+export function inspectKernelInputDisposition(
+  db: CoreDb,
+  obligation: ExecutionStepRef
+): 'accepted' | 'consumed' | 'non-submission' | 'unknown' {
+  const original = storedStep(db, obligation);
+  const fact = original.invocation.carriage.kernelInput;
+  if (fact?.kind !== 'input-obligation' || original.row.state !== 'completed') return 'unknown';
+  const refs = db.sqlite
+    .prepare(`SELECT step_id AS stepId FROM control_execution_steps
+      WHERE execution_id = ? AND inspected_execution_id = ? AND inspected_step_id = ?
+        AND state = 'completed' ORDER BY ordinal`)
+    .all(obligation.execution.executionId, obligation.execution.executionId, obligation.stepId) as {
+    stepId: string;
+  }[];
+  let accepted = false;
+  let consumed = false;
+  let refusedBeforeContact = false;
+  let removedBeforeProcessing = false;
+  for (const { stepId } of refs) {
+    const observed = storedStep(db, { execution: obligation.execution, stepId });
+    const retained = observed.invocation.carriage.kernelInput;
+    if (retained?.kind !== 'input-proof') continue;
+    if (
+      !isDeepStrictEqual(retained.proof.selected, fact.selected) ||
+      inspectKernelInputProofInDb(db, retained.intent, false).state !== 'settled'
+    )
+      return 'unknown';
+    if (retained.proof.kind === 'non-submission') {
+      if (retained.proof.reason === 'refused-before-contact') refusedBeforeContact = true;
+      else removedBeforeProcessing = true;
+    } else if (retained.proof.finding === 'consumed') consumed = true;
+    else if (retained.proof.finding === 'accepted') accepted = true;
+  }
+  const nonSubmission = refusedBeforeContact || removedBeforeProcessing;
+  if ((consumed && nonSubmission) || (accepted && refusedBeforeContact)) return 'unknown';
+  if (consumed) return 'consumed';
+  if (nonSubmission) return 'non-submission';
+  if (accepted) return 'accepted';
+  return 'unknown';
 }
 
 type RepairPolicyAllocation = Extract<

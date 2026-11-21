@@ -1615,15 +1615,33 @@ describe('action center app API', () => {
           'Worker control request lineage does not match the active lease.',
           timestamp
         );
+      const queueEntryId = 'queue_action_center';
+      createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        queueEntryId,
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: thread.id,
+        turnId: turn.id,
+        inputRef: schedulerFixtureInput(DEMO_WORKSPACE_ID, turn.id, 'Recover worker'),
+        requestedAgentId: 'agent_codex_host',
+        profileRef: 'agent_codex_host',
+        now: () => timestamp,
+      });
+      coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?"
+        )
+        .run(queueEntryId);
       coreDb.sqlite
         .prepare(`INSERT INTO scheduler_execution_attempts
         (attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
          agent_session_id, input_ref, binding_ref, preparation_input_json, phase, disposition,
          operation_id, terminal_cause, created_at, updated_at)
-        VALUES ('attempt_00000000-0000-7fc1-bf4d-d1a128657cd8', 'queue_action_center', 'nanohost', ?, ?, ?,
+        VALUES ('attempt_00000000-0000-7fc1-bf4d-d1a128657cd8', ?, 'nanohost', ?, ?, ?,
           'as_00000000-0000-7f85-a231-397f40994baa', 'pkg_orphan', 'binding_action_center', '{}', 'closing', 'unknown',
           'operation_action_center', 'native-liveness-expired', ?, ?)`)
-        .run('ws_00000000-0000-7000-8000-000000000001', thread.id, turn.id, timestamp, timestamp);
+        .run(queueEntryId, DEMO_WORKSPACE_ID, thread.id, turn.id, timestamp, timestamp);
 
       const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request(

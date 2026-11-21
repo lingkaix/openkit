@@ -3,21 +3,58 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import type {
+  ExecutionGrant,
+  ExecutionInputProof,
+  ExecutionProofIntent,
+  SelectedExecutionInput,
+} from '../storage/control-kernel-port.js';
+import type { KernelExecutionEvidence } from '../storage/control-kernel-proof-codecs.js';
 import { controlStoreFor } from '../storage/control-store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { storageRequestId } from '../storage/storage-owner.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
+  readCoreHarnessConsumption,
+  recordCoreHarnessConsumption,
+} from './core-journal-records.js';
+import {
+  acceptSchedulerExecutionObservation,
+  bindSchedulerExecutionAttemptSession,
+  createSchedulerExecutionAttempt,
+  EXECUTION_ATTEMPT_BUDGET_MS,
+  finalizeSchedulerExecutionAttemptInput,
+  recordSchedulerExecutionGrantInDb,
+  requireSchedulerExecutionAttempt,
+} from './execution-attempt-records.js';
+import {
+  admitKernelInputInDb,
+  admitKernelSchedulerGrantInDb,
   admitRepairCallEntryInDb,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_REPAIR_EXECUTION_DEFINITION,
+  CORE_SCHEDULER_EXECUTION_DEFINITION,
+  commitKernelExecutionEvidenceInDb,
+  commitKernelInputProofInDb,
   commitRepairReservationStep,
   commitRepairTerminalAuditInDb,
   createExecutionStepJournalReader,
+  inspectKernelInputDisposition,
+  inspectKernelInputProofInDb,
+  inspectKernelProofReceipt,
   inspectRepairReservationStep,
+  kernelSchedulerScopeIsHeld,
+  readExecutionJournalRoot,
+  readKernelSchedulerGrantInDb,
+  releaseKernelExecutionScopesInDb,
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from './execution-journal.js';
@@ -291,16 +328,990 @@ describe('persisted execution journal contracts', () => {
     expect((await f.reader.readInvocation(b.ref)).control.target).toBeNull();
     const endA = await ending(f, first);
     const staleB = await ending(f, local);
-    controlStoreFor(f.db.sqlite).write(() => settleExecutionJournalStep(f.db, endA));
+    controlStoreFor(f.db.sqlite).write(() =>
+      settleExecutionJournalStep(f.db, {
+        ...endA,
+        nextPhase: 'closing',
+        terminalCause: 'authority-revoked',
+      })
+    );
     expect(() =>
       controlStoreFor(f.db.sqlite).write(() => settleExecutionJournalStep(f.db, staleB))
     ).toThrow();
     expect((await f.reader.readInvocation(b.ref)).state).toBe('intent');
     expect((await f.reader.readExecution(first.execution.ref)).openSteps).toEqual([b.ref]);
+    f.reopen();
     const currentB = await ending(f, local);
-    controlStoreFor(f.db.sqlite).write(() => settleExecutionJournalStep(f.db, currentB));
-    expect((await f.reader.readExecution(first.execution.ref)).openSteps).toEqual([]);
+    controlStoreFor(f.db.sqlite).write(() =>
+      settleExecutionJournalStep(f.db, {
+        ...currentB,
+        nextPhase: 'closing',
+        terminalCause: 'late-observation',
+      })
+    );
+    expect(await f.reader.readExecution(first.execution.ref)).toMatchObject({
+      openSteps: [],
+      phase: 'closing',
+      terminalCause: 'late-observation',
+    });
     expect(await f.reader.readEndedSteps(first.execution.ref)).toHaveLength(2);
+  });
+
+  function schedulerGrantFixture(createdAt?: string) {
+    const f = journalFixture();
+    const workspaceId = testEntityId('ws', 'original-grant');
+    const userId = ensureLocalUser(f.db);
+    const actor = { kind: 'user' as const, id: userId };
+    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+    const entry = createSchedulerAdmissionEntry(f.db, {
+      queueEntryId: 'original-grant-queue',
+      backendId: 'nanohost',
+      triggerActor: actor,
+      workspaceId,
+      threadId: testEntityId('th', 'original-grant'),
+      turnId: f.execution.workId,
+      inputRef: schedulerFixtureInput(
+        workspaceId,
+        f.execution.workId,
+        'Original preparation grant'
+      ),
+      requestedAgentId: 'agent_worker',
+    });
+    const attempt = createSchedulerExecutionAttempt(f.db, {
+      entry,
+      preparationInput: {},
+      ...(createdAt === undefined ? {} : { now: () => createdAt }),
+    });
+    const operationId = 'original-preparation-grant';
+    const draft = f.intent();
+    const execution = {
+      ...draft.execution,
+      ref: { owner: { kind: 'server' as const }, executionId: attempt.attemptId },
+      definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+      fingerprint: entry.inputHash,
+    };
+    const proposal: ExecutionJournalIntent = {
+      ...draft,
+      execution,
+      control: {
+        ...draft.control,
+        kind: 'admit',
+        actor,
+        definitionVersion: execution.definitionVersion,
+        attemptId: attempt.attemptId,
+        operationId,
+        invocationId: operationId,
+      },
+    };
+    const reserve = (
+      qualified: boolean,
+      generation = 'original-generation',
+      originalProposal = proposal,
+      options: { submission?: boolean; now?: () => string } = {}
+    ) =>
+      f.db.sqlite.transaction(() =>
+        recordSchedulerExecutionGrantInDb(
+          f.db,
+          {
+            ...options,
+            proposal: originalProposal,
+            attemptId: attempt.attemptId,
+            operationId: originalProposal.control.operationId!,
+            generation,
+          },
+          () => qualified
+        )
+      )();
+    const next = (id: string, scopes = execution.exclusionRefs): ExecutionJournalIntent => ({
+      ...proposal,
+      stepId: id,
+      execution: { ...execution, exclusionRefs: scopes },
+      control: { ...proposal.control, invocationId: id, operationId: id, deadlineUnixNano: null },
+    });
+    return { f, attempt, execution, operationId, proposal, reserve, next };
+  }
+
+  it('decides the original operation and retained grant atomically and inspects lost acknowledgement', () => {
+    const { f, attempt, execution, operationId, proposal, reserve } = schedulerGrantFixture();
+    expect(() => reserve(false)).toThrow('The original execution grant is unavailable.');
+    expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId).operationId).toBeNull();
+    expect(readKernelSchedulerGrantInDb(f.db, execution.ref, operationId)).toBeNull();
+    const first = reserve(true);
+    expect(first).toMatchObject({
+      state: 'admitted-now',
+      grant: {
+        operationId,
+        deadline: null,
+        preparationStep: { execution: execution.ref, stepId: proposal.stepId },
+      },
+    });
+    expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toMatchObject({
+      operationId,
+      disposition: 'unknown',
+    });
+    f.reopen();
+    expect(reserve(false)).toEqual({ state: 'inspect-original', grant: first.grant });
+    expect(() => reserve(true, 'successor-generation')).toThrow(
+      'Execution grant conflicts with its original operation.'
+    );
+    expect(() =>
+      reserve(true, 'original-generation', { ...proposal, stepId: 'substituted-step' })
+    ).toThrow('Execution grant conflicts with its original operation.');
+    expect(() =>
+      reserve(true, 'original-generation', {
+        ...proposal,
+        carriage: { ...proposal.carriage, operation: 'different-preparation' },
+      })
+    ).toThrow('Execution grant conflicts with its original operation.');
+    expect(() =>
+      reserve(true, 'original-generation', {
+        ...proposal,
+        execution: { ...execution, fingerprint: 'substituted-work' },
+      })
+    ).toThrow('Execution grant conflicts with the admitted work.');
+  });
+
+  it('refuses new grants after the attempt preparation budget or proposed step deadline expires', () => {
+    const stale = schedulerGrantFixture(
+      new Date(Date.now() - EXECUTION_ATTEMPT_BUDGET_MS - 1_000).toISOString()
+    );
+    expect(() => stale.reserve(true)).toThrow(
+      'Original execution clock is unavailable or expired.'
+    );
+    expect(
+      requireSchedulerExecutionAttempt(stale.f.db, stale.attempt.attemptId).operationId
+    ).toBeNull();
+    const live = schedulerGrantFixture();
+    expect(() =>
+      live.reserve(true, 'original-generation', {
+        ...live.proposal,
+        control: { ...live.proposal.control, deadlineUnixNano: 1n },
+      })
+    ).toThrow('Original execution clock is unavailable or expired.');
+    expect(live.reserve(true).state).toBe('admitted-now');
+  });
+
+  it('does not renew the original submission clock and still inspects its expired grant', () => {
+    const { f, attempt, proposal, reserve, next } = schedulerGrantFixture();
+    bindSchedulerExecutionAttemptSession(f.db, {
+      attemptId: attempt.attemptId,
+      agentSessionId: testEntityId('as', 'original-submission'),
+    });
+    finalizeSchedulerExecutionAttemptInput(f.db, {
+      attemptId: attempt.attemptId,
+      inputRef: 'immutable-package',
+      bindingRef: 'original-binding',
+    });
+    const first = reserve(true, 'original-generation', proposal, { submission: true });
+    expect(first.state).toBe('admitted-now');
+    expect(
+      acceptSchedulerExecutionObservation(f.db, {
+        ...first.grant,
+        disposition: 'accepted',
+        execution: 'running',
+        outcomeRef: null,
+        fenceRef: null,
+      })?.disposition
+    ).toBe('accepted');
+    const monotonic = process.hrtime.bigint();
+    const elapsed = vi
+      .spyOn(process.hrtime, 'bigint')
+      .mockReturnValue(monotonic + BigInt(EXECUTION_ATTEMPT_BUDGET_MS + 1_000) * 1_000_000n);
+    try {
+      expect(() => reserve(true, 'original-generation', next('late-within-wall-clock'))).toThrow(
+        'Original execution clock is unavailable or expired.'
+      );
+    } finally {
+      elapsed.mockRestore();
+    }
+    const later = () => new Date(Date.parse(first.grant.deadline!) + 1).toISOString();
+    f.reopen();
+    expect(
+      reserve(false, 'original-generation', proposal, { submission: true, now: later })
+    ).toEqual({ state: 'inspect-original', grant: first.grant });
+    expect(() =>
+      reserve(true, 'original-generation', next('late-operation'), { now: later })
+    ).toThrow('Original execution clock is unavailable or expired.');
+    expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId).operationId).toBe(
+      first.grant.operationId
+    );
+  });
+
+  it('does not commit an applied receipt after the native attempt rejects a contradictory observation', () => {
+    const { f, attempt, proposal, reserve } = schedulerGrantFixture();
+    const { grant } = reserve(true);
+    const observe = (disposition: 'accepted' | 'not_accepted') => {
+      const proof = {
+        kind: 'submission' as const,
+        disposition,
+        evidence: {
+          backendId: grant.backendId,
+          ref: `event-${disposition}`,
+          digest: 'a'.repeat(64),
+        },
+      };
+      const occurrence = {
+        deploymentId: 'fixture',
+        sourceOwner: grant.backendId,
+        verb: 'apply-execution-proof' as const,
+        occurrenceKey: disposition,
+      };
+      const intent = {
+        ...occurrence,
+        target: grant,
+        requestId: storageRequestId(occurrence),
+        expectedGeneration: grant.generation,
+        inputDigest: sha256CanonicalJson(proof),
+      };
+      const result = f.db.sqlite.transaction(() =>
+        commitKernelExecutionEvidenceInDb(
+          f.db,
+          { ...proposal, control: { ...proposal.control, kind: 'observe' } },
+          { version: 1, kind: 'submission', intent, proof },
+          true,
+          () => true,
+          (observation) =>
+            acceptSchedulerExecutionObservation(f.db, {
+              ...grant,
+              disposition: observation.proof.disposition,
+              execution: 'unknown',
+              outcomeRef: null,
+              fenceRef: null,
+            }) !== null
+        )
+      )();
+      return { result, intent };
+    };
+    expect(observe('accepted').result.state).toBe('settled');
+    const rejected = observe('not_accepted');
+    expect(rejected.result.state).toBe('unknown');
+    f.reopen();
+    expect(inspectKernelProofReceipt(f.db, rejected.intent, true).state).toBe('absent');
+    expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId).disposition).toBe('accepted');
+  });
+
+  it('retains newly verified scopes and blocks another attempt from binding their session', () => {
+    const { f, attempt, execution, proposal, reserve, next } = schedulerGrantFixture();
+    const { grant } = reserve(true);
+    expect(
+      acceptSchedulerExecutionObservation(f.db, {
+        ...grant,
+        disposition: 'accepted',
+        execution: 'running',
+        outcomeRef: null,
+        fenceRef: null,
+      })?.disposition
+    ).toBe('accepted');
+    const volume = 'volume:resolved-at-placement';
+    const nextGrant = reserve(true, 'original-generation', next('new-writer', [volume]));
+    expect(nextGrant.state).toBe('admitted-now');
+    f.reopen();
+    expect(readExecutionJournalRoot(f.db, execution.ref).exclusionRefs).toEqual([
+      ...execution.exclusionRefs,
+      volume,
+    ]);
+
+    const session = testEntityId('as', 'retained-session');
+    const formerAttempt = testEntityId('attempt', 'previous-session-writer');
+    const previousExecution = {
+      ...execution,
+      ref: { ...execution.ref, executionId: formerAttempt },
+      workId: testEntityId('tu', 'previous-session-writer'),
+      exclusionRefs: [`session:${session}`],
+    };
+    const previous = {
+      ...proposal,
+      execution: previousExecution,
+      control: {
+        ...proposal.control,
+        invocationId: 'previous-allocation',
+        operationId: 'previous-allocation',
+        workId: previousExecution.workId,
+        attemptId: formerAttempt,
+      },
+    };
+    expect(
+      f.db.sqlite.transaction(() =>
+        admitKernelSchedulerGrantInDb(
+          f.db,
+          previous,
+          {
+            ...grant,
+            execution: previousExecution.ref,
+            attemptId: formerAttempt,
+            turnId: previousExecution.workId,
+            operationId: 'previous-allocation',
+            deadline: null,
+            preparationStep: { execution: previousExecution.ref, stepId: previous.stepId },
+          },
+          () => true
+        )
+      )().state
+    ).toBe('settled');
+    f.reopen();
+    expect(() =>
+      bindSchedulerExecutionAttemptSession(f.db, {
+        attemptId: attempt.attemptId,
+        agentSessionId: session,
+      })
+    ).toThrow('Selected AgentSession has an unresolved writer.');
+    expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId).agentSessionId).toBeNull();
+  });
+
+  it('uses independent original input obligations for equal bytes and reopens their linked proofs', () => {
+    const fixture = journalFixture();
+    const execution: ExecutionJournalAdmission = {
+      ...fixture.execution,
+      definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+    };
+    const attemptId = testEntityId('attempt', 'equal-input-attempt');
+    const step = (
+      id: number,
+      kind: ExecutionJournalIntent['control']['kind']
+    ): ExecutionJournalIntent => {
+      const base = fixture.intent(id);
+      return {
+        ...base,
+        execution,
+        control: {
+          ...base.control,
+          kind,
+          definitionVersion: execution.definitionVersion,
+          attemptId,
+          operationId: 'original-operation',
+        },
+      };
+    };
+    const selected: SelectedExecutionInput = {
+      input: {
+        owner: { kind: 'workspace', workspaceId: testEntityId('ws', 'input-owner') },
+        inputId: 'first-input',
+        digest: 'a'.repeat(64),
+      },
+      order: 0,
+      originalInvocationId: 'workspace-first-input',
+      grant: {
+        execution: execution.ref,
+        attemptId,
+        backendId: 'nanohost',
+        bindingRef: 'original-binding',
+        inputRef: 'original-package',
+        operationId: 'original-operation',
+        turnId: execution.workId,
+        generation: 'original-generation',
+        deadline: '2026-11-21T10:00:00.000Z',
+      },
+    };
+    const proposal = step(1, 'admit');
+    const grantProposal = {
+      ...proposal,
+      control: { ...proposal.control, invocationId: selected.grant.operationId },
+    };
+    const retainGrant = (grant: ExecutionGrant, current = true) =>
+      fixture.db.sqlite.transaction(() =>
+        admitKernelSchedulerGrantInDb(fixture.db, grantProposal, grant, () => current)
+      )();
+    expect(retainGrant(selected.grant, false)).toEqual({ state: 'unknown' });
+    expect(() =>
+      fixture.db.sqlite.transaction(() =>
+        writeExecutionJournalIntent(fixture.db, {
+          ...grantProposal,
+          carriage: {
+            ...grantProposal.carriage,
+            kernelGrant: {
+              version: 1,
+              grant: selected.grant,
+              requestDigest: 'a'.repeat(64),
+              submission: false,
+            },
+          },
+        })
+      )()
+    ).toThrow('requires its verifying native writer');
+    expect(retainGrant(selected.grant)).toEqual({ state: 'settled', receipt: selected.grant });
+    fixture.reopen();
+    expect(
+      readKernelSchedulerGrantInDb(fixture.db, execution.ref, selected.grant.operationId)
+    ).toEqual(selected.grant);
+    expect(retainGrant({ ...selected.grant, generation: 'successor-generation' })).toEqual({
+      state: 'conflict',
+    });
+    expect(retainGrant(selected.grant, false)).toEqual({
+      state: 'settled',
+      receipt: selected.grant,
+    });
+    const sibling: SelectedExecutionInput = {
+      ...selected,
+      input: { ...selected.input, inputId: 'second-input' },
+      order: 1,
+      originalInvocationId: 'workspace-second-input',
+    };
+    const admit = (id: number, input: SelectedExecutionInput, authorized = true) =>
+      fixture.db.sqlite.transaction(() =>
+        admitKernelInputInDb(fixture.db, step(id, 'admit'), input, () => authorized)
+      )();
+    expect(admit(2, selected, false)).toEqual({ state: 'unknown' });
+    const first = admit(2, selected);
+    const second = admit(3, sibling);
+    if (first.state !== 'settled' || second.state !== 'settled')
+      throw new Error('Input fixture did not commit.');
+    expect(first.receipt).not.toEqual(second.receipt);
+    expect(admit(2, selected)).toEqual(first);
+    expect(admit(2, { ...selected, input: { ...selected.input, digest: 'b'.repeat(64) } })).toEqual(
+      { state: 'conflict' }
+    );
+
+    const evidence = {
+      backendId: 'nanohost',
+      ref: 'original-receiver-observation',
+      digest: 'a'.repeat(64),
+    };
+    const consumed: ExecutionInputProof = {
+      kind: 'intake',
+      finding: 'consumed',
+      obligation: first.receipt,
+      selected,
+      boundary: 'receiver-read-back',
+      evidence,
+    };
+    const occurrence = {
+      deploymentId: 'fixture-deployment',
+      sourceOwner: 'nanohost',
+      verb: 'apply-execution-proof',
+      occurrenceKey: 'original-receiver-proof',
+    } as const;
+    const intentFor = (
+      proof: ExecutionInputProof,
+      occurrenceKey: string = occurrence.occurrenceKey
+    ): ExecutionProofIntent => {
+      const key = { ...occurrence, occurrenceKey };
+      return {
+        ...key,
+        requestId: storageRequestId(key),
+        target: proof.selected.grant,
+        expectedGeneration: proof.selected.grant.generation,
+        inputDigest: sha256CanonicalJson(proof),
+      };
+    };
+    const settle = (id: number, intent: ExecutionProofIntent, proof: ExecutionInputProof) =>
+      fixture.db.sqlite.transaction(() =>
+        commitKernelInputProofInDb(
+          fixture.db,
+          {
+            ...step(id, 'observe'),
+            inspectedStep: proof.obligation,
+            span: {
+              ...step(id, 'observe').span,
+              links: [
+                {
+                  traceId: execution.span.traceId,
+                  spanId: step(proof.obligation.stepId === first.receipt.stepId ? 2 : 3, 'admit')
+                    .span.spanId,
+                  flags: 0,
+                  attributes: [],
+                  droppedAttributesCount: 0,
+                },
+              ],
+            },
+          },
+          intent,
+          proof,
+          true,
+          () => true
+        )
+      )();
+
+    const submission = { kind: 'submission', disposition: 'unknown', evidence: null } as const;
+    const submissionKey = { ...occurrence, occurrenceKey: 'withheld-create-reply' };
+    const submissionIntent = {
+      ...submissionKey,
+      requestId: storageRequestId(submissionKey),
+      target: selected.grant,
+      expectedGeneration: selected.grant.generation,
+      inputDigest: sha256CanonicalJson(submission),
+    };
+    const applySubmission = vi.fn(() => true);
+    const admitObservation = () =>
+      fixture.db.sqlite.transaction(() =>
+        commitKernelExecutionEvidenceInDb(
+          fixture.db,
+          step(8, 'observe'),
+          {
+            version: 1,
+            kind: 'submission',
+            intent: submissionIntent,
+            proof: submission,
+          },
+          true,
+          () => true,
+          applySubmission
+        )
+      )();
+    const observed = admitObservation();
+    expect(observed.state).toBe('settled');
+    expect(admitObservation()).toEqual(observed);
+    expect(applySubmission).toHaveBeenCalledTimes(1);
+    expect(inspectKernelProofReceipt(fixture.db, submissionIntent, false)).toEqual(observed);
+
+    const misdirected = { ...consumed, selected: sibling };
+    expect(settle(4, intentFor(misdirected), misdirected)).toEqual({ state: 'conflict' });
+    const stale = {
+      ...consumed,
+      selected: { ...selected, grant: { ...selected.grant, generation: 'successor' } },
+    };
+    expect(settle(4, intentFor(stale), stale)).toEqual({ state: 'conflict' });
+    const intent = intentFor(consumed);
+    expect(
+      settle(
+        4,
+        { ...intent, target: { ...intent.target, deadline: '2026-11-21T12:00:00.000Z' } },
+        consumed
+      )
+    ).toEqual({ state: 'conflict' });
+    const receipt = settle(4, intent, consumed);
+    expect(receipt.state).toBe('settled');
+    const changedProof = { ...consumed, evidence: { ...evidence, digest: 'c'.repeat(64) } };
+    expect(settle(4, intentFor(changedProof), changedProof)).toEqual({ state: 'conflict' });
+
+    const unknown: ExecutionInputProof = { ...consumed, finding: 'unknown', evidence: null };
+    expect(settle(5, intentFor(unknown, 'late-unknown'), unknown).state).toBe('settled');
+    fixture.reopen();
+    expect(inspectKernelInputDisposition(fixture.db, first.receipt)).toBe('consumed');
+    expect(inspectKernelInputDisposition(fixture.db, second.receipt)).toBe('unknown');
+    expect(inspectKernelInputProofInDb(fixture.db, intent, false)).toEqual(receipt);
+
+    const accepted: ExecutionInputProof = {
+      ...consumed,
+      finding: 'accepted',
+      obligation: second.receipt,
+      selected: sibling,
+    };
+    expect(settle(6, intentFor(accepted, 'sibling-accepted'), accepted).state).toBe('settled');
+    expect(inspectKernelInputDisposition(fixture.db, second.receipt)).toBe('accepted');
+    const notSubmitted: ExecutionInputProof = {
+      kind: 'non-submission',
+      reason: 'removed-before-processing',
+      obligation: second.receipt,
+      selected: sibling,
+      boundary: 'receiver-read-back',
+      evidence: { ...evidence, ref: 'original-removal' },
+    };
+    expect(settle(7, intentFor(notSubmitted, 'removed-unprocessed'), notSubmitted).state).toBe(
+      'settled'
+    );
+    expect(inspectKernelInputDisposition(fixture.db, second.receipt)).toBe('non-submission');
+    const contradictsIntake: ExecutionInputProof = {
+      ...notSubmitted,
+      reason: 'refused-before-contact',
+      boundary: 'before-provider-contact',
+      evidence: { ...evidence, ref: 'contradictory-refusal' },
+    };
+    expect(
+      settle(9, intentFor(contradictsIntake, 'contradictory-refusal'), contradictsIntake).state
+    ).toBe('settled');
+    expect(inspectKernelInputDisposition(fixture.db, second.receipt)).toBe('unknown');
+    expect(inspectKernelInputDisposition(fixture.db, first.receipt)).toBe('consumed');
+
+    expect(() =>
+      fixture.db.sqlite
+        .prepare(`UPDATE control_execution_steps
+      SET invocation_json=json_set(invocation_json, '$.carriage.kernelInput.proof.finding', 'accepted')
+      WHERE execution_id=? AND step_id=?`)
+        .run(execution.ref.executionId, intent.requestId)
+    ).toThrow('Execution step identity is immutable');
+    expect(inspectKernelInputProofInDb(fixture.db, intent, true)).toEqual(receipt);
+  });
+
+  const scopedReleaseProofOrderingScenarios = [
+    'fence',
+    'handoff',
+    'fence with an unrelated unknown volume',
+    'fence with a disjoint volume writer still in flight',
+    'fence with an unbounded unknown writer',
+    'fence with an unbounded writer still in flight',
+  ] as const;
+  it.each(scopedReleaseProofOrderingScenarios)(
+    'applies scoped release when %s commits first',
+    (first) => {
+      const fixture = journalFixture();
+      const root: ExecutionJournalAdmission = {
+        ...fixture.execution,
+        definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+        exclusionRefs: ['turn:original', 'volume:still-writable'],
+      };
+      const grant: ExecutionGrant = {
+        attemptId: testEntityId('attempt', 'scoped-release'),
+        backendId: 'nanohost',
+        bindingRef: 'original-binding',
+        inputRef: 'original-package',
+        operationId: 'original-release',
+        execution: root.ref,
+        turnId: root.workId,
+        generation: 'original-generation',
+        deadline: '2026-11-21T10:00:00.000Z',
+      };
+      const proposed = (
+        id: number,
+        kind: ExecutionJournalIntent['control']['kind']
+      ): ExecutionJournalIntent => {
+        const base = fixture.intent(id);
+        return {
+          ...base,
+          execution: root,
+          control: {
+            ...base.control,
+            kind,
+            definitionVersion: root.definitionVersion,
+            attemptId: grant.attemptId,
+            operationId: grant.operationId,
+          },
+        };
+      };
+      const handoffKinds = [
+        'terminal-publication',
+        'output',
+        'evidence',
+        'outside-workspace-collection',
+      ] as const;
+      const unboundedWriter =
+        first === 'fence with an unbounded unknown writer' ||
+        first === 'fence with an unbounded writer still in flight';
+      const disjointWriter =
+        first === 'fence with an unrelated unknown volume' ||
+        first === 'fence with a disjoint volume writer still in flight';
+      const lateWriter = first.endsWith('still in flight');
+      const materialize = proposed(22, 'materialize');
+      const writer = {
+        ...materialize,
+        control: {
+          ...materialize.control,
+          operationId: unboundedWriter ? 'outstanding-create' : grant.operationId,
+          target: disjointWriter
+            ? { backendKind: 'nanohost', targetId: 'volume:still-writable', allocationRef: null }
+            : null,
+        },
+      };
+      const settleWriterUnknown = () => {
+        const current = readExecutionJournalRoot(fixture.db, root.ref);
+        settleExecutionJournalStep(fixture.db, {
+          ref: { execution: root.ref, stepId: writer.stepId },
+          expectedExecutionRevision: current.revision,
+          state: 'unknown',
+          outputRefs: [],
+          span: {
+            ...writer.span,
+            endTimeUnixNano: writer.span.startTimeUnixNano,
+            status: { code: 'ERROR' },
+          },
+          nextPhase: current.phase,
+          terminalCause: current.terminalCause,
+          exclusionRefs: current.exclusionRefs,
+        });
+      };
+      fixture.db.sqlite.transaction(() => {
+        const operations = [grant.operationId, ...handoffKinds.map((kind) => `original-${kind}`)];
+        if (unboundedWriter) operations.push(writer.control.operationId);
+        for (const [index, operationId] of operations.entries()) {
+          const step = proposed(10 + index, 'admit');
+          expect(
+            admitKernelSchedulerGrantInDb(
+              fixture.db,
+              { ...step, control: { ...step.control, operationId, invocationId: operationId } },
+              { ...grant, operationId },
+              () => true
+            ).state
+          ).toBe('settled');
+        }
+        const cancel = proposed(1, 'cancel');
+        if (unboundedWriter || disjointWriter) {
+          writeExecutionJournalIntent(fixture.db, writer);
+          if (!lateWriter) settleWriterUnknown();
+        }
+        const opened = writeExecutionJournalIntent(fixture.db, cancel);
+        const { revision } = readExecutionJournalRoot(fixture.db, root.ref);
+        settleExecutionJournalStep(fixture.db, {
+          ref: opened.ref,
+          expectedExecutionRevision: revision,
+          state: 'completed',
+          outputRefs: [],
+          span: {
+            ...cancel.span,
+            endTimeUnixNano: cancel.span.startTimeUnixNano,
+            status: { code: 'OK' },
+          },
+          nextPhase: 'closing',
+          terminalCause: 'user-cancelled',
+          exclusionRefs: root.exclusionRefs,
+        });
+      })();
+      const intentFor = (
+        key: string,
+        sourceOwner: string,
+        value: unknown,
+        operation = grant.operationId
+      ): ExecutionProofIntent => {
+        const occurrence = {
+          deploymentId: 'fixture-deployment',
+          sourceOwner,
+          verb: 'apply-execution-proof',
+          occurrenceKey: key,
+        } as const;
+        return {
+          ...occurrence,
+          requestId: storageRequestId(occurrence),
+          target: { ...grant, operationId: operation },
+          expectedGeneration: grant.generation,
+          inputDigest: sha256CanonicalJson(value),
+        };
+      };
+      const record = (
+        id: number,
+        evidence: Exclude<KernelExecutionEvidence, { kind: 'submission' }>
+      ) => {
+        const kind =
+          evidence.kind === 'fence'
+            ? 'fence'
+            : evidence.handoff.kind === 'terminal-publication'
+              ? 'terminal-publication'
+              : 'collect';
+        const proposal = proposed(id, kind);
+        return fixture.db.sqlite.transaction(() =>
+          commitKernelExecutionEvidenceInDb(
+            fixture.db,
+            {
+              ...proposal,
+              control: {
+                ...proposal.control,
+                operationId: evidence.intent.target.operationId,
+              },
+            },
+            evidence,
+            true,
+            () => true
+          )
+        )();
+      };
+      const fences = (
+        scope: string,
+        operation = grant.operationId
+      ): Extract<KernelExecutionEvidence, { kind: 'fence' }> => {
+        const proof = {
+          kind: 'fence',
+          fence: { backendId: grant.backendId, ref: `native:${scope}`, digest: 'a'.repeat(64) },
+          coveredScopeRefs: [scope],
+        } as const;
+        return {
+          version: 1,
+          kind: 'fence',
+          intent: intentFor(`${operation}:${scope}`, grant.backendId, proof, operation),
+          proof: { ...proof, coveredScopeRefs: [...proof.coveredScopeRefs] },
+        };
+      };
+      const addHandoffs = () => {
+        for (const [index, kind] of handoffKinds.entries()) {
+          const handoff = {
+            kind,
+            owner: { kind: 'workspace', workspaceId: testEntityId('ws', 'handoff-owner') },
+            ref: `workspace:${kind}`,
+            digest: 'b'.repeat(64),
+          } as const;
+          expect(
+            record(3 + index, {
+              version: 1,
+              kind: 'handoff',
+              intent: intentFor(kind, 'workspace', handoff, `original-${kind}`),
+              handoff,
+            }).state
+          ).toBe('settled');
+        }
+      };
+      const partial = proposed(7, 'release');
+      const release = (intent: ExecutionJournalIntent, revision: number, eligible = true) =>
+        fixture.db.sqlite.transaction(() =>
+          releaseKernelExecutionScopesInDb(fixture.db, intent, grant, revision, () => eligible)
+        )();
+
+      if (first !== 'handoff') expect(record(2, fences('turn:original')).state).toBe('settled');
+      else addHandoffs();
+      const before = readExecutionJournalRoot(fixture.db, root.ref);
+      const fence = fences('turn:original');
+      expect(
+        record(2, {
+          ...fence,
+          intent: {
+            ...fence.intent,
+            target: { ...grant, operationId: 'unadmitted-operation' },
+          },
+        })
+      ).toEqual({ state: 'conflict' });
+      expect(release(partial, before.revision)).toEqual({ state: 'unknown' });
+      if (first !== 'handoff') addHandoffs();
+      else expect(record(2, fences('turn:original')).state).toBe('settled');
+
+      expect(release(partial, before.revision)).toEqual({ state: 'conflict' });
+      const current = readExecutionJournalRoot(fixture.db, root.ref);
+      if (unboundedWriter) {
+        const decision = release(partial, current.revision);
+        if (lateWriter) fixture.db.sqlite.transaction(settleWriterUnknown)();
+        fixture.reopen();
+        expect(kernelSchedulerScopeIsHeld(fixture.db, ['turn:original'])).toBe(true);
+        expect(readExecutionJournalRoot(fixture.db, root.ref).exclusionRefs).toEqual(
+          root.exclusionRefs
+        );
+        expect(decision).toEqual({ state: 'unknown' });
+        expect(record(8, fences('turn:original', writer.control.operationId)).state).toBe(
+          'settled'
+        );
+        expect(
+          release(partial, readExecutionJournalRoot(fixture.db, root.ref).revision).state
+        ).toBe('settled');
+        fixture.reopen();
+        expect(kernelSchedulerScopeIsHeld(fixture.db, ['turn:original'])).toBe(false);
+        expect(kernelSchedulerScopeIsHeld(fixture.db, ['volume:still-writable'])).toBe(true);
+        return;
+      }
+      expect(release(partial, current.revision, false)).toEqual({ state: 'unknown' });
+      const partialReceipt = release(partial, current.revision);
+      expect(partialReceipt.state).toBe('settled');
+      if (lateWriter) fixture.db.sqlite.transaction(settleWriterUnknown)();
+      fixture.reopen();
+      expect(release(partial, current.revision, false)).toEqual(partialReceipt);
+      expect(release(partial, current.revision + 1, false)).toEqual({ state: 'conflict' });
+      expect(
+        release(
+          {
+            ...partial,
+            carriage: { ...partial.carriage, operation: 'changed-release' },
+          },
+          current.revision,
+          false
+        )
+      ).toEqual({ state: 'conflict' });
+      expect(readExecutionJournalRoot(fixture.db, root.ref)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'user-cancelled',
+        exclusionRefs: ['volume:still-writable'],
+      });
+      expect(kernelSchedulerScopeIsHeld(fixture.db, ['volume:still-writable'])).toBe(true);
+      expect(kernelSchedulerScopeIsHeld(fixture.db, ['turn:original', 'volume:disjoint'])).toBe(
+        false
+      );
+      expect(record(8, fences('volume:still-writable')).state).toBe('settled');
+      if (disjointWriter) {
+        expect(
+          release(proposed(9, 'release'), readExecutionJournalRoot(fixture.db, root.ref).revision)
+            .state
+        ).toBe('settled');
+        expect(readExecutionJournalRoot(fixture.db, root.ref)).toMatchObject({
+          phase: 'closed',
+          exclusionRefs: [],
+        });
+        return;
+      }
+      const diagnostic = proposed(21, 'observe');
+      const open = fixture.db.sqlite.transaction(() =>
+        writeExecutionJournalIntent(fixture.db, diagnostic)
+      )();
+      const pending = readExecutionJournalRoot(fixture.db, root.ref);
+      const final = proposed(9, 'release');
+      expect(release(final, pending.revision)).toEqual({ state: 'unknown' });
+      expect(readExecutionJournalRoot(fixture.db, root.ref).exclusionRefs).toEqual([
+        'volume:still-writable',
+      ]);
+      const ended = {
+        ref: open.ref,
+        expectedExecutionRevision: pending.revision,
+        outputRefs: [],
+        state: 'completed' as const,
+        span: {
+          ...diagnostic.span,
+          endTimeUnixNano: diagnostic.span.startTimeUnixNano,
+          status: { code: 'OK' as const },
+        },
+        terminalCause: 'late-diagnostic',
+        exclusionRefs: pending.exclusionRefs,
+      };
+      expect(() =>
+        fixture.db.sqlite.transaction(() =>
+          settleExecutionJournalStep(fixture.db, { ...ended, nextPhase: 'open' })
+        )()
+      ).toThrow('A closing Core scheduler execution cannot reopen.');
+      fixture.db.sqlite.transaction(() =>
+        settleExecutionJournalStep(fixture.db, { ...ended, nextPhase: 'closing' })
+      )();
+      const closeRevision = readExecutionJournalRoot(fixture.db, root.ref).revision;
+      const finalReceipt = release(final, closeRevision);
+      expect(finalReceipt.state).toBe('settled');
+      fixture.reopen();
+      expect(release(final, closeRevision, false)).toEqual(finalReceipt);
+      expect(readExecutionJournalRoot(fixture.db, root.ref)).toMatchObject({
+        phase: 'closed',
+        terminalCause: 'user-cancelled',
+        exclusionRefs: [],
+      });
+    }
+  );
+
+  it('preserves the image reconciliation outcome when its earlier abandonment cause differs', () => {
+    const f = journalFixture();
+    const original = f.intent();
+    const reconciliation = f.intent(2);
+    f.db.sqlite.transaction(() => {
+      const finish = (proposal: ExecutionJournalIntent, cause: string) => {
+        const invocation = writeExecutionJournalIntent(f.db, proposal);
+        settleExecutionJournalStep(f.db, {
+          ref: invocation.ref,
+          expectedExecutionRevision: readExecutionJournalRoot(f.db, f.execution.ref).revision,
+          state: 'failed',
+          outputRefs: [],
+          span: {
+            ...proposal.span,
+            endTimeUnixNano: proposal.span.startTimeUnixNano,
+            status: { code: 'ERROR' },
+          },
+          nextPhase: 'closing',
+          terminalCause: cause,
+          exclusionRefs: f.execution.exclusionRefs,
+        });
+      };
+      finish(original, 'Original image acquisition abandoned.');
+      finish(
+        {
+          ...reconciliation,
+          control: { ...reconciliation.control, kind: 'consume-receipt' },
+        },
+        'Original image acquisition outcome remains unknown.'
+      );
+    })();
+    f.reopen();
+    expect(readExecutionJournalRoot(f.db, f.execution.ref).terminalCause).toBe(
+      'Original image acquisition outcome remains unknown.'
+    );
+  });
+
+  it('keys a consumed receipt by the original binding, operation and sequence', () => {
+    const f = journalFixture();
+    const tuple = {
+      harnessBindingRef: 'original-binding',
+      operationId: 'original-operation',
+      sequence: 1,
+      resultFingerprint: 'a'.repeat(64),
+    };
+    const consumer = 'workspace:original-consumer';
+    const commit = (key: typeof tuple, owner: string) =>
+      controlStoreFor(f.db.sqlite).write(() =>
+        recordCoreHarnessConsumption(f.db, key, owner, new Date().toISOString())
+      );
+    commit(tuple, consumer);
+    commit(tuple, consumer);
+    f.reopen();
+    expect(readCoreHarnessConsumption(f.db, tuple)).toBe(consumer);
+    expect(() =>
+      readCoreHarnessConsumption(f.db, { ...tuple, resultFingerprint: 'b'.repeat(64) })
+    ).toThrow('retained consumer acknowledgement conflicts');
+    expect(() => commit(tuple, 'workspace:changed-consumer')).toThrow(
+      'consumer acknowledgement replay conflicts'
+    );
   });
 
   it('keeps a nested unknown child immutable when the parent completes and late inspection is linked', async () => {

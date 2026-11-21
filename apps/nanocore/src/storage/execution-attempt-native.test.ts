@@ -48,7 +48,7 @@ afterEach(async () => {
   });
 });
 
-function fixture(label: string) {
+function fixture(label: string, backendId = 'nanohost') {
   const root = mkdtempSync(join(tmpdir(), `openkit-attempt-owner-${label}-`));
   roots.push(root);
   const db = openCoreDb(root);
@@ -61,7 +61,7 @@ function fixture(label: string) {
   const turnId = `tu_00000000-0000-7000-8000-${label.padStart(12, '0')}`;
   const entry = createSchedulerAdmissionEntry(db, {
     queueEntryId: `queue-attempt-owner-${label}`,
-    backendId: 'nanohost',
+    backendId,
     triggerActor: actor,
     workspaceId,
     threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -85,6 +85,59 @@ const releaseProof = {
   integrationDrain: true,
   routesRevoked: true,
 } as const;
+
+it.each(['openai-agents', 'e2b'])('withholds %s attempt effects in v0.2.0', async (backendId) => {
+  const { db, entry } = fixture('10', backendId);
+  await expect(
+    createSchedulerExecutionAttempt(db, { entry, preparationInput: { admission: entry } })
+  ).rejects.toThrow('Execution backend effects are unavailable.');
+  expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('queued');
+  expect(db.sqlite.prepare('SELECT count(*) FROM scheduler_execution_attempts').pluck().get()).toBe(
+    0
+  );
+});
+
+it('does not turn a retained Agents API predecessor into a session-current cancel', async () => {
+  const { db, entry } = fixture('11');
+  const attempt = await createSchedulerExecutionAttempt(db, {
+    entry,
+    preparationInput: { admission: entry },
+  });
+  const nativeCancel = vi.fn();
+  const retainedPredecessor = {
+    ...attempt,
+    backendId: 'openai-agents',
+    operationId: 'original-predecessor-cancel',
+  };
+  expect(() => nativeCancel(schedulerExecutionCorrelation(retainedPredecessor))).toThrow(
+    'Execution backend effects are unavailable.'
+  );
+  expect(nativeCancel).not.toHaveBeenCalled();
+});
+
+it('requires a file-local admission with the original attempt scope', async () => {
+  const { db, entry, root } = fixture('12');
+  const attempt = await createSchedulerExecutionAttempt(db, {
+    entry,
+    preparationInput: { admission: entry },
+  });
+  const native = openCoreDb(root);
+  try {
+    expect(() =>
+      native.sqlite
+        .prepare('UPDATE scheduler_execution_attempts SET thread_id = ? WHERE attempt_id = ?')
+        .run('contradictory-thread', attempt.attemptId)
+    ).toThrow('FOREIGN KEY constraint failed');
+    expect(() =>
+      native.sqlite
+        .prepare('DELETE FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+        .run(entry.queueEntryId)
+    ).toThrow('FOREIGN KEY constraint failed');
+    expect(requireSchedulerExecutionAttempt(db, attempt.attemptId).threadId).toBe(entry.threadId);
+  } finally {
+    native.sqlite.close();
+  }
+});
 
 it('owns the accepted execution attempt lifecycle while the Main Core handle is read only', async () => {
   const { db, entry } = fixture('1');
@@ -229,6 +282,53 @@ it('rolls back the new attempt when admission acquisition fails inside the worke
   });
   expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('queued');
   expect(db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').all()).toEqual([]);
+});
+
+it('commits one attempt when two claims race and the winner loses its acknowledgement', async () => {
+  const { db, entry, root } = fixture('9');
+  const attemptIds = [
+    'attempt_00000000-0000-7000-8000-000000000091',
+    'attempt_00000000-0000-7000-8000-000000000092',
+  ];
+  const lostAcknowledgement = new Error('Simulated loss of the committed claim acknowledgement.');
+  const client = getControlStoreWorkerClient();
+  const apply = client.executionAttempt.bind(client);
+  const replies = vi.spyOn(client, 'executionAttempt').mockImplementation(async (...args) => {
+    const result = await apply(...args);
+    if (args[1].kind === 'create') throw lostAcknowledgement;
+    return result;
+  });
+  try {
+    const claims = await Promise.allSettled(
+      attemptIds.map((attemptId) =>
+        createSchedulerExecutionAttempt(db, {
+          entry,
+          attemptId,
+          preparationInput: { admission: entry },
+        })
+      )
+    );
+    expect(claims.every(({ status }) => status === 'rejected')).toBe(true);
+    const failures = claims.flatMap((claim) => (claim.status === 'rejected' ? [claim.reason] : []));
+    expect(failures.filter((reason) => reason === lostAcknowledgement)).toHaveLength(1);
+  } finally {
+    replies.mockRestore();
+  }
+
+  await shutdownControlStoreWorkerClient();
+  const reopened = openCoreDb(root);
+  dbs.push(reopened);
+  const rows = reopened.sqlite
+    .prepare('SELECT attempt_id AS id FROM scheduler_execution_attempts WHERE queue_entry_id = ?')
+    .all(entry.queueEntryId) as { id: string }[];
+  expect(rows).toHaveLength(1);
+  expect(attemptIds).toContain(rows[0]?.id);
+  expect(requireSchedulerExecutionAttempt(reopened, rows[0]!.id)).toMatchObject({
+    queueEntryId: entry.queueEntryId,
+    phase: 'open',
+    operationId: null,
+  });
+  expect(requireSchedulerAdmissionEntry(reopened, entry.queueEntryId).status).toBe('admitted');
 });
 
 it('refuses an admitted same-attempt successor when its queued predecessor fails', async () => {
