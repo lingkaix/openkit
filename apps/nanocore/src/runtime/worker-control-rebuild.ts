@@ -10,6 +10,8 @@ import type Database from 'better-sqlite3';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { readNanoHostObservation } from '../storage/nanohost-observation-reader.js';
+import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import type { StorageResult } from '../storage/storage-owner.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
@@ -17,6 +19,10 @@ import {
   type NanoHostExecutionAttemptRecord,
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
+import {
+  listWorkerBackendSessions,
+  readNanoHostWorkerRouteBinding,
+} from './worker-backend-session-records.js';
 import type {
   WorkerControlArtifactNotice,
   WorkerControlGateway,
@@ -47,7 +53,7 @@ export function rebuildWorkerControlGatewaySessions(
     query: (sqlite: Database.Database) => Value
   ) => StorageResult<'nanohost', Value>
 ): StorageResult<'nanohost', void> {
-  const plan = (sqlite: Database.Database) => planWorkerControlRestore(coreDb, { sqlite });
+  const plan = (sqlite: Database.Database) => planWorkerControlRestore(coreDb, { sqlite }, true);
   try {
     const observed = readNanoHost
       ? readNanoHost(plan)
@@ -62,13 +68,16 @@ export function rebuildWorkerControlGatewaySessions(
 
 function planWorkerControlRestore(
   coreDb: CoreDb,
-  owner: { readonly sqlite: Database.Database }
+  owner: { readonly sqlite: Database.Database },
+  admitted: boolean
 ): WorkerControlSessionRestoreInput[] {
   const now = new Date().toISOString();
-  const leases = [
-    ...listRestorableNanoHostExecutionAttempts(coreDb),
-    ...listTerminalControlLeases(coreDb, owner, now),
-  ];
+  const leases = admitted
+    ? listAdmittedWorkerControlLeases(coreDb, owner)
+    : [
+        ...listRestorableNanoHostExecutionAttempts(coreDb),
+        ...listTerminalControlLeases(coreDb, owner, now),
+      ];
   const planned: WorkerControlSessionRestoreInput[] = [];
   for (const lease of leases) {
     if (
@@ -92,7 +101,17 @@ function planWorkerControlRestore(
     if (
       lease.phase !== 'open' &&
       !getWorkerControlAcceptedFinalStatus(owner, lineage) &&
-      !hasPendingWorkerCancellationFinal(lease, now)
+      !hasPendingWorkerCancellationFinal(lease, now) &&
+      !(
+        admitted &&
+        lease.phase === 'closing' &&
+        lease.terminalCause === 'worker-final-status' &&
+        lease.fenceRef === null &&
+        lease.recoveryState === null &&
+        lease.heartbeatDeadline > now &&
+        lease.deadline &&
+        lease.deadline > now
+      )
     )
       continue;
     const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, lease.workspaceId);
@@ -122,6 +141,26 @@ function planWorkerControlRestore(
     });
   }
   return planned;
+}
+
+/** Native supplies the candidate tuples; the retained Core submission and phase still decide. */
+function listAdmittedWorkerControlLeases(
+  coreDb: CoreDb,
+  owner: { readonly sqlite: Database.Database }
+): NanoHostExecutionAttemptRecord[] {
+  const live: NanoHostExecutionAttemptRecord[] = [];
+  const terminal: NanoHostExecutionAttemptRecord[] = [];
+  for (const session of listWorkerBackendSessions(owner)) {
+    const original = readRetainedNanoHostSubmission(coreDb, session.attemptId);
+    if (!original || !readNanoHostWorkerRouteBinding(owner, original.lease.grant)) {
+      if (session.state === 'launching')
+        throw new Error('Native Worker Gateway restore lacks its original submission.');
+      continue;
+    }
+    const { attempt } = readNanoHostRecoveryLease(owner.sqlite, original.lease);
+    (attempt.phase === 'open' ? live : terminal).push(attempt);
+  }
+  return [...live, ...terminal];
 }
 
 /** Core supplies candidate placement. Only the admitted record owner can show final acceptance. */

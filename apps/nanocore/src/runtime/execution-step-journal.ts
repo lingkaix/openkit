@@ -1,10 +1,31 @@
+import { AgentEnvironmentCredentialDeclarationSchema } from '@openkit/config-schema';
 import type { ActorRef, WorkOwner } from '@openkit/protocol';
+import { z } from 'zod';
 import type { RepairCallOutcome } from '../storage/control-kernel-port.js';
 import type {
   KernelExecutionEvidence,
   KernelExecutionGrant,
   KernelInputStep,
 } from '../storage/control-kernel-proof-codecs.js';
+
+/** Bounded pre-AEP claim. The Work owner retains the original input bytes. */
+export const SchedulerPreparationClaimSchema = z.strictObject({
+  version: z.literal(1),
+  queueEntryId: z.string().min(1),
+  admissionHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  inputId: z.string().min(1),
+  inputDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  preparationDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  credential: z
+    .strictObject({
+      agentId: z.string().min(1),
+      declaration: AgentEnvironmentCredentialDeclarationSchema.refine(
+        (value) => value.id === 'security_honey_inbound'
+      ),
+    })
+    .nullable(),
+});
+export type SchedulerPreparationClaim = z.infer<typeof SchedulerPreparationClaimSchema>;
 
 /** Owner-qualified existing execution identity; this reference grants no authority. */
 export interface ExecutionJournalRef {
@@ -87,6 +108,8 @@ export interface ExecutionInvocationCarriage {
   readonly requestId: string;
   readonly sequence: number | null;
   readonly bindingRef: string | null;
+  /** Original Work reference and the bounded pre-AEP credential declaration. */
+  readonly schedulerPreparation?: SchedulerPreparationClaim | undefined;
   /** Exact original scheduler operation grant retained before effects can begin. */
   readonly kernelGrant?: KernelExecutionGrant | undefined;
   /** Bounded terminal usage joined to the original repair Call and Audit by the kernel step. */

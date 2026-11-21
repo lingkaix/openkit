@@ -101,6 +101,7 @@ import {
   ControlGoalInputSchema,
 } from '../runtime/goal-codecs.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
+import type { AdmittedNanoHostAttemptRecovery } from '../runtime/nanohost-attempt-recovery.js';
 import { ControlPendingCommandResultSchema } from '../runtime/pending-request-codecs.js';
 import type { ControlPendingCommandResult } from '../runtime/pending-requests.js';
 import {
@@ -171,6 +172,7 @@ import {
 import {
   type ControlScalarText,
   ControlScalarTextSchema,
+  commandInputHash,
   readControlScalarText,
 } from './control-store-input.js';
 import {
@@ -248,6 +250,7 @@ import {
   NanoHostEpochKernelReplySchema,
 } from './nanohost-epoch-kernel-codecs.js';
 import type { NanoHostEpochInvalidation, NanoHostEpochReceipt } from './nanohost-port.js';
+import { NanoHostWorkerRecoveryState } from './nanohost-recovery-native.js';
 import {
   type ControlPrivateWorkspaceInput,
   ControlPrivateWorkspaceInputSchema,
@@ -834,6 +837,26 @@ export type NanoHostLocalWorkerStorageInput = Exclude<
   { kind: 'purge-pending' }
 >;
 
+const nanoHostRecoveryClassification = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('arm-reconnect'),
+    classifiedAt: z.iso.datetime({ precision: 3 }),
+  }),
+  z.strictObject({ kind: z.literal('needs-evidence') }),
+]);
+
+const nanoHostRecoveryClassificationInput = z.strictObject({
+  dataRoot: z.string().min(1),
+  coreIdentity: z.string().regex(/^\d+:\d+$/),
+  attemptId: z.string().min(1),
+  expectedPhase: z.enum(['open', 'closing']),
+  observationHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  expectedSession: ControlBackendSessionResultSchema,
+  expectedRecovery: NanoHostWorkerRecoveryState,
+  observedAt: z.iso.datetime({ precision: 3 }),
+  classification: nanoHostRecoveryClassification,
+});
+
 const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('transport'), input: ControlNanoHostTransportInputSchema }),
   z.strictObject({
@@ -861,6 +884,10 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
     ),
   }),
   z.strictObject({
+    kind: z.literal('recovery-classification'),
+    input: nanoHostRecoveryClassificationInput,
+  }),
+  z.strictObject({
     kind: z.literal('worker-storage-binding'),
     input: ControlWorkerStorageInputSchema.refine((input) => input.kind !== 'purge-pending'),
   }),
@@ -879,6 +906,10 @@ export type NanoHostOwnerMutation =
     }
   | { readonly kind: 'worker-image'; readonly input: NanoHostLocalWorkerImageInput }
   | { readonly kind: 'backend-session'; readonly input: NanoHostLocalBackendSessionInput }
+  | {
+      readonly kind: 'recovery-classification';
+      readonly input: z.infer<typeof nanoHostRecoveryClassificationInput>;
+    }
   | { readonly kind: 'worker-storage-binding'; readonly input: NanoHostLocalWorkerStorageInput };
 
 const nanoHostTargetResultSchema = z.discriminatedUnion('state', [
@@ -908,6 +939,10 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),
   z.strictObject({ kind: z.literal('backend-session'), value: ControlBackendSessionResultSchema }),
   z.strictObject({
+    kind: z.literal('recovery-classification'),
+    value: ControlBackendSessionResultSchema,
+  }),
+  z.strictObject({
     kind: z.literal('worker-storage-binding'),
     value: ControlWorkerStorageResultSchema,
   }),
@@ -920,6 +955,33 @@ export type NanoHostOwnerMutationResult =
       readonly kind: 'worker-storage-binding';
       readonly value: import('../runtime/worker-storage-binding-records.js').WorkerStorageBinding;
     };
+
+/** An execution close may carry one exact observation from the admitted Native file. */
+const nanoHostRecoveryClose = z.strictObject({
+  coreOpeningRequestId: z.number().int().nonnegative().safe(),
+  ownerIdentity: z.string().regex(/^\d+:\d+$/),
+  expectedPhase: z.enum(['open', 'closing', 'closed']),
+  observationHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+});
+
+/** A close replay compares the original placement and Native observation across Core phase changes. */
+export function hashNanoHostRecoveryObservation({
+  lease,
+  session,
+  proof,
+}: Pick<Parameters<AdmittedNanoHostAttemptRecovery['close']>[0], 'lease' | 'session' | 'proof'>) {
+  const { queueEntryId, workspaceId, threadId, agentSessionId, createdAt } = lease.attempt;
+  return commandInputHash({
+    grant: lease.grant,
+    queueEntryId,
+    workspaceId,
+    threadId,
+    agentSessionId,
+    createdAt,
+    session,
+    proof,
+  });
+}
 
 const nanoHostOwnerOperation = { operation: z.literal('nanohost-owner') };
 /** Existing domain refusals on the captured NanoHost wire operation. */
@@ -1486,6 +1548,7 @@ export type ControlWorkerCommand =
           readonly input: ControlExecutionAttemptInput;
           readonly content?: ArrayBuffer;
           readonly simulatorCoreIdentity?: string;
+          readonly nanoHostRecoveryClose?: z.infer<typeof nanoHostRecoveryClose>;
         }
       | {
           readonly operation: 'worker-control-final-status';
@@ -3190,7 +3253,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     const parsed = ControlExecutionAttemptInputSchema.safeParse(value.input);
     if (
       !parsed.success ||
-      !exactFields(value, [...scoped, 'input'], ['content', 'simulatorCoreIdentity'])
+      !exactFields(
+        value,
+        [...scoped, 'input'],
+        ['content', 'simulatorCoreIdentity', 'nanoHostRecoveryClose']
+      )
     )
       return false;
     if (
@@ -3200,6 +3267,13 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
           .string()
           .regex(/^\d+:\d+$/)
           .safeParse(value.simulatorCoreIdentity).success)
+    )
+      return false;
+    if (
+      value.nanoHostRecoveryClose !== undefined &&
+      (parsed.data.kind !== 'closing' ||
+        parsed.data.requireUnsubmitted !== undefined ||
+        !nanoHostRecoveryClose.safeParse(value.nanoHostRecoveryClose).success)
     )
       return false;
     return (

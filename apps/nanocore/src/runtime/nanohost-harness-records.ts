@@ -20,6 +20,8 @@ import { TurnStartValidationError } from '../operation-error.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import { applyNanoHostWorkerSubmission } from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import { AgentSessionRetainedStorageSchema } from '../storage/workspace-file-records.js';
 import {
   readCoreHarnessConsumption,
@@ -36,6 +38,7 @@ import {
 } from './nanohost-compatibility.js';
 import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identity.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
+import type { NanoHostSubmissionPlacement } from './worker-backend-session-records.js';
 import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import { hashWorkerRouteToken } from './worker-control-gateway.js';
 import {
@@ -1303,12 +1306,13 @@ export function prepareNanoHostHarnessOperation(
 /** Queues the prepared identity without credentials or unconsumed receipt retirement. */
 export function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
-  input: QueueNanoHostHarnessOperationInput
+  input: QueueNanoHostHarnessOperationInput,
+  owner: NanoHostHarnessDb = coreDb
 ): number {
   const body = requireHarnessOperationBody(input.operation, input.body);
 
   try {
-    const harness = requireHarness(coreDb, input.harnessInstanceId);
+    const harness = requireHarness(owner, input.harnessInstanceId);
     if (!['idle', 'settled'].includes(harness.operation_state)) {
       throw new Error('NanoHost Harness already has an unsettled operation.');
     }
@@ -1320,9 +1324,7 @@ export function queueNanoHostHarnessOperation(
     ) {
       throw new Error('NanoHost Harness is not accepting new work.');
     }
-    requireNanoHostObservation(coreDb, (sqlite) =>
-      requireOperationLineage(coreDb, harness, input.operation, body, { sqlite })
-    );
+    requireOperationLineage(coreDb, harness, input.operation, body, owner);
     const command = input.prepared.command;
     const durableBody = redactHarnessWireBody(input.operation, input.prepared.wireBody);
     const commandBodyJson = canonicalJson(durableBody);
@@ -1341,7 +1343,7 @@ export function queueNanoHostHarnessOperation(
         'NanoHost Harness prepared identity conflicts with current binding or sequence.'
       );
     }
-    const update = coreDb.sqlite
+    const update = owner.sqlite
       .prepare(
         `UPDATE harness_instance_records
          SET operation_state = 'queued', operation_id = ?,
@@ -1373,12 +1375,20 @@ export function queueNanoHostHarnessOperation(
  */
 export function dispatchNanoHostHarnessOperation(
   coreDb: CoreDb,
-  input: DispatchNanoHostHarnessOperationInput
+  input: DispatchNanoHostHarnessOperationInput,
+  admitted?: {
+    readonly owner: NanoHostHarnessDb;
+    readonly submission?: {
+      readonly placement: NanoHostSubmissionPlacement;
+      readonly sessionCompatibilityKey?: string;
+    };
+  }
 ): NanoHostHarnessCommand | null {
+  const owner = admitted?.owner ?? coreDb;
   requireIdentity(input.sandboxIntegrationBindingRef, 'Sandbox Integration binding');
 
   try {
-    const integration = coreDb.sqlite
+    const integration = owner.sqlite
       .prepare(
         'SELECT sandbox_runtime_id AS sandboxRuntimeId FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?'
       )
@@ -1386,7 +1396,7 @@ export function dispatchNanoHostHarnessOperation(
     if (!integration) {
       throw new Error('NanoHost Sandbox Integration binding is missing or stale.');
     }
-    const harness = coreDb.sqlite
+    const harness = owner.sqlite
       .prepare(
         `SELECT *, schema_version AS schemaVersion FROM harness_instance_records
          WHERE sandbox_runtime_id = ? AND operation_state = 'queued'
@@ -1411,7 +1421,7 @@ export function dispatchNanoHostHarnessOperation(
     requireConsumedHarnessResult(coreDb, harness);
     const now = input.now?.() ?? new Date().toISOString();
     if (Date.parse(now) >= Date.parse(harness.updated_at) + NANO_HOST_HARNESS_RESULT_BUDGET_MS) {
-      setHarnessUnknown(coreDb, harness.harness_instance_id, now, 'queued');
+      setHarnessUnknown(owner, harness.harness_instance_id, now, 'queued');
 
       return null;
     }
@@ -1432,38 +1442,52 @@ export function dispatchNanoHostHarnessOperation(
     // Steer's original queue admission is exact. The existing live producer rechecks current authority
     // before materializing user text; it must also observe a stale queued target and retain refusal.
     // Marking this reference dispatched grants no native contact without that authenticated producer.
-    if (operation !== 'turn.steer')
-      requireNanoHostObservation(coreDb, (sqlite) =>
-        requireOperationLineage(coreDb, harness, operation, body, { sqlite })
-      );
+    if (harness.operation !== 'turn.steer')
+      requireOperationLineage(coreDb, harness, harness.operation, body, owner);
     if (harness.operation === 'turn.start') {
       const attemptId = body.leaseId as string;
-      const lease = coreDb.sqlite
-        .prepare(
-          'SELECT binding_ref AS bindingRef FROM scheduler_execution_attempts WHERE attempt_id = ?'
-        )
-        .get(attemptId) as { readonly bindingRef: string } | undefined;
-      if (!lease) throw new Error('NanoHost Harness Turn lease is missing.');
-      bindNanoHostAttemptRouteTokenHashes(coreDb, {
-        attemptId,
-        ...(input.now ? { now: input.now } : {}),
-        sandboxBindingRef: lease.bindingRef,
-        workerCapabilityTokenHash: requireSha256(
-          durableBody.capabilityTokenHash,
-          'capability token hash'
-        ),
-        workerControlTokenHash: requireSha256(
-          durableBody.workerControlTokenHash,
-          'worker control token hash'
-        ),
-        workerInferenceTokenHash: requireSha256(
-          durableBody.inferenceTokenHash,
-          'inference token hash'
-        ),
-      });
+      if (admitted) {
+        const original = readRetainedNanoHostSubmission(coreDb, attemptId);
+        if (!admitted.submission || !original)
+          throw new Error('NanoHost Harness requires the original admitted submission decision.');
+        applyNanoHostWorkerSubmission(owner.sqlite, {
+          ...admitted.submission,
+          lease: original.lease,
+          command: {
+            harnessInstanceId: harness.harness_instance_id,
+            operationId: harness.operation_id,
+            sequence: harness.operation_sequence,
+          },
+          observedAt: now,
+        });
+      } else {
+        const lease = coreDb.sqlite
+          .prepare(
+            'SELECT binding_ref AS bindingRef FROM scheduler_execution_attempts WHERE attempt_id = ?'
+          )
+          .get(attemptId) as { readonly bindingRef: string } | undefined;
+        if (!lease) throw new Error('NanoHost Harness Turn lease is missing.');
+        bindNanoHostAttemptRouteTokenHashes(coreDb, {
+          attemptId,
+          ...(input.now ? { now: input.now } : {}),
+          sandboxBindingRef: lease.bindingRef,
+          workerCapabilityTokenHash: requireSha256(
+            durableBody.capabilityTokenHash,
+            'capability token hash'
+          ),
+          workerControlTokenHash: requireSha256(
+            durableBody.workerControlTokenHash,
+            'worker control token hash'
+          ),
+          workerInferenceTokenHash: requireSha256(
+            durableBody.inferenceTokenHash,
+            'inference token hash'
+          ),
+        });
+      }
     }
     if (harness.operation === 'session.open') {
-      const bound = coreDb.sqlite
+      const bound = owner.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
            SET inference_loopback_credential_digest = ?, capability_loopback_credential_digest = ?,
@@ -1491,7 +1515,7 @@ export function dispatchNanoHostHarnessOperation(
         throw new Error('NanoHost AgentSession loopback credentials were already delivered.');
       }
     }
-    const update = coreDb.sqlite
+    const update = owner.sqlite
       .prepare(
         `UPDATE harness_instance_records
          SET operation_state = 'dispatched', result_json = NULL, result_fingerprint = NULL,

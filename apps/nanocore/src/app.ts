@@ -78,7 +78,11 @@ import {
   requireAdministratorOperation,
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
-import { createBootReadinessSnapshot, scopeAdmissionFailures } from './bootstrap/readiness.js';
+import {
+  createBootReadinessSnapshot,
+  isScopeAdmitted,
+  scopeAdmissionFailures,
+} from './bootstrap/readiness.js';
 import { restoreWorkspaceRetirementAdmission } from './bootstrap/workspace-recovery.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import {
@@ -188,6 +192,7 @@ import {
   executeCapturedPendingCall,
   prepareCapturedPendingCall,
 } from './runtime/captured-pending-call.js';
+import { listOpenSchedulerExecutionAttempts } from './runtime/execution-attempt-records.js';
 import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempts.js';
 import { createGoalCoordinator, type GoalWorkerCandidate } from './runtime/goal-coordinator.js';
 import { advanceGoalForThread } from './runtime/goal-native.js';
@@ -260,6 +265,8 @@ import {
   type CommunicationOwnerBinding,
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
+  type NanoHostOwnerBinding,
+  readAdmittedNanoHostAttempt,
 } from './storage/control-store-worker-client.js';
 import { readContainmentEvidenceHandoff } from './storage/core-journal-native.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
@@ -505,6 +512,7 @@ type NanoHostAppStorage = StorageResult<
   AdmittedNanoHostTransportStorage & {
     readonly dataRoot: string;
     readonly enrollTransport?: import('./auth/nanohost-operations.js').NanoHostAdministratorEnroll;
+    readonly owner: NanoHostOwnerBinding;
   }
 >;
 
@@ -683,6 +691,40 @@ export async function prepareNanoHostOwner(
         },
       }
     : owner;
+}
+
+/** Captures the exact Native restart windows from the same selection used by Worker routes. */
+export function readNanoHostRestartCensus(
+  coreDb: CoreDb,
+  storage: NanoHostAppStorage,
+  observedAt = new Date().toISOString()
+) {
+  if (storage.state !== 'ready') return storage;
+  return storage.value.owner.read((sqlite) =>
+    sqlite.transaction(() =>
+      listOpenSchedulerExecutionAttempts(coreDb).flatMap((attempt) => {
+        if (
+          attempt.backendId !== 'nanohost' ||
+          attempt.phase !== 'open' ||
+          !attempt.deadline ||
+          attempt.deadline <= observedAt ||
+          !isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)
+        )
+          return [];
+        const { lease, proof, session } = readAdmittedNanoHostAttempt(coreDb, sqlite, attempt);
+        if (
+          proof.recoveryState !== 'awaiting-reconnect' ||
+          !proof.recoveryDeadline ||
+          proof.recoveryDeadline <= observedAt ||
+          session.state !== 'launching' ||
+          session.workspaceHandoffState !== 'complete' ||
+          session.physicalCleanedAt !== null
+        )
+          return [];
+        return [lease];
+      })
+    )()
+  );
 }
 
 /** Input used to create the default process vault backend for an app instance. */

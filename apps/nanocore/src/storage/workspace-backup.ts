@@ -116,6 +116,7 @@ import {
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
+  readAdmittedNanoHostAttempt,
   type WorkspaceFreezeAdmission,
   type WorkspaceFrozenAdmission,
 } from './control-store-worker-client.js';
@@ -286,26 +287,23 @@ function readNativeWorkspaceObstructions(
         )
         .all(workspaceId) as { schemaVersion: number; id: string; threadId: string }[];
       for (const row of bindings) readRetainedV1(row, () => undefined);
-      // Core retains the liveness marker through K7. Only an exact cleaned Native tuple clears it.
+      // A terminal Core row alone does not prove release of a submitted Native placement.
       const unproved = (
         core.sqlite
           .prepare(
-            "SELECT attempt_id FROM scheduler_execution_attempts WHERE workspace_id=? AND phase='closed' AND recovery_state='needs-evidence'"
+            `SELECT attempt_id FROM scheduler_execution_attempts WHERE workspace_id=?
+             AND phase='closed' AND disposition <> 'not_accepted'`
           )
           .pluck()
           .all(workspaceId) as string[]
       ).some((id) => {
         const attempt = requireSchedulerExecutionAttempt(core, id);
-        const session = getWorkerBackendSession({ sqlite }, id);
+        if (attempt.backendId !== 'nanohost') return false;
+        const { session } = readAdmittedNanoHostAttempt(core, sqlite, attempt);
         return (
-          !session ||
           session.state !== 'cleaned' ||
           session.physicalCleanedAt === null ||
-          session.workspaceId !== attempt.workspaceId ||
-          session.threadId !== attempt.threadId ||
-          session.turnId !== attempt.turnId ||
-          session.agentSessionId !== attempt.agentSessionId ||
-          session.packageSnapshotId !== attempt.inputRef
+          session.workspaceHandoffState !== 'complete'
         );
       });
       return { sessions, storage, bindings, unproved };

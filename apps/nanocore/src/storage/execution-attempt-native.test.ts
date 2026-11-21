@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { afterEach, expect, it, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
@@ -153,7 +154,18 @@ it('owns the accepted execution attempt lifecycle while the Main Core handle is 
     preparationInput,
     now: () => '2026-11-01T00:00:00.000Z',
   });
-  expect(attempt.preparationInputJson).toBe(JSON.stringify(preparationInput));
+  const claim = db.sqlite
+    .prepare(`SELECT json_extract(invocation_json, '$.carriage.schedulerPreparation')
+    FROM control_execution_steps WHERE execution_id=? AND step_id='claim'`)
+    .pluck()
+    .get(`scheduler-lifecycle:${attempt.attemptId}`) as string;
+  expect(JSON.parse(claim)).toMatchObject({
+    queueEntryId: entry.queueEntryId,
+    admissionHash: entry.inputHash,
+    inputDigest: entry.inputRef.digest,
+    preparationDigest: sha256Hex(JSON.stringify(preparationInput)),
+  });
+  expect(attempt.preparationInputJson).not.toContain('retainedContext');
   expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('admitted');
   await bindSchedulerExecutionAttemptSession(db, {
     attemptId: attempt.attemptId,
@@ -217,6 +229,13 @@ it('owns the accepted execution attempt lifecycle while the Main Core handle is 
       now: () => '2026-11-01T00:00:06.000Z',
     })
   ).toEqual(closed);
+  await expect(
+    closeSchedulerExecutionAttemptWithFence(db, {
+      correlation,
+      proof: releaseProof,
+      fenceRef: 'changed-fence',
+    })
+  ).rejects.toThrow('Attempt release has unresolved handoff or fencing proof.');
   expect(db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').get()).toEqual(
     beforeReplay
   );
@@ -282,6 +301,11 @@ it('rolls back the new attempt when admission acquisition fails inside the worke
   });
   expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('queued');
   expect(db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').all()).toEqual([]);
+  expect(
+    db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id = ?')
+      .get('scheduler-lifecycle:attempt_00000000-0000-7000-8000-000000000003')
+  ).toBeUndefined();
 });
 
 it('commits one attempt when two claims race and the winner loses its acknowledgement', async () => {

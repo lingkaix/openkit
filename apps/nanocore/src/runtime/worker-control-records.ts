@@ -26,6 +26,9 @@ import type Database from 'better-sqlite3';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 import {
   appendWorkObservation,
   appendWorkObservationChunk,
@@ -769,9 +772,51 @@ export function getWorkerControlAcceptedFinalStatus(
  */
 export async function waitForWorkerControlFinalStatus(
   coreDb: CoreDb,
-  input: WaitForWorkerControlFinalStatusInput
+  input: WaitForWorkerControlFinalStatusInput,
+  readNanoHost?: <Value>(
+    query: (sqlite: Database.Database) => Value
+  ) => StorageResult<'nanohost', Value>
 ): Promise<AcceptedWorkerFinalStatus> {
   for (;;) {
+    if (readNanoHost) {
+      const original = readRetainedNanoHostSubmission(coreDb, input.attemptId);
+      const attempt = original?.lease.attempt;
+      if (
+        !original ||
+        !attempt ||
+        !sameWorkerControlLineage(input.lineage, {
+          workspaceId: attempt.workspaceId,
+          threadId: attempt.threadId,
+          turnId: attempt.turnId,
+          agentSessionId: attempt.agentSessionId,
+          packageSnapshotId: attempt.inputRef,
+          requestId: original.requestId,
+        })
+      )
+        throw new Error('Worker completion lease does not match the exact durable lineage.');
+      const result = readNanoHost((sqlite) => ({
+        accepted: getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage),
+        native: readNanoHostRecoveryLease(sqlite, original.lease).attempt,
+      }));
+      if (result.state !== 'ready') throw new Error('NanoHost completion storage is unavailable.');
+      if (result.value.accepted) return result.value.accepted;
+      const now = new Date().toISOString();
+      if (
+        attempt.phase !== 'open' &&
+        attempt.terminalCause !== 'worker-final-status' &&
+        !hasPendingWorkerCancellationFinal(result.value.native, now)
+      ) {
+        const cause =
+          attempt.terminalCause === 'native-liveness-expired' ? ' (native-liveness-expired)' : '';
+        throw new Error(
+          `Worker lease became ${attempt.phase} before durable final status${cause}.`
+        );
+      }
+      if (original.lease.grant.deadline <= now)
+        throw new Error('Worker lease expired before durable final status.');
+      await delay(WORKER_FINAL_STATUS_POLL_INTERVAL_MS);
+      continue;
+    }
     const lease = coreDb.sqlite
       .prepare(
         `SELECT phase, deadline, terminal_cause AS terminalCause,

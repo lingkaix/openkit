@@ -24,6 +24,7 @@ import type {
 } from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
+  canonicalJsonText,
   type Item,
   KernelAuditEventSchema,
   writeRetainedV1,
@@ -31,7 +32,12 @@ import {
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { prepareCommunicationOwner } from '../app.js';
+import {
+  prepareCommunicationOwner,
+  prepareNanoHostOwner,
+  readNanoHostRestartCensus,
+} from '../app.js';
+import { observeAppUpdatePreflight } from '../app-update/preflight.js';
 import { auditEventFromRow, listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
 import type { ControlNanoHostTransportInput } from '../auth/nanohost-transport-codecs.js';
 import { listNanoHostTransportTokenRecords } from '../auth/nanohost-transport-token-store.js';
@@ -52,9 +58,17 @@ import { createOperationInvocation } from '../operation-composition.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { readPermissionDecisionRowV1 } from '../policy/retained-records-v1.js';
 import {
+  bindSchedulerExecutionAttemptSession,
   createSchedulerExecutionAttempt,
+  finalizeSchedulerExecutionAttemptInput,
+  recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
+import {
+  admitKernelSchedulerGrantInDb,
+  CORE_SCHEDULER_EXECUTION_DEFINITION,
+} from '../runtime/execution-journal.js';
+import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
 import { stageSchedulerStartInput } from '../runtime/scheduler-input-staging.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { prepareWorkerStorageContributor } from '../runtime/worker-storage-binding-records.js';
@@ -81,6 +95,7 @@ import { commandInputHash, frameControlScalarText } from './control-store-input.
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
+  readAdmittedNanoHostAttempt,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import {
@@ -1690,6 +1705,266 @@ describe('admitted NanoHost owner worker', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it('joins the restart window and preflight hold to the original Core grant and current Native opening', async () => {
+    const workspaceId = allocateEntityId('ws');
+    const threadId = allocateEntityId('th');
+    const turnId = allocateEntityId('tu');
+    const agentSessionId = allocateEntityId('as');
+    const attemptId = allocateEntityId('attempt');
+    const inputRef = 'joined-recovery-package';
+    const bindingRef = 'joined-recovery-binding';
+    const operationId = commandInputHash({ attemptId, inputRef, operation: 'submit' });
+    const started = new Date().toISOString();
+    const now = () => started;
+    const f = await nanoHostWorkerFixture();
+    const core = openCoreDb(f.root);
+    nativeHandles.push(core);
+    const ownerUserId = ensureLocalUser(core);
+    recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId });
+    const entry = createSchedulerAdmissionEntry(core, {
+      backendId: 'nanohost',
+      queueEntryId: 'joined-recovery-queue',
+      triggerActor: { kind: 'user', id: ownerUserId },
+      requestedAgentId: 'agent_worker',
+      workspaceId,
+      threadId,
+      turnId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'The original admitted input'),
+    });
+    createSchedulerExecutionAttempt(core, {
+      entry,
+      attemptId,
+      preparationInput: { admission: entry },
+      now,
+    });
+    bindSchedulerExecutionAttemptSession(core, { attemptId, agentSessionId, now });
+    finalizeSchedulerExecutionAttemptInput(core, { attemptId, inputRef, bindingRef, now });
+    const attempt = recordSchedulerExecutionOperation(core, {
+      attemptId,
+      operationId,
+      submission: true,
+      now,
+    });
+    if (!attempt.deadline) throw new Error('Fixture did not submit its exact attempt.');
+    const grant = {
+      execution: { owner: { kind: 'server' as const }, executionId: attemptId },
+      backendId: 'nanohost',
+      operationId,
+      attemptId,
+      turnId,
+      inputRef,
+      bindingRef,
+      generation: '1',
+      deadline: attempt.deadline,
+    };
+    const recoveryDeadline = new Date(
+      Math.min(Date.parse(grant.deadline), Date.parse(started) + 300_000)
+    ).toISOString();
+    const startupDeadline = new Date(Date.parse(started) + 15_000).toISOString();
+    const recovery = {
+      version: 1,
+      sessionCompatibilityKey: 'joined-worker',
+      startupDeadline,
+      heartbeatDeadline: startupDeadline,
+      heartbeatTimeoutMs: 15_000,
+      lastAcceptedHeartbeatAt: started,
+      lastWorkerSequence: 1,
+      workerProcessKeyHash: 'a'.repeat(43),
+      recoveryState: null,
+      recoveryDeadline: null,
+    };
+    const seed = () => {
+      const sqlite = new Database(f.path, { fileMustExist: true });
+      try {
+        sqlite
+          .prepare(`INSERT INTO worker_backend_sessions (
+          attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+          backend_kind, deployment_id, backend_session_id, staging_directory_ref,
+          workspace_handoff_state, state, created_at, updated_at, runtime_target_id,
+          origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, worker_route_binding_json,
+          worker_recovery_json
+        ) VALUES (?, ?, ?, ?, ?, ?, 'openshell', ?, 'joined-backend', 'joined-staging',
+                  'complete', 'launching', ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            attemptId,
+            workspaceId,
+            threadId,
+            turnId,
+            agentSessionId,
+            inputRef,
+            readDataRootLayoutMarker(f.root).deploymentId,
+            started,
+            started,
+            nanoHostTarget.targetId,
+            nanoHostReady.physicalEpoch,
+            JSON.stringify({ imageRef: 'registry.invalid/worker' }),
+            bindingRef,
+            canonicalJsonText({
+              version: 1,
+              operationId,
+              generation: '1',
+              deadline: grant.deadline,
+              control: 'a'.repeat(64),
+              inference: 'b'.repeat(64),
+              capability: 'c'.repeat(64),
+              harnessInstanceId: 'joined-harness',
+              harnessOperationId: 'd'.repeat(64),
+              harnessSequence: 1,
+            }),
+            canonicalJsonText(recovery)
+          );
+      } finally {
+        sqlite.close();
+      }
+    };
+    await f.writer.closeServerOwner(f.root, 'nanohost');
+    seed();
+    const selected = await prepareNanoHostOwner(core, f.serving);
+    if (selected.state !== 'ready') throw new Error('Expected the acknowledged NanoHost owner.');
+    expect(readNanoHostRestartCensus(core, selected, started)).toEqual(nanoHostHeld);
+
+    const rootSpan = {
+      traceId: '1'.repeat(32),
+      spanId: '1'.repeat(16),
+      flags: 1,
+      name: 'Joined worker attempt',
+      kind: 'INTERNAL' as const,
+      startTimeUnixNano: BigInt(Date.parse(started)) * 1_000_000n,
+      endTimeUnixNano: null,
+      status: { code: 'UNSET' as const },
+      attributes: [],
+      droppedAttributesCount: 0,
+      events: [],
+      droppedEventsCount: 0,
+      links: [],
+      droppedLinksCount: 0,
+      instrumentationScope: { name: 'openkit.fixture', attributes: [], droppedAttributesCount: 0 },
+      resource: { attributes: [], droppedAttributesCount: 0 },
+    };
+    const proposal: ExecutionJournalIntent = {
+      execution: {
+        ref: grant.execution,
+        definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+        workId: turnId,
+        fingerprint: entry.inputHash,
+        exclusionRefs: [`turn:${turnId}`],
+        span: rootSpan,
+      },
+      stepId: 'original-submission',
+      parentStepId: null,
+      parent: null,
+      inspectedStep: null,
+      carriage: { operation: 'turn.start', requestId: operationId, sequence: null, bindingRef },
+      control: {
+        definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+        kind: 'admit',
+        target: null,
+        workId: turnId,
+        operationId,
+        attemptId,
+        invocationId: operationId,
+        actor: entry.triggerActor,
+        inputRefs: [inputRef],
+        outputRefs: [],
+        fingerprint: entry.inputHash,
+        permittingDecisionRef: null,
+        authorityRefs: [],
+        retryDeclarationRef: null,
+        retryPermitted: false,
+        deadlineUnixNano: BigInt(Date.parse(grant.deadline)) * 1_000_000n,
+        physicalFenceRefs: [],
+      },
+      span: { ...rootSpan, spanId: '2'.repeat(16), parentSpanId: rootSpan.spanId },
+    };
+    expect(
+      core.sqlite.transaction(() =>
+        admitKernelSchedulerGrantInDb(core, proposal, grant, () => true, true)
+      )()
+    ).toMatchObject({ state: 'settled', receipt: grant });
+    expect(readNanoHostRestartCensus(core, selected, started)).toEqual({
+      state: 'ready',
+      value: [],
+    });
+    const readCurrent = (owner: typeof selected.value.owner) =>
+      owner.read((sqlite) =>
+        readAdmittedNanoHostAttempt(core, sqlite, requireSchedulerExecutionAttempt(core, attemptId))
+      );
+    const initial = readCurrent(selected.value.owner);
+    if (initial.state !== 'ready') throw new Error('Expected the exact Native observation.');
+    const arm = {
+      lease: initial.value.lease,
+      expectedSession: initial.value.session,
+      expectedRecovery: initial.value.proof,
+      kind: 'arm-reconnect',
+      classifiedAt: started,
+      observedAt: started,
+    } as const;
+    await expect(
+      selected.value.owner.classifyRecovery({
+        ...arm,
+        lease: { ...arm.lease, grant: { ...arm.lease.grant, generation: '2' } },
+      })
+    ).resolves.toMatchObject({ state: 'unavailable', reason: 'recovery-required' });
+    expect(readCurrent(selected.value.owner)).toEqual(initial);
+    await expect(selected.value.owner.classifyRecovery(arm)).resolves.toMatchObject({
+      state: 'ready',
+      value: { attemptId, state: 'launching' },
+    });
+    expect(readNanoHostRestartCensus(core, selected, started)).toEqual({
+      state: 'ready',
+      value: [expect.objectContaining({ grant })],
+    });
+    expect(readNanoHostRestartCensus(core, selected, recoveryDeadline)).toEqual({
+      state: 'ready',
+      value: [],
+    });
+
+    const observed = readCurrent(selected.value.owner);
+    if (observed.state !== 'ready') throw new Error('Expected the exact Native observation.');
+    const { lease, session, proof } = observed.value;
+    const close = { lease, session, proof, cause: 'native-cleanup', observedAt: started };
+    await expect(
+      selected.value.owner.closeRecovery({
+        ...close,
+        proof: { ...proof, lastWorkerSequence: 2 },
+      })
+    ).resolves.toMatchObject({ state: 'unavailable', reason: 'recovery-required' });
+    expect(requireSchedulerExecutionAttempt(core, attemptId).phase).toBe('open');
+    await expect(selected.value.owner.closeRecovery(close)).resolves.toMatchObject({
+      state: 'ready',
+      value: { attemptId, phase: 'closing', terminalCause: 'native-cleanup' },
+    });
+    const retained = requireSchedulerExecutionAttempt(core, attemptId);
+    await expect(
+      selected.value.owner.closeRecovery({ ...close, observedAt: recoveryDeadline })
+    ).resolves.toEqual({ state: 'ready', value: retained });
+    await expect(
+      selected.value.owner.closeRecovery({ ...close, cause: 'other-observation' })
+    ).resolves.toMatchObject({ state: 'unavailable', reason: 'recovery-required' });
+    expect(requireSchedulerExecutionAttempt(core, attemptId)).toEqual(retained);
+    const store = new FsStore({ dataRoot: f.root });
+    const preflight = () =>
+      observeAppUpdatePreflight({ coreDb: core, store, inflightCommands: new WeakMap() });
+    expect(preflight()).toMatchObject({ state: 'busy', counts: { closingAttempts: 1 } });
+    await f.writer.closeServerOwner(f.root, 'nanohost');
+    expect(preflight()).toMatchObject({ state: 'busy', counts: { closingAttempts: 1 } });
+    const reopened = await prepareNanoHostOwner(core, f.serving);
+    if (reopened.state !== 'ready') throw new Error('Expected the original NanoHost owner.');
+    expect(readNanoHostRestartCensus(core, selected, started)).toEqual(nanoHostHeld);
+    const pending = readCurrent(reopened.value.owner);
+    if (pending.state !== 'ready') throw new Error('Expected the original recovery observation.');
+    await expect(
+      reopened.value.owner.classifyRecovery({
+        lease: pending.value.lease,
+        expectedSession: pending.value.session,
+        expectedRecovery: pending.value.proof,
+        kind: 'needs-evidence',
+        observedAt: started,
+      })
+    ).resolves.toMatchObject({ state: 'ready', value: { attemptId } });
+    expect(preflight()).toMatchObject({ state: 'idle', counts: { closingAttempts: 0 } });
   });
 
   it('covers the original NanoHost restart fence with the actual Core worker receipt', async () => {

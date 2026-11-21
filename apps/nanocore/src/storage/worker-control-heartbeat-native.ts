@@ -12,6 +12,12 @@ import { acceptWorkerControlSequence } from '../runtime/worker-control-sequences
 import { ControlProductPreconditionError } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
+import { recordNanoHostRecoveryHeartbeat } from './nanohost-recovery-native.js';
+import type { NanoHostWorkerCoordinates } from './nanohost-submitted-lease.js';
+import {
+  inspectNanoHostWorkerBinding,
+  nanoHostWorkerBindingLiveness,
+} from './nanohost-worker-binding.js';
 import {
   type ControlWorkerHeartbeatCommand,
   type ControlWorkerHeartbeatInput,
@@ -19,6 +25,50 @@ import {
   type ControlWorkerHeartbeatResult,
   WorkerHeartbeatRefusal,
 } from './worker-control-heartbeat-codecs.js';
+
+/** Accepts an original heartbeat and advances liveness only on a newly retained sequence. */
+function applyAdmittedNanoHostWorkerHeartbeat(
+  sqlite: Database.Database,
+  original: NanoHostWorkerCoordinates,
+  input: ControlWorkerHeartbeatCommand
+): ControlWorkerHeartbeatResult {
+  assertControlProductWriter(sqlite);
+  if (typeof input.tokenHash !== 'string') refuseBinding('binding-not-found');
+  const payload = ControlWorkerHeartbeatPayloadSchema.parse(input.payload);
+  const acceptedAt = payload.acceptedAt ?? new Date().toISOString();
+  const native = inspectNanoHostWorkerBinding(sqlite, original, {
+    lineage: input.lineage,
+    sandboxBindingRef: input.sandboxBindingRef,
+    tokenHash: input.tokenHash,
+    tokenFamily: 'worker-control',
+  });
+  if (native.status === 'rejected') refuseBinding(native.reason);
+  const live = nanoHostWorkerBindingLiveness(native, acceptedAt);
+  const reconnect = live.status === 'rejected' && live.reason === 'reconnect-required';
+  if (live.status === 'rejected' && !(reconnect && payload.reconnectProcessKeyHash))
+    refuseBinding(live.reason);
+  if (reconnect && payload.request.sequence !== native.proof.lastWorkerSequence! + 1)
+    throw new WorkerHeartbeatRefusal(
+      'worker_control_sequence_stale',
+      'Worker reconnect must use the exact next heartbeat sequence.',
+      409
+    );
+  // Roll back the fingerprint too if the Native liveness CAS refuses the new observation.
+  return sqlite.transaction(() =>
+    settleNanoHostWorkerHeartbeat(sqlite, { lineage: input.lineage, payload }, acceptedAt, () =>
+      recordNanoHostRecoveryHeartbeat(sqlite, original.lease, {
+        acceptedAt,
+        sequence: payload.request.sequence,
+        ...(payload.request.body.processKeyHash !== undefined
+          ? { processKeyHash: payload.request.body.processKeyHash }
+          : {}),
+        ...(payload.reconnectProcessKeyHash !== undefined
+          ? { reconnectProcessKeyHash: payload.reconnectProcessKeyHash }
+          : {}),
+      })
+    )
+  )();
+}
 
 /** Repeats the original binding refusal inside the current Core deciding section. */
 function refuseBinding(
@@ -51,10 +101,21 @@ function refuseBinding(
 
 /** Applies reconnect adoption, the original fingerprint and attempt liveness in one existing savepoint. */
 export function applyControlWorkerHeartbeat(
-  db: CoreDb,
-  input: ControlWorkerHeartbeatInput,
-  content?: ArrayBuffer
+  ...args:
+    | [db: CoreDb, input: ControlWorkerHeartbeatInput, content?: ArrayBuffer | undefined]
+    | [
+        admitted: {
+          readonly sqlite: Database.Database;
+          readonly original: NanoHostWorkerCoordinates;
+          readonly input: ControlWorkerHeartbeatCommand;
+        },
+      ]
 ): ControlWorkerHeartbeatResult {
+  if (args.length === 1) {
+    const { sqlite, original, input } = args[0];
+    return applyAdmittedNanoHostWorkerHeartbeat(sqlite, original, input);
+  }
+  const [db, input, content] = args;
   assertControlProductWriter(db.sqlite);
   if (!content) throw new ControlProductPreconditionError();
   const payload = ControlWorkerHeartbeatPayloadSchema.parse(

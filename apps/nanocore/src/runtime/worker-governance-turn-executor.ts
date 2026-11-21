@@ -148,8 +148,10 @@ import { DeterministicAgentPreparationError } from './agent-preparation-error.js
 import {
   acceptSchedulerExecutionObservation,
   bindNanoHostAttemptPreparation,
+  bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithFence,
   closeSchedulerExecutionAttemptWithoutEffects,
+  finalizeSchedulerExecutionAttemptInput,
   listOpenSchedulerExecutionAttempts,
   listSchedulerExecutionAttemptsForTurn,
   markSchedulerExecutionAttemptClosing,
@@ -213,6 +215,7 @@ import type {
 } from './types.js';
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
 import {
+  getWorkerBackendSession,
   listWorkerBackendSessions,
   type WorkerBackendSessionRecord,
   workerBackendImageIdentity,
@@ -1501,13 +1504,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       },
       prepared.agentSessionId
     );
-    await bindNanoHostAttemptPreparation(coreDb, {
+    const preparationBinding = {
       attemptId: input.attemptId,
       agentSessionId: prepared.agentSessionId,
       inputRef: `aepsnap_${input.preparation.turn.id}_${prepared.agentSessionId}`,
       bindingRef: `attempt-binding:${input.attemptId}`,
-      sessionCompatibilityKey: prepared.sessionCompatibilityKey,
-    });
+    };
+    if (this.readNanoHostEnvironment) {
+      await bindSchedulerExecutionAttemptSession(coreDb, preparationBinding);
+      await finalizeSchedulerExecutionAttemptInput(coreDb, preparationBinding);
+    } else {
+      await bindNanoHostAttemptPreparation(coreDb, {
+        ...preparationBinding,
+        sessionCompatibilityKey: prepared.sessionCompatibilityKey,
+      });
+    }
     // Keep the captured revision; a revalidation must never rebase a caller or prepared choice.
     const workerStorageChoice = this.selectContinuationStorage(
       store,
@@ -4053,7 +4064,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         submission: true,
         ...(this.now ? { now: this.now } : {}),
       });
-      if (backendLifecycle.session)
+      if (backendLifecycle.session && !this.readNanoHostEnvironment)
         backendLifecycle.session = await markWorkerBackendSessionLaunching(this.coreDb!, {
           attemptId: backendLifecycle.session.attemptId,
           ...(this.now ? { now: this.now } : {}),
@@ -5384,6 +5395,20 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     backendCapabilities: WorkerGovernanceBackendCapabilities,
     failedCloseout = false
   ): Promise<void> {
+    if (lifecycle.session && this.readNanoHostEnvironment) {
+      const expected = lifecycle.session;
+      const current = this.readNanoHostEnvironment((sqlite) =>
+        getWorkerBackendSession({ sqlite }, expected.attemptId)
+      );
+      if (
+        current.state !== 'ready' ||
+        !current.value ||
+        current.value.backendSessionId !== expected.backendSessionId
+      )
+        throw new Error('Admitted NanoHost cleanup owner is unavailable.');
+      lifecycle.session = current.value;
+      lifecycle.physicalCleanedAt = current.value.physicalCleanedAt;
+    }
     if (lifecycle.session?.state === 'cleaned') {
       return;
     }

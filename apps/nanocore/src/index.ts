@@ -16,6 +16,7 @@ import {
   prepareCommunicationOwner,
   prepareNanoHostOwner,
   prepareServerWorkOwner,
+  readNanoHostRestartCensus,
   restoreWorkspaceDeletionMutationAdmission,
 } from './app.js';
 import { createBetterAuth, resolveBetterAuthSecret } from './auth/better-auth.js';
@@ -41,7 +42,6 @@ import {
   computeCurrentReadiness,
   createBootId,
   createShutdownReadinessSnapshot,
-  isScopeAdmitted,
   refuseScope,
   withScopeAdmissionReadiness,
 } from './bootstrap/readiness.js';
@@ -89,7 +89,11 @@ import {
   createVaultProviderCredentialResolver,
 } from './providers/vault-credential-resolver.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
-import { listOpenSchedulerExecutionAttempts } from './runtime/execution-attempts.js';
+import {
+  classifyNanoHostAttemptsAfterRestart,
+  type RunNanoHostAttemptRecoveryInput,
+  runNanoHostAttemptRecoveryMaintenance,
+} from './runtime/nanohost-attempt-recovery.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import { recoverPendingRequestsAtBoot } from './runtime/pending-request-flow.js';
 import { prepareRecurringOccurrence } from './runtime/recurring-schedule-preparation.js';
@@ -107,7 +111,6 @@ import {
   startSchedulerDispatchRetryService,
 } from './runtime/scheduler-dispatch-service.js';
 import {
-  type RunSchedulerRestartRecoveryInput,
   runSchedulerRecoveryMaintenance,
   runSchedulerRestartRecovery,
   schedulerRestartRecoveryOutcome,
@@ -117,6 +120,7 @@ import {
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
 import { listExportableWorkerCheckpoints } from './runtime/worker-checkpoints.js';
+import type { WorkerControlFinalStatusAcceptedHook } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
@@ -534,9 +538,10 @@ const bootResult = await runBootPhases({
         await recoverServerKnowledgeManagerTurns(sharedStore);
         await recoverWorkspaceAssistantTurns(sharedStore);
         const recoveryStore = sharedStore;
+        let wakeRestartCloseout: WorkerControlFinalStatusAcceptedHook | undefined;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
           recoveryCoreDb,
-          undefined,
+          (accepted) => wakeRestartCloseout?.(accepted),
           nanoHostStorage
         );
         workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
@@ -564,18 +569,31 @@ const bootResult = await runBootPhases({
             'Execution backend was not initialized.'
           ),
           store: recoveryStore,
+          admittedNanoHostRecovery: {
+            state: 'unavailable',
+            owner: 'nanohost',
+            reason: 'recovery-required',
+          },
+          reconcileExecutions: () => recoveryRuntime.executionReconciler.runOnce(),
+          reconcileAcceptedFinalStatus: recoveryRuntime.reconcileAcceptedFinalStatus,
+          cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
+          prepareBackendCleanup: recoveryRuntime.prepareBackendCleanup,
+          restoreBackendSession: recoveryRuntime.restoreBackendSession,
           isTurnExecutionActive: recoveryRuntime.isTurnExecutionActive,
           projectRecoveredTurn: async (subject) => {
             const admission = requireSchedulerExecutionAttemptAdmissionContext(
               recoveryCoreDb,
               subject.attemptId
             );
+            const anchored = 'state' in subject;
             const result = await terminalizeGovernedWorkerTurn({
               agentSessionId: subject.agentSessionId,
               completedAt: new Date().toISOString(),
               errorCode: 'worker_governance_restart_recovery',
-              message: 'Worker execution stopped during scheduler recovery.',
-              outcome: 'failed',
+              message: anchored
+                ? 'Worker execution was interrupted during scheduler recovery.'
+                : 'Worker execution stopped during scheduler recovery.',
+              outcome: anchored ? 'interrupted' : 'failed',
               requestId: admission.requestId,
               store: recoveryStore,
               turnId: subject.turnId,
@@ -599,24 +617,39 @@ const bootResult = await runBootPhases({
                 workspaceIdForOwner(result.owner)
               );
               try {
-                appendRecoveredTurnObservation(workspaceDb, result, 'pre-anchor');
+                appendRecoveredTurnObservation(
+                  workspaceDb,
+                  result,
+                  anchored ? 'anchored-cleanup' : 'pre-anchor'
+                );
               } finally {
                 workspaceDb.sqlite.close();
               }
             }
             return { status: result.status };
           },
-        } satisfies RunSchedulerRestartRecoveryInput;
+        } satisfies RunNanoHostAttemptRecoveryInput;
         const schedulerRecovery = await runSchedulerRestartRecovery(recoveryCoreDb, recoveryInput);
-        // Submitted NanoHost work keeps its original lease while live Worker deciding routes are held.
-        const heldNativeAttempts = listOpenSchedulerExecutionAttempts(recoveryCoreDb)
-          .filter(
-            (attempt) =>
-              attempt.backendId === 'nanohost' &&
-              attempt.operationId !== null &&
-              isScopeAdmitted(recoveryCoreDb.dataRoot, 'workspace', attempt.workspaceId)
-          )
-          .map((attempt) => attempt.attemptId);
+        const nativeRecovery = await classifyNanoHostAttemptsAfterRestart(
+          recoveryCoreDb,
+          recoveryInput
+        );
+        const reconnects = readNanoHostRestartCensus(recoveryCoreDb, nanoHostStorage);
+        if (reconnects.state === 'ready') {
+          const pending = new Map(reconnects.value.map(({ grant }) => [grant.inputRef, grant]));
+          wakeRestartCloseout = ({ lineage, sandboxBindingRef }) => {
+            const grant = pending.get(lineage.packageSnapshotId);
+            if (!grant || grant.bindingRef !== sandboxBindingRef || grant.turnId !== lineage.turnId)
+              return;
+            pending.delete(lineage.packageSnapshotId);
+            void runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput).catch(() => {
+              pending.set(lineage.packageSnapshotId, grant);
+              console.warn('Worker final-status closeout requires recovery.');
+            });
+          };
+        } else if (reconnects.reason === 'recovery-required') {
+          console.warn('NanoHost reconnect census requires the admitted attempt evidence.');
+        }
         const checkpointRecoveryFailures =
           await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
         const pendingWorkspace = {
@@ -649,11 +682,11 @@ const bootResult = await runBootPhases({
               }
             }
           },
-          native: () => recoveryRuntime.executionReconciler.runOnce(),
+          native: () => runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput),
           checkpoints: () => classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb),
         };
         return schedulerRestartRecoveryOutcome(
-          [...schedulerRecovery.failedAttemptIds, ...heldNativeAttempts],
+          [...schedulerRecovery.failedAttemptIds, ...nativeRecovery.failedAttemptIds],
           checkpointRecoveryFailures
         );
       },

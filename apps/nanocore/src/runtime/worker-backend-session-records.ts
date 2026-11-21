@@ -13,6 +13,8 @@ import type {
   WorkerBackendWorkspaceHandoffState,
 } from '../storage/schema/index.js';
 import { BackendSessionRefusal } from '../storage/worker-backend-session-codecs.js';
+import type { SchedulerExecutionAttemptRecord } from './execution-attempt-records.js';
+import { nanoHostStartupDeadline } from './nanohost-attempt-clocks.js';
 import {
   getNanoHostRuntimeTarget,
   requireStoredNanoHostPhysicalEpoch,
@@ -236,6 +238,23 @@ interface WorkerBackendSessionAttemptRow {
   readonly last_accepted_heartbeat_at: string | null;
 }
 
+/** The split writer receives the current original Core preparation correlation. */
+type MaterializingNanoHostAttempt = Pick<
+  SchedulerExecutionAttemptRecord,
+  | 'attemptId'
+  | 'backendId'
+  | 'createdAt'
+  | 'workspaceId'
+  | 'threadId'
+  | 'turnId'
+  | 'agentSessionId'
+  | 'inputRef'
+  | 'bindingRef'
+  | 'phase'
+  | 'deadline'
+  | 'operationId'
+>;
+
 const ALLOWED_TRANSITIONS: Readonly<
   Record<WorkerBackendSessionState, readonly WorkerBackendSessionState[]>
 > = {
@@ -259,10 +278,14 @@ const ALLOWED_TRANSITIONS: Readonly<
 export function recordWorkerBackendSessionMaterializing(
   coreDb: CoreDb,
   input: RecordWorkerBackendSessionMaterializingInput,
-  owner: WorkerBackendSessionDb = coreDb
+  admitted?: {
+    readonly owner: WorkerBackendSessionDb;
+    readonly attempt: MaterializingNanoHostAttempt;
+  }
 ): WorkerBackendSessionRecord {
   const timestamp = input.now?.() ?? new Date().toISOString();
   let attemptId = '';
+  const owner = admitted?.owner ?? coreDb;
 
   {
     const runtimeTarget = owner.sqlite
@@ -294,17 +317,42 @@ export function recordWorkerBackendSessionMaterializing(
       );
     }
     const originPhysicalEpoch = runtimeTarget.physicalEpoch;
-    const lease = coreDb.sqlite
-      .prepare(
-        `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
+    const original = admitted?.attempt;
+    if (
+      original &&
+      (original.backendId !== 'nanohost' ||
+        original.bindingRef !== input.sandboxBindingRef ||
+        original.operationId !== null ||
+        !original.agentSessionId ||
+        !original.inputRef)
+    )
+      throw new BackendSessionRefusal('Native materialization has no exact Core preparation.');
+    const startupDeadline = original ? nanoHostStartupDeadline(original) : '';
+    const lease: WorkerBackendSessionAttemptRow | undefined = original
+      ? {
+          attempt_id: original.attemptId,
+          workspace_id: original.workspaceId,
+          thread_id: original.threadId,
+          turn_id: original.turnId,
+          agent_session_id: original.agentSessionId!,
+          input_ref: original.inputRef!,
+          phase: original.phase,
+          deadline: original.deadline,
+          startup_deadline: startupDeadline,
+          heartbeat_deadline: startupDeadline,
+          last_accepted_heartbeat_at: null,
+        }
+      : (coreDb.sqlite
+          .prepare(
+            `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
                 input_ref, phase, deadline, heartbeat_deadline,
                 startup_deadline, last_accepted_heartbeat_at
          FROM scheduler_execution_attempts
          WHERE binding_ref = ?
          ORDER BY created_at DESC, attempt_id DESC
          LIMIT 1`
-      )
-      .get(input.sandboxBindingRef) as WorkerBackendSessionAttemptRow | undefined;
+          )
+          .get(input.sandboxBindingRef) as WorkerBackendSessionAttemptRow | undefined);
 
     if (!lease || !attemptMatchesInput(lease, input)) {
       throw new BackendSessionRefusal(
@@ -509,7 +557,7 @@ export function markWorkerBackendWorkspaceHandoffComplete(
   return requireWorkerBackendSession(owner, input.attemptId);
 }
 
-interface NanoHostSubmissionPlacement {
+export interface NanoHostSubmissionPlacement {
   readonly workspaceId: string;
   readonly threadId: string;
   readonly agentSessionId: string;
