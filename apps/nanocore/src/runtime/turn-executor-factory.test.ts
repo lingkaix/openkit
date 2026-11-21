@@ -11183,7 +11183,7 @@ describe('createConfiguredTurnExecutor', () => {
           },
           resources: {},
           runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
-          schemaVersion: 4,
+          schemaVersion: 1,
           scope: {
             agentSessionId: testEntityId('as', `agent-session-${turnId}`),
             threadId: testEntityId('th', `thread-${turnId}`),
@@ -25142,7 +25142,7 @@ describe('inert initial private Login exchange through the concrete backend sess
               vaultGrantId: alternate.grantId,
             };
             expect(pkg).toMatchObject({
-              schemaVersion: 4,
+              schemaVersion: 1,
               scope: {
                 workspaceId: input.workspaceId,
                 threadId: input.threadId,
@@ -25315,7 +25315,7 @@ describe('inert initial private Login exchange through the concrete backend sess
             return;
           }
           expect(pkg).toMatchObject({
-            schemaVersion: 4,
+            schemaVersion: 1,
             scope: {
               workspaceId: input.workspaceId,
               threadId: input.threadId,
@@ -25646,7 +25646,7 @@ describe('inert initial private Login exchange through the concrete backend sess
           DEMO_WORKSPACE_ID,
           String(wire.body.packageSnapshotId)
         ).snapshot;
-        expect(pkg.schemaVersion).toBe(4);
+        expect(pkg.schemaVersion).toBe(1);
         expect(pkg.llm.mode).toBe('harness');
         expect(pkg.scope).toMatchObject({
           workspaceId: DEMO_WORKSPACE_ID,

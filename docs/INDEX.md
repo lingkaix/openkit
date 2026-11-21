@@ -65,7 +65,7 @@ and are not listed here.
 
 ### agent-supply
 
-- `docs/specs/20260616-agent_environment_package.md` — Accepted, Partial — Owns the strict version 4 Agent Environment Package and the boundary between resolved worker authority and backend materialization.
+- `docs/specs/20260616-agent_environment_package.md` — Accepted, Partial — Owns the strict version 1 Agent Environment Package and the boundary between resolved worker authority and backend materialization.
 - `docs/specs/20260703-agent_manifest_aep_resolution.md` — Accepted, Partial — Owns the AgentManifest schema and its resolution into one immutable package for each admitted Turn.
 - `docs/specs/20260704-workspace_data_source_catalog.md` — Accepted, Partial — Owns the Workspace source catalog: registration, source references, and the non-widening join into an admitted Turn.
 - `docs/specs/20260711-skill_catalog_versioning_pinning.md` — Accepted, Implemented — Owns Skill identity, immutable versions, exact selection, pins, and bounded-tree digests.

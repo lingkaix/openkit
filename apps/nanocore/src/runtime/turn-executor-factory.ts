@@ -2362,14 +2362,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               (declaration.visibility === 'external-handle' &&
                 declaration.consumer === 'ssh-agent')) &&
             AgentEnvironmentCredentialDeclarationSchema.safeParse(declaration).success &&
-            environmentPackage.schemaVersion === 4 &&
+            environmentPackage.schemaVersion === 1 &&
             environmentPackage.vault.grants.some((grant) => grant.id === declaration.vaultGrantId)
           ) &&
           !(
             declaration.visibility === 'runtime-token' &&
             declaration.consumer === 'codex-login' &&
             AgentEnvironmentCredentialDeclarationSchema.safeParse(declaration).success &&
-            environmentPackage.schemaVersion === 4 &&
+            environmentPackage.schemaVersion === 1 &&
             environmentPackage.llm.mode === 'harness' &&
             environmentPackage.agent.runtimeKind === 'codex' &&
             environmentPackage.control.adapter?.targetRuntime === 'codex' &&
@@ -5161,7 +5161,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, session.attemptId);
     if (
       !this.supportsHarnessLogin() ||
-      session.environmentPackage.schemaVersion !== 4 ||
+      session.environmentPackage.schemaVersion !== 1 ||
       session.environmentPackage.llm.mode !== 'harness' ||
       session.environmentPackage.agent.runtimeKind !== 'codex' ||
       session.environmentPackage.control.adapter?.targetRuntime !== 'codex' ||

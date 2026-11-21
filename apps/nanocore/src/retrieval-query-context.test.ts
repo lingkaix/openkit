@@ -1151,7 +1151,7 @@ async function createFixture(
   };
 }
 
-/** Admits authored profile-v4 fixture content into the same Git tree that the retrieval reader observes. */
+/** Admits authored profile-v1 fixture content into the same Git tree that the retrieval reader observes. */
 function createEntry(
   fixture: Fixture,
   title: string,

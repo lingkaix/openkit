@@ -903,7 +903,7 @@ describe('reviewed Workspace grant to User Login material boundary', () => {
         environmentPackage: pkg,
         createdAt: pkg.createdAt,
       });
-      expect(pkg.schemaVersion).toBe(4);
+      expect(pkg.schemaVersion).toBe(1);
       expect(pkg.llm.mode).toBe('harness');
       expect(pkg.scope).toMatchObject({
         workspaceId,

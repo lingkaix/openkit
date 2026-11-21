@@ -6,11 +6,11 @@ aspect: agent-supply
 ---
 # Agent Environment Package And Worker Governance Backends
 
-This specification owns the strict version 4 Agent Environment Package and the boundary between resolved worker authority and backend materialization.
+This specification owns the strict version 1 Agent Environment Package and the boundary between resolved worker authority and backend materialization.
 
 ## Scope
 
-Owns the version 4 envelope, the worker-consumed byte projection, immutability, the redacted snapshot, and the image reference or build definition carried as package content.
+Owns the version 1 envelope, the worker-consumed byte projection, immutability, the redacted snapshot, and the image reference or build definition carried as package content.
 
 Does not own AgentManifest schema. [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md) owns it.
 
@@ -26,7 +26,7 @@ Core: [Runtime Model](../core/runtime-model.md), [AgentSession](../core/agent-se
 
 ## Definition And Exclusions
 
-The current version 4 AEP represents the NanoHost realization of resolved worker execution. Its retained image, command, shim, and sandbox-local route meanings stay unchanged; external platforms need not consume this representation. Later external forms are additive under the [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md), without reinterpreting existing packages.
+The current version 1 AEP represents the NanoHost realization of resolved worker execution. Its retained image, command, shim, and sandbox-local route meanings stay unchanged; external platforms need not consume this representation. Later external forms are additive under the [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md), without reinterpreting existing packages.
 
 An `AgentEnvironmentPackage` is one strict, resolved, immutable NanoCore record that binds an exact worker launch to its OpenKit lineage, runtime, workspace inputs, supplied resources, sandbox-local Integration bindings, governed access, allowed logical-model contract, resource intent, observability requirements, and backend requirements.
 
@@ -60,7 +60,7 @@ one Server AgentManifest plus optional Workspace binding, selected profile, and 
 
 Core Agent Supply owns the authored `AgentManifest` concept. `docs/specs/20260703-agent_manifest_aep_resolution.md` owns its concrete schema, the identified Workspace extension and User-preference composition that occurs before resolution, validation, and resolution into `ResolvedAgentSetup`. Catalogs, workspace roots, request context, grants, runtime proof, placement, and backend facts may resolve references or establish availability, compatibility, authorization, and capacity, but they must not silently author a missing image, adapter, runtime binary, network grant, credential declaration, or backend requirement.
 
-For the current strict-v4 trusted-relay form, the target `ResolvedAgentSetup` contains the complete composed manifest, selected profile, one preferred logical model, and an exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`. It contains no LLM Provider profile, Provider-native model, account slot, private route member, or secret value. The AEP and retained setup projection omit concrete Provider routes. The in-memory setup resolver still carries those routes in its allowed logical models.
+For the current version 1 trusted-relay form, the target `ResolvedAgentSetup` contains the complete composed manifest, selected profile, one preferred logical model, and an exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`. It contains no LLM Provider profile, Provider-native model, account slot, private route member, or secret value. The AEP and retained setup projection omit concrete Provider routes. The in-memory setup resolver still carries those routes in its allowed logical models.
 
 NanoCore resolves the setup together with the exact Turn, AgentSession, `ActorRef`, workspace roots, request context, provider and Vault authority, policy, and selected backend target. The result must pass the strict AEP schema and all cross-field checks before it can cross into backend materialization.
 
@@ -68,7 +68,7 @@ The backend validates the package against its real capabilities and readiness be
 
 ## Strict Envelope
 
-`AgentEnvironmentPackageSchema` in `packages/config-schema/src/agent-environment.ts` is the admitted envelope. The parsed package has `schemaVersion: 4`.
+`AgentEnvironmentPackageSchema` in `packages/config-schema/src/agent-environment.ts` is the admitted envelope. The parsed package has `schemaVersion: 1`.
 
 Known core fields retain their owning validation, immutability and secret checks. Unknown additive members outside the core are ignored under Contract Evolution; ignored content from outside the reader's trust boundary is not persisted, forwarded or displayed. Unknown core values and unsupported required or authority-bearing semantics fail closed. Backend-specific or private expansion belongs under `extensions` only when another accepted owner defines its use; `extensions` never bypasses the package's authority, secret, or validation rules.
 
@@ -78,7 +78,7 @@ The schema supplies only these top-level defaults during parsing:
 - `credentials` defaults to no declarations;
 - `extensions` defaults to an empty object.
 
-All other top-level fields are required. `schemaVersion` is the literal number `4`, `createdAt` is an ISO date-time, and `packageId` plus `snapshotId` are non-empty immutable identities.
+All other top-level fields are required. `schemaVersion` is the literal number `1`, `createdAt` is an ISO date-time, and `packageId` plus `snapshotId` are non-empty immutable identities.
 
 The top-level sections have these responsibilities:
 
@@ -94,7 +94,7 @@ The top-level sections have these responsibilities:
 | `credentials` | Carries declarations and references only, never credential values. |
 | `vault` | Carries non-secret Vault references and grants owned by the Vault contracts. |
 | `policy` | Carries the exact filesystem, process, network, and secret policy intent to materialize. |
-| `llm` | For the current strict-v4 trusted-relay form, carries one resolved sandbox-local `/inference/*` semantic binding, distinct token reference and authority mode, one preferred logical model ID, and the exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`; it carries no concrete Provider or route identity, and trusted relay packages omit `workerBaseUrl` and every native URL. The current strict version 4 shape has no context-management field. Adding the resolved policy owned by [Context Management](20260902-agent_runtime_context_compaction.md) requires a later coordinated package version rather than an `extensions` workaround. The schema also admits a dormant harness branch with an exact native-model mapping and a required feature. The default App does not activate that branch. Dispatchable packages in the default composition stay on the trusted-relay form. |
+| `llm` | For the current version 1 trusted-relay form, carries one resolved sandbox-local `/inference/*` semantic binding, distinct token reference and authority mode, one preferred logical model ID, and the exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`; it carries no concrete Provider or route identity, and trusted relay packages omit `workerBaseUrl` and every native URL. The current strict version 1 shape has no context-management field. Adding the resolved policy owned by [Context Management](20260902-agent_runtime_context_compaction.md) requires a later coordinated package version rather than an `extensions` workaround. The schema also admits a dormant harness branch with an exact native-model mapping and a required feature. The default App does not activate that branch. Dispatchable packages in the default composition stay on the trusted-relay form. |
 | `resources` | Carries worker resource intent without creating a second scheduler. |
 | `observability` | Carries required audit and evidence expectations. |
 | `backend` | Carries the preferred backend, allowed kinds, and required capability set. |
@@ -142,7 +142,7 @@ The immutable resolved image and verified defaults identify the admitted selecte
 
 `runtime` resolves to exactly one of two image forms, never both and never neither. `runtime.image.ref` therefore stops being unconditional and becomes one arm of a discriminated selection, which changes the meaning of an existing field.
 
-The image-form change originally moved the package to version 3. Replacing the concrete Provider route with the logical-model contract and removing the `providers` section now moves the package directly to `schemaVersion: 4`. `docs/specs/20260703-schema_evolution_record_envelope.md` permits a version change, and a required feature is appropriate only when old and new readers must coexist. Under the rule in force at that transition they did not: NanoCore, Sandbox Integration, and the execution runtime are released together, restart recovery reads a snapshot written by the same version, and an incompatible historical data root was replaced rather than migrated. There is one accepted shape, and version 2 or version 3 packages are invalid. That completed cutover stands.
+The image-form change originally moved the package to version 3. Replacing the concrete Provider route with the logical-model contract and removing the `providers` section produced one accepted shape. v0.2.0 restarts that retained tag at embedded `schemaVersion: 1`; the outer snapshot `schemaVersion` stays 1. There is no upgrade reader. Version 2, version 3, and version 4 packages are invalid.
 
 **Image reference.** A governed image reference with its pull policy, resolved from the selected retained Sandbox supply when present, otherwise the authored manifest default. An exact admitted local/derived image need not be a repository-published deployment artifact. The image release catalog and attempt-image publication guarantees remain unchanged. Which reference forms an author may use, and how a tag is treated, remain owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260708-container_image_packaging.md`, and `docs/specs/20260721-worker_execution_environment_images.md`. This specification adds no new restriction on that form; resolving a reference to the exact content digest a sandbox consumes happens at the execution runtime's acquisition boundary and is owned there. Authored `runtime.image` references are not image identity and MUST NOT be treated as the measured harness grouping key.
 
@@ -193,7 +193,7 @@ Resolution and materialization obey these invariants:
 - The launch command is the generic zero-argument `openkit-worker-shim` with ignored stdin; runtime-native argv remains with the selected adapter, while the private `turn.start` operation carries Turn-scoped route tokens after Harness readiness.
 - NanoHost realizes that command only through one unary `ExecSandbox` with an empty environment map, empty stdin, `/workspace`, no TTY, and timeout zero. Static request lineage stays NanoHost-private. It is not a set of Start environment entries. No AEP field selects or widens those backend-private Start fields.
 - `control.adapter.targetRuntime` is the sole adapter selector; `agent.runtimeKind`, image names, environment variables, and backend defaults do not select or infer an adapter.
-- For the current strict-v4 trusted-relay form, the package carries one preferred logical model and an exact non-empty allowed logical-model set; a missing member, an incompatible derived capability or model-family value, direct Provider authority, or a runtime that cannot consume the sandbox-local Gateway relay fails before child launch.
+- For the current version 1 trusted-relay form, the package carries one preferred logical model and an exact non-empty allowed logical-model set; a missing member, an incompatible derived capability or model-family value, direct Provider authority, or a runtime that cannot consume the sandbox-local Gateway relay fails before child launch.
 - The sandbox-local worker-control, inference, and capability bindings remain distinct and non-secret in the package. They share no token reference or authority, and raw authentication material is resolved through runtime-private channels.
 - The package MUST NOT contain a NanoHost identity or credential, Runtime Epoch identity, Cell identity, remote NanoCore or Gateway URL, SSH target, Gateway forward, container-runtime endpoint, direct sandbox-to-NanoCore endpoint, OpenShell authentication material, or raw route token.
 - Workspace paths and roots must pass the containment, immutable-base, materialization, and publication rules of their owners before launch.
@@ -213,7 +213,7 @@ Termination, evidence collection, workspace handoff, teardown, and retry outcome
 
 Credential declarations carry placement-neutral material references and formats, targets, access and REQUIRED protection under [Worker Credential Access Declarations](20260703-vault_secret_injection.md#credential-access-declarations). NanoCore owns deliver, replace and revoke through governed Vault operations. A placement must attest its realized protection; NanoCore refuses a placement that cannot meet the requirement. Native mount, driver and disposable-root details belong only to the NanoHost realization. Core credential tests also exercise the existing fake execution backend with the same binding contract.
 
-The accepted Codex host-managed path requires coordinated package, resolver, adapter and network-policy support before enablement. It introduces no ad hoc package field, version or fallback here; current strict-v4 trusted-relay validation remains required until that support lands. Raw material remains absent from the package in every path.
+The accepted Codex host-managed path requires coordinated package, resolver, adapter and network-policy support before enablement. It introduces no ad hoc package field, version or fallback here; current version 1 trusted-relay validation remains required until that support lands. Raw material remains absent from the package in every path.
 
 A live material replacement operates on an already admitted binding under fresh authority; it does not mutate the immutable AEP or widen its declaration. A changed declaration still requires a new package under this specification. [Harness Login selection](20260703-vault_secret_injection.md#harness-subscription-logins) decides the eligible material, not placement authority. The on-demand channel uses the existing outbound Worker carriage and admitted binding, not a direct Sandbox-to-NanoCore endpoint.
 
@@ -225,7 +225,7 @@ Worker-control, inference, capability, and credential access is expressed throug
 
 Platform credential resolution and injection do not target a public-class destination. The class does not inspect arbitrary user-owned image material or detect user-provided authentication in request contents; its guarantee concerns admitted platform supply and routing, not universal secret detection. Existing separately authorized credentialed non-LLM REST declarations retain their current meaning and cannot be silently reclassified as public.
 
-The package schema recursively rejects raw secret-shaped fields. Snapshot persistence redacts backend-private identifiers and local runtime references and then parses the redacted value through the same strict version 4 schema before writing it.
+The package schema recursively rejects raw secret-shaped fields. Snapshot persistence redacts backend-private identifiers and local runtime references and then parses the redacted value through the same strict version 1 schema before writing it.
 
 The initiating `scope.triggerActor` is immutable launch lineage. Its responsible user is accountability and authorization context only and never selects a Workspace database, directory, store, or backend placement.
 
@@ -245,7 +245,7 @@ The snapshot record binds `snapshotId`, `packageId`, Workspace, Thread, Turn, Ag
 
 Snapshot list and read operations expose only the redacted record through App API, Core Client, OpenAPI, and the remote MCP and administrator CLI. The durable snapshot remains evidence and diagnostics; it is not a replay instruction or current access grant.
 
-Normal resolution, snapshot reads, restart, export, and import accept version 4 only. No runtime alias, compatibility union, or fallback form is authorized, and no reader accepts a version 2 or version 3 package. A later package version follows [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). From `v0.1.0`, retained snapshots remain evidence through a one-way migration or an explicit data-retirement decision. Before then, an explicit deployment reset may replace carry-forward. Current execution still accepts only the current version, and retained snapshots keep their integrity and lineage rules. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
+Normal resolution, snapshot reads, restart, export, and import accept version 1 only. No runtime alias, compatibility union, or fallback form is authorized, and no reader accepts a version 2, version 3, or version 4 package. A later package version follows [Contract Evolution](../core/contract-evolution.md#retained-data-continuity). From `v0.1.0`, retained snapshots remain evidence through a one-way migration or an explicit data-retirement decision. Before then, an explicit deployment reset may replace carry-forward. Current execution still accepts only the current version, and retained snapshots keep their integrity and lineage rules. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
 
 Restart recovery must parse the stored package and verify its snapshot and scope against the durable lease, session, and admission lineage required by the scheduler and worker-runtime owners before using it as recovery evidence. The package's backend kind and exact image reference or immutable build input lineage must match the durable backend session. A missing, malformed, secret-bearing, or lineage-conflicting snapshot fails closed.
 
@@ -281,7 +281,7 @@ Qualification proves admission denial for invalid classes, unauthorized applicat
 
 The contract is satisfied only when all of the following are observable:
 
-- A parsed package has literal `schemaVersion: 4`, contains the complete strict top-level envelope without a `providers` section, applies only the three documented defaults, and ignores unknown additive members outside the core under Contract Evolution without persisting, forwarding or displaying ignored content from outside its trust boundary; unknown core values and unsupported required or authority-bearing semantics fail closed, while known-field immutability and secret checks remain required.
+- A parsed package has literal `schemaVersion: 1`, contains the complete strict top-level envelope without a `providers` section, applies only the three documented defaults, and ignores unknown additive members outside the core under Contract Evolution without persisting, forwarding or displaying ignored content from outside its trust boundary; unknown core values and unsupported required or authority-bearing semantics fail closed, while known-field immutability and secret checks remain required.
 - One Server `AgentManifest`, optional Workspace binding, selected profile, applicable User preference, and request selection compose before one `ResolvedAgentSetup` produces one immutable AEP, with no parallel setup document or authority path.
 - Unequal member parameters project a complete coherent logical contract when their required values are known; mixed families retain the Gateway-derived null family without exposing route identity. Missing required parameter values remain absent and an adapter requiring them refuses launch.
 - Missing authored image, adapter, binary, network, credential requirement, Workspace, policy, logical-model contract, Integration binding, or backend authority is rejected rather than inferred.
@@ -294,12 +294,12 @@ The contract is satisfied only when all of the following are observable:
 - The worker-consumed AEP is reparsed immediately before import and serialized as compact UTF-8 JSON with recursively UTF-16-code-unit-sorted object keys, preserved array order, JSON-stringified keys and strings, no BOM, and no trailing newline; non-JSON values fail before effects, and its exact lowercase SHA-256 plus byte length bind the import identity.
 - The first successful import for each admitted Turn is its canonical AEP at `/openkit/sessions/<agent-session-id>/config/package.json`; it precedes the exact `worker-supply` file inventory, complete private Context inventory, and `turn.start`. The data-boundary path grammar admits no adjacent path, export, caller-selected root, or new transfer surface. Failed import or unproved prior-input cleanup prevents launch under the existing runtime cleanup and wider-fence owner.
 - The package carries only distinct non-secret sandbox-local Integration bindings and token references for worker control, inference, and capability; it carries no raw route token, NanoHost credential, remote Gateway or NanoCore endpoint, SSH target, Gateway forward, container-runtime endpoint, Cell identity, or Runtime Epoch identity.
-- For the current strict-v4 trusted-relay form, the package carries one preferred logical model and an exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`; it carries no LLM Provider profile, Provider-native model, account slot, private route member, fallback order, or Provider credential.
+- For the current version 1 trusted-relay form, the package carries one preferred logical model and an exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`; it carries no LLM Provider profile, Provider-native model, account slot, private route member, fallback order, or Provider credential.
 - NanoHost bootstrap uses only the fixed package command, an empty environment map, and empty stdin, and carries no Turn credential; private `turn.start` supplies three mutually distinct raw route tokens through AgentSession-local bindings, with worker control restricted to the Worker Shim control client and inference and enabled capability restricted to their authorized sanitized native bindings.
 - Raw secrets, authorization material, backend-private handles, and unrestricted host references are absent from the AEP, durable snapshot, public diagnostics, and product records.
 - Exact Skill trees verify from the retained version inventory before adapter exposure, and the expected derived supply digest equals the digest reread from installed bytes. Missing, extra, tampered, or unsupported required resources prevent native launch; raw source MCP configuration, credentials, and nonstandard extensions never enter worker discovery. A new Skill selection changes the AEP and uses the existing session compatibility boundary.
 - Any material change to the launch declaration or authority produces a new package and bounded launch. Replacement of credential material within an already admitted binding follows its Vault owner without mutating the package.
-- The persisted snapshot is redacted, reparsed as version 4, digest-bound, Workspace-owned, and linked to the exact package, Turn, AgentSession, Agent, runtime, and backend.
+- The persisted snapshot is redacted, reparsed as version 1, digest-bound, Workspace-owned, and linked to the exact package, Turn, AgentSession, Agent, runtime, and backend.
 - Complete restart evidence rejects a missing or mismatched package snapshot. Backend kind and exact image reference or immutable build input lineage must match the durable backend session before claiming package-to-session consistency. Missing or contradictory evidence fails closed.
 - Current diagnostics use the setup resolver's closed codes and the owners' broader failure categories. This specification defines no unified typed resolver taxonomy.
 - Deleting backend-private material or one concrete adapter does not change the AEP's NanoCore-owned authority, strict envelope, or product lineage.
@@ -323,7 +323,7 @@ Capture Coverage resolves installed Server, Workspace and Task overrides with a 
 
 ## Implementation Gaps
 
-- The package projects the logical model's resolved context-management policy - version 4 has no such field - #413
+- The package projects the logical model's resolved context-management policy - version 1 has no such field - #413
 - Production harness Login activation, Codex host-managed replacement, generic HTTP bearer delegated refresh and real-native qualification - Writer transitions and refresh-delegation Policy authority are implemented; the default App Login handler and delegated refresh runtime projection/collection remain inactive, and real-native qualification is incomplete - #604
 - Plugin membership expands before setup resolution - authored setup has no consumed plugins field that performs that expansion - #487
 - Verified derived native component materialization uses the existing inventory and adapter path - the package records Skill inventory and an effective catalog digest, and that derived materialization is not verified - #487

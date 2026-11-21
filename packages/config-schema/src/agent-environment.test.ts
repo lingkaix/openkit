@@ -27,7 +27,7 @@ import {
  */
 function openshellPackageFixture(): unknown {
   return {
-    schemaVersion: 4,
+    schemaVersion: 1,
     packageId: 'aepkg_demo',
     snapshotId: 'aepsnap_demo',
     createdAt: '2026-06-16T00:00:00.000Z',
@@ -477,16 +477,17 @@ describe('agent environment package schema', () => {
     ).toBe(false);
   });
 
-  it('accepts only strict AEP version 4', () => {
-    const versionFour = openshellPackageFixture() as Record<string, unknown>;
+  it('accepts only embedded AEP schemaVersion 1', () => {
+    const current = openshellPackageFixture() as Record<string, unknown>;
 
-    expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(4).success).toBe(true);
+    expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(1).success).toBe(true);
+    expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(4).success).toBe(false);
     expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(3).success).toBe(false);
     expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(2).success).toBe(false);
-    expect(AgentEnvironmentPackageSchema.parse(versionFour).schemaVersion).toBe(4);
-    expect(
-      AgentEnvironmentPackageSchema.safeParse({ ...versionFour, schemaVersion: 3 }).success
-    ).toBe(false);
+    expect(AgentEnvironmentPackageSchema.parse(current).schemaVersion).toBe(1);
+    expect(AgentEnvironmentPackageSchema.safeParse({ ...current, schemaVersion: 4 }).success).toBe(
+      false
+    );
   });
 
   it('accepts exactly one reference or immutable bounded build image projection', () => {
@@ -584,12 +585,12 @@ describe('agent environment package schema', () => {
     }
   });
 
-  it('accepts only V4 package scope with one exact trigger actor', () => {
+  it('accepts only version 1 package scope with one exact trigger actor', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
     const scope = fixture.scope as Record<string, unknown>;
     const parsed = AgentEnvironmentPackageSchema.parse(fixture);
 
-    expect(parsed.schemaVersion).toBe(4);
+    expect(parsed.schemaVersion).toBe(1);
     expect(parsed.scope.triggerActor).toEqual({
       kind: 'user',
       id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
@@ -611,7 +612,7 @@ describe('agent environment package schema', () => {
       id: 'auto_00000000-0000-78f1-8515-ecaa54916cbe',
       responsibleUserId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
     });
-    expect(AgentEnvironmentPackageSchema.safeParse({ ...fixture, schemaVersion: 1 }).success).toBe(
+    expect(AgentEnvironmentPackageSchema.safeParse({ ...fixture, schemaVersion: 4 }).success).toBe(
       false
     );
     expect(AgentEnvironmentPackageSchema.safeParse({ ...fixture, schemaVersion: 2 }).success).toBe(
@@ -2392,8 +2393,8 @@ function harnessLoginPackageFixture() {
   };
 }
 
-describe('AEP4 explicit Codex harness Login schema', () => {
-  // The accepted #604 ruling adds only the closed harness mode to current AEP4.
+describe('version 1 explicit Codex harness Login schema', () => {
+  // The accepted #604 ruling adds only the closed harness mode to the current version 1 package.
   // worker.harness-login.v1 belongs to the resolved manifest and stored setup, not AEP roots.
   it('accepts the native endpoint while keeping logical and native model identities distinct', () => {
     const fixture = harnessLoginLlmFixture();
@@ -2414,12 +2415,12 @@ describe('AEP4 explicit Codex harness Login schema', () => {
     expect(parsed.data.routes[0]?.endpoint).not.toHaveProperty('upstream');
   });
 
-  it('accepts current version four with a Workspace grant reference and fixed Codex consumer', () => {
+  it('accepts current version 1 with a Workspace grant reference and fixed Codex consumer', () => {
     const fixture = harnessLoginPackageFixture();
     const parsed = AgentEnvironmentPackageSchema.safeParse(fixture);
     expect(parsed.success).toBe(true);
     if (!parsed.success) throw parsed.error;
-    expect(parsed.data.schemaVersion).toBe(4);
+    expect(parsed.data.schemaVersion).toBe(1);
     expect(parsed.data.llm).toEqual(fixture.llm);
     expect(parsed.data.credentials).toEqual(fixture.credentials);
     expect(parsed.data.vault).toEqual(fixture.vault);

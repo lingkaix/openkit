@@ -199,7 +199,7 @@ function proposalInput(source: { id: string; contentDigest: string }, baseRevisi
     '---',
     'type: "KnowledgePage"',
     'title: "Cutover lesson"',
-    'schema_version: "openkit-scope-knowledge-schema-v4"',
+    'schema_version: "openkit-scope-knowledge-schema-v1"',
     'openkit_status: "active"',
     'status: "stable"',
     'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',

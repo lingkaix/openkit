@@ -11990,7 +11990,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Direct Task lesson"',
-        'schema_version: "openkit-scope-knowledge-schema-v4"',
+        'schema_version: "openkit-scope-knowledge-schema-v1"',
         'openkit_status: "active"',
         'status: "stable"',
         `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) })}`,
@@ -18458,7 +18458,7 @@ describe('reviewed Login access through the neutral credential effect', () => {
         });
         packageSnapshotId = pkg.snapshotId;
         const attempt = attempts.requireSchedulerExecutionAttempt(fixture.coreDb, attemptId);
-        expect(pkg.schemaVersion).toBe(4);
+        expect(pkg.schemaVersion).toBe(1);
         expect(pkg.llm.mode).toBe('harness');
         expect(pkg.scope).toMatchObject({
           workspaceId,
@@ -20668,7 +20668,7 @@ describe('Login publication under the original Goal Task decision', () => {
         expect(submitted.deadline !== null && submitted.deadline > new Date().toISOString()).toBe(
           true
         );
-        expect(pkg.schemaVersion).toBe(4);
+        expect(pkg.schemaVersion).toBe(1);
         expect(pkg.llm.mode).toBe('harness');
         expect(pkg.snapshotId).toBe(planned.snapshotId);
         expect(submitted.inputRef).toBe(pkg.snapshotId);

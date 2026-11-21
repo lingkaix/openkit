@@ -1,6 +1,6 @@
 import { Document, isMap, parseDocument } from 'yaml';
 
-const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION = 'openkit-scope-knowledge-schema-v4';
+const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION = 'openkit-scope-knowledge-schema-v1';
 const REQUIRED_SCOPED_KNOWLEDGE_FEATURES = [
   'openkit.knowledge-owner-scope.v1',
   'openkit.knowledge-git-notebook.v1',

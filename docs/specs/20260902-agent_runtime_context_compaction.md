@@ -90,7 +90,7 @@ interface ResolvedContextManagement {
 
 The Knowledge Manager selects `openkit`. Rolling internal roles do not use this Gateway/Worker compaction-authority projection. A Worker uses `runtime-native` only when its pinned adapter proves that it can apply the exact central threshold, retain a valid native continuation checkpoint, emit normalized outcome evidence, and disable the OpenKit automatic path for that Turn. A Worker uses `openkit` only when its adapter proves that it can preserve, return, and later submit the OpenKit Compaction Item without loss. Once an immutable Worker package carries `llm.contextManagement`, setup fails visibly if neither capability is proven rather than running two compactors or silently ignoring the policy. Until that coordinated AEP version is admitted, a Worker continues with its runtime-native local defaults, receives no OpenKit `context_management` injection, and makes no central-policy conformance claim.
 
-The future Worker projection belongs at `llm.contextManagement` in the immutable Agent Environment Package and carries exactly the resolved object above. The current strict version 4 package has no such field, so Worker policy projection requires the next coordinated AEP schema and adapter implementation; an `extensions` workaround, ambient Harness configuration, or mutable post-launch file is forbidden.
+The future Worker projection belongs at `llm.contextManagement` in the immutable Agent Environment Package and carries exactly the resolved object above. The current strict version 1 package has no such field, so Worker policy projection requires the next coordinated AEP schema and adapter implementation; an `extensions` workaround, ambient Harness configuration, or mutable post-launch file is forbidden.
 
 ## Responses Control And Item Contract
 
@@ -300,7 +300,7 @@ Rolling context, retained summaries and compaction MUST preserve the sticky exte
 
 ## Implementation Gaps
 
-- One context-management field on the Worker package and one consumed central threshold - version 4 of the package has no such field, and no adapter consumes one - #413
+- One context-management field on the Worker package and one consumed central threshold - version 1 of the package has no such field, and no adapter consumes one - #413
 - Gateway `context_management` validation, injection, compaction item, automatic compactor, and the one overflow retry of the same request - no producer; the native pre-output 503 mapping is a separate existing seam - #778
 
 ## Decisions

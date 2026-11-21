@@ -1239,7 +1239,7 @@ export const AgentEnvironmentPackageSchema = z
     env: z.never().optional(),
     nativeEnvironment: z.never().optional(),
     runtimeEnvironment: z.never().optional(),
-    schemaVersion: z.literal(4),
+    schemaVersion: z.literal(1),
     packageId: z.string().min(1),
     snapshotId: z.string().min(1),
     createdAt: z.string().datetime(),

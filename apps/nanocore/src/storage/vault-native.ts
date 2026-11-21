@@ -1726,7 +1726,7 @@ function requireLoginAccessBinding(
   }
   const snapshot = AgentEnvironmentPackageSchema.parse(preparedPackage);
   if (
-    snapshot.schemaVersion !== 4 ||
+    snapshot.schemaVersion !== 1 ||
     snapshot.llm.mode !== 'harness' ||
     !isDeepStrictEqual(snapshot.scope, consumer.scope) ||
     snapshot.agent.agentId !== consumer.agent.agentId ||

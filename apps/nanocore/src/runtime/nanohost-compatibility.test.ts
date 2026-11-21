@@ -38,7 +38,7 @@ const packageFor = (
     },
     resources: {},
     runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
-    schemaVersion: 4,
+    schemaVersion: 1,
     scope: {
       agentSessionId: testEntityId('as', `agent-session-${turnId}`),
       threadId: testEntityId('th', `thread-${turnId}`),

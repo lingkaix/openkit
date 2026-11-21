@@ -6349,7 +6349,7 @@ describe('Harness same-Turn live steer', () => {
 });
 
 /**
- * Builds current-v4 wire metadata for an isolated Worker plumbing test. The Vault entries below
+ * Builds current version 1 wire metadata for an isolated Worker plumbing test. The Vault entries below
  * are syntax-only package projections, not Core grants, Policy evidence or permission proofs.
  * Only the resident and the external Integration response are scripted; Harness and Turn owners run.
  */
@@ -6412,7 +6412,7 @@ function nativeLoginHolderFixture(mode: 'harness' | 'gateway' = 'harness') {
           }
     );
     const value = AgentEnvironmentPackageSchema.parse({
-      schemaVersion: 4,
+      schemaVersion: 1,
       packageId: 'aepkg_native_holder',
       snapshotId: `package-${currentTurnId}`,
       createdAt: '2026-11-09T00:00:00.000Z',
@@ -6577,7 +6577,7 @@ function nativeLoginHolderFixture(mode: 'harness' | 'gateway' = 'harness') {
   };
 }
 
-describe('current-v4 native Login holder plumbing (isolated, not Core authorization)', () => {
+describe('current version 1 native Login holder plumbing (isolated, not Core authorization)', () => {
   it('joins logical IDs to the preferred native route and permits one native model for two logical IDs', async () => {
     const f = nativeLoginHolderFixture();
     f.writePackage();

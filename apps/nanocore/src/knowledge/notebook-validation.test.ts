@@ -43,14 +43,14 @@ const ownerScope = {
 } as const;
 const pageScopeId = `page/workspace/${ownerScope.workspaceId}/kb_00000000-0000-7000-8000-000000000001`;
 const schema =
-  'schema_version: openkit-scope-knowledge-schema-v4\nstatus: active\nallowed_types: [KnowledgePage]\nallowed_statuses: [active, archived]\nallowed_review_states: [user-authored]\nallowed_sensitivities: [normal]\nallowed_freshness: [current]\n';
+  'schema_version: openkit-scope-knowledge-schema-v1\nstatus: active\nallowed_types: [KnowledgePage]\nallowed_statuses: [active, archived]\nallowed_review_states: [user-authored]\nallowed_sensitivities: [normal]\nallowed_freshness: [current]\n';
 
 /** Exact proposed bytes remain caller-owned; validation must not rewrite them. */
 function page(id: string, body = 'A stable note.', extra = ''): string {
   return `---
 type: KnowledgePage
 title: ${id}
-schema_version: openkit-scope-knowledge-schema-v4
+schema_version: openkit-scope-knowledge-schema-v1
 required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable

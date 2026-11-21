@@ -313,7 +313,7 @@ function writeExportTree(
       sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       exportCreatedAt: timestamp,
-      exportFormatVersion: 3,
+      exportFormatVersion: 1,
       contentInventory,
     })
   );

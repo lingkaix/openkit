@@ -12,11 +12,11 @@ import { NotebookError } from './notebook-error.js';
 
 export const OKF_SNAPSHOT_ID = 'docs/okf-spec-v0.2-snapshot.md#v0.2';
 /** Accepted governed profile for complete notebook ownership and Git content history. */
-export const OPENKIT_KNOWLEDGE_PROFILE_VERSION = 'openkit-knowledge-profile-v4';
+export const OPENKIT_KNOWLEDGE_PROFILE_VERSION = 'openkit-knowledge-profile-v1';
 /** Default schema identity for User, Workspace and Server notebooks. */
-export const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION = 'openkit-scope-knowledge-schema-v4';
+export const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION = 'openkit-scope-knowledge-schema-v1';
 
-/** Required semantics for every v4 scoped notebook page. */
+/** Required semantics for every version 1 scoped notebook page. */
 export const REQUIRED_SCOPED_KNOWLEDGE_FEATURES = [
   'openkit.knowledge-owner-scope.v1',
   'openkit.knowledge-git-notebook.v1',
@@ -437,7 +437,7 @@ export function validateOpenKitKnowledgeProfile(
       errors.push({
         code: 'profile.obsolete_authority_field',
         field,
-        message: 'Profile v4 uses only scope for ownership and Git for notebook revision.',
+        message: 'Profile v1 uses only scope for ownership and Git for notebook revision.',
       });
     }
   }
@@ -466,6 +466,12 @@ export function parseScopeKnowledgeSchema(content: string): ParseScopeKnowledgeS
       code: 'scope_schema.missing_schema_version',
       field: 'schema_version',
       message: 'Scope knowledge schema requires schema_version.',
+    });
+  } else if (schemaVersion !== DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION) {
+    errors.push({
+      code: 'scope_schema.version_mismatch',
+      field: 'schema_version',
+      message: `Scope knowledge schema_version must be ${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}.`,
     });
   }
 
@@ -1001,7 +1007,7 @@ function validateOwnerScope(
     errors.push({
       code: 'profile.invalid_scope',
       field: 'scope',
-      message: 'Profile v4 scope must identify one complete User, Workspace or Server owner.',
+      message: 'Profile v1 scope must identify one complete User, Workspace or Server owner.',
     });
     return;
   }
@@ -1049,7 +1055,7 @@ function validateRequiredFeatures(
     errors.push({
       code: `${prefix}.missing_required_feature`,
       field,
-      message: 'Profile v4 requires scoped ownership and Git notebook semantics.',
+      message: 'Profile v1 requires scoped ownership and Git notebook semantics.',
     });
   }
 }

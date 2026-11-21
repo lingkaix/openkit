@@ -575,7 +575,7 @@ describe('private Harness Login request authentication', () => {
     'authenticates the exact pending $kind request without a native acknowledgement',
     async (fields) => {
       const f = await fixture();
-      expect(f.environmentPackage.schemaVersion).toBe(4);
+      expect(f.environmentPackage.schemaVersion).toBe(1);
       expect(f.environmentPackage.llm.mode).toBe('harness');
       expect(f.environmentPackage.credentials.declarations).toContainEqual(
         expect.objectContaining({
@@ -778,7 +778,7 @@ describe('private Harness Login request authentication', () => {
 
   it('refuses an actual owner-produced gateway AEP without promoting it to Login eligibility', async () => {
     const f = await fixture('gateway');
-    expect(f.environmentPackage.schemaVersion).toBe(4);
+    expect(f.environmentPackage.schemaVersion).toBe(1);
     expect(f.environmentPackage.llm.mode).toBe('gateway');
     expect(f.environmentPackage.credentials.declarations).toEqual([]);
     expect(requireHarnessLoginBinding(f.coreDb, f.context, f.now())).toBe(f.integrationRef);

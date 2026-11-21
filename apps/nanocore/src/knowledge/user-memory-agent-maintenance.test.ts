@@ -60,7 +60,7 @@ function retainedMemoryScript(sourceReference: string): string {
 ---
 type: SourceSummary
 title: Synthetic KM16 color-code preference
-schema_version: "openkit-scope-knowledge-schema-v4"
+schema_version: "openkit-scope-knowledge-schema-v1"
 openkit_status: active
 scope:
   kind: user
@@ -87,7 +87,7 @@ cat > /notebook/claims/km16-color-code.md << 'EOF'
 ---
 type: Claim
 title: Synthetic KM16 test color code
-schema_version: "openkit-scope-knowledge-schema-v4"
+schema_version: "openkit-scope-knowledge-schema-v1"
 openkit_status: active
 scope:
   kind: user
@@ -116,7 +116,7 @@ cat > /notebook/index.md << 'EOF'
 okf_version: "0.2"
 type: Index
 title: Notebook
-schema_version: "openkit-scope-knowledge-schema-v4"
+schema_version: "openkit-scope-knowledge-schema-v1"
 openkit_status: active
 scope:
   kind: user

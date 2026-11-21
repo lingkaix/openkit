@@ -55,7 +55,7 @@ test('publishes a structured Knowledge page from the desktop sidebar', async ({ 
   const createResponse = await created;
   expect(createResponse.status()).toBe(200);
   const createdPage = createResponse.request().postDataJSON() as { content?: string };
-  expect(createdPage.content).toContain('schema_version: openkit-scope-knowledge-schema-v4');
+  expect(createdPage.content).toContain('schema_version: openkit-scope-knowledge-schema-v1');
   expect(createdPage.content).toContain('openkit_status: draft');
   expect(createdPage.content).toContain('type: KnowledgePage');
 

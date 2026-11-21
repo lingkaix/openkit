@@ -80,7 +80,7 @@ function rulePage(
     '---',
     'type: Rule',
     `title: ${JSON.stringify(`Aster metric ${rule.id}`)}`,
-    'schema_version: openkit-scope-knowledge-schema-v4',
+    'schema_version: openkit-scope-knowledge-schema-v1',
     `openkit_status: ${state}`,
     `status: ${state === 'active' ? 'stable' : 'deprecated'}`,
     `scope: ${JSON.stringify({ kind: 'workspace', workspaceId })}`,

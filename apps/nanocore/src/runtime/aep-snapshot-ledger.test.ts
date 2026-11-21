@@ -1230,7 +1230,7 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('rejects V1 snapshots through every normal ledger path', async () => {
+  it('rejects the retired embedded schema version through every normal ledger path', async () => {
     const workspaceDb = createWorkspaceDb();
     const environmentPackage = await createEnvironmentPackage();
 
@@ -1245,9 +1245,15 @@ describe('AEP snapshot ledger', () => {
       const legacyRecord = {
         ...record,
         schemaVersion: 1,
-        snapshot: { ...record.snapshot, schemaVersion: 1, scope: legacyScope },
+        snapshot: { ...record.snapshot, schemaVersion: 4 },
       };
       legacyRecord.contentDigest = snapshotDigest(legacyRecord.snapshot);
+      const legacyShape = {
+        ...record,
+        schemaVersion: 1,
+        snapshot: { ...record.snapshot, schemaVersion: 1, scope: legacyScope },
+      };
+      legacyShape.contentDigest = snapshotDigest(legacyShape.snapshot);
       writeFileSync(
         snapshotPath(workspaceDb, environmentPackage),
         `${JSON.stringify(legacyRecord)}\n`
@@ -1268,7 +1274,7 @@ describe('AEP snapshot ledger', () => {
       ]) {
         try {
           await operation();
-          throw new Error('Expected V1 rejection.');
+          throw new Error('Expected retired schemaVersion rejection.');
         } catch (error) {
           expect((error as Error).cause).toMatchObject({
             issues: expect.arrayContaining([expect.objectContaining({ path: ['schemaVersion'] })]),
@@ -1298,6 +1304,9 @@ describe('AEP snapshot ledger', () => {
       expect(() =>
         importAgentEnvironmentPackageSnapshots(workspaceDb, [legacyRecord as never])
       ).toThrow(/schemaVersion/);
+      expect(() =>
+        importAgentEnvironmentPackageSnapshots(workspaceDb, [legacyShape as never])
+      ).toThrow();
     } finally {
       workspaceDb.sqlite.close();
     }

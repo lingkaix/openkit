@@ -43,7 +43,7 @@ export class AgentEnvironmentSnapshotPreparationError extends Error {
 
 /** Input for recording an AEP snapshot. */
 export interface RecordAgentEnvironmentPackageSnapshotInput {
-  /** Full parsed V4 AEP snapshot. The helper stores only its redacted form. */
+  /** Full parsed version 1 AEP snapshot. The helper stores only its redacted form. */
   readonly environmentPackage: AgentEnvironmentPackage;
   /** Record creation timestamp. */
   readonly createdAt: string;

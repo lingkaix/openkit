@@ -731,7 +731,7 @@ function resolveOpenShellAgentEnvironmentPackage(
     const workerProviderId = 'openkit-gateway';
 
     const environmentPackage = parseAgentEnvironmentPlanningFields({
-      schemaVersion: 4,
+      schemaVersion: 1,
       packageId,
       snapshotId,
       createdAt,

@@ -187,7 +187,7 @@ function proposalPageBytes(
     '---',
     'type: "KnowledgePage"',
     `title: ${JSON.stringify(title)}`,
-    'schema_version: "openkit-scope-knowledge-schema-v4"',
+    'schema_version: "openkit-scope-knowledge-schema-v1"',
     'openkit_status: "active"',
     'status: "stable"',
     `scope: {kind: workspace, workspaceId: ${DEMO_WORKSPACE_ID}}`,

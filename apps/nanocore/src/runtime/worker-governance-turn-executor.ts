@@ -2501,7 +2501,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           !deliverAccess ||
           !this.vaultBackend ||
           consumer.snapshotId !== original.snapshotId ||
-          consumer.schemaVersion !== 4 ||
+          consumer.schemaVersion !== 1 ||
           consumer.llm.mode !== 'harness' ||
           declaration.consumer !== 'codex-login' ||
           (previousReceiptId === undefined

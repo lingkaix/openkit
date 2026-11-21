@@ -48,7 +48,7 @@ maintainer: OpenKit
 created_at: "2026-10-31T00:00:00.000Z"
 updated_at: "2026-10-31T00:00:00.000Z"
 extension_points: [allowed_types, allowed_statuses, allowed_review_states, allowed_sensitivities, allowed_freshness]
-validation_rules: [openkit-knowledge-profile-v4]
+validation_rules: [openkit-knowledge-profile-v1]
 review_requirements: [active_retrieval, required_fields, sensitivity, source_reference_shape, review_rules]
 future_description: {label: preserved authored annotation}
 `);
@@ -66,7 +66,7 @@ future_description: {label: preserved authored annotation}
           'allowed_sensitivities',
           'allowed_freshness',
         ],
-        validationRules: ['openkit-knowledge-profile-v4'],
+        validationRules: ['openkit-knowledge-profile-v1'],
         reviewRequirements: [
           'active_retrieval',
           'required_fields',
@@ -543,7 +543,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
 
     expect(report).toEqual({
       okfSnapshot: 'docs/okf-spec-v0.2-snapshot.md#v0.2',
-      profileVersion: 'openkit-knowledge-profile-v4',
+      profileVersion: 'openkit-knowledge-profile-v1',
       conformance: 'OpenKit-profile-valid',
       errors: [],
     });
@@ -801,7 +801,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
   it('allows extension types declared by the scope schema', () => {
     const schema = parseScopeKnowledgeSchema(
       [
-        'schema_version: "openkit-scope-knowledge-schema-v4"',
+        'schema_version: "openkit-scope-knowledge-schema-v1"',
         'status: "active"',
         'allowed_types: ["KnowledgePage", "RepoConvention"]',
         'allowed_statuses: ["active"]',
@@ -817,7 +817,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
         '---',
         'type: "RepoConvention"',
         'title: "Repo convention"',
-        'schema_version: "openkit-scope-knowledge-schema-v4"',
+        'schema_version: "openkit-scope-knowledge-schema-v1"',
         'openkit_status: "active"',
         'status: "stable"',
         `scope: ${JSON.stringify(workspace)}`,
@@ -1187,7 +1187,7 @@ function registerOkfScopedProfileTests() {
     const frontmatter = {
       type: 'KnowledgePage',
       title: 'Scoped understanding',
-      schema_version: 'openkit-scope-knowledge-schema-v4',
+      schema_version: 'openkit-scope-knowledge-schema-v1',
       openkit_status: 'active',
       scope: workspace,
       required_features: features,
@@ -1216,10 +1216,10 @@ function registerOkfScopedProfileTests() {
     return parsed.document;
   }
 
-  describe('OpenKit scoped profile v4', () => {
+  describe('OpenKit scoped profile v1', () => {
     it('names the accepted profile and default scope schema versions', () => {
-      expect(OPENKIT_KNOWLEDGE_PROFILE_VERSION).toBe('openkit-knowledge-profile-v4');
-      expect(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION).toBe('openkit-scope-knowledge-schema-v4');
+      expect(OPENKIT_KNOWLEDGE_PROFILE_VERSION).toBe('openkit-knowledge-profile-v1');
+      expect(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION).toBe('openkit-scope-knowledge-schema-v1');
     });
 
     // Generated scope IDs are inputs; collected case names must agree across separate processes.
@@ -1262,7 +1262,7 @@ function registerOkfScopedProfileTests() {
     );
 
     it.each([[], [features[0]], [features[1]]].map((value) => [value]))(
-      'rejects an omitted v4 semantic %j',
+      'rejects an omitted v1 semantic %j',
       (requiredFeatures) => {
         expect(
           validateOpenKitKnowledgeProfile(parsedPage({ required_features: requiredFeatures }))
@@ -1326,11 +1326,11 @@ function registerOkfScopedProfileTests() {
       expect(validateOpenKitKnowledgeProfile(parsed.document).errors).toEqual([]);
     });
 
-    it('validates delegated pages under the default v4 scope schema', () => {
+    it('validates delegated pages under the default v1 scope schema', () => {
       const document = parsedPage();
       expect(validateScopeKnowledgeSchema(document, undefined, workspace)).toMatchObject({
         conformance: 'scope-schema-valid',
-        scopeSchemaVersion: 'openkit-scope-knowledge-schema-v4',
+        scopeSchemaVersion: 'openkit-scope-knowledge-schema-v1',
         errors: [],
       });
       expect(isActiveOpenKitKnowledgePage(document, undefined, workspace)).toBe(true);
@@ -1375,6 +1375,45 @@ function registerOkfScopedProfileTests() {
           knowledgeIds: new Set(),
         })
       ).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    });
+
+    it('refuses the retired profile and scope schema tags', () => {
+      const retiredProfile = parseScopeKnowledgeSchema(
+        `${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT}validation_rules: ["openkit-knowledge-profile-v4"]\n`
+      );
+      expect(retiredProfile.ok).toBe(false);
+      expect(retiredProfile.errors).toContainEqual(
+        expect.objectContaining({
+          code: 'scope_schema.unsupported_governance_value',
+          field: 'validation_rules',
+        })
+      );
+      const retiredSchema = parseScopeKnowledgeSchema(
+        DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replaceAll(
+          DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
+          'openkit-scope-knowledge-schema-v4'
+        )
+      );
+      expect(retiredSchema.ok).toBe(false);
+      expect(retiredSchema.errors).toContainEqual(
+        expect.objectContaining({
+          code: 'scope_schema.version_mismatch',
+          field: 'schema_version',
+        })
+      );
+      expect(
+        validateScopeKnowledgeSchema(
+          parsedPage({ schema_version: 'openkit-scope-knowledge-schema-v4' })
+        )
+      ).toMatchObject({
+        conformance: 'OpenKit-profile-valid',
+        errors: [
+          expect.objectContaining({
+            code: 'scope_schema.version_mismatch',
+            field: 'schema_version',
+          }),
+        ],
+      });
     });
 
     it('does not admit old page/schema bytes through a v2 fallback', () => {

@@ -61,13 +61,13 @@ async function fixture(snapshotRoot?: string) {
   }
 }
 
-/** Fix page expectations from the accepted v4 profile, including unknown metadata that must survive. */
+/** Fix page expectations from the accepted v1 profile, including unknown metadata that must survive. */
 function page(id: string, body: string, source: string): string {
   return [
     '---',
     'type: KnowledgePage',
     `title: ${JSON.stringify(id)}`,
-    'schema_version: openkit-scope-knowledge-schema-v4',
+    'schema_version: openkit-scope-knowledge-schema-v1',
     'required_features: [ openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1 ]',
     'openkit_status: active',
     'status: stable',

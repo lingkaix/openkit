@@ -13,7 +13,7 @@ import {
 } from './schema-evolution.js';
 
 /** Current workspace export format version. */
-export const WORKSPACE_EXPORT_FORMAT_VERSION = 3;
+export const WORKSPACE_EXPORT_FORMAT_VERSION = 1;
 
 /** Current data-root backup manifest format version. */
 export const DATA_ROOT_BACKUP_FORMAT_VERSION = 1;

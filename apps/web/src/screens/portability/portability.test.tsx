@@ -91,7 +91,7 @@ const MANIFEST = {
   sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
   workspaceId: WORKSPACE.id,
   exportCreatedAt: TIMESTAMP,
-  exportFormatVersion: 3 as const,
+  exportFormatVersion: 1 as const,
   contentInventory: CONTENT_INVENTORY,
 };
 

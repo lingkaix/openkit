@@ -56,7 +56,7 @@ async function createStrictKnowledgeProposal(store: FsStore, workspaceId: string
     '---',
     'type: "KnowledgePage"',
     'title: "Canonical proposal"',
-    'schema_version: "openkit-scope-knowledge-schema-v4"',
+    'schema_version: "openkit-scope-knowledge-schema-v1"',
     'openkit_status: "active"',
     'status: "stable"',
     `scope: {kind: workspace, workspaceId: ${workspaceId}}`,

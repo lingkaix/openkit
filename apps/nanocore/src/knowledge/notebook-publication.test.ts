@@ -378,7 +378,7 @@ describe('Notebook publication through existing Audit and command receipts', () 
     const content = `---
 type: KnowledgePage
 title: Human note
-schema_version: openkit-scope-knowledge-schema-v4
+schema_version: openkit-scope-knowledge-schema-v1
 required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable
@@ -408,7 +408,7 @@ Exact human body.\r\n\t  `;
     const content = `---
 type: KnowledgePage
 title: Agent note
-schema_version: openkit-scope-knowledge-schema-v4
+schema_version: openkit-scope-knowledge-schema-v1
 required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable
@@ -477,7 +477,7 @@ Exact Agent body.\r\n\t  `;
     const page = `---
 type: KnowledgePage
 title: Topic
-schema_version: openkit-scope-knowledge-schema-v4
+schema_version: openkit-scope-knowledge-schema-v1
 required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable

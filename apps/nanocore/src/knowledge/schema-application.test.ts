@@ -23,7 +23,7 @@ import {
 } from './schema-application.js';
 
 const previousSchemaText = [
-  'schema_version: "openkit-scope-knowledge-schema-v4"',
+  'schema_version: "openkit-scope-knowledge-schema-v1"',
   'status: active',
   'allowed_types: [KnowledgePage]',
   'allowed_statuses: [stable]',

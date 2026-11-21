@@ -47092,7 +47092,7 @@
               },
               "exportFormatVersion": {
                 "type": "number",
-                "const": 3
+                "const": 1
               },
               "contentInventory": {
                 "type": "array",
@@ -183314,5 +183314,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:9b638b6b6f4af8bb87765583703c622415eb99b304f4cfe557885bb0cbac0a16"
+  "x-openkit-source-digest": "sha256:31dacf0e94e681228672b71fa9ba0bc0350c0a63a41509e38a0c5fcc9befffd2"
 }

@@ -55,7 +55,7 @@ function gatewayPackage(declarations: unknown[] = []) {
   const inputs = workerSessionInputPaths(SESSION);
   const capture = workerTurnCapturePaths(THREAD, 'codex', TURN);
   return {
-    schemaVersion: 4,
+    schemaVersion: 1,
     packageId: 'synthetic-package',
     snapshotId: 'synthetic-snapshot',
     createdAt: '2099-01-02T03:04:05.000Z',

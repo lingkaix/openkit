@@ -670,7 +670,7 @@ function workspaceExportResponse() {
       sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       exportCreatedAt: timestamp,
-      exportFormatVersion: 3,
+      exportFormatVersion: 1,
       contentInventory: [
         {
           path: 'records/workspace-record.json',

@@ -46,7 +46,7 @@ function exportManifest(overrides: Record<string, unknown> = {}) {
     sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
     workspaceId,
     exportCreatedAt: timestamp,
-    exportFormatVersion: 3,
+    exportFormatVersion: 1,
     contentInventory: [
       {
         path: 'records/workspace-record.json',

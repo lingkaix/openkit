@@ -66,7 +66,7 @@ const PORTABLE_PAGES = {
     '---\ntype: "KnowledgePage"\ntitle: "Owned"\nopenkit_entry_id: "kn_owned"\n---\nOwned page.\n',
 } as const;
 
-/** Valid v4 scope schema. The description is the marker export must keep byte for byte. */
+/** Valid v1 scope schema. The description is the marker export must keep byte for byte. */
 const PORTABLE_SCOPE_SCHEMA_TEXT = `${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.trimEnd()}
 description: "Portable export schema marker"
 `;

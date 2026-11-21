@@ -93,7 +93,7 @@ function page(f: Awaited<ReturnType<typeof fixture>>, sourceReferences: string[]
     '---',
     'type: KnowledgePage',
     'title: Admission note',
-    'schema_version: openkit-scope-knowledge-schema-v4',
+    'schema_version: openkit-scope-knowledge-schema-v1',
     'required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_status: active',
     'status: stable',

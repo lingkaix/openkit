@@ -68,7 +68,7 @@ export interface ResidentTurnRouteTokens {
 export interface ResidentTurnOptions {
   /** Adapter fixed by the owning Harness. */
   readonly adapterId: string;
-  /** Session-static native holder selected from the original admitted current-v4 package. */
+  /** Session-static native holder selected from the original admitted current version 1 package. */
   readonly hostManagedLogin?: boolean;
   /** Exact session credential values excluded from diagnostics, output, and publication. */
   readonly credentialValues: readonly string[];

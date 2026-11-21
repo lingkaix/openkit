@@ -920,7 +920,7 @@ describe('agent environment package resolver', () => {
       workspaceRoots: [],
     });
 
-    expect(resolved.schemaVersion).toBe(4);
+    expect(resolved.schemaVersion).toBe(1);
     expect(resolved.scope.triggerActor).toEqual(AUTOMATION_TRIGGER_ACTOR);
     expect(resolved.scope).not.toHaveProperty('userId');
     expect(resolved.scope).not.toHaveProperty('automationId');
@@ -1231,7 +1231,7 @@ describe('agent environment package resolver', () => {
       }),
     });
 
-    expect(resolved.schemaVersion).toBe(4);
+    expect(resolved.schemaVersion).toBe(1);
     expect(resolved.control).toMatchObject({
       mode: 'sandbox-integration',
       bindings: {

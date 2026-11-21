@@ -124,7 +124,7 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
           'allowed_sensitivities',
           'allowed_freshness',
         ],
-        validationRules: ['openkit-knowledge-profile-v4'],
+        validationRules: ['openkit-knowledge-profile-v1'],
         reviewRequirements: [
           'active_retrieval',
           'required_fields',
@@ -292,7 +292,7 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
         'note.md': `---
 type: KnowledgePage
 title: Authored note
-schema_version: openkit-scope-knowledge-schema-v4
+schema_version: openkit-scope-knowledge-schema-v1
 required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable
@@ -387,7 +387,7 @@ User-authored note.
     ) => `---
 type: KnowledgePage
 title: ${title}
-schema_version: openkit-scope-knowledge-schema-v4
+schema_version: openkit-scope-knowledge-schema-v1
 required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable

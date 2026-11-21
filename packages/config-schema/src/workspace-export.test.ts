@@ -31,7 +31,7 @@ function manifest() {
     sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     exportCreatedAt: timestamp,
-    exportFormatVersion: 3,
+    exportFormatVersion: 1,
     contentInventory: [
       {
         path: 'records/workspace-record.json',
@@ -48,6 +48,10 @@ describe('workspace export manifest schema', () => {
     expect(parseWorkspaceExportManifest(manifest()).contentInventory[0]?.path).toBe(
       'records/workspace-record.json'
     );
+  });
+
+  it('refuses the retired export format version', () => {
+    expect(() => parseWorkspaceExportManifest({ ...manifest(), exportFormatVersion: 3 })).toThrow();
   });
 
   it('rejects an unsupported envelope major before decoding family payload fields', () => {

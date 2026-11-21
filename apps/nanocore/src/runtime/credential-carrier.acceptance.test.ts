@@ -1502,7 +1502,7 @@ describe('typed native helper admission owner boundaries', () => {
           requestId: f.entry.requestId,
           workspaceRoots: [],
         });
-        expect(preview.schemaVersion).toBe(4);
+        expect(preview.schemaVersion).toBe(1);
         expect(
           preview.credentials.declarations.some(
             (entry) => entry.id === 'native_helper' && entry.vaultGrantId === f.grantId

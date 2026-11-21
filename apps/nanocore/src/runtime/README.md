@@ -452,7 +452,7 @@ Native Worker entry points supply their known cause through the existing Turn `t
 
 Turn feedback checks the shared retained v1 marker before its fixed native history decoder. New files and updates publish v1 explicitly; unsupported versions remain unchanged. Current API fields are projected separately, and safe root/history annotations survive native updates.
 
-Runtime JSON-bearing SQL records use the shared retained row marker before their existing native decoders, replay checks and reachable payload replacement. The marker does not change lifecycle or grant new authority. AEP snapshot files carry an outer v1 marker independently of embedded AEP v4. Normalized provenance rows also carry v1; raw runtime streams and their existing manifests remain unchanged.
+Runtime JSON-bearing SQL records use the shared retained row marker before their existing native decoders, replay checks and reachable payload replacement. The marker does not change lifecycle or grant new authority. AEP snapshot files carry an outer v1 marker independently of embedded AEP v1. Normalized provenance rows also carry v1; raw runtime streams and their existing manifests remain unchanged.
 
 AEP snapshot files use the shared retained v1 header and a fixed native outer metadata decoder. The embedded versioned AEP keeps its existing redaction, native-environment, lineage and original-byte digest checks; App API object schemas do not select retained file meaning.
 
@@ -525,7 +525,7 @@ Worker MCP sessions copy their admitted non-secret Vault grant identities into t
 
 Pending Request admission counts raw outstanding and unknown lifecycle rows toward the existing per-Thread bound, including unreadable payloads. Archive requires a complete decoded census of its exact Thread before effects; inspection still omits malformed individual records and unrelated Threads remain usable. See [Pending Requests](../../../../docs/specs/20260930-pending_requests.md). Command-intent repeats reuse the original pending request before the bound and native Item publication when the Workspace, Thread, requester kind and identity, responsible human and canonical exact intent match. A different requester or effect remains distinct; captured MCP calls retain their separate qualified-binding comparison.
 
-Version-four Agent Environment Package inference uses only the governed Gateway mode and its local Integration binding. The producer has no direct-provider or backend-local inference branch; runtime provenance keeps its existing capability and path requirements.
+Version 1 Agent Environment Package inference uses only the governed Gateway mode and its local Integration binding. The producer has no direct-provider or backend-local inference branch; runtime provenance keeps its existing capability and path requirements.
 
 Worker Context Package Material selection applies the existing explicit, sensitivity, current Kernel policy and package-allowance predicates in order. Policy dependency or source-integrity failures refuse acceptance; a verified policy-allowed candidate loses only when its bounded representation cannot fit after the required request, and excluded candidates supply no package bytes or consumed queue. Restricted exclusions retain the first matching reason, so an explicit exclusion precedes restricted sensitivity without permitting any excluded bytes.
 
