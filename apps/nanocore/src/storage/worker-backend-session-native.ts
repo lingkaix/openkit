@@ -25,8 +25,11 @@ export function applyControlBackendSession(
   db: CoreDb | { readonly scope: 'nanohost'; readonly sqlite: Database.Database },
   input: ControlBackendSessionInput
 ) {
-  if (input.kind === 'transition' || input.kind === 'handoff')
+  if (input.kind === 'transition' || input.kind === 'handoff') {
+    if (db.scope !== 'core' && input.kind === 'transition' && input.toState === 'launching')
+      throw new BackendSessionRefusal('Backend session launch requires deciding Core authority.');
     return applyNanoHostLocalBackendSession(db, input);
+  }
   assertControlProductWriter(db.sqlite);
   if (db.scope !== 'core')
     throw new BackendSessionRefusal('Backend session tuple requires deciding Core authority.');
