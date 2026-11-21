@@ -2414,13 +2414,29 @@ describe('admitted NanoHost owner worker', () => {
         outcome: { kind: 'success', imageDigest: `sha256:${'f'.repeat(64)}` },
       },
     } as const;
+    const activation = {
+      kind: 'environment',
+      candidate: {
+        authoredArtifactId: image.value.authoredArtifactId,
+        authoredArtifactVersion: image.value.authoredArtifactVersion,
+        authoredContentDigest: image.value.authoredContentDigest,
+        inputDigest: image.value.inputDigest,
+      },
+      environment: {
+        imageDigest: image.value.outcome.imageDigest,
+        defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+        values: {},
+      },
+    } as const;
     let enabled = true;
     let imageAuthorized = false;
     let workspace: ReturnType<typeof openWorkspaceDb> | undefined;
     const f = await nanoHostWorkerFixture(
       {
         enabled: () => enabled,
-        verifyImagePublication: (input) => imageAuthorized && isDeepStrictEqual(input, image),
+        verifyImagePublication: (input) =>
+          imageAuthorized &&
+          (isDeepStrictEqual(input, image) || isDeepStrictEqual(input, activation)),
         verifyStorageBinding: (input) =>
           input.kind === 'create-and-reserve' &&
           input.workspaceId === workspaceId &&
@@ -2536,6 +2552,20 @@ describe('admitted NanoHost owner worker', () => {
     ).resolves.toMatchObject({
       state: 'ready',
     });
+    Atomics.store(f.gate, 1, 0);
+    Atomics.store(f.gate, 0, 0);
+    const activating = f.owner.workerImage(activation);
+    try {
+      await waitForHold(f.gate);
+      expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+        state: 'ready',
+        value: { ready: true, physicalEpoch: nanoHostReady.physicalEpoch, connectionGeneration: 1 },
+      });
+      expect(f.owner.read(() => 'unacknowledged')).toEqual(nanoHostHeld);
+    } finally {
+      release(f.gate);
+    }
+    await expect(activating).resolves.toBeUndefined();
     await expect(
       f.owner.harnessLifecycle({
         kind: 'runtime.create',
