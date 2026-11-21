@@ -74,9 +74,14 @@ import { getWorkerBackendSession } from '../runtime/worker-backend-session-recor
 import { prepareWorkerStorageContributor } from '../runtime/worker-storage-binding-records.js';
 import { recordWorkspaceBackendHandoff } from '../runtime/workspace-backend-handoff.js';
 import {
+  buildWorkspaceInputSnapshots,
+  buildWorkspaceMaterializationRecords,
+} from '../runtime/workspace-materializer.js';
+import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
@@ -1600,16 +1605,40 @@ describe('admitted NanoHost owner worker', () => {
         const workspaceId = DEMO_WORKSPACE_ID;
         const ownerUserId = ensureLocalUser(core);
         recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId });
-        const turnId = allocateEntityId('tu');
-        const threadId = DEMO_THREAD_ID;
-        const agentSessionId = allocateEntityId('as');
-        const packageSnapshotId = 'self-check-package-original';
+        const triggerActor = { kind: 'user' as const, id: ownerUserId };
+        if (!selfCheck) ensureWorkspaceLayout(f.root, workspaceId);
+        const workspace = selfCheck ? null : openWorkspaceDb(f.root, workspaceId);
+        if (workspace) {
+          nativeHandles.push(workspace);
+          applyScopedMigrations(workspace);
+          const scope = nativeProductScope(f.root, { kind: 'workspace', workspaceId });
+          await f.writer.open({
+            database: `workspace:${scope.path}`,
+            path: scope.path,
+            dataRoot: f.root,
+            create: false,
+            initialize: 'workspace',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          });
+        }
+        const pkg = workspace
+          ? await recordTestAgentEnvironmentPackage(workspace, {
+              suffix: 'worker_submission',
+              triggerActor,
+              workspaceInputIds: ['repo'],
+            })
+          : null;
+        const turnId = pkg?.scope.turnId ?? allocateEntityId('tu');
+        const threadId = pkg?.scope.threadId ?? DEMO_THREAD_ID;
+        const agentSessionId = pkg?.scope.agentSessionId ?? allocateEntityId('as');
+        const packageSnapshotId = pkg?.snapshotId ?? 'self-check-package-original';
         const sandboxBindingRef = 'self-check-sandbox-original';
         const when = new Date().toISOString();
         const entry = createSchedulerAdmissionEntry(core, {
           queueEntryId: 'self-check-worker-route',
           backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: ownerUserId },
+          triggerActor,
           workspaceId,
           threadId,
           turnId,
@@ -1655,7 +1684,7 @@ describe('admitted NanoHost owner worker', () => {
             stagingDirectoryRef: 'self-check-workspace-staging',
             transientProviderInstanceId: null,
           },
-          backendVersion: null,
+          backendVersion: pkg ? '0.0.80' : null,
           backendLineage: { kind: 'reference', imageRef: 'fixture-image' },
           lineage: { threadId, turnId, workspaceId },
           sandboxBindingRef,
@@ -1697,6 +1726,53 @@ describe('admitted NanoHost owner worker', () => {
         ).toEqual({ state: 'ready', value: [{ attempt_id: attempt.attemptId }] });
         const backend = { attemptId: attempt.attemptId, observedAt: when };
         if (!selfCheck) {
+          const attachment = {
+            kind: 'create-and-reserve' as const,
+            workspaceId,
+            threadId,
+            agentSessionId,
+            responsibleUserId: ownerUserId,
+            purpose: 'work' as const,
+            storageRef: 'original-live-attachment',
+            runtimeTargetId: nanoHostTarget.targetId,
+            deploymentId,
+            layout: {
+              family: 'openkit-worker',
+              version: '1',
+              uid: 1000,
+              gid: 1000,
+              workingDirectory: '/workspace',
+              platform: { architecture: 'amd64', os: 'linux' },
+              targets: [{ target: '/workspace' }],
+            },
+            expectedRevision: 1,
+            now: when,
+          };
+          const contributor = prepareWorkerStorageContributor(
+            { storageRef: attachment.storageRef, workspaceId, contributors: [] },
+            attachment,
+            when,
+            1
+          );
+          const guard = vi.fn(() => true);
+          Atomics.store(f.gate, 1, 0);
+          Atomics.store(f.gate, 0, 0);
+          const reserving = f.owner.writeStorageAttachment(
+            { ...attachment, authorizedContributorRefs: [contributor.contributorRef] },
+            { attemptId: attempt.attemptId, verifyBeforePost: guard }
+          );
+          try {
+            await waitForHold(f.gate);
+            expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+              state: 'ready',
+              value: { connectionGeneration: 1, ready: true, deploymentId },
+            });
+            expect(f.owner.read(() => true)).toMatchObject({ state: 'unavailable' });
+          } finally {
+            release(f.gate);
+          }
+          await expect(reserving).resolves.toMatchObject({ state: 'reserved' });
+          expect(guard).toHaveBeenCalledTimes(1);
           await expect(
             f.writer.backendSession(f.coreKey, {
               kind: 'transition',
@@ -1720,6 +1796,75 @@ describe('admitted NanoHost owner worker', () => {
           await expect(
             f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend })
           ).resolves.toMatchObject({ state: 'materialized', workspaceHandoffState: 'complete' });
+          if (!workspace || !pkg) throw new Error('Expected the original Workspace package.');
+          await expect(f.owner.firstSubmission(backend)).rejects.toThrow(
+            'The original execution grant is unavailable.'
+          );
+          expect(requireSchedulerExecutionAttempt(core, attempt.attemptId).operationId).toBeNull();
+          const inputSnapshots = buildWorkspaceInputSnapshots({
+            backendCapabilities: ['trusted-worker-inference-relay'],
+            backendKind: 'openshell',
+            createdAt: when,
+            environmentPackage: pkg,
+          });
+          await recordWorkspaceBackendHandoff(
+            workspace,
+            inputSnapshots,
+            buildWorkspaceMaterializationRecords({
+              createdAt: when,
+              inputSnapshots,
+              materialization: {
+                backendKind: 'openshell',
+                backendStatus: { health: 'ready', version: materializing.backendVersion! },
+                packageSnapshotId,
+                requiredCapabilities: pkg.backend.requiredCapabilities,
+                sandbox: { name: materializing.identity.backendSessionId, state: 'created' },
+                workspaceInputs: pkg.workspace.inputs.map(({ id, target }) => ({ id, target })),
+              },
+            })
+          );
+          Atomics.store(f.gate, 3, 0);
+          Atomics.store(f.gate, 4, f.corePath.length);
+          for (let index = 0; index < f.corePath.length; index++)
+            Atomics.store(f.gate, 5 + index, f.corePath.charCodeAt(index));
+          Atomics.store(f.gate, 1, 0);
+          Atomics.store(f.gate, 0, 0);
+          const submission = f.owner.firstSubmission(backend);
+          let acknowledged = false;
+          void submission.then(
+            () => {
+              acknowledged = true;
+            },
+            () => {}
+          );
+          try {
+            await waitForHold(f.gate);
+            expect(Atomics.load(f.gate, f.gate.length - 1)).toBe(2);
+            expect(acknowledged).toBe(false);
+            expect(requireSchedulerExecutionAttempt(core, attempt.attemptId).operationId).toBe(
+              commandInputHash({
+                attemptId: attempt.attemptId,
+                inputRef: packageSnapshotId,
+                operation: 'submit',
+              })
+            );
+            await expect(f.writer.pauseForDataRootBackup()).rejects.toMatchObject({
+              code: 'busy',
+              commit: 'not-committed',
+            });
+            await expect(f.owner.firstSubmission(backend)).rejects.toMatchObject({
+              code: 'busy',
+              commit: 'not-committed',
+            });
+          } finally {
+            release(f.gate);
+          }
+          const original = await submission;
+          expect(original.state).toBe('admitted-now');
+          await expect(f.owner.firstSubmission(backend)).resolves.toEqual({
+            state: 'inspect-original',
+            attempt: original.attempt,
+          });
           expectNanoHostTablesAbsent(f.corePath, 'worker_backend_sessions');
           await f.writer.closeServerOwner(f.root, 'nanohost');
           expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({

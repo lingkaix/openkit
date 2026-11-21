@@ -557,6 +557,13 @@ const bootResult = await runBootPhases({
               nanoHostStorage.state === 'ready'
                 ? { state: 'ready', value: nanoHostStorage.value.owner }
                 : nanoHostStorage,
+            ...(nanoHostStorage.state === 'ready'
+              ? {
+                  admitSubmission: nanoHostStorage.value.owner.firstSubmission,
+                  harnessTurnLifecycle: nanoHostStorage.value.owner.harnessTurnLifecycle,
+                  writeStorageAttachment: nanoHostStorage.value.owner.writeStorageAttachment,
+                }
+              : {}),
           },
           releaseIdentity: requireBootValue(releaseIdentity, 'Release identity was not read.'),
           store: recoveryStore,
