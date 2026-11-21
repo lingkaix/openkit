@@ -156,6 +156,10 @@ import {
   ControlAutomationScannerResultSchema,
   ControlAutomationScannerSchema,
 } from './automation-scanner-codecs.js';
+import type {
+  CommunicationWriterCommand,
+  CommunicationWriterReply,
+} from './communication-writer.js';
 import {
   type ControlAdmissionInput,
   ControlAdmissionInputSchema,
@@ -931,6 +935,8 @@ export type ControlWorkerCommand =
           readonly physicalScope?: ControlAppScope;
           /** Independent service or extension writer with no legacy raw SQL entry. */
           readonly serverOwner?: ServerOwnerDescriptor;
+          /** One trusted live policy cell captured by the Communication owner OPEN. */
+          readonly communicationExpiryPolicy?: SharedArrayBuffer;
           /** Exact admitted root for same-connection scoped domain bodies; never inferred from a caller-selected database key. */
           readonly dataRoot?: string;
           /** Admitted private Storage binding; never derived from an incoming content locator. */
@@ -1012,6 +1018,11 @@ export type ControlWorkerCommand =
           readonly operation: 'nanohost-owner';
           readonly openingRequestId: number;
           readonly mutation: NanoHostOwnerMutation;
+        }
+      | {
+          readonly operation: 'communication-owner';
+          readonly openingRequestId: number;
+          readonly mutation: CommunicationWriterCommand;
         }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
@@ -1318,7 +1329,16 @@ interface OrdinaryControlWorkerDomainRefusal {
 }
 
 /** Existing native refusals plus the sharing family's exact current-record projection. */
+const communicationOwnerRefusalSchema = z.strictObject({
+  operation: z.literal('communication-owner'),
+  kind: z.enum(['attention', 'operation']),
+  code: z.string().min(1).max(96),
+  message: z.string().min(1).max(512),
+  status: z.union([z.literal(400), z.literal(403), z.literal(404), z.literal(409), z.literal(503)]),
+});
+
 export type ControlWorkerDomainRefusal =
+  | z.infer<typeof communicationOwnerRefusalSchema>
   | z.infer<typeof ControlSecurityTriggerRefusalSchema>
   | z.infer<typeof ControlPrivateWorkspaceRefusalSchema>
   | OrdinaryControlWorkerDomainRefusal
@@ -1421,6 +1441,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'nanohost-owner';
       readonly result: NanoHostOwnerMutationResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'communication-owner';
+      readonly result: CommunicationWriterReply;
     }
   | {
       readonly status: 'ok';
@@ -1837,6 +1862,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlWorkerImageRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'nanohost-owner')
     return NanoHostOwnerRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'communication-owner')
+    return communicationOwnerRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'runtime-target')
     return ControlRuntimeTargetRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'backend-session')
@@ -1999,6 +2026,12 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
       nanoHostOwnerResultSchema.safeParse(reply.result).success
+    );
+  if (reply.operation === 'communication-owner')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      isRecord(reply.result) &&
+      typeof reply.result.stage === 'string'
     );
   if (reply.operation === 'nanohost-transport')
     return ControlNanoHostTransportResultSchema.safeParse(reply.result).success;
@@ -2458,13 +2491,26 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(
         value,
         [...scoped, 'path', 'create'],
-        ['initialize', 'productOwner', 'physicalScope', 'dataRoot', 'contentMount', 'serverOwner']
+        [
+          'initialize',
+          'productOwner',
+          'physicalScope',
+          'dataRoot',
+          'contentMount',
+          'serverOwner',
+          'communicationExpiryPolicy',
+        ]
       ) &&
       typeof value.path === 'string' &&
       isAbsolute(value.path) &&
       typeof value.create === 'boolean' &&
       (value.dataRoot === undefined ||
         (typeof value.dataRoot === 'string' && isAbsolute(value.dataRoot))) &&
+      (value.communicationExpiryPolicy === undefined ||
+        (isRecord(value.serverOwner) &&
+          value.serverOwner.owner === 'communication' &&
+          value.communicationExpiryPolicy instanceof SharedArrayBuffer &&
+          value.communicationExpiryPolicy.byteLength === BigInt64Array.BYTES_PER_ELEMENT)) &&
       (value.serverOwner === undefined ||
         (isRecord(value.serverOwner) &&
           exactFields(value.serverOwner, ['owner']) &&
@@ -2608,6 +2654,15 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       Number.isSafeInteger(value.openingRequestId) &&
       (value.openingRequestId as number) >= 0 &&
       nanoHostOwnerMutationSchema.safeParse(value.mutation).success
+    );
+  if (value.operation === 'communication-owner')
+    return (
+      exactFields(value, [...scoped, 'openingRequestId', 'mutation']) &&
+      Number.isSafeInteger(value.openingRequestId) &&
+      (value.openingRequestId as number) >= 0 &&
+      isRecord(value.mutation) &&
+      typeof value.mutation.stage === 'string' &&
+      Buffer.byteLength(JSON.stringify(value.mutation)) <= CONTROL_PRODUCT_LIMITS.metadataBytes
     );
   if (value.operation === 'nanohost-transport')
     return (

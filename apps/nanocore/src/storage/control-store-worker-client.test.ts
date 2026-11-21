@@ -22,6 +22,7 @@ import { allocateEntityId, type Item, writeRetainedV1 } from '@openkit/protocol'
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { prepareCommunicationOwner } from '../app.js';
 import { listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
 import type { ControlNanoHostTransportInput } from '../auth/nanohost-transport-codecs.js';
 import { listNanoHostTransportTokenRecords } from '../auth/nanohost-transport-token-store.js';
@@ -57,6 +58,7 @@ import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import { commandRequestKey, getCommandRequestRecord } from './command-request-records.js';
+import { communicationOwner } from './communication-owner.js';
 import { admitCoreScheduler } from './control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
@@ -373,6 +375,145 @@ afterEach(async () => {
   interception.workers.length = 0;
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+/** Real split owner writer and test-only gated Kernel receipt handle. */
+async function communicationWorkerFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'control-communication-')));
+  roots.push(root);
+  ensureLayout(root);
+  initializeTestCore(root);
+  const coreDb = openCoreDb(root);
+  nativeHandles.push(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  const writer = getControlStoreWorkerClient();
+  client = writer;
+  const corePath = coreDbPath(root);
+  await writer.open({
+    database: `core:${corePath}`,
+    path: corePath,
+    create: false,
+    initialize: 'core',
+    productOwner: { kind: 'server' },
+    dataRoot: root,
+  });
+
+  const unexpected = async (): Promise<never> => {
+    throw new Error('Unexpected Kernel receipt call.');
+  };
+  const kernel = {
+    status: () => ({ state: 'ready', owner: 'control-kernel' }) as const,
+    reserveChannelInbound: unexpected,
+    inspectChannelInbound: unexpected,
+    bindChannelInboundOrigin: unexpected,
+    settleChannelInbound: unexpected,
+    inspectPairingAudit: unexpected,
+    relayPairingAudit: unexpected,
+  };
+  const input = { coreDb, mode: 'local' as const };
+  await expect(prepareCommunicationOwner(input)).resolves.toEqual({
+    state: 'unavailable',
+    owner: 'control-kernel',
+    reason: 'missing',
+  });
+  expect(existsSync(serverStoragePath(root, 'communication'))).toBe(false);
+  await expect(writer.provisionServerOwner(root, communicationOwner)).resolves.toEqual({
+    state: 'ready',
+    owner: 'communication',
+  });
+  const bound = await prepareCommunicationOwner({ ...input, kernel });
+  if (bound.state !== 'ready') throw new Error(`Communication binding failed: ${bound.reason}`);
+  return { root, writer, binding: bound.value, userId };
+}
+
+it('joins the Communication producer before the common cut and refuses a closed Workspace', async () => {
+  const { root, writer, binding, userId } = await communicationWorkerFixture();
+  const { attention } = binding.owners;
+  const workspaceId = allocateEntityId('ws');
+  const selection = {
+    source: {
+      kind: 'approval-request' as const,
+      workspaceId,
+      threadId: allocateEntityId('th'),
+      requestId: 'ap_communication_binding',
+    },
+    recipientUserId: userId,
+  };
+  const held = { state: 'unavailable', owner: 'communication', reason: 'recovery-required' };
+
+  writer.restoreWorkspaceMutationsClosed(root, workspaceId);
+  const probe = vi.fn(async () => undefined);
+  await expect(attention.withWorkspace(workspaceId, probe)).resolves.toEqual(held);
+  expect(probe).not.toHaveBeenCalled();
+  writer.reopenWorkspaceMutations(root, workspaceId);
+
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const original = attention.withWorkspace(workspaceId, async () => {
+    entered.resolve();
+    await release.promise;
+    return attention.enqueue(selection);
+  });
+  await entered.promise;
+  const acquired = vi.fn();
+  const cut = writer.pauseForDataRootBackup().then((resume) => {
+    acquired();
+    return resume;
+  });
+  try {
+    await expect(binding.withProducer(probe)).resolves.toEqual(held);
+    expect(acquired).not.toHaveBeenCalled();
+  } finally {
+    release.resolve();
+  }
+  await expect(original).resolves.toMatchObject({
+    state: 'ready',
+    value: { state: 'ready', value: { source: selection.source, status: 'queued' } },
+  });
+  const resume = await cut;
+  try {
+    expect(acquired).toHaveBeenCalledOnce();
+    await expect(binding.withProducer(probe)).resolves.toEqual(held);
+  } finally {
+    resume();
+  }
+  await expect(binding.withProducer(probe)).resolves.toMatchObject({ state: 'ready' });
+  expect(probe).toHaveBeenCalledOnce();
+  await writer.closeServerOwner(root, 'communication');
+  expect(attention.read(() => true)).toEqual(held);
+  expect(existsSync(serverStoragePath(root, 'communication'))).toBe(true);
+});
+
+it('reads the live Communication expiry policy in the real writer after the retention drain', async () => {
+  const { binding, userId } = await communicationWorkerFixture();
+  const actor = { kind: 'local' as const, userId };
+  const { communication } = binding.owners;
+  const selection = { kind: 'expire' as const };
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const oldProducer = binding.withProducer(async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  await entered.promise;
+  binding.setExpiryAgeMs(1_000);
+  const retained = communication.runRetention(actor, randomUUID(), selection);
+  try {
+    binding.setExpiryAgeMs(undefined);
+  } finally {
+    release.resolve();
+  }
+  await oldProducer;
+  await expect(retained).resolves.toEqual({
+    state: 'unavailable',
+    owner: 'communication',
+    reason: 'disabled',
+  });
+  binding.setExpiryAgeMs(1_000);
+  await expect(communication.runRetention(actor, randomUUID(), selection)).resolves.toMatchObject({
+    state: 'ready',
+    value: { challenges: 0, auditEventId: expect.any(String) },
+  });
 });
 
 const nanoHostReaders = {

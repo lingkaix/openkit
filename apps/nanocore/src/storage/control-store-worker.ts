@@ -167,6 +167,10 @@ import { applyControlAttentionAttemptClaim } from './attention-attempt-claim-nat
 import { applyControlAttentionAttemptCompletion } from './attention-attempt-completion-native.js';
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
 import {
+  applyCommunicationWriterCommand,
+  CommunicationWriterCommandSchema,
+} from './communication-writer.js';
+import {
   ControlStoreBusyError,
   ControlStoreNoSpaceError,
   controlStoreFor,
@@ -290,7 +294,7 @@ import {
   applyControlExecutionAttempt,
   controlExecutionAttemptLanes,
 } from './execution-attempt-native.js';
-import { coreDbPath, workspaceDbPath } from './fs-layout.js';
+import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import { HarnessLifecycleRefusal } from './harness-lifecycle-codecs.js';
 import { applyControlHarnessLifecycle } from './harness-lifecycle-native.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
@@ -466,6 +470,7 @@ type WriteCommand = Extract<
       | 'better-auth'
       | 'vault'
       | 'runtime-policy-publication'
+      | 'communication-owner'
       | 'nanohost-owner'
       | 'nanohost-transport'
       | 'worker-control-evidence'
@@ -565,6 +570,12 @@ interface OwnedDatabase {
   readonly productOwner: ControlProductOwner | undefined;
   readonly physicalScope: ControlAppScope | undefined;
   readonly serverOwner: ServerOwnerDescriptor['owner'] | undefined;
+  readonly communication:
+    | {
+        readonly dataRoot: string;
+        readonly expiryPolicy: BigInt64Array | undefined;
+      }
+    | undefined;
   readonly contentMount: ControlProductContentMount | undefined;
   readonly pending: WriteRequest[];
   readonly publications: ControlContentPreparation['publications'];
@@ -1090,6 +1101,25 @@ function domainRefusal(
     error instanceof RuntimeTargetRefusal
   )
     return { operation, code: 'runtime_target_refused', message: error.message, status: 409 };
+  if (operation === 'communication-owner') {
+    if (error instanceof AttentionError)
+      return { operation, kind: 'attention', code: error.code, message: error.code, status: 409 };
+    if (
+      error instanceof OperationError &&
+      (error.status === 400 ||
+        error.status === 403 ||
+        error.status === 404 ||
+        error.status === 409 ||
+        error.status === 503)
+    )
+      return {
+        operation,
+        kind: 'operation',
+        code: error.code,
+        message: error.message,
+        status: error.status,
+      };
+  }
   if (operation === 'execution-attempt' && error instanceof ExecutionAttemptRefusal)
     return { operation, code: 'attempt_refused', message: error.message, status: 409 };
   if (operation === 'harness-lifecycle' && error instanceof HarnessLifecycleRefusal)
@@ -3460,6 +3490,36 @@ function flush(owner: OwnedDatabase): void {
               operation: 'nanohost-owner',
               result: applyNanoHostOwnerMutation(owner, request.openingRequestId, request.mutation),
             };
+          } else if (request.operation === 'communication-owner') {
+            const file = lstatSync(owner.path, { throwIfNoEntry: false });
+            if (
+              owner.openingRequestId !== request.openingRequestId ||
+              !file?.isFile() ||
+              file.nlink !== 1 ||
+              `${file.dev}:${file.ino}` !== owner.identity ||
+              realpathSync(owner.path) !== owner.path
+            )
+              throw new ServerOwnerAdmissionError('recovery-required');
+            const communication = owner.communication;
+            if (!communication) throw new ServerOwnerAdmissionError('recovery-required');
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'communication-owner',
+              result: applyCommunicationWriterCommand(
+                owner.sqlite,
+                readDataRootLayoutMarker(communication.dataRoot).deploymentId,
+                request.mutation,
+                Date.now,
+                () => {
+                  const value = communication.expiryPolicy
+                    ? Atomics.load(communication.expiryPolicy, 0)
+                    : 0n;
+                  return value === 0n ? undefined : Number(value);
+                }
+              ),
+            };
           } else if (request.operation === 'nanohost-transport') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlNanoHostTransport(owner.scopeDb, request.input);
@@ -4389,6 +4449,15 @@ async function openDatabase(request: OpenRequest): Promise<void> {
         productOwner: request.productOwner,
         physicalScope: request.physicalScope,
         serverOwner: split?.owner,
+        communication:
+          split?.owner === 'communication'
+            ? {
+                dataRoot: dataRoot!,
+                expiryPolicy: request.communicationExpiryPolicy
+                  ? new BigInt64Array(request.communicationExpiryPolicy)
+                  : undefined,
+              }
+            : undefined,
         contentMount,
         pending: [],
         publications: new Map(),
@@ -4647,12 +4716,21 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       return;
     }
     if (
-      value.operation === 'nanohost-owner'
-        ? owner.serverOwner !== 'nanohost'
-        : owner.serverOwner &&
-          value.operation !== 'close' &&
-          value.operation !== 'checkpoint' &&
-          value.operation !== 'reclaim'
+      value.operation === 'communication-owner' &&
+      !CommunicationWriterCommandSchema.safeParse(value.mutation).success
+    ) {
+      reply(failure(value.id, 'invalid-request'));
+      return;
+    }
+    if (
+      value.operation === 'communication-owner'
+        ? owner.serverOwner !== 'communication'
+        : value.operation === 'nanohost-owner'
+          ? owner.serverOwner !== 'nanohost'
+          : owner.serverOwner &&
+            value.operation !== 'close' &&
+            value.operation !== 'checkpoint' &&
+            value.operation !== 'reclaim'
     ) {
       reply(failure(value.id, 'precondition'));
       return;
@@ -4690,6 +4768,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'better-auth' ||
       value.operation === 'runtime-policy-publication' ||
       value.operation === 'vault' ||
+      value.operation === 'communication-owner' ||
       value.operation === 'nanohost-owner' ||
       value.operation === 'nanohost-transport' ||
       value.operation === 'worker-control-evidence' ||

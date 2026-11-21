@@ -20,6 +20,7 @@ import {
   ControlLocalIdentityResultSchema,
 } from '../auth/local-identity-codecs.js';
 import { assertScopeAdmitted } from '../bootstrap/readiness.js';
+import type { DiscordChannelOwners } from '../channel-services.js';
 import {
   type ControlDiscordChannelInput,
   ControlDiscordChannelInputSchema,
@@ -60,12 +61,24 @@ import type {
   ControlAutomationScanner,
   ControlAutomationScannerResult,
 } from './automation-scanner-codecs.js';
+import type { CommunicationAttentionOwner } from './communication-attention.js';
+import type {
+  CommunicationDiscordWrites,
+  PairingAuthorityObservation,
+  WithPairingAuthority,
+} from './communication-discord.js';
+import { communicationOwner } from './communication-owner.js';
+import type {
+  CommunicationWriterCommand,
+  CommunicationWriterReply,
+} from './communication-writer.js';
+import type { ControlKernelStore } from './control-kernel-port.js';
 import {
   CoreSchedulerRefusalSchema,
   CoreSchedulerResultSchema,
 } from './control-store-admission-codecs.js';
-
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
 import type {
   ControlResolvedAgentSetupInput,
@@ -617,6 +630,37 @@ function readPhysicalDatabaseIdentity(path: string) {
   return { path: realpathSync(path), identity: `${current.dev}:${current.ino}`, file: current };
 }
 
+type CommunicationKernel = NonNullable<DiscordChannelOwners['kernel']> &
+  Pick<ControlKernelStore, 'inspectPairingAudit' | 'relayPairingAudit'>;
+
+type CommunicationResult<Value> = StorageResult<'communication', Value>;
+
+interface CommunicationOwnerDependencies {
+  readonly observeAuthority: (
+    selection: Parameters<WithPairingAuthority>[0]
+  ) => PairingAuthorityObservation;
+  readonly createCommunicationDiscord: typeof import('./communication-discord.js').createCommunicationDiscord;
+  readonly readPendingPairingAuditInDb: typeof import('./communication-pairing-native.js').readPendingPairingAuditInDb;
+  readonly relayNextPairingAudit: typeof import('./communication-pairing-relay.js').relayNextPairingAudit;
+  readonly CommunicationWriterCommandSchema: typeof import('./communication-writer.js').CommunicationWriterCommandSchema;
+  readonly CommunicationWriterReplySchema: typeof import('./communication-writer.js').CommunicationWriterReplySchema;
+}
+
+export interface CommunicationOwnerBinding {
+  readonly owners: DiscordChannelOwners;
+  readonly withProducer: <Value>(
+    effect: () => Promise<Value>
+  ) => Promise<CommunicationResult<Value>>;
+  readonly wakePairingAudit: () => void;
+  readonly setExpiryAgeMs: (ageMs: number | undefined) => void;
+}
+
+const communicationHeld = {
+  state: 'unavailable',
+  owner: 'communication',
+  reason: 'recovery-required',
+} as const;
+
 /** A process-wide physical reservation, including a fresh scope awaiting native initialization. */
 interface Opening {
   readonly command: Omit<OpenCommand, 'operation'>;
@@ -632,6 +676,9 @@ interface Opening {
   nanoHostWritePending?: true;
   nanoHostTargetTransition?: true;
   nanoHostReader?: Promise<Database.Database>;
+  communicationRelayWake?: () => void;
+  communicationBindingPending?: boolean;
+  communicationReader?: Database.Database;
   /** Request-local capture enrollment stays with this existing physical Workspace owner. */
   captureReads?: CaptureReadGeneration;
   /** The exact close owner excludes later OPEN/read acquisition, including after a failed attempt. */
@@ -996,6 +1043,13 @@ class ControlStoreWorkerClient {
   private shutdownPromise: Promise<void> | undefined;
   private backupHold: PostingHold | undefined;
   private readonly databaseHolds = new Map<string, PostingHold>();
+  private communicationProducerHold = false;
+  private readonly communicationProducers = new Set<Promise<unknown>>();
+  private readonly communicationLease = new AsyncLocalStorage<{
+    readonly database: string;
+    readonly retention: boolean;
+    active: boolean;
+  }>();
   /** Returns the actual logical scope gates; physical host disposal never releases them. */
   private workspaceMutations(dataRoot: string): WorkspaceMutationScope {
     const root = resolve(dataRoot);
@@ -3188,12 +3242,331 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Closes intake before waiting so accepted producers can finish their original ACKs. */
+  private holdCommunicationProducers(): (() => void) | null {
+    if (this.communicationProducerHold) return null;
+    this.communicationProducerHold = true;
+    return () => {
+      this.communicationProducerHold = false;
+      for (const opening of this.openings.values()) opening.communicationRelayWake?.();
+    };
+  }
+
+  /** Binds the staged owner only after both lifecycle and the production receipt adapter qualify. */
+  async bindCommunicationOwner(input: {
+    readonly coreDb: CoreDb;
+    readonly kernel?: CommunicationKernel;
+    readonly dependencies: CommunicationOwnerDependencies;
+  }): Promise<
+    CommunicationResult<CommunicationOwnerBinding> | StorageUnavailable<'control-kernel'>
+  > {
+    const { coreDb, kernel, dependencies } = input;
+    if (!kernel) return { state: 'unavailable', owner: 'control-kernel', reason: 'missing' };
+    const kernelStatus = kernel.status();
+    if (kernelStatus.state !== 'ready') return kernelStatus;
+    const owner = 'communication';
+    let claimedOpening: Opening | undefined;
+    let readConnection: Database.Database | undefined;
+    let bound = false;
+    try {
+      const {
+        observeAuthority,
+        createCommunicationDiscord,
+        readPendingPairingAuditInDb,
+        relayNextPairingAudit,
+        CommunicationWriterCommandSchema,
+        CommunicationWriterReplySchema,
+      } = dependencies;
+      const root = await realpath(coreDb.dataRoot);
+      const opened = await this.openServerOwner(root, communicationOwner);
+      if (opened.state !== 'ready') return opened;
+
+      const database = `server-owner:${serverStoragePath(root, owner)}`;
+      const opening = this.openings.get(database);
+      const openingRequestId = opening?.openingRequestId;
+      const cell = opening?.command.communicationExpiryPolicy;
+      if (
+        !opening?.acknowledged ||
+        openingRequestId === undefined ||
+        !cell ||
+        opening.command.serverOwner?.owner !== owner ||
+        opening.communicationRelayWake ||
+        opening.communicationBindingPending
+      )
+        return communicationHeld;
+      opening.communicationBindingPending = true;
+      claimedOpening = opening;
+      const sqlite = await this.openAcknowledgedServerOwnerReadDb(database, owner, opening);
+      readConnection = sqlite;
+      const policy = new BigInt64Array(cell);
+      const deploymentId = readDataRootLayoutMarker(root).deploymentId;
+      const available = () =>
+        (!this.stopping || this.communicationLease.getStore()?.active === true) &&
+        !opening.host.failed &&
+        !opening.retirement &&
+        this.openings.get(database) === opening &&
+        sqlite.open;
+      const status = (): StorageStatus<'communication'> =>
+        available() ? { state: 'ready', owner } : communicationHeld;
+      const read = <Value>(
+        query: (database: Database.Database) => Value
+      ): CommunicationResult<Value> =>
+        available() ? { state: 'ready', value: query(sqlite) } : communicationHeld;
+
+      const withProducer: CommunicationOwnerBinding['withProducer'] = async (effect) => {
+        if (this.stopping || this.communicationProducerHold || !available())
+          return communicationHeld;
+        const lease = { database, retention: false, active: true };
+        const accepted = this.runOperation(() => this.communicationLease.run(lease, effect));
+        this.communicationProducers.add(accepted);
+        try {
+          return { state: 'ready', value: await accepted };
+        } finally {
+          lease.active = false;
+          this.communicationProducers.delete(accepted);
+        }
+      };
+
+      const write = async <Command extends CommunicationWriterCommand, Value>(
+        mutation: Command,
+        value: (reply: Extract<CommunicationWriterReply, { stage: Command['stage'] }>) => Value
+      ): Promise<CommunicationResult<Value>> => {
+        const lease = this.communicationLease.getStore();
+        if (
+          !available() ||
+          !lease?.active ||
+          lease.database !== database ||
+          lease.retention !== (mutation.stage === 'discord-retention')
+        )
+          return communicationHeld;
+        try {
+          const reply = await this.request({
+            operation: 'communication-owner',
+            database,
+            openingRequestId,
+            mutation: CommunicationWriterCommandSchema.parse(mutation),
+          });
+          const decoded =
+            reply.operation === 'communication-owner'
+              ? CommunicationWriterReplySchema.safeParse(reply.result)
+              : null;
+          if (!decoded?.success || decoded.data.stage !== mutation.stage)
+            throw new ControlStoreWorkerError('invalid-request', 'unknown');
+          return {
+            state: 'ready',
+            value: value(
+              decoded.data as Extract<CommunicationWriterReply, { stage: Command['stage'] }>
+            ),
+          };
+        } catch (error) {
+          if (error instanceof ControlStoreWorkerError) {
+            if (error.commit === 'unknown' || error.code === 'integrity') this.fail(opening.host);
+            if (
+              error.commit === 'not-committed' &&
+              error.domain?.operation === 'communication-owner'
+            ) {
+              const { code, message, status, kind } = error.domain;
+              if (kind === 'attention')
+                throw new AttentionError(code as ConstructorParameters<typeof AttentionError>[0]);
+              throw new OperationError(code, message, status);
+            }
+          }
+          return serverOwnerUnavailable(owner, error);
+        }
+      };
+      const noValue = () => undefined;
+      const settleReceipt = (
+        stage: 'settle-origin' | 'settle-handled' | 'settle-pairing-audit',
+        input: unknown
+      ) => write(CommunicationWriterCommandSchema.parse({ stage, input }), noValue);
+      const writer: CommunicationDiscordWrites = {
+        stageEnvelope: (envelope, externalAccountId) =>
+          write(
+            { stage: 'stage-envelope', envelope, externalAccountId },
+            (reply) => reply.admission
+          ),
+        issueChallenge: (input, authority) =>
+          write({ stage: 'issue-challenge', input, authority }, noValue),
+        revokeChallenges: (userId, authority) =>
+          write({ stage: 'revoke-challenges', input: { userId }, authority }, noValue),
+        pair: (input, authority) =>
+          write({ stage: 'pair', input, authority }, (reply) => reply.change),
+        unbind: (input, authority) =>
+          write({ stage: 'unbind', input, authority }, (reply) => reply.change),
+        writeDisclosure: (input, authority) =>
+          write({ stage: 'write-disclosure', input, authority }, noValue),
+        claimOrigin: (input) => write({ stage: 'claim-origin', input }, (reply) => reply.claimed),
+        settleInbound: (input) => settleReceipt('settle-origin', input),
+        settleHandled: (input) => settleReceipt('settle-handled', input),
+        settleRefusal: (input) => write({ stage: 'settle-refusal', input }, noValue),
+        applyRetention: async (input, authority) => {
+          const applied = await write(
+            { stage: 'discord-retention', input, authority },
+            (reply) => reply.acknowledgement
+          );
+          if (applied.state !== 'ready') return applied;
+          return applied.value === null
+            ? { state: 'unavailable', owner, reason: 'disabled' }
+            : { state: 'ready', value: applied.value };
+        },
+      };
+      const withAuthority: WithPairingAuthority = async ({ userId, actor }, post) => {
+        const scope = nativeProductScope(root, { kind: 'server' });
+        const coreKey = `core:${scope.path}`;
+        const admitted = this.openings.get(coreKey);
+        if (!admitted?.acknowledged || coreDb.sqlite.name !== scope.path || this.backupHold)
+          return communicationHeld;
+        // Only Core postings are held. The exact Communication write can commit and ACK independently.
+        const resume = await this.pauseForDataRootBackup(coreKey);
+        try {
+          if (
+            kernel.status().state !== 'ready' ||
+            admitted.host.failed ||
+            this.openings.get(coreKey) !== admitted
+          )
+            return communicationHeld;
+          return await post(observeAuthority({ userId, ...(actor ? { actor } : {}) }));
+        } finally {
+          resume();
+        }
+      };
+      let relayRequested = false;
+      let relaying = false;
+      function wakePairingAudit() {
+        relayRequested = true;
+        tryStartRelay();
+      }
+      const tryStartRelay = () => {
+        if (
+          !relayRequested ||
+          relaying ||
+          this.communicationProducerHold ||
+          !available() ||
+          kernel.status().state !== 'ready'
+        )
+          return;
+        relayRequested = false;
+        relaying = true;
+        void withProducer(async () => {
+          do {
+            const result = await relayNextPairingAudit(
+              {
+                readPendingPairingAudit: async () => read(readPendingPairingAuditInDb),
+                settlePairingAudit: (input) => settleReceipt('settle-pairing-audit', input),
+              },
+              kernel
+            );
+            if (result.state !== 'ready' || result.value !== 'relayed') return;
+          } while (available() && kernel.status().state === 'ready');
+        })
+          .catch(() => undefined)
+          .finally(() => {
+            relaying = false;
+            tryStartRelay();
+          });
+      };
+      const readExpiryAgeMs = () => {
+        const value = Atomics.load(policy, 0);
+        return value === 0n ? undefined : Number(value);
+      };
+      const communication = createCommunicationDiscord({
+        status,
+        read,
+        writer,
+        withAuthority,
+        kernel,
+        pairingAuditReady: wakePairingAudit,
+        retention: {
+          readExpiryAgeMs,
+          withProducerDrain: async (post) => {
+            if (this.communicationLease.getStore()?.active) return communicationHeld;
+            const resume = this.holdCommunicationProducers();
+            if (!resume) return communicationHeld;
+            const lease = { database, retention: true, active: true };
+            try {
+              return await this.runOperation(async () => {
+                await Promise.allSettled(this.communicationProducers);
+                if (!available()) return communicationHeld;
+                return this.communicationLease.run(lease, post);
+              });
+            } finally {
+              lease.active = false;
+              resume();
+            }
+          },
+        },
+      });
+      const attention: CommunicationAttentionOwner = {
+        read,
+        enqueue: (input) => write({ stage: 'enqueue-attention', input }, (reply) => reply.delivery),
+        claim: (input) => write({ stage: 'claim-attention', input }, (reply) => reply.delivery),
+        settle: (input) => write({ stage: 'settle-attention', input }, noValue),
+        reconcile: async () => {
+          const admitted = await withProducer(() =>
+            write({ stage: 'reconcile-attention' }, (reply) => reply.changes)
+          );
+          return admitted.state === 'ready' ? admitted.value : admitted;
+        },
+        withWorkspace: async (workspaceId, effect) => {
+          const admitted = await withProducer(async () => {
+            const release = this.enterWorkspaceMutation(root, workspaceId);
+            if (!release) return communicationHeld;
+            try {
+              return { state: 'ready' as const, value: await effect() };
+            } finally {
+              release();
+            }
+          });
+          return admitted.state === 'ready' ? admitted.value : admitted;
+        },
+      };
+      const reconciled = await attention.reconcile();
+      if (reconciled.state !== 'ready') return reconciled;
+      opening.communicationReader = sqlite;
+      opening.communicationRelayWake = tryStartRelay;
+      bound = true;
+      return {
+        state: 'ready',
+        value: {
+          owners: { deploymentId, kernel, communication, attention },
+          withProducer,
+          wakePairingAudit,
+          setExpiryAgeMs: (ageMs) => {
+            if (!available()) throw new ServerOwnerAdmissionError('recovery-required');
+            if (ageMs !== undefined && (!Number.isSafeInteger(ageMs) || ageMs <= 0))
+              throw new TypeError('Communication expiry age must be a positive safe integer.');
+            Atomics.store(policy, 0, BigInt(ageMs ?? 0));
+          },
+        },
+      };
+    } catch (error) {
+      return serverOwnerUnavailable(owner, error);
+    } finally {
+      if (claimedOpening) delete claimedOpening.communicationBindingPending;
+      if (!bound && readConnection?.open) readConnection.close();
+    }
+  }
+
   /** Closes an admitted owner and retains its bytes. */
   async closeServerOwner(dataRoot: string, owner: ServerOwnerDescriptor['owner']): Promise<void> {
     let database = `server-owner:${serverStoragePath(dataRoot, owner)}`;
     if (!this.openings.has(database))
       database = `server-owner:${serverStoragePath(await realpath(dataRoot), owner)}`;
-    if (this.openings.has(database)) await this.close(database);
+    if (!this.openings.has(database)) return;
+    if (owner !== 'communication') {
+      await this.close(database);
+      return;
+    }
+    if (this.communicationLease.getStore()?.active)
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    const resume = this.holdCommunicationProducers();
+    if (!resume) throw new ControlStoreWorkerError('busy', 'not-committed');
+    try {
+      await Promise.allSettled(this.communicationProducers);
+      await this.close(database);
+    } finally {
+      resume();
+    }
   }
 
   /** Projects owner-local admission failures without failing Core or another owner. */
@@ -3206,12 +3579,19 @@ class ControlStoreWorkerClient {
     try {
       const root = await realpath(dataRoot);
       const path = serverStoragePath(root, owner);
+      const database = `server-owner:${path}`;
+      const communicationExpiryPolicy =
+        owner === 'communication'
+          ? (this.openings.get(database)?.command.communicationExpiryPolicy ??
+            new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT))
+          : undefined;
       await this.open({
-        database: `server-owner:${path}`,
+        database,
         path,
         dataRoot: root,
         create,
         serverOwner: { owner },
+        ...(communicationExpiryPolicy ? { communicationExpiryPolicy } : {}),
       });
       return { state: 'ready', owner };
     } catch (error) {
@@ -6634,6 +7014,7 @@ class ControlStoreWorkerClient {
         await this.drainScopePublications(opening);
         if (opening) {
           await this.closeNanoHostReader(opening);
+          if (opening.communicationReader?.open) opening.communicationReader.close();
           closeWorkspaceProductReadHandles(opening.path);
           await drainMainScopeReadHandles([opening.path]);
           // Accepted ACK continuations can create an idle metadata reader before releasing their own.
@@ -6835,6 +7216,16 @@ class ControlStoreWorkerClient {
     if (failed()) throw new ControlStoreWorkerError('unavailable', 'not-committed');
     if (database === undefined && this.backupHold)
       throw new ControlStoreWorkerError('busy', 'not-committed');
+    const resumeCommunication = database === undefined ? this.holdCommunicationProducers() : null;
+    if (database === undefined && !resumeCommunication)
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    if (resumeCommunication && this.communicationProducers.size !== 0) {
+      await Promise.allSettled(this.communicationProducers);
+      if (failed()) {
+        resumeCommunication();
+        throw new ControlStoreWorkerError('unavailable', 'not-committed');
+      }
+    }
     const previous = database === undefined ? undefined : this.databaseHolds.get(database);
     const dependencies =
       database === undefined
@@ -6853,6 +7244,7 @@ class ControlStoreWorkerClient {
       else if (hold.released === released) this.databaseHolds.delete(database);
       release();
       for (const entry of this.pending.values()) if (!entry.posted) this.post(entry);
+      resumeCommunication?.();
     };
     try {
       await Promise.all(dependencies);
@@ -6899,6 +7291,9 @@ class ControlStoreWorkerClient {
         await Promise.all(
           [...this.openings.values()].map((opening) => this.closeNanoHostReader(opening))
         );
+        for (const opening of this.openings.values()) {
+          if (opening.communicationReader?.open) opening.communicationReader.close();
+        }
         await drainMainScopeReadHandles([...this.openings.values()].map((opening) => opening.path));
         closeWorkspaceProductReadHandles();
         const shutdowns = await Promise.allSettled(
@@ -8055,6 +8450,10 @@ class ControlStoreWorkerClient {
         value.operation === 'nanohost-owner' &&
         entry.command.operation === 'nanohost-owner' &&
         value.result.kind !== entry.command.mutation.kind) ||
+      (value.status === 'ok' &&
+        value.operation === 'communication-owner' &&
+        entry.command.operation === 'communication-owner' &&
+        value.result.stage !== entry.command.mutation.stage) ||
       (value.status === 'error' &&
         value.domain !== undefined &&
         value.domain.operation !== entry.command.operation)
