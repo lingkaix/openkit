@@ -4,7 +4,7 @@ import { connect, createServer } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
@@ -61,6 +61,43 @@ async function issueTransportToken(
 }
 
 describe('NanoHost transport production admission', () => {
+  it('reports an unavailable admitted owner without verifying a token or allocating a generation', async () => {
+    const unavailable = {
+      state: 'unavailable',
+      owner: 'nanohost',
+      reason: 'recovery-required',
+    } as const;
+    const owner = {
+      read: vi.fn(() => unavailable),
+      transport: vi.fn(),
+      transitionRuntimeTarget: vi.fn(),
+    };
+    const kernel = {
+      reserveHolderIntent: vi.fn(),
+      fenceNanoHostEpoch: vi.fn(),
+      inspectNanoHostEpochFence: vi.fn(),
+    };
+    const app = new Hono<{ Variables: AuthVariables }>();
+    registerNanoHostTransportAdmissionRoutes({
+      app,
+      coreDb: undefined,
+      nativeStorage: { state: 'ready', value: { owner, kernel } },
+      sessionAuthority: createNanoHostTransportSessionAuthority(),
+    });
+    const response = await app.request('/api/nanohost/transport/session/admit', {
+      method: 'POST',
+      headers: { authorization: 'Bearer okt_fixture', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'nanohost_transport_storage_unavailable',
+    });
+    expect(owner.read).toHaveBeenCalledOnce();
+    expect(owner.transport).not.toHaveBeenCalled();
+    expect(owner.transitionRuntimeTarget).not.toHaveBeenCalled();
+  });
+
   it('requires the shared transport revision before allocation and accepts a matching native admission', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-admit-reader-')));
     applyMigrations(coreDb);
