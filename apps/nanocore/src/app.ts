@@ -70,6 +70,7 @@ import {
   DeploymentAdminRequiredError,
   evaluateOwnedUserOperation,
   evaluateProductAuthorization,
+  isCurrentDeploymentAdministrator,
   isCurrentServerPolicyAuthor,
   isUsablePresentedCredential,
   isWorkspaceOperationAuthorized,
@@ -257,6 +258,7 @@ import {
 import { verifyOrdinaryServerGatewayAuthority } from './storage/control-store-server-work-authority.js';
 import {
   type CommunicationOwnerBinding,
+  ControlStoreWorkerError,
   getControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
 import { readContainmentEvidenceHandoff } from './storage/core-journal-native.js';
@@ -500,7 +502,10 @@ function workerCoordinatorCandidates(
 
 type NanoHostAppStorage = StorageResult<
   'nanohost',
-  AdmittedNanoHostTransportStorage & { readonly dataRoot: string }
+  AdmittedNanoHostTransportStorage & {
+    readonly dataRoot: string;
+    readonly enrollTransport?: import('./auth/nanohost-operations.js').NanoHostAdministratorEnroll;
+  }
 >;
 
 /**
@@ -582,6 +587,8 @@ export interface CreateAppOptions {
   appUpdateHostTransport?: AppUpdateHostTransport | null;
   /** The single acknowledged Native selection shared by boot, App and private transport. */
   nanoHostStorage?: NanoHostAppStorage;
+  /** Boot admits public enrollment through the acknowledged Core and Native writers. */
+  enableNanoHostEnrollment?: boolean;
 
   /** Optional dispatcher bound to the same process-local NanoHost session authority. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch;
@@ -655,6 +662,7 @@ export async function prepareNanoHostOwner(
   const owner = await writer.bindNanoHostOwner(
     coreDb.dataRoot,
     {
+      isEnrollmentAdministrator: isCurrentDeploymentAdministrator,
       getWorkerBackendSession,
       inspectNanoHostRuntimeTargetTransition,
       listNanoHostTransportTokenRecords,
@@ -670,6 +678,7 @@ export async function prepareNanoHostOwner(
         value: {
           dataRoot: resolve(coreDb.dataRoot),
           owner: owner.value,
+          enrollTransport: owner.value.enrollTransport,
           kernel: writer.nanoHostEpochKernel(coreDb),
         },
       }
@@ -2294,6 +2303,23 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     nanoHostStorage.state === 'ready'
       ? createNanoHostCoreReads(nanoHostStorage.value.owner).readTarget
       : () => nanoHostStorage;
+  const enrollmentWriter =
+    nanoHostStorage.state === 'ready' ? nanoHostStorage.value.enrollTransport : undefined;
+  const nanoHostEnrollment: import('./operation-composition.js').OperationInvocationDependencies['nanoHostEnrollment'] =
+    options.enableNanoHostEnrollment && enrollmentWriter
+      ? {
+          storage: nanoHostStorage,
+          commitEnroll: (input) => {
+            const config = startupOpenKitConfig.nanohost;
+            if (
+              input.record.deploymentId !== config?.deploymentId ||
+              input.record.ownerNanoHostIdentityId !== config.identityId
+            )
+              throw new ControlStoreWorkerError('precondition', 'not-committed');
+            return enrollmentWriter(input);
+          },
+        }
+      : undefined;
   const nanoHostCleanupOwner =
     nanoHostStorage.state === 'ready'
       ? { state: 'ready' as const, value: nanoHostStorage.value.owner }
@@ -3126,6 +3152,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
     readNanoHostTarget,
+    ...(nanoHostEnrollment ? { nanoHostEnrollment } : {}),
     nanoHostCleanupOwner,
   });
 
@@ -3196,6 +3223,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
     readNanoHostTarget,
+    ...(nanoHostEnrollment ? { nanoHostEnrollment } : {}),
     nanoHostCleanupOwner,
   });
 

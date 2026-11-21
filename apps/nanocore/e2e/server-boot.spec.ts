@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   completeServerBootstrap,
+  findOpenPort,
   type NanoCoreHarness,
   removeDataRoot,
   startNanoCoreHarness,
@@ -48,6 +50,69 @@ describe('nanocore e2e server boot', () => {
     );
     expect(protectedResponse.status).toBe(401);
     expect(protectedBody).toMatchObject({ code: 'core.auth.unauthenticated' });
+  });
+
+  it('enrolls NanoHost through the public route after a fresh server boot', async () => {
+    const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-nanohost-enrollment-'));
+    const slots = join(dataRoot, 'slots');
+    const slot = (name: string) => ({
+      secretPath: join(slots, `${name}.token`),
+      companionPath: join(slots, `${name}.env`),
+    });
+    const deploymentId = 'dep_0190f4c8-0000-7000-8000-000000000602';
+    const identityId = 'fresh-enrollment';
+    try {
+      const port = await findOpenPort();
+      let nanoHostPort = await findOpenPort();
+      while (nanoHostPort === port) nanoHostPort = await findOpenPort();
+      await mkdir(join(dataRoot, 'config'));
+      await mkdir(slots, { mode: 0o700 });
+      await writeFile(
+        join(dataRoot, 'config', 'server.jsonc'),
+        JSON.stringify({
+          schemaVersion: 1,
+          mode: 'server',
+          nanohost: {
+            bind: { host: '127.0.0.1', port: nanoHostPort },
+            credentialRef: 'nanohost-transport:fresh-enrollment',
+            credentialSlots: { A: slot('A'), B: slot('B') },
+            deploymentId,
+            identityId,
+            rendezvousUrl: `http://127.0.0.1:${nanoHostPort}`,
+          },
+        })
+      );
+      harness = await startNanoCoreHarness({
+        coreMode: 'server',
+        dataRoot,
+        port,
+        useSimulator: false,
+      });
+      const token = await completeServerBootstrap(harness);
+      const url = `${harness.baseUrl}/api/app/operations/nanohost.enroll`;
+      const request = {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          targetSlot: 'A',
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
+      };
+      const enrollment = await fetch(url, request);
+      const body = (await enrollment.json()) as { code?: string };
+      expect(enrollment.status, body.code).toBe(201);
+      expect(body).toMatchObject({ deploymentId, identityId, targetSlot: 'A' });
+      expect(await lstat(slot('A').secretPath)).toMatchObject({ mode: 0o100600 });
+      const companion = await readFile(slot('A').companionPath, 'utf8');
+      expect(companion).toContain(`=${deploymentId}\n`);
+      expect(companion).toContain(`=${identityId}\n`);
+      const duplicate = await fetch(url, request);
+      expect(duplicate.status).toBe(409);
+      await expect(duplicate.json()).resolves.toMatchObject({ code: 'nanohost_already_enrolled' });
+      expect(await readFile(slot('A').companionPath, 'utf8')).toBe(companion);
+    } finally {
+      if (!harness) await removeDataRoot(dataRoot);
+    }
   });
 
   it.each(['corrupt', 'missing'] as const)(

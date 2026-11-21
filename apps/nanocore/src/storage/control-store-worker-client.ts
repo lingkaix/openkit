@@ -144,10 +144,14 @@ import {
   type ControlBetterAuthResult,
   isBetterAuthRefusal,
 } from '../auth/better-auth-codecs.js';
+import type { NanoHostAdministratorEnroll } from '../auth/nanohost-operations.js';
 import {
   type ControlNanoHostTransportInput,
+  ControlNanoHostTransportInputSchema,
   type ControlNanoHostTransportResult,
   isNanoHostTransportAdminRefusal,
+  NANOHOST_TRANSPORT_ADMIN_REFUSAL,
+  nanoHostTransportAdminFacts,
 } from '../auth/nanohost-transport-codecs.js';
 import type {
   listNanoHostTransportTokenRecords,
@@ -563,6 +567,11 @@ interface PolicyReadResource {
 
 /** NanoHost composition supplies the landed readers over the admitted query-only connection. */
 interface NanoHostOwnerReaders {
+  readonly isEnrollmentAdministrator?: (
+    coreDb: CoreDb,
+    actor: ReturnType<typeof nanoHostTransportAdminFacts>,
+    now?: Date
+  ) => boolean;
   readonly listNanoHostTransportTokenRecords: typeof listNanoHostTransportTokenRecords;
   readonly prepareNanoHostRuntimeTargetTransition: typeof prepareNanoHostRuntimeTargetTransition;
   readonly readNanoHostEpochInvalidation: typeof readNanoHostEpochInvalidation;
@@ -586,6 +595,7 @@ interface NanoHostOwnerBinding
     'stageEpochInvalidation' | 'readEpochInvalidation' | 'settleEpochInvalidation'
   > {
   transport(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
+  enrollTransport: NanoHostAdministratorEnroll;
   harnessLifecycle(
     input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
   ): Promise<void>;
@@ -729,6 +739,7 @@ interface Opening {
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
   communicationReader?: Database.Database;
+  nanoHostEnrollmentPending?: true;
   nanoHostTargetTransition?: true;
   nanoHostReader?: Promise<Database.Database>;
   readNanoHost?: NanoHostOwnerBinding['read'];
@@ -3244,6 +3255,91 @@ class ControlStoreWorkerClient {
         }
       };
 
+      const enrollTransport: NanoHostAdministratorEnroll = async (input) => {
+        const enrolled = ControlNanoHostTransportInputSchema.parse(input);
+        const isAdministrator = readers.isEnrollmentAdministrator;
+        if (
+          enrolled.kind !== 'enroll' ||
+          !enrolled.actor ||
+          enrolled.actor.userId !== enrolled.record.responsibleServerAdminActorId ||
+          enrolled.record.predecessorTokenId != null ||
+          !isAdministrator
+        )
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const actor = nanoHostTransportAdminFacts(enrolled.actor);
+        const corePath = serverStoragePath(root, 'control-kernel');
+        const coreKey = `core:${corePath}`;
+        const core = this.openings.get(coreKey);
+        assertCurrent();
+        if (
+          !core?.acknowledged ||
+          !core.identity ||
+          core.command.initialize !== 'core' ||
+          core.command.dataRoot !== root ||
+          core.host.failed ||
+          core.retirement ||
+          this.backupHold ||
+          opening.nanoHostEnrollmentPending
+        )
+          throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+        opening.nanoHostEnrollmentPending = true;
+        try {
+          return await this.runOperation(
+            async () => {
+              // Like the Communication authority join, hold Core postings through the other owner's ACK.
+              const resume = await this.pauseForDataRootBackup(coreKey);
+              try {
+                let authorized: boolean;
+                try {
+                  const physical = readPhysicalDatabaseIdentity(corePath);
+                  if (
+                    this.openings.get(coreKey) !== core ||
+                    core.host.failed ||
+                    core.retirement ||
+                    !physical.file.isFile() ||
+                    physical.file.nlink !== 1 ||
+                    physical.path !== corePath ||
+                    physical.identity !== core.identity
+                  )
+                    throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+                  const reader = openCoreReadDb(root);
+                  try {
+                    authorized = isAdministrator(reader, actor, enrolled.record.now);
+                  } finally {
+                    reader.sqlite.close();
+                  }
+                } catch (error) {
+                  if (error instanceof ControlStoreWorkerError) throw error;
+                  throw new ControlStoreWorkerError('precondition', 'not-committed');
+                }
+                if (!authorized) {
+                  const refusal = NANOHOST_TRANSPORT_ADMIN_REFUSAL;
+                  throw new OperationError(refusal.code, refusal.message, refusal.status, {
+                    cause: new ControlStoreWorkerError('precondition', 'not-committed'),
+                  });
+                }
+                const result = (
+                  await write({
+                    kind: 'transport',
+                    input: { kind: 'enroll', record: enrolled.record },
+                  })
+                ).value;
+                if (result.kind !== 'record')
+                  throw new ControlStoreWorkerError('integrity', 'unknown');
+                return result;
+              } finally {
+                if (opening.host.failed) await opening.host.exited.promise;
+                resume();
+              }
+            },
+            undefined,
+            database
+          );
+        } finally {
+          delete opening.nanoHostEnrollmentPending;
+        }
+      };
+
       const writeUnavailable = (error: unknown): StorageUnavailable<'nanohost'> =>
         error instanceof ControlStoreWorkerError &&
         error.code === 'unavailable' &&
@@ -3295,6 +3391,7 @@ class ControlStoreWorkerClient {
         state: 'ready',
         value: {
           transport: async (input) => (await write({ kind: 'transport', input })).value,
+          enrollTransport,
           harnessLifecycle: async (input) => {
             await write({ kind: 'harness-lifecycle', input });
           },
@@ -7829,7 +7926,9 @@ class ControlStoreWorkerClient {
     if (
       database === undefined &&
       (this.serverWorkProducers.size !== 0 ||
-        [...this.openings.values()].some((opening) => opening.nanoHostTargetTransition))
+        [...this.openings.values()].some(
+          (opening) => opening.nanoHostTargetTransition || opening.nanoHostEnrollmentPending
+        ))
     ) {
       resumeCommunication?.();
       throw new ControlStoreWorkerError('busy', 'not-committed');

@@ -35,6 +35,7 @@ import { prepareCommunicationOwner } from '../app.js';
 import { auditEventFromRow, listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
 import type { ControlNanoHostTransportInput } from '../auth/nanohost-transport-codecs.js';
 import { listNanoHostTransportTokenRecords } from '../auth/nanohost-transport-token-store.js';
+import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { openCommunicationDiscordChannel } from '../channels/discord-owner.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -1283,6 +1284,7 @@ describe('admitted Server work owner worker', () => {
 
 const nanoHostReaders = {
   getWorkerBackendSession,
+  isEnrollmentAdministrator: isCurrentDeploymentAdministrator,
   listNanoHostTransportTokenRecords,
   prepareNanoHostRuntimeTargetTransition,
   readNanoHostEpochInvalidation,
@@ -1841,6 +1843,52 @@ describe('admitted NanoHost owner worker', () => {
     } finally {
       core.close();
     }
+  });
+
+  it('keeps the current Core administrator check ordered through the Native enrollment ACK', async () => {
+    const f = await nanoHostWorkerFixture();
+    const core = openCoreDb(f.root);
+    nativeHandles.push(core);
+    const administrator = ensureLocalUser(core);
+    const enrollment = (userId: string) =>
+      f.owner.enrollTransport({
+        kind: 'enroll',
+        actor: { kind: 'local', userId },
+        record: {
+          tokenId: allocateEntityId('nhtok'),
+          tokenHash: `sha256:${'b'.repeat(64)}`,
+          ownerNanoHostIdentityId: nanoHostTarget.identityId,
+          deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+          responsibleServerAdminActorId: userId,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        },
+      });
+    await expect(enrollment(allocateEntityId('usr'))).rejects.toMatchObject({
+      code: 'deployment_admin_required',
+      status: 403,
+    });
+    expect(await f.owner.listTransportTokens()).toEqual({ state: 'ready', value: [] });
+
+    Atomics.store(f.gate, 0, 0);
+    const committed = enrollment(administrator);
+    let checkpoint: ReturnType<typeof f.writer.checkpoint> | undefined;
+    try {
+      await waitForHold(f.gate);
+      const posted = vi.spyOn(interception.workers[0]!, 'postMessage');
+      checkpoint = f.writer.checkpoint(f.coreKey);
+      await expect(f.writer.pauseForDataRootBackup()).rejects.toMatchObject({
+        code: 'busy',
+        commit: 'not-committed',
+      });
+      expect(posted).not.toHaveBeenCalled();
+    } finally {
+      release(f.gate);
+    }
+    await expect(committed).resolves.toMatchObject({
+      kind: 'record',
+      record: { responsibleServerAdminActorId: administrator, status: 'active' },
+    });
+    await expect(checkpoint).resolves.toBeDefined();
   });
 
   it('admits only local serving tuples and rechecks original proof before dispatch', async () => {

@@ -231,6 +231,9 @@ export interface OperationInvocationDependencies {
   readonly readNanoHostTarget?: (
     targetId: string
   ) => StorageResult<'nanohost', NanoHostRuntimeTargetRecord | null>;
+  readonly nanoHostEnrollment?: Parameters<
+    typeof createNanoHostOperationImplementations
+  >[0]['nanoHostEnrollment'];
   /** Trusted deployment storage path and process-local transport fencing owner. */
   readonly dataRoot?: string | null;
   readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
@@ -345,6 +348,9 @@ export function createOperationImplementations(dependencies: OperationInvocation
       coreDb: dependencies.coreDb,
       mode: dependencies.mode ?? 'local',
       ...(dependencies.nanoHostConfig ? { nanoHostConfig: dependencies.nanoHostConfig } : {}),
+      ...(dependencies.nanoHostEnrollment
+        ? { nanoHostEnrollment: dependencies.nanoHostEnrollment }
+        : {}),
       ...(dependencies.readNanoHostTarget
         ? { readNanoHostTarget: dependencies.readNanoHostTarget }
         : {}),
