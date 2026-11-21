@@ -110,19 +110,20 @@ it('commits local Harness and image tuples without admitting mixed Core operatio
       const assert = require('node:assert/strict');
       const { workerData } = require('node:worker_threads');
       (async () => {
-        const { applyNanoHostLocalHarnessLifecycle } = await import(workerData.handler);
-        const { applyNanoHostLocalWorkerImage } = await import(workerData.imageHandler);
+        const { applyControlHarnessLifecycle } = await import(workerData.handler);
+        const { applyControlWorkerImage } = await import(workerData.imageHandler);
         const sqlite = new (require(workerData.sqlite))(workerData.path, { fileMustExist: true });
         try {
           sqlite.pragma('foreign_keys = ON');
           sqlite.pragma('synchronous = FULL');
-          for (const input of workerData.inputs) {
-            assert.equal(sqlite.transaction(() =>
-              applyNanoHostLocalHarnessLifecycle({ sqlite }, input)
-            ).immediate(), null);
-          }
+          const owner = { scope: 'nanohost', sqlite };
+          const applyHarness = input => sqlite.transaction(() =>
+            applyControlHarnessLifecycle(owner, input)
+          ).immediate();
+          for (const input of workerData.inputs) assert.equal(applyHarness(input), null);
+          assert.throws(() => applyHarness(workerData.restore), /requires deciding Core authority/);
           const applyImage = input => sqlite.transaction(() =>
-            applyNanoHostLocalWorkerImage({ sqlite }, input)
+            applyControlWorkerImage(owner, input)
           ).immediate();
           assert.equal(applyImage(workerData.build), null);
           assert.equal(applyImage(workerData.build), null);
@@ -141,6 +142,7 @@ it('commits local Harness and image tuples without admitting mixed Core operatio
           imageHandler: new URL('../../dist/storage/worker-image-native.js', import.meta.url).href,
           inputs,
           path,
+          restore,
           sqlite: createRequire(import.meta.url).resolve('better-sqlite3'),
         },
       }

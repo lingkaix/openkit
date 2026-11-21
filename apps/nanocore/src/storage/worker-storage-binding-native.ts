@@ -18,7 +18,7 @@ import type { CoreDb } from './db.js';
 import type { ControlWorkerStorageInput } from './worker-storage-binding-codecs.js';
 
 /** Applies the binding CAS against an admitted NanoHost handle after its external authority decision. */
-export function applyNanoHostLocalWorkerStorageBinding(
+function applyNanoHostLocalWorkerStorageBinding(
   owner: { readonly sqlite: Database.Database },
   input: Exclude<ControlWorkerStorageInput, { kind: 'purge-pending' }>
 ) {
@@ -53,10 +53,16 @@ export function applyNanoHostLocalWorkerStorageBinding(
 }
 
 /** Runs the existing Core transition for the current serve path and its purge census. */
-export function applyControlWorkerStorageBinding(db: CoreDb, input: ControlWorkerStorageInput) {
+export function applyControlWorkerStorageBinding(
+  db: CoreDb | { readonly scope: 'nanohost'; readonly sqlite: Database.Database },
+  input: ControlWorkerStorageInput
+) {
   if (input.kind !== 'purge-pending') return applyNanoHostLocalWorkerStorageBinding(db, input);
   assertControlProductWriter(db.sqlite);
-  if (!isDeepStrictEqual(workerStorageSchedulerRows(db, input.storageRef), input.schedulerRows))
+  if (
+    db.scope !== 'core' ||
+    !isDeepStrictEqual(workerStorageSchedulerRows(db, input.storageRef), input.schedulerRows)
+  )
     throw new WorkerStorageBindingError(
       'purge_blocked',
       'Worker storage still has an attachment or surviving reference.'

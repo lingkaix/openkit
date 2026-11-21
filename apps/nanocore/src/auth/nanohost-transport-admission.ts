@@ -3,6 +3,7 @@ import type { Http2Session } from 'node:http2';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type Database from 'better-sqlite3';
 import type { Context, Hono } from 'hono';
+import type { z } from 'zod';
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import {
   type AllocateNanoHostRuntimeTargetConnectionGenerationInput,
@@ -13,7 +14,7 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
-import type { NanoHostLocalHarnessLifecycleInput } from '../storage/harness-lifecycle-codecs.js';
+import type { NanoHostLocalHarnessLifecycleInputSchema } from '../storage/harness-lifecycle-codecs.js';
 import type { NanoHostRuntimeTargetEpochKernel } from '../storage/nanohost-epoch-invalidation.js';
 import {
   type NanoHostRuntimeTargetTransition,
@@ -104,7 +105,9 @@ export interface AdmittedNanoHostTransportStorage {
   readonly owner: {
     read<Value>(query: (sqlite: Database.Database) => Value): StorageResult<'nanohost', Value>;
     transport(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
-    harnessLifecycle(input: NanoHostLocalHarnessLifecycleInput): Promise<void>;
+    harnessLifecycle(
+      input: z.output<typeof NanoHostLocalHarnessLifecycleInputSchema>
+    ): Promise<void>;
     transitionRuntimeTarget(
       kernel: NanoHostRuntimeTargetEpochKernel,
       original: NanoHostRuntimeTargetTransition
