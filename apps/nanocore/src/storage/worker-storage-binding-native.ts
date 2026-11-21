@@ -4,6 +4,7 @@ import {
   activateWorkerStorageAttachment,
   admitWorkerStorageContributor,
   createWorkerStorageBinding,
+  getWorkerStorageBinding,
   markWorkerStorageAttachmentUnknown,
   markWorkerStoragePurgePending,
   releaseWorkerStorageAttachment,
@@ -56,12 +57,22 @@ function applyLocalWorkerStorageBinding(
 /** Applies the binding tuple on the admitted owner. The purge census requires Core. */
 export function applyControlWorkerStorageBinding(
   db: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
-  input: ControlWorkerStorageInput
+  input: ControlWorkerStorageInput,
+  admitted?: { readonly coreDb: CoreDb }
 ) {
   if (input.kind !== 'purge-pending') return applyLocalWorkerStorageBinding(db, input);
   assertControlProductWriter(db.sqlite);
-  if (db.scope !== 'core') throw new ControlProductPreconditionError();
-  if (!isDeepStrictEqual(workerStorageSchedulerRows(db, input.storageRef), input.schedulerRows))
+  const coreDb = admitted?.coreDb;
+  if (!coreDb || db.scope === 'core') throw new ControlProductPreconditionError();
+  const binding = getWorkerStorageBinding(db, { storageRef: input.storageRef });
+  if (!binding)
+    throw new WorkerStorageBindingError('not_found', 'Worker storage association was not found.');
+  if (
+    !isDeepStrictEqual(
+      workerStorageSchedulerRows(coreDb, input.storageRef, binding.workspaceId),
+      input.schedulerRows
+    )
+  )
     throw new WorkerStorageBindingError(
       'purge_blocked',
       'Worker storage still has an attachment or surviving reference.'

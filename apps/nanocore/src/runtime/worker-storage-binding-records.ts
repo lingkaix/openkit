@@ -1088,16 +1088,14 @@ export function prepareWorkerStorageContributor(
 }
 
 /** Exact active Scheduler facts; changed Core references refuse the existing purge admission. */
-export function workerStorageSchedulerRows(db: CoreDb, storageRef: string, workspaceId?: string) {
-  const workspace = workspaceId ?? getWorkerStorageBinding(db, { storageRef })?.workspaceId;
-  if (!workspace) return [];
+export function workerStorageSchedulerRows(db: CoreDb, storageRef: string, workspaceId: string) {
   return (
     db.sqlite
       .prepare(`SELECT queue_entry_id AS queueEntryId, status, turn_id AS turnId,
     worker_storage_choice_json AS choice FROM scheduler_admission_entries
     WHERE workspace_id = ?
       AND status IN ('queued','denied','admitted') ORDER BY queue_entry_id`)
-      .all(workspace) as {
+      .all(workspaceId) as {
       queueEntryId: string;
       status: string;
       turnId: string;
