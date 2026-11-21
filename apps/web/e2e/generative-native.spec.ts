@@ -217,12 +217,10 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       agentSessionId,
     });
     const sandboxBindingRef = `generative-browser-${randomUUID()}`;
-    nativeAttempts.bindNanoHostAttemptPreparation(coreDb, {
+    attempts.finalizeSchedulerExecutionAttemptInput(coreDb, {
       attemptId: attempt.attemptId,
-      agentSessionId,
       inputRef: preparedPackage.snapshotId,
       bindingRef: sandboxBindingRef,
-      sessionCompatibilityKey,
     });
     await seedSyntheticLocalSchedulerTarget(fixtureRoot);
     const entered = Promise.withResolvers<void>();

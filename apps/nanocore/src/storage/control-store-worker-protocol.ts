@@ -865,7 +865,7 @@ const nanoHostPreparedImageResult = z.strictObject({
   target: ControlCoreImageResultSchema.shape.target,
   acquisitionDecisionDigest: z
     .string()
-    .regex(/^[0-9a-f]{64}$/)
+    .regex(/^sha256:[0-9a-f]{64}$/)
     .optional(),
 });
 
