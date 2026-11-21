@@ -12,14 +12,36 @@ import { seedSimulatorInferenceConfig } from './simulator-inference.js';
  * Writes the explicit Demo Workspace fixture used by local-mode Web e2e tests.
  *
  * @param dataRoot NanoCore data root to seed.
- * @returns Resolves after the file records and Core membership authority are durable.
+ * @returns Resolves after the fixture records and storage owners are ready for boot.
  * @throws When fixture files or authority persistence fails.
  */
 export async function seedDemoWorkspaceDataRoot(dataRoot: string): Promise<void> {
   await seedSharedDemoWorkspaceDataRoot(dataRoot);
+  await seedCommunicationOwner(dataRoot);
   await seedSimulatorInferenceConfig(dataRoot);
   await seedDemoWorkspaceAuthority(dataRoot);
   await seedSimulatorAgent(dataRoot);
+}
+
+/** Provisions Communication because the seeded Core is already an existing root at boot. */
+async function seedCommunicationOwner(dataRoot: string): Promise<void> {
+  const [
+    { communicationOwner },
+    { getControlStoreWorkerClient, shutdownControlStoreWorkerClient },
+  ] = await Promise.all([
+    import('../../../nanocore/dist/storage/communication-owner.js'),
+    import('../../../nanocore/dist/storage/control-store-worker-client.js'),
+  ]);
+  try {
+    const status = await getControlStoreWorkerClient().provisionServerOwner(
+      dataRoot,
+      communicationOwner
+    );
+    if (status.state !== 'ready')
+      throw new Error(`Web e2e Communication storage is unavailable: ${status.reason}.`);
+  } finally {
+    await shutdownControlStoreWorkerClient();
+  }
 }
 
 /**
