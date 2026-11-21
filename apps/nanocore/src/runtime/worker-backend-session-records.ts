@@ -516,6 +516,17 @@ export function getWorkerBackendSession(
   return row ? mapWorkerBackendSessionRow(row) : null;
 }
 
+/** Reads the exact retained session for a package snapshot using its unique index. */
+export function getWorkerBackendSessionByPackage(
+  owner: WorkerBackendSessionDb,
+  packageSnapshotId: string
+): WorkerBackendSessionRecord | null {
+  const row = owner.sqlite
+    .prepare(`${workerBackendSessionSelectSql()} WHERE package_snapshot_id = ?`)
+    .get(packageSnapshotId) as WorkerBackendSessionRow | undefined;
+  return row ? mapWorkerBackendSessionRow(row) : null;
+}
+
 /**
  * Lists all durable backend sessions in stable lease order.
  *

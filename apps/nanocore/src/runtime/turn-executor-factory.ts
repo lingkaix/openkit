@@ -53,6 +53,7 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import type { NanoHostCoreReads } from '../storage/control-kernel-port.js';
 import {
   decode as decodeControlProduct,
   openControlStoreProductReadHandle,
@@ -349,6 +350,13 @@ export interface CreateConfiguredTurnExecutorOptions {
   store?: FsStore | undefined;
   /** Authoritative fixed-effect dispatcher shared with the native NanoHost session. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch | undefined;
+  /** Admitted resident reads and the optional deciding adapter for split cleanup. */
+  nanoHostRecovery?:
+    | {
+        readonly reads: NanoHostCoreReads;
+        readonly advanceIdleCleanup?: (selection: IdleCleanupSelection) => Promise<void>;
+      }
+    | undefined;
 }
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
@@ -495,7 +503,8 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.policyInterception,
     options.goalTaskPolicy,
     options.releaseIdentity,
-    options.readProviderAccessShape
+    options.readProviderAccessShape,
+    options.nanoHostRecovery
   );
 }
 
@@ -523,7 +532,8 @@ function createNanoHostWorkerLifecycleRuntime(
   policyInterception?: (() => import('../policy/interception.js').PolicyInterception) | undefined,
   goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'],
   releaseIdentity?: ReleaseBuildIdentity,
-  readProviderAccessShape?: WorkerProviderAccessShapeReader
+  readProviderAccessShape?: WorkerProviderAccessShapeReader,
+  nanoHostRecovery?: CreateConfiguredTurnExecutorOptions['nanoHostRecovery']
 ): ConfiguredWorkerLifecycleRuntime {
   const configuredProviderReader: WorkerProviderAccessShapeReader =
     readProviderAccessShape ??
@@ -556,9 +566,15 @@ function createNanoHostWorkerLifecycleRuntime(
     releaseIdentity,
     configuredProviderReader
   );
+  const advanceIdleCleanup = async (selection: IdleCleanupSelection): Promise<void> => {
+    if (!nanoHostRecovery) return await backend.advanceIdleCleanup(selection);
+    if (!nanoHostRecovery.advanceIdleCleanup) throw new NanoHostCleanupFencePendingError();
+    return await nanoHostRecovery.advanceIdleCleanup(selection);
+  };
   executionReconciler = new ExecutionReconciler({
     coreDb,
-    advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
+    ...(nanoHostRecovery ? { nanoHost: nanoHostRecovery.reads } : {}),
+    advanceIdleCleanup,
   });
   const turnExecutor =
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
@@ -631,7 +647,7 @@ function createNanoHostWorkerLifecycleRuntime(
     readHarnessLoginNativeResume: (context) => backend.readHarnessLoginNativeResume(context),
     readCompletedHarnessLoginSupply: (context) => backend.readCompletedHarnessLoginSupply(context),
     completeHarnessLogin: (...args) => backend.completeHarnessLogin(...args),
-    advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
+    advanceIdleCleanup,
     captureArtifact: (input) => backend.captureArtifact(input),
     registerCredentialHelperComparisonValues: (lineage, receiptId, values) =>
       backend.registerCredentialHelperComparisonValues(lineage, receiptId, values),
