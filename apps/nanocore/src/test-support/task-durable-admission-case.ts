@@ -17,6 +17,7 @@ import {
 import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import type { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { listSchedulerExecutionAttemptsForTurn } from '../runtime/execution-attempt-records.js';
 import { listThreadPendingRequests } from '../runtime/pending-requests.js';
 import { runSchedulerDispatchLoop } from '../runtime/scheduler-dispatch-loop.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
@@ -46,7 +47,9 @@ import {
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { readAdmittedTestNanoHost } from './admitted-nanohost.js';
 import { confirmContextDefaults } from './context-defaults.js';
+import { admitTestNativeEnvironmentForRoot } from './native-environment.js';
 
 /** Installs one deliberate checkpoint fault only after native writes drain, then resumes before replay. */
 export async function mutateQuiescentCheckpoint(mutate: () => { changes: number }): Promise<void> {
@@ -91,24 +94,31 @@ async function assertNativeTaskAdmission(
     expect(
       store.getTurnEvents(turnId).filter((event) => event.event === 'turn.completed')
     ).toHaveLength(1);
-    const finalStatuses = coreDb.sqlite
-      .prepare(
-        "SELECT record_json FROM worker_control_records WHERE turn_id=? AND operation='final_status'"
-      )
-      .all(turnId) as { record_json: string }[];
+    const finalStatuses = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          "SELECT record_json FROM worker_control_records WHERE turn_id=? AND operation='final_status'"
+        )
+        .all(turnId)
+    ) as { record_json: string }[];
     expect(finalStatuses.map((row) => JSON.parse(row.record_json))).toEqual([
       expect.objectContaining({ status: 'completed', stopReason: 'completed' }),
     ]);
-    const attempts = observeExecutionAttempts(coreDb).filter(
-      (attempt) => attempt.turn_id === turnId
-    );
+    const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, {
+      workspaceId: workspaceIdForOwner(turn.owner),
+      threadId: turn.threadId,
+      turnId,
+    }).map(({ attemptId, phase, fenceRef }) => ({ attemptId, phase, fence_ref: fenceRef }));
     expect(attempts).toEqual([
       expect.objectContaining({
         phase: releaseLost ? 'closing' : 'closed',
         fence_ref: releaseLost ? null : expect.any(String),
       }),
     ]);
-    expect(getWorkerBackendSession(coreDb, String(attempts[0]!.attempt_id))).toMatchObject({
+    const backend = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, attempts[0]!.attemptId)
+    );
+    expect(backend).toMatchObject({
       state: 'cleaned',
       workspaceHandoffState: 'complete',
       physicalCleanedAt: expect.any(String),
@@ -185,6 +195,7 @@ export async function assertTaskDurableAdmissionResponse({
   const setup = createTestAgentSetup({
     requiredCapabilities: ['trusted-worker-inference-relay'],
   });
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const provider = taskProposalProvider(input, setup.manifest.id);
   const runtimeConfigManager =
     entry === 'assistant'
@@ -215,6 +226,7 @@ export async function assertTaskDurableAdmissionResponse({
         )
       : undefined;
   const app = createAppWithWorkspaceAuthority({
+    nanoHostStorage,
     fileAdmission: native.fileAdmission,
     workerControlGateway: native.workerControlGateway,
     coreDb,

@@ -48,6 +48,7 @@ import { type CreateAppOptions, createApp, createAppWithWorkspaceAuthority } fro
 import { confirmContextDefaults, confirmContextDefaultsForApp } from './context-defaults.js';
 import { createDemoStore } from './demo-store.js';
 import { ensureLocalUser } from './local-user.js';
+import { admitTestNativeEnvironmentForRoot } from './native-environment.js';
 import { createNativeTaskAdmissionFixture } from './native-task-admission.js';
 import { operationRequest } from './operation-request.js';
 import { asPiAiGatewayClientDouble } from './pi-ai-gateway-client-double.js';
@@ -434,12 +435,14 @@ export const taskTerminalReplayCloseoutOwnership: (input: {
   const setup = createTestAgentSetup({
     requiredCapabilities: ['trusted-worker-inference-relay'],
   });
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const brief = 'Implement a focused change and run its tests.';
   const provider = taskProposalProvider(brief, setup.manifest.id);
   const appOptions: CreateAppOptions = {
     coreDb,
     dataRoot,
     store,
+    nanoHostStorage,
     turnExecutor: executor,
     fileAdmission: native.fileAdmission,
     workerControlGateway: native.workerControlGateway,
@@ -802,6 +805,7 @@ export const independentTasksAdmissionOwnership: () => Promise<void> = async () 
   const native = await createNativeTaskAdmissionFixture(coreDb, store, {
     readRuntimeConfig: () => config.current(),
   });
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const executor = native.executor;
   const backend = executor.executionBackend!;
   const submit = backend.submit.bind(backend);
@@ -830,6 +834,7 @@ export const independentTasksAdmissionOwnership: () => Promise<void> = async () 
     coreDb,
     dataRoot,
     store,
+    nanoHostStorage,
     turnExecutor: executor,
     runtimeConfigManager: config,
     fileAdmission: native.fileAdmission,
