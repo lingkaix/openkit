@@ -3392,12 +3392,18 @@ class ControlStoreWorkerClient {
         )
           return communicationHeld;
         try {
-          const reply = await this.request({
-            operation: 'communication-owner',
-            database,
-            openingRequestId,
-            mutation: CommunicationWriterCommandSchema.parse(mutation),
-          });
+          const json = JSON.stringify(CommunicationWriterCommandSchema.parse(mutation));
+          const reply = await this.request(
+            {
+              operation: 'communication-owner',
+              database,
+              openingRequestId,
+              stage: mutation.stage,
+              input: frameControlScalarText(json),
+              content: new ArrayBuffer(0),
+            },
+            [json]
+          );
           const decoded =
             reply.operation === 'communication-owner'
               ? CommunicationWriterReplySchema.safeParse(reply.result)
@@ -7771,6 +7777,7 @@ class ControlStoreWorkerClient {
         command.operation === 'generative-presentation' ||
         command.operation === 'app-kernel' ||
         command.operation === 'schema-application' ||
+        command.operation === 'communication-owner' ||
         command.operation === 'attention-enqueue' ||
         (command.operation === 'transition' &&
           'kind' in command.transition &&
@@ -7799,6 +7806,7 @@ class ControlStoreWorkerClient {
                 : command.operation === 'generative-presentation' ||
                     command.operation === 'app-kernel' ||
                     command.operation === 'schema-application' ||
+                    command.operation === 'communication-owner' ||
                     command.operation === 'attention-enqueue' ||
                     command.operation === 'standalone-audit' ||
                     command.operation === 'thread-read-membership' ||
@@ -8750,7 +8758,7 @@ class ControlStoreWorkerClient {
       (value.status === 'ok' &&
         value.operation === 'communication-owner' &&
         entry.command.operation === 'communication-owner' &&
-        value.result.stage !== entry.command.mutation.stage) ||
+        value.result.stage !== entry.command.stage) ||
       (value.status === 'error' &&
         value.domain !== undefined &&
         value.domain.operation !== entry.command.operation)

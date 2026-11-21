@@ -168,6 +168,7 @@ import { applyControlAttentionAttemptCompletion } from './attention-attempt-comp
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
 import {
   applyCommunicationWriterCommand,
+  type CommunicationWriterCommand,
   CommunicationWriterCommandSchema,
 } from './communication-writer.js';
 import {
@@ -522,6 +523,7 @@ type WriteRequest = WriteCommand & {
   readonly appInput?: ControlAppInput;
   readonly preparedSchedulerAdmission?: CoreSchedulerInput;
   readonly preparedAttentionEnqueue?: AttentionEnqueueCommand;
+  readonly preparedCommunication?: CommunicationWriterCommand;
   readonly preparedCommandReceipt?: ControlCommandReceiptAdmission;
   readonly preparedStandaloneAudit?: ControlStandaloneAuditInput;
   readonly preparedThreadReadItemIds?: readonly string[];
@@ -3534,7 +3536,8 @@ function flush(owner: OwnedDatabase): void {
             )
               throw new ServerOwnerAdmissionError('recovery-required');
             const communication = owner.communication;
-            if (!communication) throw new ServerOwnerAdmissionError('recovery-required');
+            if (!communication || !request.preparedCommunication)
+              throw new ServerOwnerAdmissionError('recovery-required');
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -3543,7 +3546,7 @@ function flush(owner: OwnedDatabase): void {
               result: applyCommunicationWriterCommand(
                 owner.sqlite,
                 readDataRootLayoutMarker(communication.dataRoot).deploymentId,
-                request.mutation,
+                request.preparedCommunication,
                 Date.now,
                 () => {
                   const value = communication.expiryPolicy
@@ -4757,13 +4760,6 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             ? 'nanohost'
             : undefined;
     if (
-      value.operation === 'communication-owner' &&
-      !CommunicationWriterCommandSchema.safeParse(value.mutation).success
-    ) {
-      reply(failure(value.id, 'invalid-request'));
-      return;
-    }
-    if (
       splitMutation
         ? owner.serverOwner !== splitMutation
         : owner.serverOwner &&
@@ -4931,6 +4927,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let appInput: ControlAppInput | undefined;
           let preparedSchedulerAdmission: CoreSchedulerInput | undefined;
           let preparedAttentionEnqueue: AttentionEnqueueCommand | undefined;
+          let preparedCommunication: CommunicationWriterCommand | undefined;
           let preparedCommandReceipt: ControlCommandReceiptAdmission | undefined;
           let preparedStandaloneAudit: ControlStandaloneAuditInput | undefined;
           let preparedThreadReadItemIds: readonly string[] | undefined;
@@ -4958,6 +4955,12 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedAttentionEnqueue = AttentionEnqueueCommandSchema.parse(
                 JSON.parse(readControlScalarText(value.input, value.content))
               );
+            }
+            if (value.operation === 'communication-owner') {
+              preparedCommunication = CommunicationWriterCommandSchema.parse(
+                JSON.parse(readControlScalarText(value.input, value.content))
+              );
+              if (preparedCommunication.stage !== value.stage) throw new PreconditionError();
             }
             if (value.operation === 'standalone-audit') {
               preparedStandaloneAudit = ControlStandaloneAuditInputSchema.parse(
@@ -5387,6 +5390,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               appInput,
               preparedSchedulerAdmission,
               preparedAttentionEnqueue,
+              preparedCommunication,
               preparedCommandReceipt,
               preparedStandaloneAudit,
               preparedThreadReadItemIds,

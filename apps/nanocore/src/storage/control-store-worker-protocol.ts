@@ -1133,7 +1133,9 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'communication-owner';
           readonly openingRequestId: number;
-          readonly mutation: CommunicationWriterCommand;
+          readonly stage: CommunicationWriterCommand['stage'];
+          readonly input: ControlScalarText;
+          readonly content: ArrayBuffer;
         }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
@@ -1308,6 +1310,7 @@ export function controlWorkerInputBytes(
               command.operation === 'generative-presentation' ||
               command.operation === 'app-kernel' ||
               command.operation === 'schema-application' ||
+              command.operation === 'communication-owner' ||
               command.operation === 'attention-enqueue' ||
               (command.operation === 'transition' &&
                 'kind' in command.transition &&
@@ -2795,15 +2798,19 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       (value.openingRequestId as number) >= 0 &&
       nanoHostOwnerMutationSchema.safeParse(value.mutation).success
     );
-  if (value.operation === 'communication-owner')
+  if (value.operation === 'communication-owner') {
+    const parsed = ControlScalarTextSchema.safeParse(value.input);
     return (
-      exactFields(value, [...scoped, 'openingRequestId', 'mutation']) &&
+      exactFields(value, [...scoped, 'openingRequestId', 'stage', 'input', 'content']) &&
       Number.isSafeInteger(value.openingRequestId) &&
       (value.openingRequestId as number) >= 0 &&
-      isRecord(value.mutation) &&
-      typeof value.mutation.stage === 'string' &&
-      Buffer.byteLength(JSON.stringify(value.mutation)) <= CONTROL_PRODUCT_LIMITS.metadataBytes
+      typeof value.stage === 'string' &&
+      value.stage.length <= 64 &&
+      parsed.success &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );
+  }
   if (value.operation === 'nanohost-transport')
     return (
       exactFields(value, [...scoped, 'input']) &&

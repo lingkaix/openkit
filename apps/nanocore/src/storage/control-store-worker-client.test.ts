@@ -442,7 +442,13 @@ async function communicationWorkerFixture() {
   });
   const bound = await prepareCommunicationOwner({ ...input, kernel });
   if (bound.state !== 'ready') throw new Error(`Communication binding failed: ${bound.reason}`);
-  return { root, writer, binding: bound.value, userId };
+  return {
+    root,
+    writer,
+    binding: bound.value,
+    userId,
+    reopen: () => prepareCommunicationOwner({ ...input, kernel }),
+  };
 }
 
 it('joins the Communication producer before the common cut and refuses a closed Workspace', async () => {
@@ -501,6 +507,42 @@ it('joins the Communication producer before the common cut and refuses a closed 
   await writer.closeServerOwner(root, 'communication');
   expect(attention.read(() => true)).toEqual(held);
   expect(existsSync(serverStoragePath(root, 'communication'))).toBe(true);
+});
+
+it('replays a Communication Attention selector beyond the ordinary worker metadata limit', async () => {
+  const { root, writer, binding, userId, reopen } = await communicationWorkerFixture();
+  const requestId = `apr_${'"\\\n\u0000\uFEFF😀'.repeat(110_000)}`;
+  expect(Buffer.byteLength(requestId)).toBeGreaterThan(1_048_576);
+  const selection = {
+    source: {
+      kind: 'approval-request' as const,
+      workspaceId: allocateEntityId('ws'),
+      threadId: allocateEntityId('th'),
+      requestId,
+    },
+    recipientUserId: userId,
+  };
+  const enqueue = (owner: typeof binding) =>
+    owner.withProducer(() => owner.owners.attention.enqueue(selection));
+  const [original, concurrent] = await Promise.all([enqueue(binding), enqueue(binding)]);
+  if (original.state !== 'ready' || original.value.state !== 'ready')
+    throw new Error('Expected the exact large Attention enqueue to be ready.');
+  if (concurrent.state !== 'ready' || concurrent.value.state !== 'ready')
+    throw new Error('Expected the exact concurrent enqueue to be ready.');
+  expect(original.value.value.id).toBe(concurrent.value.value.id);
+  expect(sha256CanonicalJson(original.value.value.source)).toBe(
+    sha256CanonicalJson(selection.source)
+  );
+  await writer.closeServerOwner(root, 'communication');
+  const again = await reopen();
+  if (again.state !== 'ready') throw new Error('Expected Communication to reopen.');
+  const replay = await enqueue(again.value);
+  if (replay.state !== 'ready' || replay.value.state !== 'ready')
+    throw new Error('Expected the exact large selector to replay.');
+  expect(replay.value.value.id).toBe(original.value.value.id);
+  expect(sha256CanonicalJson(replay.value.value.source)).toBe(
+    sha256CanonicalJson(selection.source)
+  );
 });
 
 it('reads the live Communication expiry policy in the real writer after the retention drain', async () => {
