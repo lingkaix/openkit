@@ -53,13 +53,12 @@ export function assertEvidenceBundleDirectoryId(id: string): void {
   }
 }
 
-/** Stores one exact known EvidenceBundle without changing original replay or scope semantics. */
-export function insertEvidenceBundle<T extends EvidenceBundleRecord | ServerEvidenceBundleRecord>(
-  workspaceDb: WorkspaceDb | CoreDb,
-  record: T
-): T {
-  assertEvidenceBundleDirectoryId(record.id);
-  const existingRow = workspaceDb.sqlite
+/** Reads exactly one retained bundle row on the supplied owner connection. */
+export function readEvidenceBundleRow(
+  db: Pick<CoreDb, 'sqlite'>,
+  id: string
+): EvidenceBundleRow | undefined {
+  return db.sqlite
     .prepare(
       `SELECT
         schema_version,
@@ -83,15 +82,29 @@ export function insertEvidenceBundle<T extends EvidenceBundleRecord | ServerEvid
       FROM evidence_bundles
       WHERE evidence_bundle_id = ?`
     )
-    .get(record.id) as EvidenceBundleRow | undefined;
+    .get(id) as EvidenceBundleRow | undefined;
+}
+
+type EvidenceBundleDb =
+  | WorkspaceDb
+  | CoreDb
+  | { readonly scope: 'server-work'; readonly sqlite: CoreDb['sqlite'] };
+
+/** Stores one exact known EvidenceBundle without changing original replay or scope semantics. */
+export function insertEvidenceBundle<T extends EvidenceBundleRecord | ServerEvidenceBundleRecord>(
+  db: EvidenceBundleDb,
+  record: T
+): T {
+  assertEvidenceBundleDirectoryId(record.id);
+  const existingRow = readEvidenceBundleRow(db, record.id);
   if (existingRow) {
-    const existing = evidenceBundleFromRow(existingRow, workspaceDb.scope === 'core') as T;
+    const existing = evidenceBundleFromRow(existingRow, db.scope !== 'workspace') as T;
     if (JSON.stringify(existing) !== JSON.stringify(record)) {
       throw new Error(`Evidence bundle replay conflict: ${record.id}`);
     }
     return existing;
   }
-  workspaceDb.sqlite
+  db.sqlite
     .prepare(
       `INSERT INTO evidence_bundles (
         schema_version,
