@@ -97,7 +97,7 @@ async fn idle_harness_poll_during_app_shutdown_preserves_nanohost_epoch() {
     };
     let selection_context = CredentialSelectionContext {
         identity_id: "nanohost-a".into(),
-        deployment_id: "deployment-a".into(),
+        deployment_id: address["deploymentId"].as_str().unwrap().to_owned(),
     };
     write_credential_slot(
         &slot_paths,
