@@ -11,6 +11,7 @@ import {
 import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -757,6 +758,8 @@ describe('conversation.submit worker storage choice', () => {
   });
 
   it('forwards the exact choice on new-task-worker and conflicts when the choice changes', async () => {
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+    onTestFinished(() => vi.unstubAllEnvs());
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-conversation-storage-choice-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -1527,6 +1530,8 @@ describe('conversation.submit worker acceptance wait', () => {
         requiredCapabilities: ['trusted-worker-inference-relay'],
       });
       await recordTestNativeRuntimeTarget(coreDb);
+      const nativeStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
+      const owner = nativeStorage.value.owner;
       const effect = vi.fn(async (request: { kind: string; requestId?: string }) => {
         expect(request.kind).toBe('image.acquire');
         const refusal = new NanoHostEffectNotEnqueuedError('image.acquire', request.requestId!);
@@ -1539,6 +1544,14 @@ describe('conversation.submit worker acceptance wait', () => {
         coreDb,
         store,
         env: {},
+        workerControlGateway: createDefaultWorkerControlGateway(coreDb, undefined, nativeStorage),
+        nanoHostRecovery: {
+          owner: { state: 'ready', value: owner },
+          admitSubmission: owner.firstSubmission,
+          harnessTurnLifecycle: owner.harnessTurnLifecycle,
+          writeStorageAttachment: owner.writeStorageAttachment,
+          commitCloseout: owner.classifyRecovery,
+        },
         nanoHostSessionDispatch: {
           effect,
           async poll() {
@@ -1570,6 +1583,7 @@ describe('conversation.submit worker acceptance wait', () => {
         coreDb,
         dataRoot,
         store,
+        nanoHostStorage: nativeStorage,
         turnExecutor: runtime.turnExecutor,
         agentManifests: [setup.manifest],
         openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
@@ -1636,6 +1650,7 @@ describe('conversation.submit worker acceptance wait', () => {
       } finally {
         await completion?.catch(() => undefined);
         execution.mockRestore();
+        await shutdownControlStoreWorkerClient();
         coreDb.sqlite.close();
       }
     }
