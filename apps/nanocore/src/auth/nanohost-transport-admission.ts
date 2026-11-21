@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Http2Session } from 'node:http2';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type Database from 'better-sqlite3';
@@ -14,6 +15,10 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { CoreDb } from '../storage/db.js';
 import type { NanoHostLocalHarnessLifecycleInput } from '../storage/harness-lifecycle-codecs.js';
 import type { NanoHostRuntimeTargetEpochKernel } from '../storage/nanohost-epoch-invalidation.js';
+import {
+  type NanoHostRuntimeTargetTransition,
+  prepareNanoHostRuntimeTargetTransition,
+} from '../storage/nanohost-epoch-invalidation-native.js';
 import type {
   ControlRuntimeTargetInput,
   ControlRuntimeTargetResult,
@@ -102,7 +107,7 @@ export interface AdmittedNanoHostTransportStorage {
     harnessLifecycle(input: NanoHostLocalHarnessLifecycleInput): Promise<void>;
     transitionRuntimeTarget(
       kernel: NanoHostRuntimeTargetEpochKernel,
-      input: ControlRuntimeTargetInput
+      original: NanoHostRuntimeTargetTransition
     ): Promise<StorageResult<'nanohost' | 'control-kernel', ControlRuntimeTargetResult>>;
   };
   readonly kernel: NanoHostRuntimeTargetEpochKernel;
@@ -143,14 +148,29 @@ function readCurrentTransportToken(
     : null;
 }
 
+/** Captures a distinct authenticated transport occurrence before submitting its original tuple. */
+export async function transitionAdmittedNanoHostRuntimeTarget(
+  { owner, kernel }: AdmittedNanoHostTransportStorage,
+  input: ControlRuntimeTargetInput
+): Promise<StorageResult<'nanohost' | 'control-kernel', ControlRuntimeTargetResult>> {
+  const occurrenceId = randomUUID();
+  const original = owner.read((sqlite) =>
+    prepareNanoHostRuntimeTargetTransition(sqlite, input, occurrenceId)
+  );
+  return original.state === 'ready'
+    ? await owner.transitionRuntimeTarget(kernel, original.value)
+    : original;
+}
+
 /** Admits transport only through the admitted native owner and the exact original epoch decision. */
 export async function admitNativeNanoHostTransportConnection(
-  { owner, kernel }: AdmittedNanoHostTransportStorage,
+  storage: AdmittedNanoHostTransportStorage,
   authority: NanoHostTransportSessionAuthority,
   input: AdmitNanoHostTransportConnectionInput
 ): Promise<AdmitNanoHostTransportConnectionResult> {
+  const { owner } = storage;
   const transition = async (target: ControlRuntimeTargetInput) =>
-    requireNativeResult(await owner.transitionRuntimeTarget(kernel, target));
+    requireNativeResult(await transitionAdmittedNanoHostRuntimeTarget(storage, target));
   try {
     return await admitTransportConnection(
       {
