@@ -5,7 +5,7 @@ import type {
   ControlNanoHostTransportInput,
   ControlNanoHostTransportResult,
 } from '../auth/nanohost-transport-codecs.js';
-import type { NanoHostLocalHarnessLifecycleInputSchema } from './harness-lifecycle-codecs.js';
+import type { ControlHarnessLifecycleInputSchema } from './harness-lifecycle-codecs.js';
 import type { NanoHostRuntimeTargetEpochKernel } from './nanohost-epoch-invalidation.js';
 import {
   type NanoHostRuntimeTargetTransition,
@@ -23,7 +23,7 @@ export interface AdmittedNanoHostTransportStorage {
     read<Value>(query: (sqlite: Database.Database) => Value): StorageResult<'nanohost', Value>;
     transport(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
     harnessLifecycle(
-      input: z.output<typeof NanoHostLocalHarnessLifecycleInputSchema>
+      input: z.output<typeof ControlHarnessLifecycleInputSchema.nanoHostLocal>
     ): Promise<void>;
     transitionRuntimeTarget(
       kernel: NanoHostRuntimeTargetEpochKernel,
