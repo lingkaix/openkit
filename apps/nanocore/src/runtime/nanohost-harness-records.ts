@@ -38,7 +38,6 @@ import {
 } from './nanohost-compatibility.js';
 import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identity.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
-import type { NanoHostSubmissionPlacement } from './worker-backend-session-records.js';
 import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import { hashWorkerRouteToken } from './worker-control-gateway.js';
 import {
@@ -1376,13 +1375,7 @@ export function queueNanoHostHarnessOperation(
 export function dispatchNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: DispatchNanoHostHarnessOperationInput,
-  admitted?: {
-    readonly owner: NanoHostHarnessDb;
-    readonly submission?: {
-      readonly placement: NanoHostSubmissionPlacement;
-      readonly sessionCompatibilityKey?: string;
-    };
-  }
+  admitted?: { readonly owner: NanoHostHarnessDb }
 ): NanoHostHarnessCommand | null {
   const owner = admitted?.owner ?? coreDb;
   requireIdentity(input.sandboxIntegrationBindingRef, 'Sandbox Integration binding');
@@ -1390,9 +1383,17 @@ export function dispatchNanoHostHarnessOperation(
   try {
     const integration = owner.sqlite
       .prepare(
-        'SELECT sandbox_runtime_id AS sandboxRuntimeId FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?'
+        `SELECT sandbox_runtime_id AS sandboxRuntimeId, runtime_target_id AS targetId,
+                origin_physical_epoch AS physicalEpoch
+         FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?`
       )
-      .get(input.sandboxIntegrationBindingRef) as { readonly sandboxRuntimeId: string } | undefined;
+      .get(input.sandboxIntegrationBindingRef) as
+      | {
+          readonly sandboxRuntimeId: string;
+          readonly targetId: string;
+          readonly physicalEpoch: string;
+        }
+      | undefined;
     if (!integration) {
       throw new Error('NanoHost Sandbox Integration binding is missing or stale.');
     }
@@ -1442,17 +1443,30 @@ export function dispatchNanoHostHarnessOperation(
     // Steer's original queue admission is exact. The existing live producer rechecks current authority
     // before materializing user text; it must also observe a stale queued target and retain refusal.
     // Marking this reference dispatched grants no native contact without that authenticated producer.
-    if (harness.operation !== 'turn.steer')
-      requireOperationLineage(coreDb, harness, harness.operation, body, owner);
+    const sessionCompatibilityKey =
+      operation === 'turn.steer'
+        ? undefined
+        : requireOperationLineage(coreDb, harness, operation, body, owner);
     if (harness.operation === 'turn.start') {
       const attemptId = body.leaseId as string;
       if (admitted) {
         const original = readRetainedNanoHostSubmission(coreDb, attemptId);
-        if (!admitted.submission || !original)
+        const target = getNanoHostRuntimeTarget(owner, integration.targetId);
+        if (!original || !target || !sessionCompatibilityKey)
           throw new Error('NanoHost Harness requires the original admitted submission decision.');
+        const { attempt } = original.lease;
         applyNanoHostWorkerSubmission(owner.sqlite, {
-          ...admitted.submission,
           lease: original.lease,
+          placement: {
+            runtimeTargetId: integration.targetId,
+            physicalEpoch: integration.physicalEpoch,
+            identityId: target.identityId,
+            deploymentId: target.deploymentId,
+            workspaceId: attempt.workspaceId,
+            threadId: attempt.threadId,
+            agentSessionId: attempt.agentSessionId,
+          },
+          sessionCompatibilityKey,
           command: {
             harnessInstanceId: harness.harness_instance_id,
             operationId: harness.operation_id,
@@ -1949,7 +1963,7 @@ function requireOperationLineage(
   operation: NanoHostHarnessOperation,
   body: Readonly<Record<string, unknown>>,
   owner: NanoHostHarnessDb
-): void {
+): string | undefined {
   if (operation === 'harness.drain') {
     return;
   }
@@ -1958,7 +1972,8 @@ function requireOperationLineage(
       `SELECT schema_version AS schemaVersion, agent_session_id AS agentSessionId, workspace_id AS workspaceId,
               thread_id AS threadId, lifecycle_state AS lifecycleState,
               current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId,
-              next_turn_sequence AS nextTurnSequence, native_environment_json AS nativeEnvironment
+              next_turn_sequence AS nextTurnSequence, native_environment_json AS nativeEnvironment,
+              agent_session_compatibility_key AS compatibilityKey
        FROM agent_session_runtime_bindings
        WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`
     )
@@ -1973,6 +1988,7 @@ function requireOperationLineage(
         readonly lifecycleState: string;
         readonly nextTurnSequence: number;
         readonly nativeEnvironment: string | null;
+        readonly compatibilityKey: string;
       }
     | undefined;
   if (binding) readRetainedV1(binding, () => binding);
@@ -2127,6 +2143,7 @@ function requireOperationLineage(
   ) {
     throw new Error('NanoHost Harness Turn lease lineage conflicts.');
   }
+  return binding.compatibilityKey;
 }
 
 /** Returns the queued instruction after checking its closed credential-digest extension. */

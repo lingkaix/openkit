@@ -8,6 +8,7 @@ import { Worker } from 'node:worker_threads';
 import { canonicalJsonText } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import { expect, it, onTestFinished } from 'vitest';
+import { recordCoreHarnessConsumption } from '../runtime/core-journal-records.js';
 import {
   bindSchedulerExecutionAttemptSession,
   createSchedulerExecutionAttempt,
@@ -167,10 +168,20 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
       const sqlite = new Database(workerData.path, { fileMustExist: true });
       sqlite.pragma('synchronous = FULL');
       try {
-        const [native, heartbeat, final] = await modules;
+        const [native, heartbeat, final, harness, db] = await modules;
         const result = sqlite.transaction(() => {
           if (command.kind === 'submit')
             return native.applyNanoHostWorkerSubmission(sqlite, command.input);
+          if (command.kind === 'dispatch') {
+            const coreDb = db.openCoreReadDb(command.dataRoot);
+            try {
+              return coreDb.sqlite.transaction(() =>
+                harness.applyControlHarnessLifecycle({ sqlite }, command.input, { coreDb })
+              )();
+            } finally {
+              coreDb.sqlite.close();
+            }
+          }
           if (command.kind === 'worker-heartbeat')
             return heartbeat.applyControlWorkerHeartbeat({ sqlite, original: command.original, input: command.input });
           if (command.kind === 'worker-final')
@@ -198,6 +209,8 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
           new URL('../../dist/storage/nanohost-recovery-native.js', import.meta.url).href,
           new URL('../../dist/storage/worker-control-heartbeat-native.js', import.meta.url).href,
           new URL('../../dist/storage/worker-control-final-status-native.js', import.meta.url).href,
+          new URL('../../dist/storage/harness-lifecycle-native.js', import.meta.url).href,
+          new URL('../../dist/storage/db.js', import.meta.url).href,
         ],
       },
     }
@@ -359,6 +372,10 @@ async function queuedSubmission() {
   const f = await fixture('queued');
   const operationId = 'd'.repeat(64);
   const body = canonicalJsonText({
+    aepRef: 'session-package',
+    contextPackageId: 'context-package',
+    contextRef: 'context',
+    turnSequence: 0,
     leaseId: attemptId,
     packageSnapshotId: inputRef,
     turnId,
@@ -626,6 +643,18 @@ it('resolves App and Gateway bindings from the retained Core grant and the admit
   bindSchedulerExecutionAttemptSession(core, { attemptId, agentSessionId, now });
   finalizeSchedulerExecutionAttemptInput(core, { attemptId, inputRef, bindingRef, now });
   expect(readRetainedNanoHostSubmission(core, attemptId)).toBeNull();
+  const dispatch = () =>
+    f.send({
+      kind: 'dispatch',
+      dataRoot: root,
+      input: {
+        kind: 'operation.dispatch',
+        sandboxIntegrationBindingRef: 'sandbox-integration',
+        observedAt: acceptedAt,
+      },
+    });
+  await expect(dispatch()).rejects.toThrow('original admitted submission');
+  expect(getWorkerBackendSession(f.owner, attemptId)?.state).toBe('materialized');
 
   const span = {
     traceId: '1'.repeat(32),
@@ -706,7 +735,62 @@ it('resolves App and Gateway bindings from the retained Core grant and the admit
     status: 'rejected',
     reason: 'binding-not-found',
   });
-  await f.submit({ ...f.input, lease: retained!.lease });
+  f.owner.setup((sqlite) =>
+    sqlite.prepare('UPDATE nanohost_runtime_targets SET connection_generation = 2').run()
+  );
+  await expect(dispatch()).rejects.toThrow();
+  expect(getWorkerBackendSession(f.owner, attemptId)?.state).toBe('materialized');
+  expect(readNanoHostWorkerRouteBinding(f.owner, grant)).toBeNull();
+  f.owner.setup((sqlite) =>
+    sqlite.prepare('UPDATE nanohost_runtime_targets SET connection_generation = 1').run()
+  );
+  const previousOperationId = '9'.repeat(64);
+  const previousResult = (maxActiveTurns: number) =>
+    canonicalJsonText({
+      schemaVersion: 2,
+      harnessInstanceId: f.input.command.harnessInstanceId,
+      operationId: previousOperationId,
+      sequence: 0,
+      disposition: 'succeeded',
+      body: {
+        state: 'open',
+        nativeHandleState: 'pending',
+        nativeHandleDigest: null,
+        maxActiveTurns,
+      },
+    });
+  const retainPreviousResult = (bytes: string) =>
+    f.owner.setup((sqlite) =>
+      sqlite
+        .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+        .run(bytes, sha256Hex(bytes))
+    );
+  retainPreviousResult(previousResult(1));
+  await expect(dispatch()).resolves.toBeNull();
+  const consumed = previousResult(2);
+  core.sqlite.transaction(() =>
+    recordCoreHarnessConsumption(
+      core,
+      {
+        harnessBindingRef: 'harness-binding',
+        operationId: previousOperationId,
+        sequence: 0,
+        resultFingerprint: sha256Hex(consumed),
+      },
+      canonicalJsonText({ workspaceId, turnId, executionId: 'open-execution', stepId: 'open' }),
+      acceptedAt
+    )
+  )();
+  await expect(dispatch()).rejects.toThrow('retained consumer acknowledgement conflicts');
+  expect(getWorkerBackendSession(f.owner, attemptId)?.state).toBe('materialized');
+  expect(readNanoHostWorkerRouteBinding(f.owner, grant)).toBeNull();
+  retainPreviousResult(consumed);
+  await expect(dispatch()).resolves.toMatchObject({
+    operation: 'turn.start',
+    operationId: f.input.command.operationId,
+    sequence: f.input.command.sequence,
+  });
+  await expect(dispatch()).resolves.toBeNull();
   expect(
     resolveAdmittedNanoHostWorkerBinding(core, f.owner.sqlite, input, acceptedAt)
   ).toMatchObject({ status: 'accepted', attempt: { attemptId } });

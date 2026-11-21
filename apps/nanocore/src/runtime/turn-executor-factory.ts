@@ -263,6 +263,7 @@ import {
   workerCredentialFileBinding,
 } from './worker-governance-backend.js';
 import {
+  type AdmitNanoHostSubmission,
   agentSessionCompatibilityKeyFromPackage,
   beginWorkerTurnJournalStep,
   endWorkerTurnJournalStep,
@@ -379,6 +380,7 @@ export interface CreateConfiguredTurnExecutorOptions {
   nanoHostRecovery?:
     | {
         readonly owner: StorageResult<'nanohost', NanoHostLifecycleOwner>;
+        readonly admitSubmission?: AdmitNanoHostSubmission;
         readonly harnessTurnLifecycle?: AdmittedNanoHostHarnessTurnLifecycle;
         readonly advanceIdleCleanup?: (selection: IdleCleanupSelection) => Promise<void>;
       }
@@ -634,6 +636,7 @@ function createNanoHostWorkerLifecycleRuntime(
           backend,
           coreDb,
           readNanoHostEnvironment,
+          admitNanoHostSubmission: nanoHostRecovery?.admitSubmission,
           ...(readRuntimeConfig ? { readRuntimeConfig } : {}),
           ...(policyInterception ? { policyInterception } : {}),
           ...(goalTaskPolicy ? { goalTaskPolicy } : {}),
