@@ -8,7 +8,15 @@ import {
 import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { WorkerImageSettlementSchema } from '../runtime/worker-image-settlements-records.js';
+import {
+  KernelExecutionGrantSchema,
+  KernelExecutionProofIntentSchema,
+} from './control-kernel-proof-codecs.js';
 import { SchedulerExecutionAttemptSchema } from './execution-attempt-codecs.js';
+import {
+  ControlWorkerFinalStatusInputSchema,
+  ControlWorkerFinalStatusPayloadSchema,
+} from './worker-control-final-status-codecs.js';
 
 const text = z.string().min(1);
 const stepRef = z
@@ -40,6 +48,54 @@ export const ControlCoreImageResultSchema = z
   .strict();
 
 export type ControlCoreImageResult = z.infer<typeof ControlCoreImageResultSchema>;
+
+const finalClocks = { acceptedAt: z.iso.datetime(), eventAcceptedAt: z.iso.datetime() };
+const finalFingerprint = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+
+/** Closed Core command carried under the existing Worker final-status byte admission. */
+export const ControlCoreNanoHostFinalInputSchema = ControlWorkerFinalStatusInputSchema.omit({
+  byteLength: true,
+}).extend({
+  sandboxBindingRef: text.max(512),
+  payload: ControlWorkerFinalStatusPayloadSchema.extend(finalClocks),
+});
+
+/** The original Core intake, with the first decision class distinct from a Native replay. */
+export const CoreNanoHostFinalIntakeSchema = z
+  .object({
+    kind: z.enum(['decided', 'cancellation-decided']),
+    fingerprint: finalFingerprint,
+    ...finalClocks,
+  })
+  .strict();
+
+/** Exact reply to the Native final writer. A preparation grant cannot authorize a final. */
+export const ControlCoreNanoHostFinalDecisionSchema = CoreNanoHostFinalIntakeSchema.extend({
+  kind: z.enum(['decided', 'cancellation-decided', 'replay']),
+  grant: KernelExecutionGrantSchema.options[1],
+});
+
+/** First observation and inspection both carry the exact committed Core receipt. */
+export const ControlCoreNanoHostAcceptedFinalResultSchema = z.union([
+  z
+    .object({
+      state: z.enum(['applied', 'inspect-original']),
+      receipt: z
+        .object({
+          intent: KernelExecutionProofIntentSchema,
+          disposition: z.literal('applied'),
+          receiptDigest: finalFingerprint,
+          result: z.object({ step: stepRef }).strict(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z.object({ state: z.enum(['unknown', 'conflict']) }).strict(),
+]);
+
+export type ControlCoreNanoHostAcceptedFinalResult = z.infer<
+  typeof ControlCoreNanoHostAcceptedFinalResultSchema
+>;
 
 /** First submission names the attempt and the exact admitted Native placement. */
 export const ControlNanoHostFirstSubmissionInputSchema = z
