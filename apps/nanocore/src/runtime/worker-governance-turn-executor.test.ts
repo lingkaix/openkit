@@ -20218,6 +20218,7 @@ describe('Login publication under the original Goal Task decision', () => {
   ] as const)(
     'repeats the original consumed Task decision after an acknowledged cross-owner Plan change (%s)',
     async (ending) => {
+      const caseStarted = Date.now();
       const otherOwnerCase = ending.endsWith('other-owner');
       const heldRefresh =
         ending === 'cancelled-other-owner' ||
@@ -20302,6 +20303,8 @@ describe('Login publication under the original Goal Task decision', () => {
       let targetDatabase: string | undefined;
       let nativeStage: { mockRestore(): void } | undefined;
       let nativePosting: { mockRestore(): void } | undefined;
+      let goalStage: { mockRestore(): void } | undefined;
+      let outcomeDeadline: ReturnType<typeof setTimeout> | undefined;
       const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
         const request = new Request(input, init);
         expect(request.url === 'https://auth.openai.com/oauth/token').toBe(true);
@@ -21520,6 +21523,8 @@ describe('Login publication under the original Goal Task decision', () => {
               }
             });
         }
+        const outcomeConsidered = Promise.withResolvers<number>();
+        let goalBeforeEnd: ReturnType<typeof readGoalView>['goal'];
         if (coordinatorCase) {
           const binding = { actor, ...goalScope, turnId: coordinator.id };
           expect(requireNativeCoordinatorGoal(db, binding)).toMatchObject({
@@ -21533,8 +21538,22 @@ describe('Login publication under the original Goal Task decision', () => {
           expect(store.getTurnById(coordinator.id)).not.toHaveProperty('agentSessionId');
           const client = getControlStoreWorkerClient();
           const nativeVault = client.vault.bind(client);
+          const nativeGoal = client.goal.bind(client);
           const originalPost = NativeWorker.prototype.postMessage;
           const coreAddress = `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`;
+          // Ending the Coordinator Turn releases the queued Plan approval outcomes to a new
+          // Coordinator Turn, which records this Goal's considered revision in the background.
+          goalStage = vi.spyOn(client, 'goal').mockImplementation(async (database, input) => {
+            const result = await nativeGoal(database, input);
+            if (
+              'kind' in input &&
+              input.kind === 'considered' &&
+              input.goalId === goal.goalId &&
+              input.turnId !== coordinator.id
+            )
+              outcomeConsidered.resolve(input.readRevision);
+            return result;
+          });
           nativePosting = vi
             .spyOn(NativeWorker.prototype, 'postMessage')
             .mockImplementation(function (
@@ -21627,11 +21646,21 @@ describe('Login publication under the original Goal Task decision', () => {
                     expect(() => requireNativeCoordinatorGoal(db, binding)).toThrow(
                       expect.objectContaining({ code: 'coordinator_authority_denied' })
                     );
+                    // The end releases queued Plan outcomes to a new Coordinator Turn. Its considered
+                    // revision may commit on either side of this read; every other Goal field is exact.
+                    goalBeforeEnd = unchangedGoal;
+                    expect(readGoalView(store, db, goal.goalId).goal).toEqual({
+                      ...unchangedGoal,
+                      consideredRevision: expect.toBeOneOf([
+                        unchangedGoal!.consideredRevision,
+                        unchangedGoal!.changeRevision,
+                      ]),
+                    });
                   } else {
                     expect(requireNativeCoordinatorGoal(db, binding)).toEqual(currentGoal);
+                    expect(readGoalView(store, db, goal.goalId).goal).toEqual(unchangedGoal);
                   }
                   // Only the original caller Turn ended: consumer Task, Plan and basic authority stay current.
-                  expect(readGoalView(store, db, goal.goalId).goal).toEqual(unchangedGoal);
                   expect(store.getTurnById(turn.id)).toEqual(workerTurn);
                   expect(readGoalTaskPolicyContext({ coreDb, store, db, lineage })).toEqual(
                     workerTask
@@ -22394,6 +22423,28 @@ describe('Login publication under the original Goal Task decision', () => {
                 receipts: 0,
               });
             expect(result.kind).toBe('refused');
+            // Outside the receipt boundary, join the released outcome Turn's acknowledged commit.
+            expect(goalBeforeEnd).toBeDefined();
+            // A missing acknowledgement fails 5 s before the 30 s test budget, so finally still runs.
+            const considered = await Promise.race([
+              outcomeConsidered.promise,
+              new Promise<never>((_, reject) => {
+                outcomeDeadline = setTimeout(
+                  () =>
+                    reject(
+                      new Error(
+                        'Released Coordinator Turn did not acknowledge the considered revision.'
+                      )
+                    ),
+                  Math.max(0, caseStarted + 25_000 - Date.now())
+                );
+              }),
+            ]);
+            expect(considered).toBe(goalBeforeEnd!.changeRevision);
+            expect(readGoalView(store, db, goal.goalId).goal).toEqual({
+              ...goalBeforeEnd,
+              consideredRevision: goalBeforeEnd!.changeRevision,
+            });
           }
           expect(
             listWorkspaceAuditEvents(db, workspaceId, coreDb).some(
@@ -22550,6 +22601,8 @@ describe('Login publication under the original Goal Task decision', () => {
         if (predecessor) await predecessor.catch(() => {});
         nativeStage?.mockRestore();
         nativePosting?.mockRestore();
+        goalStage?.mockRestore();
+        clearTimeout(outcomeDeadline);
         http.mockRestore();
         await shutdownControlStoreWorkerClient();
         vault.lock();
