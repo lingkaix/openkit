@@ -14,12 +14,14 @@ import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target-records.js';
+import { readWorkerImageSettlement } from '../runtime/worker-image-settlements-records.js';
 import {
   ControlHarnessLifecycleInputSchema,
   NanoHostLocalHarnessLifecycleInputSchema,
 } from './harness-lifecycle-codecs.js';
+import { ControlWorkerImageInputSchema } from './worker-image-codecs.js';
 
-it('admits only owner-local Harness tuples and commits them on the NanoHost file', async () => {
+it('commits local Harness and image tuples without admitting mixed Core operations', async () => {
   const timestamp = '2026-11-21T00:00:00.000Z';
   const targetId = 'target-native';
   const physicalEpoch = 'f'.repeat(64);
@@ -58,6 +60,23 @@ it('admits only owner-local Harness tuples and commits them on the NanoHost file
   const restore = { kind: 'sandbox.restore-admission', sandboxRuntimeId: 'sandbox-runtime' };
   expect(ControlHarnessLifecycleInputSchema.safeParse(restore).success).toBe(true);
   expect(NanoHostLocalHarnessLifecycleInputSchema.safeParse(restore).success).toBe(false);
+  const image = {
+    authoredArtifactId: 'ar_00000000-0000-7ce7-b2d8-9d02176fb5b5',
+    authoredArtifactVersion: 1,
+    authoredContentDigest: `sha256:${'b'.repeat(64)}`,
+    inputDigest: `sha256:${'c'.repeat(64)}`,
+    outcome: { kind: 'success', imageDigest },
+  };
+  const buildRequestId = '1'.repeat(64);
+  const acquisitionRequestId = '2'.repeat(64);
+  const build = ControlWorkerImageInputSchema.parse({
+    kind: 'settlement',
+    value: { ...image, operation: 'image.build', requestId: buildRequestId },
+  });
+  const acquisition = ControlWorkerImageInputSchema.parse({
+    kind: 'settlement',
+    value: { ...image, operation: 'image.acquire', requestId: acquisitionRequestId },
+  });
 
   const root = mkdtempSync(join(tmpdir(), 'openkit-nanohost-serving-local-'));
   const path = join(root, 'state.sqlite');
@@ -92,6 +111,7 @@ it('admits only owner-local Harness tuples and commits them on the NanoHost file
       const { workerData } = require('node:worker_threads');
       (async () => {
         const { applyNanoHostLocalHarnessLifecycle } = await import(workerData.handler);
+        const { applyNanoHostLocalWorkerImage } = await import(workerData.imageHandler);
         const sqlite = new (require(workerData.sqlite))(workerData.path, { fileMustExist: true });
         try {
           sqlite.pragma('foreign_keys = ON');
@@ -101,6 +121,12 @@ it('admits only owner-local Harness tuples and commits them on the NanoHost file
               applyNanoHostLocalHarnessLifecycle({ sqlite }, input)
             ).immediate(), null);
           }
+          const applyImage = input => sqlite.transaction(() =>
+            applyNanoHostLocalWorkerImage({ sqlite }, input)
+          ).immediate();
+          assert.equal(applyImage(workerData.build), null);
+          assert.equal(applyImage(workerData.build), null);
+          assert.throws(() => applyImage(workerData.acquisition), /transition precondition failed/);
         } finally {
           sqlite.close();
         }
@@ -109,7 +135,10 @@ it('admits only owner-local Harness tuples and commits them on the NanoHost file
       {
         eval: true,
         workerData: {
+          acquisition,
+          build,
           handler: new URL('../../dist/storage/harness-lifecycle-native.js', import.meta.url).href,
+          imageHandler: new URL('../../dist/storage/worker-image-native.js', import.meta.url).href,
           inputs,
           path,
           sqlite: createRequire(import.meta.url).resolve('better-sqlite3'),
@@ -132,6 +161,10 @@ it('admits only owner-local Harness tuples and commits them on the NanoHost file
       expect(
         readNanoHostMeasuredHarnessIdentity({ sqlite: reader }, agentSessionRuntimeBindingId)
       ).toBe(imageDigest);
+      expect(readWorkerImageSettlement({ sqlite: reader }, buildRequestId)?.outcome).toEqual(
+        image.outcome
+      );
+      expect(readWorkerImageSettlement({ sqlite: reader }, acquisitionRequestId)).toBeNull();
       expect(reader.pragma('foreign_key_check')).toEqual([]);
     } finally {
       reader.close();
