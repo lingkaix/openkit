@@ -695,6 +695,10 @@ export interface NanoHostOwnerBinding
   ): Promise<StorageResult<'nanohost' | 'control-kernel', ControlRuntimeTargetResult>>;
   /** Runs a synchronous projection on the captured query-only generation. */
   read<Value>(query: (sqlite: Database.Database) => Value): StorageResult<'nanohost', Value>;
+  /** Waits for a serving acknowledgement without reading an unsettled outcome. */
+  readWorkerCompletion<Value>(
+    query: (sqlite: Database.Database) => Value
+  ): StorageResult<'nanohost', Value> | { readonly state: 'pending' };
   beginEpochRetirement(placement: NanoHostEpochPlacement): Promise<StorageResult<'nanohost', void>>;
   readPendingEpochRetirement(): Promise<StorageResult<'nanohost', NanoHostEpochPlacement | null>>;
   listTransportTokens(): Promise<StorageResult<'nanohost', NanoHostTransportTokenRecord[]>>;
@@ -3251,6 +3255,23 @@ class ControlStoreWorkerClient {
         }
       };
       opening.readNanoHost = read;
+      const readWorkerCompletion: NanoHostOwnerBinding['readWorkerCompletion'] = (query) => {
+        try {
+          if (!gate.enabled()) return disabled;
+          if (opening.nanoHostTargetTransition)
+            throw new ControlStoreWorkerError('busy', 'not-committed');
+          if (
+            opening.nanoHostWritePending === 'target-stable-write' ||
+            opening.nanoHostWritePending === 'core-owner-read'
+          ) {
+            readCurrent(() => undefined, true);
+            return { state: 'pending' };
+          }
+          return read(query);
+        } catch (error) {
+          return serverOwnerUnavailable(owner, error);
+        }
+      };
       const readRuntimeTarget: NanoHostOwnerBinding['readRuntimeTarget'] = (targetId) => {
         try {
           if (!gate.enabled()) return disabled;
@@ -3819,6 +3840,7 @@ class ControlStoreWorkerClient {
         value: {
           transport: async (input) => (await write({ kind: 'transport', input })).value,
           enrollTransport,
+          readWorkerCompletion,
           readRuntimeTarget,
           firstSubmission,
           harnessTurnLifecycle,

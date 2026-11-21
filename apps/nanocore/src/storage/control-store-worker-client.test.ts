@@ -2797,7 +2797,7 @@ describe('admitted NanoHost owner worker', () => {
     expectNanoHostTablesAbsent(f.corePath, 'nanohost_runtime_targets');
   });
 
-  it('keeps RuntimeTarget and empty Harness polling independent of mixed writes', async () => {
+  it('lets exact RuntimeTarget and Harness polls proceed while completion awaits serving FULL', async () => {
     const f = await nanoHostWorkerFixture();
     for (const target of [nanoHostTarget, nanoHostReady]) {
       const original = await prepareNanoHostTarget(f.owner, target);
@@ -2812,6 +2812,7 @@ describe('admitted NanoHost owner worker', () => {
       f.owner.harnessTurnLifecycle.dispatch({
         sandboxIntegrationBindingRef: 'sandbox-integration',
       });
+    const completion = vi.fn(() => true);
     Atomics.store(f.gate, 0, 0);
     const writing = f.owner.harnessLifecycle({
       kind: 'runtime.create',
@@ -2836,11 +2837,15 @@ describe('admitted NanoHost owner worker', () => {
         value: { connectionGeneration: 1, ready: true },
       });
       expect(f.owner.read(() => true)).toMatchObject({ state: 'unavailable' });
+      expect(f.owner.readWorkerCompletion(completion)).toEqual({ state: 'pending' });
+      expect(completion).not.toHaveBeenCalled();
       await expect(poll()).resolves.toBeNull();
     } finally {
       release(f.gate);
     }
     await expect(writing).resolves.toBeUndefined();
+    expect(f.owner.readWorkerCompletion(completion)).toEqual({ state: 'ready', value: true });
+    expect(completion).toHaveBeenCalledTimes(1);
 
     await expect(poll()).resolves.toBeNull();
     expect(posted.mock.calls.map(([frame]) => frame)).not.toContainEqual(
@@ -2871,6 +2876,9 @@ describe('admitted NanoHost owner worker', () => {
       expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
         state: 'unavailable',
       });
+      const completion = vi.fn(() => true);
+      expect(f.owner.readWorkerCompletion(completion)).toMatchObject({ state: 'unavailable' });
+      expect(completion).not.toHaveBeenCalled();
       await expect(
         f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, successor)
       ).resolves.toEqual(nanoHostHeld);
