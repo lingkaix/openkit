@@ -1584,128 +1584,164 @@ describe('admitted NanoHost owner worker', () => {
     });
   });
 
-  it('routes the internal self-check backend and exact final receipt through the Native writer', async () => {
-    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
-    try {
-      const f = await nanoHostWorkerFixture();
-      const core = openCoreDb(f.root);
-      nativeHandles.push(core);
-      const workspaceId = DEMO_WORKSPACE_ID;
-      const ownerUserId = ensureLocalUser(core);
-      recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId });
-      const turnId = allocateEntityId('tu');
-      const threadId = DEMO_THREAD_ID;
-      const agentSessionId = allocateEntityId('as');
-      const packageSnapshotId = 'self-check-package-original';
-      const sandboxBindingRef = 'self-check-sandbox-original';
-      const when = new Date().toISOString();
-      const entry = createSchedulerAdmissionEntry(core, {
-        queueEntryId: 'self-check-worker-route',
-        backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: ownerUserId },
-        workspaceId,
-        threadId,
-        turnId,
-        inputRef: schedulerFixtureInput(workspaceId, turnId, 'Native self-check worker route.'),
-        requestedAgentId: 'agent_worker',
-      });
-      const attempt = createSchedulerExecutionAttempt(core, {
-        entry,
-        preparationInput: { admission: entry },
-        now: () => when,
-      });
-      await f.writer.executionAttempt(f.coreKey, {
-        kind: 'native-preparation',
-        attemptId: attempt.attemptId,
-        agentSessionId,
-        inputRef: packageSnapshotId,
-        bindingRef: sandboxBindingRef,
-        sessionCompatibilityKey: 'self-check-session-original',
-        observedAt: when,
-      });
-      const deploymentId = readDataRootLayoutMarker(f.root).deploymentId;
-      const kernel = f.writer.nanoHostEpochKernel(core);
-      for (const target of [nanoHostTarget, nanoHostReady]) {
-        const command = await prepareNanoHostTarget(f.owner, { ...target, deploymentId });
-        await expect(f.owner.transitionRuntimeTarget(kernel, command)).resolves.toMatchObject({
-          state: 'ready',
-        });
-      }
-
-      const materializing = {
-        kind: 'materializing',
-        identity: {
-          agentSessionId,
-          backendKind: 'openshell',
-          backendSessionId: `self-check_${packageSnapshotId}`,
-          deploymentId,
-          packageSnapshotId,
-          runtimeTargetId: nanoHostTarget.targetId,
-          stagingDirectoryRef: 'self-check-workspace-staging',
-          transientProviderInstanceId: null,
-        },
-        backendVersion: null,
-        backendLineage: { kind: 'reference', imageRef: 'fixture-image' },
-        lineage: { threadId, turnId, workspaceId },
-        sandboxBindingRef,
-        observedAt: when,
-      } as const;
-      await expect(f.writer.backendSession(f.coreKey, materializing)).resolves.toMatchObject({
-        attemptId: attempt.attemptId,
-        state: 'materializing',
-      });
-      const backend = { attemptId: attempt.attemptId, observedAt: when };
-      await f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend });
-      await f.writer.backendSession(f.coreKey, {
-        kind: 'transition',
-        fromState: 'materializing',
-        toState: 'materialized',
-        ...backend,
-      });
-
-      core.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET disposition='accepted', operation_id=? WHERE attempt_id=?"
-        )
-        .run(
-          commandInputHash({
-            attemptId: attempt.attemptId,
-            inputRef: packageSnapshotId,
-            operation: 'submit',
-          }),
-          attempt.attemptId
-        );
-      const final = {
-        kind: 'simulator-final',
-        attemptId: attempt.attemptId,
-        acceptedAt: when,
-        lineage: {
-          agentSessionId,
-          packageSnapshotId,
+  it.each(['live Native materialization', 'self-check final replay'])(
+    'uses the original Core preparation for %s',
+    async (path) => {
+      const selfCheck = path === 'self-check final replay';
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', selfCheck ? '1' : '0');
+      try {
+        const f = await nanoHostWorkerFixture();
+        const core = openCoreDb(f.root);
+        nativeHandles.push(core);
+        const workspaceId = DEMO_WORKSPACE_ID;
+        const ownerUserId = ensureLocalUser(core);
+        recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId });
+        const turnId = allocateEntityId('tu');
+        const threadId = DEMO_THREAD_ID;
+        const agentSessionId = allocateEntityId('as');
+        const packageSnapshotId = 'self-check-package-original';
+        const sandboxBindingRef = 'self-check-sandbox-original';
+        const when = new Date().toISOString();
+        const entry = createSchedulerAdmissionEntry(core, {
+          queueEntryId: 'self-check-worker-route',
+          backendId: 'nanohost',
+          triggerActor: { kind: 'user', id: ownerUserId },
+          workspaceId,
           threadId,
           turnId,
-          workspaceId,
-          requestId: null,
-        },
-      } as const;
-      const original = await f.writer.executionAttempt(f.coreKey, final);
-      expect(original).toMatchObject({ attemptId: attempt.attemptId, disposition: 'accepted' });
-      await expect(f.writer.executionAttempt(f.coreKey, final)).resolves.toEqual(original);
-      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '0');
-      await expect(f.writer.executionAttempt(f.coreKey, final)).rejects.toMatchObject({
-        code: 'owner-recovery-required',
-        commit: 'not-committed',
-      });
-      expect(
-        f.owner.read((sqlite) =>
-          sqlite.prepare('SELECT operation, record_key FROM worker_control_records').all()
-        )
-      ).toEqual({ state: 'ready', value: [{ operation: 'final_status', record_key: '1' }] });
-      expectNanoHostTablesAbsent(f.corePath, 'worker_backend_sessions', 'worker_control_records');
-    } finally {
-      vi.unstubAllEnvs();
+          inputRef: schedulerFixtureInput(workspaceId, turnId, 'Native self-check worker route.'),
+          requestedAgentId: 'agent_worker',
+        });
+        const attempt = createSchedulerExecutionAttempt(core, {
+          entry,
+          preparationInput: { admission: entry },
+          now: () => when,
+        });
+        await f.writer.executionAttempt(f.coreKey, {
+          kind: 'bind-session',
+          attemptId: attempt.attemptId,
+          agentSessionId,
+          observedAt: when,
+        });
+        await f.writer.executionAttempt(f.coreKey, {
+          kind: 'finalize-input',
+          attemptId: attempt.attemptId,
+          inputRef: packageSnapshotId,
+          bindingRef: sandboxBindingRef,
+          observedAt: when,
+        });
+        const deploymentId = readDataRootLayoutMarker(f.root).deploymentId;
+        const kernel = f.writer.nanoHostEpochKernel(core);
+        for (const target of [nanoHostTarget, nanoHostReady]) {
+          const command = await prepareNanoHostTarget(f.owner, { ...target, deploymentId });
+          await expect(f.owner.transitionRuntimeTarget(kernel, command)).resolves.toMatchObject({
+            state: 'ready',
+          });
+        }
+
+        const materializing = {
+          kind: 'materializing',
+          identity: {
+            agentSessionId,
+            backendKind: 'openshell',
+            backendSessionId: `self-check_${packageSnapshotId}`,
+            deploymentId,
+            packageSnapshotId,
+            runtimeTargetId: nanoHostTarget.targetId,
+            stagingDirectoryRef: 'self-check-workspace-staging',
+            transientProviderInstanceId: null,
+          },
+          backendVersion: null,
+          backendLineage: { kind: 'reference', imageRef: 'fixture-image' },
+          lineage: { threadId, turnId, workspaceId },
+          sandboxBindingRef,
+          observedAt: when,
+        } as const;
+        await expect(
+          f.writer.backendSession(f.coreKey, {
+            ...materializing,
+            sandboxBindingRef: 'different-binding',
+          })
+        ).rejects.toMatchObject({ code: 'owner-recovery-required', commit: 'not-committed' });
+        expect(
+          f.owner.read((sqlite) =>
+            sqlite.prepare('SELECT attempt_id FROM worker_backend_sessions').all()
+          )
+        ).toEqual({ state: 'ready', value: [] });
+        await expect(f.writer.backendSession(f.coreKey, materializing)).resolves.toMatchObject({
+          attemptId: attempt.attemptId,
+          state: 'materializing',
+        });
+        expect(
+          f.owner.read((sqlite) =>
+            sqlite.prepare('SELECT attempt_id FROM worker_backend_sessions').all()
+          )
+        ).toEqual({ state: 'ready', value: [{ attempt_id: attempt.attemptId }] });
+        const backend = { attemptId: attempt.attemptId, observedAt: when };
+        if (!selfCheck) {
+          await expect(
+            f.writer.backendSession(f.coreKey, {
+              kind: 'transition',
+              fromState: 'materializing',
+              toState: 'launching',
+              ...backend,
+            })
+          ).rejects.toMatchObject({ code: 'owner-recovery-required', commit: 'not-committed' });
+          expectNanoHostTablesAbsent(f.corePath, 'worker_backend_sessions');
+          return;
+        }
+        await f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend });
+        await f.writer.backendSession(f.coreKey, {
+          kind: 'transition',
+          fromState: 'materializing',
+          toState: 'materialized',
+          ...backend,
+        });
+
+        core.sqlite
+          .prepare(
+            "UPDATE scheduler_execution_attempts SET disposition='accepted', operation_id=? WHERE attempt_id=?"
+          )
+          .run(
+            commandInputHash({
+              attemptId: attempt.attemptId,
+              inputRef: packageSnapshotId,
+              operation: 'submit',
+            }),
+            attempt.attemptId
+          );
+        const final = {
+          kind: 'simulator-final',
+          attemptId: attempt.attemptId,
+          acceptedAt: when,
+          lineage: {
+            agentSessionId,
+            packageSnapshotId,
+            threadId,
+            turnId,
+            workspaceId,
+            requestId: null,
+          },
+        } as const;
+        const original = await f.writer.executionAttempt(f.coreKey, final);
+        expect(original).toMatchObject({ attemptId: attempt.attemptId, disposition: 'accepted' });
+        await expect(f.writer.executionAttempt(f.coreKey, final)).resolves.toEqual(original);
+        vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '0');
+        await expect(f.writer.executionAttempt(f.coreKey, final)).rejects.toMatchObject({
+          code: 'owner-recovery-required',
+          commit: 'not-committed',
+        });
+        expect(
+          f.owner.read((sqlite) =>
+            sqlite.prepare('SELECT operation, record_key FROM worker_control_records').all()
+          )
+        ).toEqual({ state: 'ready', value: [{ operation: 'final_status', record_key: '1' }] });
+        expectNanoHostTablesAbsent(f.corePath, 'worker_backend_sessions', 'worker_control_records');
+      } finally {
+        vi.unstubAllEnvs();
+      }
     }
-  });
+  );
 
   it('joins the restart window and preflight hold to the original Core grant and current Native opening', async () => {
     const workspaceId = allocateEntityId('ws');

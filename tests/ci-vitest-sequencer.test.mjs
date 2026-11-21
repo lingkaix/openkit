@@ -116,7 +116,7 @@ test('isolated CI assignment refuses a missing or duplicate target before select
 
 test('checked-in costs are positive per-file milliseconds with named source batches', () => {
   assert.deepEqual(timings.sourceRuns, [42185315340]);
-  assert.equal(Object.keys(timings.files).length, 725);
+  assert.equal(Object.keys(timings.files).length, 724);
   assert(timings.sourceRuns.every(Number.isSafeInteger));
   assert(Number.isSafeInteger(timings.fallbackMs) && timings.fallbackMs > 0);
   assert(Object.keys(timings.files).length > 0);

@@ -944,7 +944,10 @@ function domainRefusal(
   if (operation === 'worker-control-final-status' && error instanceof WorkerFinalStatusRefusal)
     return { operation, code: error.code, message: error.message, status: error.status };
   if (request?.operation === 'nanohost-owner') {
-    const kind = request.mutation.kind;
+    const kind =
+      request.mutation.kind === 'backend-session-materialize'
+        ? 'backend-session'
+        : request.mutation.kind;
     if (
       kind === 'harness-lifecycle' ||
       kind === 'worker-image' ||
@@ -1891,6 +1894,15 @@ function applyNanoHostOwnerMutation(
         kind: mutation.kind,
         value: applyControlBackendSession({ sqlite }, mutation.input),
       };
+    case 'backend-session-materialize':
+      return withNanoHostCore(owner, mutation.coreIdentity, (core) => ({
+        kind: mutation.kind,
+        value: applyControlBackendSession(
+          { sqlite },
+          mutation.input,
+          requireNanoHostMaterialization(core, mutation.input)
+        ),
+      }));
     case 'recovery-classification': {
       const input = mutation.input;
       if (serverStoragePath(input.dataRoot, 'nanohost') !== owner.path)
@@ -2093,7 +2105,10 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     }
     case 'nanohost-owner':
-      if (
+      if (request.mutation.kind === 'backend-session-materialize') {
+        lanes.add(request.mutation.input.lineage.turnId);
+        lanes.add(`session:${request.mutation.input.identity.agentSessionId}`);
+      } else if (
         request.mutation.kind === 'backend-session' ||
         request.mutation.kind === 'recovery-classification'
       ) {

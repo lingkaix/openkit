@@ -774,10 +774,13 @@ interface Opening {
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
   communicationReader?: Database.Database;
-  nanoHostEnrollmentPending?: true;
+  nanoHostCoreHoldPending?: true;
   nanoHostTargetTransition?: true;
   nanoHostReader?: Promise<Database.Database>;
   readNanoHost?: NanoHostOwnerBinding['read'];
+  materializeNanoHostBackend?(
+    input: Extract<ControlBackendSessionInput, { kind: 'materializing' }>
+  ): Promise<ControlBackendSessionResult>;
   /** Request-local capture enrollment stays with this existing physical Workspace owner. */
   captureReads?: CaptureReadGeneration;
   /** The exact close owner excludes later OPEN/read acquisition, including after a failed attempt. */
@@ -3267,6 +3270,7 @@ class ControlStoreWorkerClient {
                   throw new WorkerImageSettlementConflict();
                 break;
               case 'backend-session':
+              case 'backend-session-materialize':
                 if (domain.code === 'backend_session_refused') {
                   const Constructor =
                     domain.errorName === 'TypeError'
@@ -3290,6 +3294,60 @@ class ControlStoreWorkerClient {
         }
       };
 
+      // Drain Core postings while the original authority is used by the Native writer.
+      const withCoreHold = async <Value>(submit: (identity: string) => Promise<Value>) => {
+        const corePath = serverStoragePath(root, 'control-kernel');
+        const coreKey = `core:${corePath}`;
+        const core = this.openings.get(coreKey);
+        const identity = core?.identity;
+        assertCurrent();
+        if (
+          !core?.acknowledged ||
+          !identity ||
+          core.command.initialize !== 'core' ||
+          core.command.dataRoot !== root ||
+          core.host.failed ||
+          core.retirement ||
+          this.backupHold ||
+          opening.nanoHostCoreHoldPending
+        )
+          throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+        opening.nanoHostCoreHoldPending = true;
+        try {
+          return await this.runOperation(
+            async () => {
+              const resume = await this.pauseForDataRootBackup(coreKey);
+              try {
+                let physical: ReturnType<typeof readPhysicalDatabaseIdentity>;
+                try {
+                  physical = readPhysicalDatabaseIdentity(corePath);
+                } catch {
+                  throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+                }
+                if (
+                  this.openings.get(coreKey) !== core ||
+                  core.host.failed ||
+                  core.retirement ||
+                  !physical.file.isFile() ||
+                  physical.file.nlink !== 1 ||
+                  physical.path !== corePath ||
+                  physical.identity !== identity
+                )
+                  throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+                return await submit(identity);
+              } finally {
+                if (opening.host.failed) await opening.host.exited.promise;
+                resume();
+              }
+            },
+            undefined,
+            database
+          );
+        } finally {
+          delete opening.nanoHostCoreHoldPending;
+        }
+      };
+
       const enrollTransport: NanoHostAdministratorEnroll = async (input) => {
         const enrolled = ControlNanoHostTransportInputSchema.parse(input);
         const isAdministrator = readers.isEnrollmentAdministrator;
@@ -3302,77 +3360,44 @@ class ControlStoreWorkerClient {
         )
           throw new ControlStoreWorkerError('precondition', 'not-committed');
         const actor = nanoHostTransportAdminFacts(enrolled.actor);
-        const corePath = serverStoragePath(root, 'control-kernel');
-        const coreKey = `core:${corePath}`;
-        const core = this.openings.get(coreKey);
-        assertCurrent();
-        if (
-          !core?.acknowledged ||
-          !core.identity ||
-          core.command.initialize !== 'core' ||
-          core.command.dataRoot !== root ||
-          core.host.failed ||
-          core.retirement ||
-          this.backupHold ||
-          opening.nanoHostEnrollmentPending
-        )
-          throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-        opening.nanoHostEnrollmentPending = true;
-        try {
-          return await this.runOperation(
-            async () => {
-              // Like the Communication authority join, hold Core postings through the other owner's ACK.
-              const resume = await this.pauseForDataRootBackup(coreKey);
-              try {
-                let authorized: boolean;
-                try {
-                  const physical = readPhysicalDatabaseIdentity(corePath);
-                  if (
-                    this.openings.get(coreKey) !== core ||
-                    core.host.failed ||
-                    core.retirement ||
-                    !physical.file.isFile() ||
-                    physical.file.nlink !== 1 ||
-                    physical.path !== corePath ||
-                    physical.identity !== core.identity
-                  )
-                    throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-                  const reader = openCoreReadDb(root);
-                  try {
-                    authorized = isAdministrator(reader, actor, enrolled.record.now);
-                  } finally {
-                    reader.sqlite.close();
-                  }
-                } catch (error) {
-                  if (error instanceof ControlStoreWorkerError) throw error;
-                  throw new ControlStoreWorkerError('precondition', 'not-committed');
-                }
-                if (!authorized) {
-                  const refusal = NANOHOST_TRANSPORT_ADMIN_REFUSAL;
-                  throw new OperationError(refusal.code, refusal.message, refusal.status, {
-                    cause: new ControlStoreWorkerError('precondition', 'not-committed'),
-                  });
-                }
-                const result = (
-                  await write({
-                    kind: 'transport',
-                    input: { kind: 'enroll', record: enrolled.record },
-                  })
-                ).value;
-                if (result.kind !== 'record')
-                  throw new ControlStoreWorkerError('integrity', 'unknown');
-                return result;
-              } finally {
-                if (opening.host.failed) await opening.host.exited.promise;
-                resume();
-              }
-            },
-            undefined,
-            database
-          );
-        } finally {
-          delete opening.nanoHostEnrollmentPending;
-        }
+        return withCoreHold(async () => {
+          let authorized: boolean;
+          try {
+            const reader = openCoreReadDb(root);
+            try {
+              authorized = isAdministrator(reader, actor, enrolled.record.now);
+            } finally {
+              reader.sqlite.close();
+            }
+          } catch {
+            throw new ControlStoreWorkerError('precondition', 'not-committed');
+          }
+          if (!authorized) {
+            const refusal = NANOHOST_TRANSPORT_ADMIN_REFUSAL;
+            throw new OperationError(refusal.code, refusal.message, refusal.status, {
+              cause: new ControlStoreWorkerError('precondition', 'not-committed'),
+            });
+          }
+          const result = (
+            await write({ kind: 'transport', input: { kind: 'enroll', record: enrolled.record } })
+          ).value;
+          if (result.kind !== 'record') throw new ControlStoreWorkerError('integrity', 'unknown');
+          return result;
+        });
+      };
+
+      opening.materializeNanoHostBackend = (input) => {
+        const original = structuredClone(input);
+        return withCoreHold(
+          async (coreIdentity) =>
+            (
+              await write({
+                kind: 'backend-session-materialize',
+                input: original,
+                coreIdentity,
+              })
+            ).value
+        );
       };
 
       const writeUnavailable = (error: unknown): StorageUnavailable<'nanohost'> =>
@@ -7419,6 +7444,21 @@ class ControlStoreWorkerClient {
     input: ControlBackendSessionInput
   ): Promise<ControlBackendSessionResult> {
     try {
+      if (
+        input.kind === 'materializing' &&
+        process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR !== '1'
+      ) {
+        const core = this.openings.get(database);
+        const root =
+          core?.acknowledged && core.command.initialize === 'core'
+            ? core.command.dataRoot
+            : undefined;
+        const native =
+          root && this.openings.get(`server-owner:${serverStoragePath(root, 'nanohost')}`);
+        if (!native || !native.materializeNanoHostBackend)
+          throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+        return await native.materializeNanoHostBackend(input);
+      }
       const reply =
         process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
           ? await this.runSimulatorNative(database, (native, simulatorCoreIdentity) =>
@@ -8085,7 +8125,7 @@ class ControlStoreWorkerClient {
       database === undefined &&
       (this.serverWorkProducers.size !== 0 ||
         [...this.openings.values()].some(
-          (opening) => opening.nanoHostTargetTransition || opening.nanoHostEnrollmentPending
+          (opening) => opening.nanoHostTargetTransition || opening.nanoHostCoreHoldPending
         ))
     ) {
       resumeCommunication?.();

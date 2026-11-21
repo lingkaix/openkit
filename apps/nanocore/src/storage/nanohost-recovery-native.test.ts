@@ -636,6 +636,14 @@ it('resolves App and Gateway bindings from the retained Core grant and the admit
     startTimeUnixNano: BigInt(Date.parse(created)) * 1_000_000n,
     endTimeUnixNano: null,
     status: { code: 'UNSET' as const },
+    attributes: [],
+    droppedAttributesCount: 0,
+    events: [],
+    droppedEventsCount: 0,
+    links: [],
+    droppedLinksCount: 0,
+    instrumentationScope: { name: 'openkit.fixture', attributes: [], droppedAttributesCount: 0 },
+    resource: { attributes: [], droppedAttributesCount: 0 },
   };
   const intent: ExecutionJournalIntent = {
     execution: {
