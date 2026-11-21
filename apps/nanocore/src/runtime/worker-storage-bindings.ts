@@ -1,17 +1,51 @@
+import { isDeepStrictEqual } from 'node:util';
 import { allocateEntityId } from '@openkit/protocol';
+import type Database from 'better-sqlite3';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
+import type { ControlWorkerStorageInput } from '../storage/worker-storage-binding-codecs.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
+  getNanoHostRuntimeTarget,
+  type NanoHostRuntimeTargetRecord,
+} from './nanohost-runtime-target-records.js';
+import {
+  type AuthorizeWorkerStorageContributor,
   getWorkerStorageBinding,
   prepareWorkerStorageContributor,
   type WorkerStorageBinding,
   WorkerStorageBindingError,
+  type WorkerStorageContributor,
   type WorkerStorageSelectionInput,
   type WorkerStorageTarget,
   workerStorageSchedulerRows,
 } from './worker-storage-binding-records.js';
+
+type WorkerStorageAttachmentCommand = Extract<
+  ControlWorkerStorageInput,
+  { kind: 'create-and-reserve' | 'reserve-existing' | 'admit-contributor' | 'activate' }
+>;
+
+/** The owner evaluates the local guard just before posting the closed Native CAS command. */
+export type WriteNanoHostStorageAttachment = (
+  command: WorkerStorageAttachmentCommand,
+  authority: {
+    readonly attemptId: string;
+    readonly verifyBeforePost: (sqlite: Database.Database) => boolean;
+  }
+) => Promise<WorkerStorageBinding>;
+
+/** Binds ordinary preparation to one original attempt and the selected Native opening. */
+export interface AdmittedWorkerStorageAttachment {
+  readonly attemptId: string;
+  readonly target: NanoHostRuntimeTargetRecord;
+  readonly read: AdmittedNanoHostTransportStorage['owner']['read'];
+  readonly write: WriteNanoHostStorageAttachment;
+  readonly authorizeContributor: AuthorizeWorkerStorageContributor;
+  isCurrentAttempt(): boolean;
+}
 
 export {
   type AuthorizeWorkerStorageContributor,
@@ -73,14 +107,85 @@ function admittedSelection<
   }
   const { authorizeContributor: _callback, ...facts } = input;
   return {
-    ...facts,
-    now,
-    layout: { ...input.layout, targets: [...input.layout.targets] },
-    ...(input.adjudicatedThreadIds
-      ? { adjudicatedThreadIds: [...input.adjudicatedThreadIds] }
-      : {}),
-    authorizedContributorRefs,
+    contributors,
+    input: {
+      ...facts,
+      now,
+      layout: { ...input.layout, targets: [...input.layout.targets] },
+      ...(input.adjudicatedThreadIds
+        ? { adjudicatedThreadIds: [...input.adjudicatedThreadIds] }
+        : {}),
+      authorizedContributorRefs,
+    },
   };
+}
+
+/** Uses the existing pre-post authority boundary. The Native transaction still decides the CAS. */
+async function prepareAttachmentPublisher(
+  coreDb: CoreDb,
+  admitted: AdmittedWorkerStorageAttachment | undefined,
+  authorizeContributor: AuthorizeWorkerStorageContributor | undefined
+) {
+  if (!admitted) {
+    const { client, database } = await bindingWriter(coreDb);
+    return (input: WorkerStorageAttachmentCommand) => client.workerStorageBinding(database, input);
+  }
+  const { target, attemptId } = admitted;
+  const authorize = authorizeContributor ?? admitted.authorizeContributor;
+  return (
+    input: WorkerStorageAttachmentCommand,
+    prior?: WorkerStorageBinding | null,
+    contributors: readonly WorkerStorageContributor[] = []
+  ) =>
+    admitted.write(input, {
+      attemptId,
+      verifyBeforePost: (sqlite) =>
+        sqlite
+          .transaction(() => {
+            const owner = { sqlite };
+            const current = getNanoHostRuntimeTarget(owner, target.targetId);
+            if (
+              !current?.ready ||
+              !current.freshEmpty ||
+              !current.predecessorFenced ||
+              current.connectionGeneration !== target.connectionGeneration ||
+              current.deploymentId !== target.deploymentId ||
+              current.identityId !== target.identityId ||
+              current.physicalEpoch !== target.physicalEpoch ||
+              ('runtimeTargetId' in input && input.runtimeTargetId !== target.targetId) ||
+              ('deploymentId' in input && input.deploymentId !== target.deploymentId) ||
+              (prior &&
+                (prior.runtimeTargetId !== target.targetId ||
+                  prior.deploymentId !== target.deploymentId)) ||
+              !admitted.isCurrentAttempt() ||
+              !isDeepStrictEqual(getWorkerStorageBinding(owner, input), prior)
+            )
+              return false;
+            if (
+              input.kind !== 'activate' &&
+              input.authorizedContributorRefs.length !== contributors.length
+            )
+              return false;
+            return contributors.every(authorize);
+          })
+          .deferred(),
+    });
+}
+
+/** Captures the current selected revision on the same reader as the attachment writer. */
+function readAttachmentBinding(
+  coreDb: CoreDb,
+  storageRef: string,
+  admitted?: AdmittedWorkerStorageAttachment
+): WorkerStorageBinding {
+  const binding = requireNanoHostObservation(
+    coreDb,
+    (sqlite) => getWorkerStorageBinding({ sqlite }, { storageRef }),
+    admitted?.read
+  );
+  if (!binding)
+    throw new WorkerStorageBindingError('not_found', 'Worker storage association was not found.');
+  return binding;
 }
 
 /** Creates and reserves the first attachment as one atomic native tuple; no idle partial association is published. */
@@ -89,11 +194,12 @@ export async function createAndReserveWorkerStorageAttachment(
   input: Omit<
     Parameters<typeof reserveWorkerStorageAttachment>[1],
     'storageRef' | 'expectedRevision'
-  > & { readonly deploymentId: string }
+  > & { readonly deploymentId: string },
+  owner?: AdmittedWorkerStorageAttachment
 ): Promise<WorkerStorageBinding> {
   const { authorizeContributor, ...facts } = input;
   const snapshot = { ...structuredClone(facts), authorizeContributor };
-  const { client, database } = await bindingWriter(coreDb);
+  const publish = await prepareAttachmentPublisher(coreDb, owner, authorizeContributor);
   const storageRef = allocateEntityId('wst');
   const now = snapshot.now ?? new Date().toISOString();
   const admitted = admittedSelection(
@@ -102,12 +208,16 @@ export async function createAndReserveWorkerStorageAttachment(
     now,
     1
   );
-  return client.workerStorageBinding(database, {
-    ...admitted,
-    storageRef,
-    expectedRevision: 1,
-    kind: 'create-and-reserve',
-  });
+  return publish(
+    {
+      ...admitted.input,
+      storageRef,
+      expectedRevision: 1,
+      kind: 'create-and-reserve',
+    },
+    null,
+    admitted.contributors
+  );
 }
 
 /** Publishes the existing exact reserveWorkerStorageAttachment transition after its covering FULL acknowledgement. */
@@ -118,37 +228,31 @@ export async function reserveWorkerStorageAttachment(
     readonly now?: string;
     readonly reuseWorkSlotRef?: string;
     readonly runtimeTargetId: string;
-  }
+  },
+  owner?: AdmittedWorkerStorageAttachment
 ): Promise<WorkerStorageBinding> {
   const { authorizeContributor, ...facts } = input;
   const snapshot = { ...structuredClone(facts), authorizeContributor };
-  const { client, database } = await bindingWriter(coreDb);
-  const binding = requireNanoHostObservation(coreDb, (sqlite) =>
-    getWorkerStorageBinding({ sqlite }, { storageRef: snapshot.storageRef })
-  );
-  if (!binding)
-    throw new WorkerStorageBindingError('not_found', 'Worker storage association was not found.');
+  const publish = await prepareAttachmentPublisher(coreDb, owner, authorizeContributor);
+  const binding = readAttachmentBinding(coreDb, snapshot.storageRef, owner);
   const now = snapshot.now ?? new Date().toISOString();
   const admitted = admittedSelection(binding, snapshot, now, binding.attachmentGeneration + 1);
-  return client.workerStorageBinding(database, { ...admitted, kind: 'reserve-existing' });
+  return publish({ ...admitted.input, kind: 'reserve-existing' }, binding, admitted.contributors);
 }
 
 /** Publishes the existing exact admitWorkerStorageContributor transition after its covering FULL acknowledgement. */
 export async function admitWorkerStorageContributor(
   coreDb: CoreDb,
-  input: WorkerStorageSelectionInput & { readonly reuseWorkSlotRef?: string }
+  input: WorkerStorageSelectionInput & { readonly reuseWorkSlotRef?: string },
+  owner?: AdmittedWorkerStorageAttachment
 ): Promise<WorkerStorageBinding> {
   const { authorizeContributor, ...facts } = input;
   const snapshot = { ...structuredClone(facts), authorizeContributor };
-  const { client, database } = await bindingWriter(coreDb);
-  const binding = requireNanoHostObservation(coreDb, (sqlite) =>
-    getWorkerStorageBinding({ sqlite }, { storageRef: snapshot.storageRef })
-  );
-  if (!binding)
-    throw new WorkerStorageBindingError('not_found', 'Worker storage association was not found.');
+  const publish = await prepareAttachmentPublisher(coreDb, owner, authorizeContributor);
+  const binding = readAttachmentBinding(coreDb, snapshot.storageRef, owner);
   const now = new Date().toISOString();
   const admitted = admittedSelection(binding, snapshot, now, binding.attachmentGeneration);
-  return client.workerStorageBinding(database, { ...admitted, kind: 'admit-contributor' });
+  return publish({ ...admitted.input, kind: 'admit-contributor' }, binding, admitted.contributors);
 }
 
 /** Publishes the existing exact activateWorkerStorageAttachment transition after its covering FULL acknowledgement. */
@@ -161,15 +265,21 @@ export async function activateWorkerStorageAttachment(
     readonly sandboxBindingRef: string;
     readonly storageRef: string;
     readonly targets: readonly WorkerStorageTarget[];
-  }
+  },
+  owner?: AdmittedWorkerStorageAttachment
 ): Promise<WorkerStorageBinding> {
   const snapshot = structuredClone(input);
-  const { client, database } = await bindingWriter(coreDb);
-  return client.workerStorageBinding(database, {
-    ...snapshot,
-    targets: [...snapshot.targets],
-    kind: 'activate',
-  });
+  const publish = await prepareAttachmentPublisher(coreDb, owner, undefined);
+  const prior = owner ? readAttachmentBinding(coreDb, snapshot.storageRef, owner) : undefined;
+  return publish(
+    {
+      ...snapshot,
+      targets: [...snapshot.targets],
+      kind: 'activate',
+    },
+    prior,
+    prior?.contributors
+  );
 }
 
 /** Publishes the existing exact releaseWorkerStorageAttachment transition after its covering FULL acknowledgement. */

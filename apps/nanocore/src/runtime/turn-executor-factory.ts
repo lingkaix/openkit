@@ -272,6 +272,7 @@ import {
 } from './worker-governance-turn-executor.js';
 import { requireMatchingWorkerReleaseIdentity } from './worker-release-identity.js';
 import {
+  type AdmittedWorkerStorageAttachment,
   activateWorkerStorageAttachment,
   admitWorkerStorageContributor,
   authorizeAttachedWorkerStorageReplacement,
@@ -289,6 +290,7 @@ import {
   type WorkerStorageContributor,
   type WorkerStorageSelectionInput,
   type WorkerStorageTarget,
+  type WriteNanoHostStorageAttachment,
 } from './worker-storage-bindings.js';
 import type {
   WorkerRuntimeProvenanceCollection,
@@ -381,6 +383,7 @@ export interface CreateConfiguredTurnExecutorOptions {
     | {
         readonly owner: StorageResult<'nanohost', NanoHostLifecycleOwner>;
         readonly admitSubmission?: AdmitNanoHostSubmission;
+        readonly writeStorageAttachment?: WriteNanoHostStorageAttachment;
         readonly harnessTurnLifecycle?: AdmittedNanoHostHarnessTurnLifecycle;
         readonly advanceIdleCleanup?: (selection: IdleCleanupSelection) => Promise<void>;
       }
@@ -598,7 +601,8 @@ function createNanoHostWorkerLifecycleRuntime(
     releaseIdentity,
     configuredProviderReader,
     nanoHostOwner,
-    nanoHostRecovery?.harnessTurnLifecycle
+    nanoHostRecovery?.harnessTurnLifecycle,
+    nanoHostRecovery?.writeStorageAttachment
   );
   const advanceIdleCleanup = async (selection: IdleCleanupSelection): Promise<void> => {
     if (!nanoHostRecovery) return await backend.advanceIdleCleanup(selection);
@@ -1167,7 +1171,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly releaseIdentity?: ReleaseBuildIdentity,
     private readonly readProviderAccessShape?: WorkerProviderAccessShapeReader,
     private readonly nanoHostOwner?: StorageResult<'nanohost', NanoHostLifecycleOwner>,
-    private readonly admittedHarnessTurn?: AdmittedNanoHostHarnessTurnLifecycle
+    private readonly admittedHarnessTurn?: AdmittedNanoHostHarnessTurnLifecycle,
+    private readonly writeStorageAttachment?: WriteNanoHostStorageAttachment
   ) {}
 
   private unavailableNanoHostRuntime(): never {
@@ -1232,6 +1237,48 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot }),
       this.nanoHostOwner ? (input) => this.resolveLiveWorkerBinding(input) : undefined
     );
+  }
+
+  /** Captures the original materialization placement for the Native attachment post. */
+  private storageAttachmentAdmission(
+    identity: WorkerGovernanceBackendSessionIdentity,
+    attemptId: string,
+    physicalEpoch: string,
+    authorizeContributor: AdmittedWorkerStorageAttachment['authorizeContributor']
+  ): AdmittedWorkerStorageAttachment | undefined {
+    if (!this.nanoHostOwner) return undefined;
+    const owner = this.nanoHostOwner;
+    const write = this.writeStorageAttachment;
+    if (owner.state !== 'ready' || !write) return this.unavailableNanoHostRuntime();
+    const target = this.readNanoHost((reader) =>
+      getNanoHostRuntimeTarget(reader, requireNanoHostRuntimeTargetId(identity))
+    );
+    if (
+      !target?.ready ||
+      target.deploymentId !== identity.deploymentId ||
+      target.physicalEpoch !== physicalEpoch
+    )
+      return this.unavailableNanoHostRuntime();
+    const original = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
+    return {
+      attemptId,
+      target,
+      write,
+      read: owner.value.read,
+      authorizeContributor,
+      isCurrentAttempt: () => {
+        const current = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
+        return (
+          current.phase === 'open' &&
+          current.backendId === this.id &&
+          current.deadline === null &&
+          current.bindingRef !== null &&
+          current.bindingRef === original.bindingRef &&
+          current.inputRef === identity.packageSnapshotId &&
+          current.agentSessionId === identity.agentSessionId
+        );
+      },
+    };
   }
 
   /** Reads the authored aggregate bound; invalid current configuration fails closed. */
@@ -4781,10 +4828,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
 
     if (sharedSandbox && choice?.kind === 'selected' && replacementSelection) {
-      const admitted = await admitWorkerStorageContributor(this.coreDb, {
-        ...replacementSelection,
-        layout: sharedSandbox.workerStorageBinding.layout,
-      });
+      const admitted = await admitWorkerStorageContributor(
+        this.coreDb,
+        {
+          ...replacementSelection,
+          layout: sharedSandbox.workerStorageBinding.layout,
+        },
+        this.storageAttachmentAdmission(
+          identity,
+          attemptId,
+          originPhysicalEpoch,
+          authorizeContributor
+        )
+      );
       // The native acknowledgement yields; current audience must still authorize later effects.
       if (!admitted.contributors.every(authorizeContributor)) {
         throw new WorkerStorageBindingError(
@@ -4796,44 +4852,59 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     if (!sharedSandbox) {
       let storageBinding: WorkerStorageBinding;
+      let attachment: AdmittedWorkerStorageAttachment | undefined;
       try {
+        attachment = this.storageAttachmentAdmission(
+          identity,
+          attemptId,
+          originPhysicalEpoch,
+          authorizeContributor
+        );
         storageBinding =
           choice?.kind === 'selected'
-            ? await reserveWorkerStorageAttachment(this.coreDb, {
-                ...(choice.adjudicatedThreadIds
-                  ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
-                  : {}),
-                agentSessionId: environmentPackage.scope.agentSessionId,
-                authorizeContributor,
-                expectedRevision:
-                  releasedSelectedBinding?.storageRef === choice.storageRef &&
-                  releasedSelectedBinding.revision === choice.expectedRevision + 1
-                    ? releasedSelectedBinding.revision
-                    : choice.expectedRevision,
-                ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
-                layout: imageInspection.layout,
-                purpose: choice.purpose,
-                responsibleUserId,
-                ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
-                runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
-                storageRef: choice.storageRef,
-                ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
-                threadId: environmentPackage.scope.threadId,
-                workspaceId: environmentPackage.scope.workspaceId,
-              })
-            : await createAndReserveWorkerStorageAttachment(this.coreDb, {
-                agentSessionId: environmentPackage.scope.agentSessionId,
-                authorizeContributor,
-                deploymentId: identity.deploymentId,
-                ...(choice?.kind === 'fresh' ? { goalId: choice.goalId } : {}),
-                layout: imageInspection.layout,
-                purpose: 'work',
-                responsibleUserId,
-                runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
-                ...(choice?.kind === 'fresh' ? { taskId: choice.taskId } : {}),
-                threadId: environmentPackage.scope.threadId,
-                workspaceId: environmentPackage.scope.workspaceId,
-              });
+            ? await reserveWorkerStorageAttachment(
+                this.coreDb,
+                {
+                  ...(choice.adjudicatedThreadIds
+                    ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
+                    : {}),
+                  agentSessionId: environmentPackage.scope.agentSessionId,
+                  authorizeContributor,
+                  expectedRevision:
+                    releasedSelectedBinding?.storageRef === choice.storageRef &&
+                    releasedSelectedBinding.revision === choice.expectedRevision + 1
+                      ? releasedSelectedBinding.revision
+                      : choice.expectedRevision,
+                  ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
+                  layout: imageInspection.layout,
+                  purpose: choice.purpose,
+                  responsibleUserId,
+                  ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
+                  runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
+                  storageRef: choice.storageRef,
+                  ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
+                  threadId: environmentPackage.scope.threadId,
+                  workspaceId: environmentPackage.scope.workspaceId,
+                },
+                attachment
+              )
+            : await createAndReserveWorkerStorageAttachment(
+                this.coreDb,
+                {
+                  agentSessionId: environmentPackage.scope.agentSessionId,
+                  authorizeContributor,
+                  deploymentId: identity.deploymentId,
+                  ...(choice?.kind === 'fresh' ? { goalId: choice.goalId } : {}),
+                  layout: imageInspection.layout,
+                  purpose: 'work',
+                  responsibleUserId,
+                  runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
+                  ...(choice?.kind === 'fresh' ? { taskId: choice.taskId } : {}),
+                  threadId: environmentPackage.scope.threadId,
+                  workspaceId: environmentPackage.scope.workspaceId,
+                },
+                attachment
+              );
       } catch (error) {
         this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
         throw error;
@@ -4907,14 +4978,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       });
       requireNanoHostResultString(sandboxResult, 'sandboxId');
       this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch);
-      const attachedStorage = await activateWorkerStorageAttachment(this.coreDb, {
-        attachmentGeneration: storageBinding.attachmentGeneration,
-        expectedRevision: storageBinding.revision,
-        sandboxBindingRef:
-          context.sandboxBindingRef ?? `sandbox-binding-${sandboxCompatibilityKey.slice(0, 24)}`,
-        storageRef: storageBinding.storageRef,
-        targets: requireNanoHostSandboxStorageProof(sandboxResult, storageBinding),
-      });
+      const attachedStorage = await activateWorkerStorageAttachment(
+        this.coreDb,
+        {
+          attachmentGeneration: storageBinding.attachmentGeneration,
+          expectedRevision: storageBinding.revision,
+          sandboxBindingRef:
+            context.sandboxBindingRef ?? `sandbox-binding-${sandboxCompatibilityKey.slice(0, 24)}`,
+          storageRef: storageBinding.storageRef,
+          targets: requireNanoHostSandboxStorageProof(sandboxResult, storageBinding),
+        },
+        attachment
+      );
       const sandboxIdentity = sandboxCompatibilityKey.slice(0, 24);
       sharedSandbox = {
         bridgeOpen: false,
