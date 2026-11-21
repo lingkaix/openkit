@@ -80,7 +80,10 @@ import {
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import { WorkerProviderEffectIntentSchema } from './provider-credential-binding.js';
-import { listWorkerBackendSessions } from './worker-backend-session-records.js';
+import {
+  BackendSessionRefusal,
+  listWorkerBackendSessions,
+} from './worker-backend-session-records.js';
 import {
   type NanoHostFileImportSource,
   WorkerSandboxPolicyIntentSchema,
@@ -1743,27 +1746,40 @@ function canDiscardCleanedDeleteResult(
   )
     return false;
   requireCurrentReadiness(readiness);
-  const matches = readRuntimeTargetOwner(readiness.runtimeTarget, listWorkerBackendSessions).filter(
-    (row) => {
+  const sessions = readRuntimeTargetOwner(readiness.runtimeTarget, (owner) => {
+    try {
+      return listWorkerBackendSessions(owner);
+    } catch (error) {
       if (
-        row.backendKind !== 'openshell' ||
-        row.deploymentId !== readiness.runtimeTarget.deploymentId ||
-        row.runtimeTargetId !== readiness.runtimeTarget.targetId
+        error instanceof BackendSessionRefusal ||
+        error instanceof SyntaxError ||
+        (error instanceof TypeError && error.message === 'Unsupported retained record format.')
       )
-        return false;
-      if (!row.attemptId.trim() || !row.packageSnapshotId.trim()) {
-        throw effectTransportError(409, 'NanoHost delete correlation lineage is incomplete.');
-      }
-      const sandboxId = nanoHostSandboxIdFromBackendSessionId(row.backendSessionId);
-      return (
-        sandboxId === result.sandboxId &&
-        createNanoHostEffectRequest(row, row.attemptId, 'sandbox.delete', {
-          attemptId: row.attemptId,
-          sandboxId,
-        }).requestId === requestId
-      );
+        return null;
+      throw error;
     }
-  );
+  });
+  if (sessions === null)
+    throw effectTransportError(409, 'NanoHost delete correlation lineage is incomplete.');
+  const matches = sessions.filter((row) => {
+    if (
+      row.backendKind !== 'openshell' ||
+      row.deploymentId !== readiness.runtimeTarget.deploymentId ||
+      row.runtimeTargetId !== readiness.runtimeTarget.targetId
+    )
+      return false;
+    if (!row.attemptId.trim() || !row.packageSnapshotId.trim()) {
+      throw effectTransportError(409, 'NanoHost delete correlation lineage is incomplete.');
+    }
+    const sandboxId = nanoHostSandboxIdFromBackendSessionId(row.backendSessionId);
+    return (
+      sandboxId === result.sandboxId &&
+      createNanoHostEffectRequest(row, row.attemptId, 'sandbox.delete', {
+        attemptId: row.attemptId,
+        sandboxId,
+      }).requestId === requestId
+    );
+  });
   return (
     matches.length === 1 &&
     (matches[0]!.state === 'physical-cleaned' || matches[0]!.state === 'cleaned')

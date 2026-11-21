@@ -21,6 +21,7 @@ import {
 } from './nanohost-runtime-target-records.js';
 
 export type { WorkerBackendSessionState } from '../storage/schema/index.js';
+export { BackendSessionRefusal };
 
 /** Admitted SQLite connection that holds the native session records. */
 type WorkerBackendSessionDb = { readonly sqlite: Database.Database };
