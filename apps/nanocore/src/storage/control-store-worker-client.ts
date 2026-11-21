@@ -185,6 +185,7 @@ import {
 } from '../runtime/execution-journal.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import type { AdmittedNanoHostAttemptRecovery } from '../runtime/nanohost-attempt-recovery.js';
+import type { AdmittedNanoHostHarnessTurnLifecycle } from '../runtime/nanohost-harness.js';
 import {
   getNanoHostRuntimeTarget,
   type NanoHostRuntimeTargetRecord,
@@ -202,6 +203,7 @@ import {
   type WorkerStorageBinding,
   WorkerStorageBindingError,
 } from '../runtime/worker-storage-binding-records.js';
+import type { WriteNanoHostStorageAttachment } from '../runtime/worker-storage-bindings.js';
 import {
   type ControlMaterialCommandInput,
   type ControlMaterialCommandResult,
@@ -314,6 +316,9 @@ import {
 import {
   type ControlCoreImageResult,
   type ControlCoreJournalInput,
+  type ControlNanoHostFirstSubmissionInput,
+  ControlNanoHostFirstSubmissionInputSchema,
+  type ControlNanoHostFirstSubmissionResult,
   readCoreJournalLineage,
 } from './core-journal-codecs.js';
 import {
@@ -327,9 +332,10 @@ import {
   type WorkspaceDb,
 } from './db.js';
 import type { ControlEvaluationCandidate } from './evaluation-candidate-codecs.js';
-import type {
-  ControlExecutionAttemptCommand,
-  ControlExecutionAttemptResult,
+import {
+  type ControlExecutionAttemptCommand,
+  type ControlExecutionAttemptResult,
+  ExecutionAttemptRefusal,
 } from './execution-attempt-codecs.js';
 import { DEFAULT_FILE_RESERVE_BYTES } from './file-reserve.js';
 import { ensureUserLayout, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
@@ -411,9 +417,18 @@ import type {
   ControlBackendSessionInput,
   ControlBackendSessionResult,
 } from './worker-backend-session-codecs.js';
-import type { ControlWorkerFinalStatusCommand } from './worker-control-final-status-codecs.js';
-import type { ControlWorkerHeartbeatCommand } from './worker-control-heartbeat-codecs.js';
-import type { ControlWorkerRecordCommand } from './worker-control-record-codecs.js';
+import type {
+  ControlWorkerFinalStatusCommand,
+  ControlWorkerFinalStatusResult,
+} from './worker-control-final-status-codecs.js';
+import type {
+  ControlWorkerHeartbeatCommand,
+  ControlWorkerHeartbeatResult,
+} from './worker-control-heartbeat-codecs.js';
+import type {
+  ControlWorkerRecordCommand,
+  ControlWorkerRecordResult,
+} from './worker-control-record-codecs.js';
 import type { ControlWorkerImageInput } from './worker-image-codecs.js';
 import type { ControlWorkerStorageInput } from './worker-storage-binding-codecs.js';
 import type { ControlWorkspaceApplyPlan } from './workspace-apply-plan-codecs.js';
@@ -447,6 +462,9 @@ export class ControlStoreWorkerShutdownError extends ControlStoreWorkerError {
 
 type Success = Extract<ControlWorkerReply, { status: 'ok' }>;
 type OpenCommand = Extract<ControlWorkerCommand, { operation: 'open' }>;
+type WorkerControlFinalStage = NonNullable<
+  Extract<ControlWorkerCommand, { operation: 'worker-control-final-status' }>['nanoHostFinal']
+>;
 /** Immutable native binding selected by the current Core recovery admission, not caller pathname text. */
 export interface ControlRecoveryNativeBinding {
   readonly command: Omit<OpenCommand, 'operation'>;
@@ -637,9 +655,20 @@ export interface NanoHostOwnerBinding
   readRuntimeTarget(
     targetId: string
   ): StorageResult<'nanohost', NanoHostRuntimeTargetRecord | null>;
+  firstSubmission(
+    input: Pick<ControlNanoHostFirstSubmissionInput, 'attemptId' | 'observedAt'>
+  ): Promise<ControlNanoHostFirstSubmissionResult>;
   harnessLifecycle(
     input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
   ): Promise<void>;
+  readonly harnessTurnLifecycle: AdmittedNanoHostHarnessTurnLifecycle;
+  workerControlHeartbeat(
+    input: ControlWorkerHeartbeatCommand
+  ): Promise<ControlWorkerHeartbeatResult>;
+  workerControlRecord(input: ControlWorkerRecordCommand): Promise<ControlWorkerRecordResult>;
+  workerControlFinalStatus(
+    input: ControlWorkerFinalStatusCommand
+  ): Promise<ControlWorkerFinalStatusResult>;
   workerImage(input: NanoHostLocalWorkerImageInput): Promise<void>;
   settlePreparedImage(
     input: Extract<NanoHostOwnerMutation, { kind: 'prepared-image-result' }>['input']
@@ -651,6 +680,7 @@ export interface NanoHostOwnerBinding
   ): ReturnType<AdmittedNanoHostAttemptRecovery['commit']>;
 
   workerStorageBinding(input: NanoHostLocalWorkerStorageInput): Promise<WorkerStorageBinding>;
+  readonly writeStorageAttachment: WriteNanoHostStorageAttachment;
   prepareRuntimeTarget(
     input: ControlRuntimeTargetInput,
     occurrenceId: string
@@ -784,7 +814,7 @@ interface Opening {
   readonly promise: Promise<void>;
   readonly policyReads: Set<PolicyReadResource>;
   /** A second NanoHost tuple cannot rely on a write whose FULL ACK is outstanding. */
-  nanoHostWritePending?: true | 'core-image-read' | 'backend-session-materialize';
+  nanoHostWritePending?: true | 'core-owner-read' | 'target-stable-write';
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
   communicationReader?: Database.Database;
@@ -3192,9 +3222,9 @@ class ControlStoreWorkerClient {
         query: (sqlite: Database.Database) => Value,
         ownPendingWrite = false
       ): Value => {
-        // A Core image transaction pins the same Native reader without changing its target.
+        // A Core decision can pin the same Native reader without changing its target.
         // Physical polls may observe it while other writers remain excluded.
-        assertCurrent(ownPendingWrite || opening.nanoHostWritePending === 'core-image-read');
+        assertCurrent(ownPendingWrite || opening.nanoHostWritePending === 'core-owner-read');
         const physical = readPhysicalDatabaseIdentity(opening.path);
         if (
           !sqlite.open ||
@@ -3222,12 +3252,12 @@ class ControlStoreWorkerClient {
           if (!gate.enabled()) return disabled;
           if (opening.nanoHostTargetTransition)
             throw new ControlStoreWorkerError('busy', 'not-committed');
-          // Materialization only mutates backend sessions. Other owner reads wait for its ACK.
+          // Backend preparation and Sandbox attachment leave this target unchanged.
           return {
             state: 'ready',
             value: readCurrent(
               (handle) => getNanoHostRuntimeTarget({ sqlite: handle }, targetId),
-              opening.nanoHostWritePending === 'backend-session-materialize'
+              opening.nanoHostWritePending === 'target-stable-write'
             ),
           };
         } catch (error) {
@@ -3256,11 +3286,15 @@ class ControlStoreWorkerClient {
       };
 
       const write = async <Kind extends NanoHostOwnerMutation['kind']>(
-        mutation: NanoHostOwnerMutation & { kind: Kind }
+        mutation: NanoHostOwnerMutation & { kind: Kind },
+        verifyStorageAttachment?: (sqlite: Database.Database) => boolean
       ): Promise<Extract<NanoHostOwnerMutationResult, { kind: Kind }>> => {
         assertCurrent();
         opening.nanoHostWritePending =
-          mutation.kind === 'backend-session-materialize' ? mutation.kind : true;
+          mutation.kind === 'backend-session-materialize' ||
+          (mutation.kind === 'worker-storage-binding' && verifyStorageAttachment)
+            ? 'target-stable-write'
+            : true;
         try {
           const reply = (await this.request(
             { operation: 'nanohost-owner', database, openingRequestId, mutation },
@@ -3273,7 +3307,10 @@ class ControlStoreWorkerClient {
             undefined,
             undefined,
             undefined,
-            verifyPost
+            verifyStorageAttachment
+              ? () =>
+                  !opening.nanoHostTargetTransition && readCurrent(verifyStorageAttachment, true)
+              : verifyPost
           )) as Extract<Success, { operation: 'nanohost-owner' }>;
           return reply.result as Extract<NanoHostOwnerMutationResult, { kind: Kind }>;
         } catch (error) {
@@ -3289,6 +3326,7 @@ class ControlStoreWorkerClient {
             const domain = error.domain;
             switch (mutation.kind) {
               case 'harness-lifecycle':
+              case 'harness-turn-lifecycle':
                 if (domain.code === 'harness_refused') {
                   const refusal = new Error(domain.message, { cause: error });
                   if (domain.exhaustedBound)
@@ -3423,6 +3461,266 @@ class ControlStoreWorkerClient {
         });
       };
 
+      const withNativeReadForCore = async <Value>(
+        run: (core: Opening, openingRequestId: number, nativeIdentity: string) => Promise<Value>
+      ): Promise<Value> => {
+        assertCurrent();
+        readCurrent(() => undefined);
+        if (
+          opening.nanoHostTargetTransition ||
+          opening.nanoHostCoreHoldPending ||
+          !opening.identity ||
+          this.backupHold
+        )
+          throw new ControlStoreWorkerError('busy', 'not-committed');
+        const nativeIdentity = opening.identity;
+        const corePath = coreDbPath(root);
+        const coreKey = `core:${corePath}`;
+        const core = this.openings.get(coreKey);
+        const coreOpeningRequestId = core?.openingRequestId;
+        if (
+          !core?.acknowledged ||
+          core.command.initialize !== 'core' ||
+          coreOpeningRequestId === undefined ||
+          core.host.failed ||
+          core.retirement ||
+          readPhysicalDatabaseIdentity(corePath).identity !== core.identity
+        )
+          throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+        if (this.databaseHolds.has(coreKey))
+          throw new ControlStoreWorkerError('busy', 'not-committed');
+        const releaseNative = reserveMainScopeReadAcquisition(opening.path);
+        opening.nanoHostCoreHoldPending = true;
+        opening.nanoHostWritePending = 'core-owner-read';
+        try {
+          return await run(core, coreOpeningRequestId, nativeIdentity);
+        } finally {
+          if (core.host.failed) await core.host.exited.promise;
+          delete opening.nanoHostWritePending;
+          delete opening.nanoHostCoreHoldPending;
+          releaseNative();
+        }
+      };
+
+      const withWorkspaceForAttempt = async <Value>(
+        attemptId: string,
+        run: (workspaceIdentity: string) => Promise<Value>
+      ): Promise<Value> => {
+        const reader = openCoreReadDb(root);
+        let workspaceId: string;
+        try {
+          workspaceId = requireSchedulerExecutionAttempt(reader, attemptId).workspaceId;
+        } finally {
+          reader.sqlite.close();
+        }
+        const workspaceKey = `workspace:${workspaceDbPath(root, workspaceId)}`;
+        const workspace = this.openings.get(workspaceKey);
+        const workspaceIdentity = workspace?.identity;
+        if (
+          !workspace?.acknowledged ||
+          !workspaceIdentity ||
+          workspace.command.initialize !== 'workspace' ||
+          workspace.command.productOwner?.kind !== 'workspace' ||
+          workspace.command.productOwner.workspaceId !== workspaceId ||
+          workspace.host.failed ||
+          workspace.retirement
+        )
+          throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+        if (this.databaseHolds.has(workspaceKey))
+          throw new ControlStoreWorkerError('busy', 'not-committed');
+
+        return this.runOperation(
+          async () => {
+            const resume = await this.pauseForDataRootBackup(workspaceKey);
+            try {
+              return await run(workspaceIdentity);
+            } finally {
+              resume();
+            }
+          },
+          undefined,
+          database,
+          undefined,
+          undefined,
+          undefined,
+          workspace.command
+        );
+      };
+
+      const firstSubmission: NanoHostOwnerBinding['firstSubmission'] = (original) =>
+        withNativeReadForCore(async (core, coreOpeningRequestId, nativeIdentity) => {
+          const coreKey = core.command.database;
+          const input = readCurrent((handle) => {
+            const session = readers.getWorkerBackendSession({ sqlite: handle }, original.attemptId);
+            const target =
+              session && getNanoHostRuntimeTarget({ sqlite: handle }, session.runtimeTargetId);
+            if (!target?.physicalEpoch || !target.connectionGeneration || !session)
+              throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+            return ControlNanoHostFirstSubmissionInputSchema.parse({
+              ...original,
+              placement: {
+                runtimeTargetId: session.runtimeTargetId,
+                identityId: target.identityId,
+                deploymentId: session.deploymentId,
+                physicalEpoch: session.originPhysicalEpoch,
+                connectionGeneration: target.connectionGeneration,
+              },
+            });
+          });
+
+          try {
+            return await withWorkspaceForAttempt(input.attemptId, async (workspaceIdentity) => {
+              try {
+                readCurrent(() => undefined, true);
+                if (
+                  this.backupHold ||
+                  this.databaseHolds.has(coreKey) ||
+                  opening.nanoHostTargetTransition
+                )
+                  throw new ControlStoreWorkerError('busy', 'not-committed');
+                const reply = await this.request({
+                  operation: 'nanohost-first-submission',
+                  database: coreKey,
+                  openingRequestId: coreOpeningRequestId,
+                  input,
+                  peers: { nanoHostIdentity: nativeIdentity, workspaceIdentity },
+                });
+                if (
+                  reply.operation !== 'nanohost-first-submission' ||
+                  reply.result.attempt.attemptId !== input.attemptId
+                )
+                  throw new ControlStoreWorkerError('integrity', 'unknown');
+                return reply.result;
+              } finally {
+                if (core.host.failed) await core.host.exited.promise;
+              }
+            });
+          } catch (error) {
+            if (
+              error instanceof ControlStoreWorkerError &&
+              error.domain?.operation === 'nanohost-first-submission'
+            )
+              throw new ExecutionAttemptRefusal(error.domain.message);
+            throw error;
+          }
+        });
+
+      const writeHarnessTurn = (
+        input: Extract<NanoHostOwnerMutation, { kind: 'harness-turn-lifecycle' }>['input']
+      ) => {
+        const original = structuredClone(input);
+        return withCoreHold(
+          async (coreIdentity) =>
+            (await write({ kind: 'harness-turn-lifecycle', input: original, coreIdentity })).value
+        );
+      };
+      const writeStorageAttachment: WriteNanoHostStorageAttachment = (input, authority) => {
+        const original = structuredClone(input);
+        const { attemptId, verifyBeforePost } = authority;
+        return withCoreHold(() =>
+          withWorkspaceForAttempt(attemptId, async () => {
+            try {
+              return (
+                await write({ kind: 'worker-storage-binding', input: original }, verifyBeforePost)
+              ).value;
+            } finally {
+              if (opening.host.failed) await opening.host.exited.promise;
+            }
+          })
+        );
+      };
+      const writeWorkerObservation = <Value>(publish: (coreIdentity: string) => Promise<Value>) =>
+        withCoreHold(async (coreIdentity) => {
+          assertCurrent();
+          if (opening.nanoHostTargetTransition)
+            throw new ControlStoreWorkerError('busy', 'not-committed');
+          opening.nanoHostWritePending = true;
+          try {
+            return await publish(coreIdentity);
+          } catch (error) {
+            if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+              this.fail(opening.host);
+            throw error;
+          } finally {
+            if (opening.host.failed) await opening.host.exited.promise;
+            delete opening.nanoHostWritePending;
+          }
+        });
+      const workerControlFinalStatus: NanoHostOwnerBinding['workerControlFinalStatus'] = async (
+        input
+      ) => {
+        const original = structuredClone(input);
+        const intake = await withNativeReadForCore((core, openingRequestId, ownerIdentity) =>
+          this.workerControlFinalStage(core.command.database, original, {
+            kind: 'intake',
+            openingRequestId,
+            ownerIdentity,
+          })
+        );
+        if (!('kind' in intake) || intake.kind !== 'intake')
+          throw new ControlStoreWorkerError('integrity', 'unknown');
+        const settled = await writeWorkerObservation((coreIdentity) =>
+          this.workerControlFinalStage(database, original, {
+            kind: 'settle',
+            coreIdentity,
+            decision: intake.value,
+          })
+        );
+        if ('kind' in settled) throw new ControlStoreWorkerError('integrity', 'unknown');
+        const observed = await withNativeReadForCore((core, openingRequestId, ownerIdentity) =>
+          this.workerControlFinalStage(core.command.database, original, {
+            kind: 'observe',
+            openingRequestId,
+            ownerIdentity,
+          })
+        );
+        if (!('kind' in observed) || observed.kind !== 'observe')
+          throw new ControlStoreWorkerError('integrity', 'unknown');
+        if (observed.value.state !== 'applied' && observed.value.state !== 'inspect-original')
+          throw new ControlStoreWorkerError('owner-recovery-required', 'unknown');
+        return settled;
+      };
+      const harnessTurnLifecycle: AdmittedNanoHostHarnessTurnLifecycle = {
+        queue: async ({ prepared, body, harnessInstanceId, operation, timestamp }) => {
+          const result = await writeHarnessTurn({
+            kind: 'operation.queue',
+            prepared,
+            body,
+            harnessInstanceId,
+            operation,
+            timestamp,
+          });
+          if (typeof result !== 'number') throw new ControlStoreWorkerError('integrity', 'unknown');
+          return result;
+        },
+        dispatch: async ({ sandboxIntegrationBindingRef, now }) => {
+          const result = await writeHarnessTurn({
+            kind: 'operation.dispatch',
+            sandboxIntegrationBindingRef,
+            ...(now ? { observedAt: now() } : {}),
+          });
+          if (typeof result !== 'object') throw new ControlStoreWorkerError('integrity', 'unknown');
+          return result;
+        },
+        settle: async (input) => {
+          const result = await writeHarnessTurn({ ...input, kind: 'operation.settle' });
+          if (result !== 'settled' && result !== 'replayed')
+            throw new ControlStoreWorkerError('integrity', 'unknown');
+          return result;
+        },
+        acknowledge: (input) =>
+          withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
+            const reply = await this.request({
+              operation: 'harness-lifecycle',
+              database: core.command.database,
+              input: { ...input, kind: 'result.acknowledge' },
+              nanoHostAckPeer: { openingRequestId, ownerIdentity },
+            });
+            if (reply.operation !== 'harness-lifecycle' || reply.result !== null)
+              throw new ControlStoreWorkerError('integrity', 'unknown');
+          }),
+      };
+
       opening.prepareNanoHostBackend = async (input) => {
         const original = structuredClone(input);
         if (original.kind === 'handoff') {
@@ -3498,6 +3796,22 @@ class ControlStoreWorkerClient {
           transport: async (input) => (await write({ kind: 'transport', input })).value,
           enrollTransport,
           readRuntimeTarget,
+          firstSubmission,
+          harnessTurnLifecycle,
+          writeStorageAttachment,
+          workerControlHeartbeat: (input) => {
+            const original = structuredClone(input);
+            return writeWorkerObservation((identity) =>
+              this.workerControlHeartbeat(database, original, identity)
+            );
+          },
+          workerControlRecord: (input) => {
+            const original = structuredClone(input);
+            return writeWorkerObservation((identity) =>
+              this.workerControlRecord(database, original, identity)
+            );
+          },
+          workerControlFinalStatus,
           harnessLifecycle: async (input) => {
             await write({ kind: 'harness-lifecycle', input });
           },
@@ -6908,6 +7222,16 @@ class ControlStoreWorkerClient {
 
   /** Commits both terminal streams and the attempt close inside one existing native savepoint. */
   async workerControlFinalStatus(database: string, command: ControlWorkerFinalStatusCommand) {
+    const result = await this.workerControlFinalStage(database, command);
+    if ('kind' in result) throw new ControlStoreWorkerError('integrity', 'unknown');
+    return result;
+  }
+
+  private async workerControlFinalStage(
+    database: string,
+    command: ControlWorkerFinalStatusCommand,
+    nanoHostFinal?: WorkerControlFinalStage
+  ) {
     return this.runOperation(
       async () => {
         const { payload, ...metadata } = command;
@@ -6917,6 +7241,7 @@ class ControlStoreWorkerClient {
             operation: 'worker-control-final-status',
             database,
             input: { ...metadata, byteLength: Buffer.byteLength(json) },
+            ...(nanoHostFinal ? { nanoHostFinal } : {}),
           },
           [json]
         );
@@ -6932,7 +7257,11 @@ class ControlStoreWorkerClient {
   }
 
   /** Commits heartbeat fingerprint and attempt liveness inside one existing native savepoint. */
-  async workerControlHeartbeat(database: string, command: ControlWorkerHeartbeatCommand) {
+  async workerControlHeartbeat(
+    database: string,
+    command: ControlWorkerHeartbeatCommand,
+    nanoHostCoreIdentity?: string
+  ) {
     return this.runOperation(
       async () => {
         const { payload, ...metadata } = command;
@@ -6942,6 +7271,7 @@ class ControlStoreWorkerClient {
             operation: 'worker-control-heartbeat',
             database,
             input: { ...metadata, byteLength: Buffer.byteLength(json) },
+            ...(nanoHostCoreIdentity ? { nanoHostCoreIdentity } : {}),
           },
           [json]
         );
@@ -6957,7 +7287,11 @@ class ControlStoreWorkerClient {
   }
 
   /** Commits one original nonterminal control stage inside one existing native savepoint. */
-  async workerControlRecord(database: string, command: ControlWorkerRecordCommand) {
+  async workerControlRecord(
+    database: string,
+    command: ControlWorkerRecordCommand,
+    nanoHostCoreIdentity?: string
+  ) {
     return this.runOperation(
       async () => {
         const { payload, ...metadata } = command;
@@ -6967,6 +7301,7 @@ class ControlStoreWorkerClient {
             operation: 'worker-control-record',
             database,
             input: { ...metadata, byteLength: Buffer.byteLength(json) },
+            ...(nanoHostCoreIdentity ? { nanoHostCoreIdentity } : {}),
           },
           [json]
         );
@@ -7068,7 +7403,7 @@ class ControlStoreWorkerClient {
         ) {
           candidate.nanoHostWritePending =
             input.kind === 'image-intent' || input.kind === 'image-result'
-              ? 'core-image-read'
+              ? 'core-owner-read'
               : true;
           nativeRead = candidate;
         }

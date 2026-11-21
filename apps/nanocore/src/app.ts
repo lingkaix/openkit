@@ -237,6 +237,7 @@ import {
 } from './runtime/turn-executor-factory.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { getWorkerBackendSession } from './runtime/worker-backend-session-records.js';
+import { readWorkerControlDuplicateReceipt } from './runtime/worker-control-final-status.js';
 import {
   type WorkerControlFinalStatusAcceptedHook,
   WorkerControlGateway,
@@ -253,6 +254,11 @@ import {
   createDefaultWorkerMcpGateway,
   type WorkerMcpGateway,
 } from './runtime/worker-mcp-gateway.js';
+import {
+  assertWorkerRawOutputFinalStatus,
+  WorkerRawOutputAuthorityError,
+  WorkerRawOutputPendingError,
+} from './runtime/worker-raw-output.js';
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import {
   listSchedulerAdmissionEntriesForWorkspace,
@@ -292,7 +298,10 @@ import {
   readPendingNanoHostEpochRetirement,
 } from './storage/nanohost-epoch-invalidation-native.js';
 import type { AdmittedNanoHostTransportStorage } from './storage/nanohost-transport-owner.js';
-import { resolveAdmittedNanoHostWorkerBinding } from './storage/nanohost-worker-binding.js';
+import {
+  resolveAdmittedNanoHostFinalBinding,
+  resolveAdmittedNanoHostWorkerBinding,
+} from './storage/nanohost-worker-binding.js';
 import { readServerCallUsageIds } from './storage/server-work-call.js';
 import {
   type ServerWorkCommandBinding,
@@ -630,13 +639,13 @@ export interface CreateAppOptions {
  * Creates the default worker-control gateway for one app instance.
  *
  * @param coreDb Optional server-scope database used for durable execution attempt binding checks.
- * @param _onFinalStatusCommitted Optional restart-only closeout observer for the deciding writer.
+ * @param onFinalStatusCommitted Optional closeout observer after both owners acknowledge the final.
  * @param nanoHostStorage Acknowledged owner shared with boot and the Worker runtime.
  * @returns Worker-control gateway.
  */
 export function createDefaultWorkerControlGateway(
   coreDb?: CoreDb,
-  _onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook,
+  onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook,
   nanoHostStorage?: NanoHostAppStorage
 ): WorkerControlGateway {
   if (!coreDb) return new WorkerControlGateway();
@@ -646,8 +655,83 @@ export function createDefaultWorkerControlGateway(
   )
     return new HeldWorkerControlGateway();
   const { owner } = nanoHostStorage.value;
+  const publishObservation = async <Value>(publish: () => Promise<Value>): Promise<Value> => {
+    try {
+      return await publish();
+    } catch (error) {
+      if (!(error instanceof ControlStoreWorkerError)) throw error;
+      const domain = error.domain;
+      if (
+        domain?.operation === 'worker-control-record' ||
+        domain?.operation === 'worker-control-heartbeat' ||
+        domain?.operation === 'worker-control-final-status'
+      )
+        throw new WorkerControlGatewayError(domain.code, domain.message, domain.status);
+      return requireWorkerControlStorage();
+    }
+  };
   const gateway = new WorkerControlGateway({
-    ...heldWorkerControlPublications,
+    ...(onFinalStatusCommitted ? { onFinalStatusCommitted } : {}),
+    resolveFinalStatusTokenBinding(input) {
+      const binding = owner.read((sqlite) =>
+        resolveAdmittedNanoHostFinalBinding(coreDb, sqlite, input)
+      );
+      if (binding.state !== 'ready') return requireWorkerControlStorage();
+      return binding.value;
+    },
+    publishHeartbeat: (input) => publishObservation(() => owner.workerControlHeartbeat(input)),
+    publishControlOperation: ({ payload, fingerprint, ...coordinates }) =>
+      publishObservation(async () => {
+        const accepted = await owner.workerControlRecord({
+          ...coordinates,
+          payload: {
+            kind: 'sequence',
+            operation: payload.operation,
+            sequence: payload.sequence,
+            fingerprint,
+          },
+        });
+        if (accepted.kind !== 'sequence') return requireWorkerControlStorage();
+        if (!accepted.duplicate || payload.operation === 'event_append')
+          await owner.workerControlRecord({ ...coordinates, payload });
+        const { duplicate, nextExpectedSequence } = accepted;
+        if (
+          duplicate &&
+          (payload.operation === 'artifact_notice' || payload.operation === 'supply_refresh_ack')
+        ) {
+          const { operation, recordKey } = payload;
+          const receipt = owner.read((sqlite) =>
+            readWorkerControlDuplicateReceipt({ sqlite }, coordinates.lineage, operation, recordKey)
+          );
+          if (receipt.state !== 'ready') return requireWorkerControlStorage();
+          if (receipt.value) return { duplicate, nextExpectedSequence, record: receipt.value };
+        }
+        return { duplicate, nextExpectedSequence };
+      }),
+    publishFinalStatus: async (input) => {
+      const workspace = openAdmittedWorkspaceReadDb(coreDb.dataRoot, input.lineage.workspaceId);
+      try {
+        assertWorkerRawOutputFinalStatus(
+          workspace,
+          input.lineage,
+          input.payload.terminalData.status === 'completed'
+        );
+      } catch (error) {
+        if (
+          error instanceof WorkerRawOutputPendingError ||
+          error instanceof WorkerRawOutputAuthorityError
+        )
+          throw new WorkerControlGatewayError(
+            'worker_raw_output_pending',
+            'Worker raw output proof is not ready.',
+            503
+          );
+        throw error;
+      } finally {
+        workspace.sqlite.close();
+      }
+      return publishObservation(() => owner.workerControlFinalStatus(input));
+    },
     resolveTokenBinding(input) {
       const binding = owner.read((sqlite) =>
         resolveAdmittedNanoHostWorkerBinding(coreDb, sqlite, input)
@@ -1600,6 +1684,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               nanoHostStorage.state === 'ready'
                 ? { state: 'ready', value: nanoHostStorage.value.owner }
                 : nanoHostStorage,
+            ...(nanoHostStorage.state === 'ready'
+              ? {
+                  admitSubmission: nanoHostStorage.value.owner.firstSubmission,
+                  harnessTurnLifecycle: nanoHostStorage.value.owner.harnessTurnLifecycle,
+                  writeStorageAttachment: nanoHostStorage.value.owner.writeStorageAttachment,
+                }
+              : {}),
           },
           workerControlGateway,
         }));
@@ -2430,6 +2521,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     nativeStorage: nanoHostStorage,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     dispatch: nanoHostSessionDispatch,
+    ...(nanoHostStorage.state === 'ready'
+      ? { nativeHarnessLifecycle: nanoHostStorage.value.owner.harnessTurnLifecycle }
+      : {}),
     ...(configuredWorkerRuntime
       ? {
           harnessCommandDispatched: configuredWorkerRuntime.acceptNanoHostHarnessCommand,

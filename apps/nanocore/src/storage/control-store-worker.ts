@@ -107,6 +107,7 @@ import {
 } from '../runtime/goal-owner.js';
 import { StoredGoalCompletionCandidateV1Schema } from '../runtime/goal-retained-v1.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import { acknowledgeNanoHostHarnessResult } from '../runtime/nanohost-harness-records.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type {
   ControlPendingCommandInput,
@@ -286,8 +287,13 @@ import {
   applyServerWorkOwnerMutation,
   prepareServerWorkOwnerMutation,
 } from './control-store-worker-server-work.js';
-import { CoreJournalRefusal } from './core-journal-codecs.js';
-import { applyControlCoreJournal } from './core-journal-native.js';
+import { ControlCoreNanoHostFinalInputSchema, CoreJournalRefusal } from './core-journal-codecs.js';
+import {
+  admitNanoHostFirstSubmissionInDb,
+  admitNanoHostWorkerFinalInDb,
+  applyControlCoreJournal,
+  observeAcceptedNanoHostFinalInDb,
+} from './core-journal-native.js';
 import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
 import {
   bindCoreSqlite,
@@ -337,6 +343,7 @@ import {
   readNanoHostRecoveryLease,
 } from './nanohost-recovery-native.js';
 import { applyNanoHostSimulatorFinalStatus } from './nanohost-simulator-final.js';
+import { readOriginalNanoHostWorkerCoordinates } from './nanohost-worker-binding.js';
 import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
 import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
 import {
@@ -386,7 +393,14 @@ import {
   controlBackendSessionLanes,
 } from './worker-backend-session-native.js';
 import { WorkerFinalStatusRefusal } from './worker-control-final-status-codecs.js';
-import { WorkerHeartbeatRefusal } from './worker-control-heartbeat-codecs.js';
+import { applyControlWorkerFinalStatus } from './worker-control-final-status-native.js';
+import {
+  ControlWorkerHeartbeatPayloadSchema,
+  WorkerHeartbeatRefusal,
+} from './worker-control-heartbeat-codecs.js';
+import { applyControlWorkerHeartbeat } from './worker-control-heartbeat-native.js';
+import { ControlWorkerRecordPayloadSchema } from './worker-control-record-codecs.js';
+import { applyControlWorkerRecord } from './worker-control-record-native.js';
 import { applyControlWorkerImage } from './worker-image-native.js';
 import { applyControlWorkerStorageBinding } from './worker-storage-binding-native.js';
 import { WorkspaceApplyPlanConflictError } from './workspace-apply-plan-codecs.js';
@@ -501,6 +515,7 @@ type WriteCommand = Extract<
       | 'nanohost-owner'
       | 'server-work-owner'
       | 'nanohost-epoch-kernel'
+      | 'nanohost-first-submission'
       | 'repair-kernel'
       | 'server-work-kernel'
       | 'nanohost-transport'
@@ -952,7 +967,9 @@ function domainRefusal(
         ? 'backend-session'
         : request.mutation.kind === 'prepared-image-result'
           ? 'worker-image'
-          : request.mutation.kind;
+          : request.mutation.kind === 'harness-turn-lifecycle'
+            ? 'harness-lifecycle'
+            : request.mutation.kind;
     if (
       kind === 'harness-lifecycle' ||
       kind === 'worker-image' ||
@@ -1168,7 +1185,10 @@ function domainRefusal(
         status: error.status,
       };
   }
-  if (operation === 'execution-attempt' && error instanceof ExecutionAttemptRefusal)
+  if (
+    (operation === 'execution-attempt' || operation === 'nanohost-first-submission') &&
+    error instanceof ExecutionAttemptRefusal
+  )
     return { operation, code: 'attempt_refused', message: error.message, status: 409 };
   if (operation === 'harness-lifecycle' && error instanceof HarnessLifecycleRefusal)
     return {
@@ -1554,6 +1574,29 @@ function applyNanoHostEpochKernel(
   );
 }
 
+/** Proves first submission on the Core writer using the original acknowledged peer files. */
+function applyNanoHostFirstSubmission(
+  owner: OwnedDatabase,
+  request: Extract<WriteRequest, { operation: 'nanohost-first-submission' }>
+) {
+  const core = requireCurrentKernelOpening(owner, request.openingRequestId);
+  const { workspaceId } = requireSchedulerExecutionAttempt(core, request.input.attemptId);
+  return withCurrentPeerRead(
+    serverStoragePath(core.dataRoot, 'nanohost'),
+    request.peers.nanoHostIdentity,
+    (nanoHost) =>
+      withCurrentPeerRead(
+        workspaceDbPath(core.dataRoot, workspaceId),
+        request.peers.workspaceIdentity,
+        (workspace) =>
+          admitNanoHostFirstSubmissionInDb(core, request.input, {
+            nanoHost: { sqlite: nanoHost },
+            workspace: bindWorkspaceSqlite(workspace, core.dataRoot, workspaceId),
+          })
+      )
+  );
+}
+
 /** Borrows an exact query-only file reserved by the acknowledged peer writer. */
 function withCurrentPeerRead<Value>(
   path: string,
@@ -1889,6 +1932,11 @@ function applyNanoHostOwnerMutation(
       if (value !== null) throw new ControlProductPreconditionError();
       return { kind: mutation.kind, value };
     }
+    case 'harness-turn-lifecycle':
+      return withNanoHostCore(owner, mutation.coreIdentity, (coreDb) => ({
+        kind: mutation.kind,
+        value: applyControlHarnessLifecycle({ sqlite }, mutation.input, { coreDb }),
+      }));
     case 'worker-image':
       return {
         kind: mutation.kind,
@@ -2144,6 +2192,16 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         controlBackendSessionLanes(core, request.input)
       );
       for (const lane of selected) lanes.add(lane);
+      break;
+    }
+    case 'nanohost-first-submission': {
+      const core = requireCurrentKernelOpening(owner, request.openingRequestId);
+      const { turnId, agentSessionId } = requireSchedulerExecutionAttempt(
+        core,
+        request.input.attemptId
+      );
+      lanes.add(turnId);
+      if (agentSessionId) lanes.add(`session:${agentSessionId}`);
       break;
     }
     case 'execution-attempt': {
@@ -3323,13 +3381,111 @@ function flush(owner: OwnedDatabase): void {
               operation: 'backend-session',
               result,
             };
+          } else if (request.operation === 'harness-lifecycle') {
+            const { input, nanoHostAckPeer } = request;
+            if (input.kind !== 'result.acknowledge' || !nanoHostAckPeer)
+              throw new ServerOwnerAdmissionError('recovery-required');
+            const core = requireCurrentKernelOpening(owner, nanoHostAckPeer.openingRequestId);
+            withCurrentPeerRead(
+              serverStoragePath(core.dataRoot, 'nanohost'),
+              nanoHostAckPeer.ownerIdentity,
+              (sqlite) => acknowledgeNanoHostHarnessResult(core, input, { sqlite })
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'harness-lifecycle',
+              result: null,
+            };
+          } else if (request.operation === 'worker-control-heartbeat') {
+            const { content, nanoHostCoreIdentity } = request;
+            if (!content || !nanoHostCoreIdentity)
+              throw new ServerOwnerAdmissionError('recovery-required');
+            const payload = ControlWorkerHeartbeatPayloadSchema.parse(
+              JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content))
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: request.operation,
+              result: withNanoHostCore(owner, nanoHostCoreIdentity, (coreDb) =>
+                applyControlWorkerHeartbeat({
+                  sqlite,
+                  coreDb,
+                  input: { ...request.input, payload },
+                })
+              ),
+            };
+          } else if (request.operation === 'worker-control-record') {
+            const { content, nanoHostCoreIdentity } = request;
+            if (!content || !nanoHostCoreIdentity)
+              throw new ServerOwnerAdmissionError('recovery-required');
+            const payload = ControlWorkerRecordPayloadSchema.parse(
+              JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content))
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: request.operation,
+              result: withNanoHostCore(owner, nanoHostCoreIdentity, (coreDb) =>
+                applyControlWorkerRecord({ sqlite, coreDb, input: { ...request.input, payload } })
+              ),
+            };
+          } else if (request.operation === 'worker-control-final-status') {
+            const { content, nanoHostFinal: stage } = request;
+            if (!content || !stage) throw new ServerOwnerAdmissionError('recovery-required');
+            const { byteLength: _byteLength, ...coordinates } = request.input;
+            const input = ControlCoreNanoHostFinalInputSchema.parse({
+              ...coordinates,
+              payload: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content)),
+            });
+            let result: Extract<
+              ControlWorkerReply,
+              { status: 'ok'; operation: 'worker-control-final-status' }
+            >['result'];
+            if (stage.kind === 'settle') {
+              result = withNanoHostCore(owner, stage.coreIdentity, (coreDb) => {
+                const original = readOriginalNanoHostWorkerCoordinates(coreDb, sqlite, input);
+                if (!original)
+                  throw new WorkerFinalStatusRefusal(
+                    'worker_control_unauthorized',
+                    'Worker control request is missing a valid sandbox token.',
+                    401
+                  );
+                return applyControlWorkerFinalStatus({
+                  sqlite,
+                  original,
+                  input,
+                  decision: stage.decision,
+                });
+              });
+            } else {
+              const core = requireCurrentKernelOpening(owner, stage.openingRequestId);
+              result = withCurrentPeerRead(
+                serverStoragePath(core.dataRoot, 'nanohost'),
+                stage.ownerIdentity,
+                (native) =>
+                  stage.kind === 'intake'
+                    ? { kind: 'intake', value: admitNanoHostWorkerFinalInDb(core, input, native) }
+                    : {
+                        kind: 'observe',
+                        value: observeAcceptedNanoHostFinalInDb(core, input, native),
+                      }
+              );
+            }
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: request.operation,
+              result,
+            };
           } else if (
-            request.operation === 'worker-control-final-status' ||
-            request.operation === 'worker-control-heartbeat' ||
-            request.operation === 'worker-control-record' ||
             request.operation === 'worker-image' ||
             request.operation === 'runtime-target' ||
-            request.operation === 'harness-lifecycle' ||
             request.operation === 'worker-storage-binding'
           ) {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
@@ -3887,6 +4043,14 @@ function flush(owner: OwnedDatabase): void {
               status: 'ok',
               operation: 'nanohost-epoch-kernel',
               result: applyNanoHostEpochKernel(owner, request),
+            };
+          } else if (request.operation === 'nanohost-first-submission') {
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'nanohost-first-submission',
+              result: applyNanoHostFirstSubmission(owner, request),
             };
           } else if (request.operation === 'repair-kernel') {
             const core = requireCurrentKernelOpening(owner, request.openingRequestId);
@@ -5335,6 +5499,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'nanohost-owner' ||
       value.operation === 'server-work-owner' ||
       value.operation === 'nanohost-epoch-kernel' ||
+      value.operation === 'nanohost-first-submission' ||
       value.operation === 'repair-kernel' ||
       value.operation === 'server-work-kernel' ||
       value.operation === 'nanohost-transport' ||

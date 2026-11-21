@@ -220,6 +220,12 @@ import {
   type ControlCoreJournalInput,
   ControlCoreJournalInputSchema,
   ControlCoreJournalRefusalSchema,
+  ControlCoreNanoHostAcceptedFinalResultSchema,
+  ControlCoreNanoHostFinalDecisionSchema,
+  type ControlNanoHostFirstSubmissionInput,
+  ControlNanoHostFirstSubmissionInputSchema,
+  type ControlNanoHostFirstSubmissionResult,
+  ControlNanoHostFirstSubmissionResultSchema,
 } from './core-journal-codecs.js';
 import {
   type ControlEvaluationCandidate,
@@ -869,6 +875,18 @@ const nanoHostPreparedImageResult = z.strictObject({
     .optional(),
 });
 
+const nanoHostHarnessTurnInput = ControlHarnessLifecycleInputSchema.refine(
+  (
+    input
+  ): input is Extract<
+    ControlHarnessLifecycleInput,
+    { kind: 'operation.queue' | 'operation.dispatch' | 'operation.settle' }
+  > =>
+    input.kind === 'operation.queue' ||
+    input.kind === 'operation.dispatch' ||
+    input.kind === 'operation.settle'
+);
+
 const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('transport'), input: ControlNanoHostTransportInputSchema }),
   z.strictObject({
@@ -881,6 +899,11 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('harness-lifecycle'),
     input: ControlHarnessLifecycleInputSchema.nanoHostLocal,
+  }),
+  z.strictObject({
+    kind: z.literal('harness-turn-lifecycle'),
+    input: nanoHostHarnessTurnInput,
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
   }),
   z.strictObject({
     kind: z.literal('worker-image'),
@@ -925,6 +948,11 @@ export type NanoHostOwnerMutation =
       readonly kind: 'harness-lifecycle';
       readonly input: z.output<typeof ControlHarnessLifecycleInputSchema.nanoHostLocal>;
     }
+  | {
+      readonly kind: 'harness-turn-lifecycle';
+      readonly input: z.output<typeof nanoHostHarnessTurnInput>;
+      readonly coreIdentity: string;
+    }
   | { readonly kind: 'worker-image'; readonly input: NanoHostLocalWorkerImageInput }
   | {
       readonly kind: 'prepared-image-result';
@@ -966,6 +994,10 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('stage-invalidation'), value: z.null() }),
   z.strictObject({ kind: z.literal('settle-invalidation'), value: z.null() }),
   z.strictObject({ kind: z.literal('harness-lifecycle'), value: z.null() }),
+  z.strictObject({
+    kind: z.literal('harness-turn-lifecycle'),
+    value: ControlHarnessLifecycleResultSchema,
+  }),
   z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),
   z.strictObject({ kind: z.literal('prepared-image-result'), value: z.null() }),
   z.strictObject({ kind: z.literal('backend-session'), value: ControlBackendSessionResultSchema }),
@@ -998,6 +1030,34 @@ const nanoHostRecoveryClose = z.strictObject({
   expectedPhase: z.enum(['open', 'closing', 'closed']),
   observationHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 });
+
+const nanoHostSubmissionPeers = z.strictObject({
+  nanoHostIdentity: z.string().regex(/^\d+:\d+$/),
+  workspaceIdentity: z.string().regex(/^\d+:\d+$/),
+});
+
+const nanoHostHarnessAckPeer = z.strictObject({
+  openingRequestId: z.number().int().nonnegative().safe(),
+  ownerIdentity: z.string().regex(/^\d+:\d+$/),
+});
+
+const nanoHostFinalStage = z.discriminatedUnion('kind', [
+  nanoHostHarnessAckPeer.extend({ kind: z.literal('intake') }),
+  nanoHostHarnessAckPeer.extend({ kind: z.literal('observe') }),
+  z.strictObject({
+    kind: z.literal('settle'),
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
+    decision: ControlCoreNanoHostFinalDecisionSchema,
+  }),
+]);
+
+const nanoHostFinalCoreResult = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('intake'), value: ControlCoreNanoHostFinalDecisionSchema }),
+  z.strictObject({
+    kind: z.literal('observe'),
+    value: ControlCoreNanoHostAcceptedFinalResultSchema,
+  }),
+]);
 
 /** A close replay compares the original placement and Native observation across Core phase changes. */
 export function hashNanoHostRecoveryObservation({
@@ -1453,6 +1513,12 @@ export type ControlWorkerCommand =
           readonly input: NanoHostEpochKernelInput;
         }
       | {
+          readonly operation: 'nanohost-first-submission';
+          readonly openingRequestId: number;
+          readonly input: ControlNanoHostFirstSubmissionInput;
+          readonly peers: z.infer<typeof nanoHostSubmissionPeers>;
+        }
+      | {
           readonly operation: 'repair-kernel';
           readonly openingRequestId: number;
           readonly input: RepairWorkerInput;
@@ -1589,18 +1655,25 @@ export type ControlWorkerCommand =
           readonly operation: 'worker-control-final-status';
           readonly input: ControlWorkerFinalStatusInput;
           readonly content?: ArrayBuffer;
+          readonly nanoHostFinal?: z.infer<typeof nanoHostFinalStage>;
         }
       | {
           readonly operation: 'worker-control-heartbeat';
           readonly input: ControlWorkerHeartbeatInput;
           readonly content?: ArrayBuffer;
+          readonly nanoHostCoreIdentity?: string;
         }
       | {
           readonly operation: 'worker-control-record';
           readonly input: ControlWorkerRecordInput;
           readonly content?: ArrayBuffer;
+          readonly nanoHostCoreIdentity?: string;
         }
-      | { readonly operation: 'harness-lifecycle'; readonly input: ControlHarnessLifecycleInput }
+      | {
+          readonly operation: 'harness-lifecycle';
+          readonly input: ControlHarnessLifecycleInput;
+          readonly nanoHostAckPeer?: z.infer<typeof nanoHostHarnessAckPeer>;
+        }
       | {
           readonly operation: 'recovery-target-preparation';
           readonly input: ControlRecoveryTargetPreparationInput;
@@ -1797,6 +1870,10 @@ const communicationOwnerRefusalSchema = z.strictObject({
   status: z.union([z.literal(400), z.literal(403), z.literal(404), z.literal(409), z.literal(503)]),
 });
 
+const nanoHostFirstSubmissionRefusalSchema = ControlExecutionAttemptRefusalSchema.extend({
+  operation: z.literal('nanohost-first-submission'),
+});
+
 export type ControlWorkerDomainRefusal =
   | z.infer<typeof communicationOwnerRefusalSchema>
   | z.infer<typeof ControlSecurityTriggerRefusalSchema>
@@ -1814,6 +1891,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlWorkerHeartbeatRefusalSchema>
   | z.infer<typeof ControlWorkerRecordRefusalSchema>
   | z.infer<typeof ControlExecutionAttemptRefusalSchema>
+  | z.infer<typeof nanoHostFirstSubmissionRefusalSchema>
   | z.infer<typeof ControlCoreJournalRefusalSchema>
   | z.infer<typeof ControlWorkerImageRefusalSchema>
   | z.infer<typeof ControlRuntimeTargetRefusalSchema>
@@ -1901,6 +1979,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'nanohost-epoch-kernel';
       readonly result: NanoHostEpochKernelReply;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'nanohost-first-submission';
+      readonly result: ControlNanoHostFirstSubmissionResult;
     }
   | {
       readonly status: 'ok';
@@ -2110,7 +2193,7 @@ export type ControlWorkerReply = {
   | {
       readonly status: 'ok';
       readonly operation: 'worker-control-final-status';
-      readonly result: ControlWorkerFinalStatusResult;
+      readonly result: ControlWorkerFinalStatusResult | z.infer<typeof nanoHostFinalCoreResult>;
     }
   | {
       readonly status: 'ok';
@@ -2337,6 +2420,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlWorkerFinalStatusRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'execution-attempt')
     return ControlExecutionAttemptRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'nanohost-first-submission')
+    return nanoHostFirstSubmissionRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'harness-lifecycle')
     return ControlHarnessLifecycleRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'worker-storage-binding')
@@ -2488,6 +2573,11 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
       exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
       NanoHostEpochKernelReplySchema.safeParse(reply.result).success
     );
+  if (reply.operation === 'nanohost-first-submission')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      ControlNanoHostFirstSubmissionResultSchema.safeParse(reply.result).success
+    );
   if (reply.operation === 'repair-kernel')
     return RepairWorkerReplySchema.safeParse(reply.result).success;
   if (reply.operation === 'server-work-kernel')
@@ -2611,7 +2701,10 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'worker-control-heartbeat')
     return ControlWorkerHeartbeatResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'worker-control-final-status')
-    return ControlWorkerFinalStatusResultSchema.safeParse(reply.result).success;
+    return (
+      ControlWorkerFinalStatusResultSchema.safeParse(reply.result).success ||
+      nanoHostFinalCoreResult.safeParse(reply.result).success
+    );
   if (
     reply.operation === 'recovery-target-preparation' ||
     reply.operation === 'recovery-source-reactivation'
@@ -3133,6 +3226,15 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       NanoHostEpochKernelInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
+  if (value.operation === 'nanohost-first-submission')
+    return (
+      exactFields(value, [...scoped, 'openingRequestId', 'input', 'peers']) &&
+      Number.isSafeInteger(value.openingRequestId) &&
+      (value.openingRequestId as number) >= 0 &&
+      ControlNanoHostFirstSubmissionInputSchema.safeParse(value.input).success &&
+      nanoHostSubmissionPeers.safeParse(value.peers).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'repair-kernel')
     return (
       exactFields(value, [...scoped, 'openingRequestId', 'input']) &&
@@ -3261,7 +3363,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     const parsed = ControlWorkerFinalStatusInputSchema.safeParse(value.input);
     return (
       parsed.success &&
-      exactFields(value, [...scoped, 'input', 'content']) &&
+      exactFields(value, [...scoped, 'input', 'content'], ['nanoHostFinal']) &&
+      (value.nanoHostFinal === undefined ||
+        nanoHostFinalStage.safeParse(value.nanoHostFinal).success) &&
       parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
       controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );
@@ -3270,7 +3374,10 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     const parsed = ControlWorkerHeartbeatInputSchema.safeParse(value.input);
     return (
       parsed.success &&
-      exactFields(value, [...scoped, 'input', 'content']) &&
+      exactFields(value, [...scoped, 'input', 'content'], ['nanoHostCoreIdentity']) &&
+      (value.nanoHostCoreIdentity === undefined ||
+        (typeof value.nanoHostCoreIdentity === 'string' &&
+          /^\d+:\d+$/.test(value.nanoHostCoreIdentity))) &&
       parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
       controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );
@@ -3279,7 +3386,10 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     const parsed = ControlWorkerRecordInputSchema.safeParse(value.input);
     return (
       parsed.success &&
-      exactFields(value, [...scoped, 'input', 'content']) &&
+      exactFields(value, [...scoped, 'input', 'content'], ['nanoHostCoreIdentity']) &&
+      (value.nanoHostCoreIdentity === undefined ||
+        (typeof value.nanoHostCoreIdentity === 'string' &&
+          /^\d+:\d+$/.test(value.nanoHostCoreIdentity))) &&
       parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
       controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );
@@ -3497,12 +3607,17 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   }
-  if (value.operation === 'harness-lifecycle')
+  if (value.operation === 'harness-lifecycle') {
+    const input = ControlHarnessLifecycleInputSchema.safeParse(value.input);
     return (
-      exactFields(value, [...scoped, 'input']) &&
-      ControlHarnessLifecycleInputSchema.safeParse(value.input).success &&
+      exactFields(value, [...scoped, 'input'], ['nanoHostAckPeer']) &&
+      input.success &&
+      (value.nanoHostAckPeer === undefined ||
+        (input.data.kind === 'result.acknowledge' &&
+          nanoHostHarnessAckPeer.safeParse(value.nanoHostAckPeer).success)) &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
+  }
   if (value.operation === 'worker-storage-binding')
     return (
       exactFields(value, [...scoped, 'input']) &&
