@@ -1,6 +1,7 @@
+import Database from 'better-sqlite3';
 import { prepareNanoHostOwner } from '../app.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import type { CoreDb } from '../storage/db.js';
+import { type CoreDb, serverStoragePath } from '../storage/db.js';
 import { nanoHostStoreDescriptor } from '../storage/nanohost-store-descriptor.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 
@@ -27,5 +28,41 @@ export async function openAdmittedTestNanoHost(coreDb: CoreDb) {
 export async function reopenAdmittedTestNanoHost(coreDb: CoreDb) {
   const storage = await prepareNanoHostOwner(coreDb, { enabled: () => true });
   if (storage.state !== 'ready') throw new Error(`NanoHost admission: ${storage.reason}`);
+  return storage;
+}
+
+/** Reads fixture evidence from the same acknowledged NanoHost generation as production. */
+export function readAdmittedTestNanoHost<Value>(
+  coreDb: CoreDb,
+  query: (sqlite: Database.Database) => Value
+): Value {
+  const result = getControlStoreWorkerClient().readAdmittedNanoHost(coreDb.dataRoot, query);
+  if (result.state !== 'ready') throw new Error(`NanoHost fixture read: ${result.reason}`);
+  return result.value;
+}
+
+/** Changes fixture bytes while the test owns an admitted NanoHost opening and has paused its writers. */
+export function mutateAdmittedTestNanoHost<Value>(
+  coreDb: CoreDb,
+  mutate: (sqlite: Database.Database) => Value
+): Value {
+  readAdmittedTestNanoHost(coreDb, () => undefined);
+  const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+    fileMustExist: true,
+  });
+  try {
+    return sqlite.transaction(mutate).immediate(sqlite);
+  } finally {
+    sqlite.close();
+  }
+}
+
+/** Seeds an exact fixture through a short-lived connection to the admitted NanoHost file. */
+export async function seedAdmittedTestNanoHost(
+  coreDb: CoreDb,
+  seed: (sqlite: Database.Database) => void
+) {
+  const storage = await openAdmittedTestNanoHost(coreDb);
+  mutateAdmittedTestNanoHost(coreDb, seed);
   return storage;
 }
