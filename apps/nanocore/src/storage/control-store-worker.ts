@@ -5434,6 +5434,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       reply(failure(value.id, 'owner-recovery-required'));
       return;
     }
+    const nativeWorkerPublication =
+      ((value.operation === 'worker-control-heartbeat' ||
+        value.operation === 'worker-control-record') &&
+        value.nanoHostCoreIdentity !== undefined) ||
+      (value.operation === 'worker-control-final-status' && value.nanoHostFinal?.kind === 'settle');
     const splitMutation =
       value.operation === 'communication-owner'
         ? 'communication'
@@ -5441,6 +5446,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           ? 'server-work'
           : value.operation === 'nanohost-owner' ||
               value.operation === 'worker-control-evidence' ||
+              nativeWorkerPublication ||
               simulatorMutation
             ? 'nanohost'
             : undefined;
