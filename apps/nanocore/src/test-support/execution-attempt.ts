@@ -5,6 +5,7 @@ import {
   recordSchedulerExecutionOperation,
 } from '../runtime/execution-attempt-records.js';
 import {
+  type AdmittedNanoHostHarnessTurnLifecycle,
   acknowledgeNanoHostHarnessResult,
   type PreparedNanoHostHarnessOperation,
   type PrepareNanoHostHarnessOperationInput,
@@ -13,6 +14,7 @@ import {
 } from '../runtime/nanohost-harness.js';
 import type { CoreSchedulerQueueEntry } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { readAdmittedTestNanoHost } from './admitted-nanohost.js';
 
 /**
  * Records the Core-owned preparation tuple for tests below the dispatcher.
@@ -73,10 +75,11 @@ export async function queueTestPreparedHarnessOperation(
   coreDb: CoreDb,
   input: PrepareNanoHostHarnessOperationInput & {
     readonly prepared?: PreparedNanoHostHarnessOperation;
-  }
+  },
+  admitted?: AdmittedNanoHostHarnessTurnLifecycle
 ): Promise<number> {
   const prepared = input.prepared ?? prepareNanoHostHarnessOperation(coreDb, input);
-  return await queueNanoHostHarnessOperation(coreDb, { ...input, prepared });
+  return await queueNanoHostHarnessOperation(coreDb, { ...input, prepared }, admitted);
 }
 
 /**
@@ -94,26 +97,34 @@ export async function acknowledgeTestExternalWorkspaceConsumer(
     readonly workspaceId: string;
     readonly turnId: string;
     readonly timestamp: string;
-  }
+  },
+  admitted?: AdmittedNanoHostHarnessTurnLifecycle
 ): Promise<void> {
-  const row = coreDb.sqlite
-    .prepare(
-      'SELECT result_json AS bytes FROM harness_instance_records WHERE harness_instance_id = ?'
-    )
-    .get(input.harnessInstanceId) as { bytes: string } | undefined;
-  if (!row?.bytes) throw new Error('External consumer double requires an actual Core result.');
+  const inspect = (sqlite: CoreDb['sqlite']) =>
+    sqlite
+      .prepare(
+        'SELECT result_json AS bytes FROM harness_instance_records WHERE harness_instance_id = ?'
+      )
+      .get(input.harnessInstanceId) as { bytes: string } | undefined;
+  const row = admitted ? readAdmittedTestNanoHost(coreDb, inspect) : inspect(coreDb.sqlite);
+  if (!row?.bytes)
+    throw new Error('External consumer double requires the original retained result.');
   const result = JSON.parse(row.bytes) as Parameters<
     typeof acknowledgeNanoHostHarnessResult
   >[1]['result'];
-  await acknowledgeNanoHostHarnessResult(coreDb, {
-    result,
-    harnessBindingRef: input.harnessBindingRef,
-    timestamp: input.timestamp,
-    consumerReceipt: JSON.stringify({
-      workspaceId: input.workspaceId,
-      turnId: input.turnId,
-      executionId: `external-consumer-double:${result.operationId}`,
-      stepId: `external-consumer-double:${result.sequence}`,
-    }),
-  });
+  await acknowledgeNanoHostHarnessResult(
+    coreDb,
+    {
+      result,
+      harnessBindingRef: input.harnessBindingRef,
+      timestamp: input.timestamp,
+      consumerReceipt: JSON.stringify({
+        workspaceId: input.workspaceId,
+        turnId: input.turnId,
+        executionId: `external-consumer-double:${result.operationId}`,
+        stepId: `external-consumer-double:${result.sequence}`,
+      }),
+    },
+    admitted
+  );
 }
