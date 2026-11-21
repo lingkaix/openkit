@@ -102,6 +102,13 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
 } from '../storage/index-rebuild.js';
 import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import {
+  type NanoHostRecoveryMutation,
+  type NanoHostWorkerRecoveryState,
+  readNanoHostPhysicalCleanupReceipt,
+  readNanoHostRecoveryLease,
+} from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import { vaultCredentialWriterOf } from '../storage/vault-native-codecs.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import {
@@ -164,6 +171,7 @@ import { requireExecutionCredentialReceipts } from './execution-backend.js';
 import {
   createExecutionStepJournalReader,
   decodeExecutionJournalSpan,
+  readExecutionJournalInvocation,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 } from './execution-journal.js';
 import type {
@@ -180,8 +188,10 @@ import {
   prepareHarnessLoginSelection,
 } from './harness-login-selection.js';
 import { commandInputHash } from './idempotent-command.js';
+import type { AdmittedNanoHostAttemptRecovery } from './nanohost-attempt-recovery.js';
 import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
 import { requireReleasedLoginPredecessor } from './nanohost-harness-records.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import type { NanoHostEnvironmentRead } from './native-environment.js';
 import { selectThreadNativeResumeSource } from './native-resume-selection.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -1080,12 +1090,20 @@ export async function withPreparedWorkerSubmission<Value>(
   return await submit(attempt);
 }
 
+type CommitNanoHostCloseout = (
+  input: NanoHostRecoveryMutation & {
+    readonly kind: 'transition' | 'workspace-handoff' | 'finish-cleanup';
+  }
+) => ReturnType<AdmittedNanoHostAttemptRecovery['commit']>;
+
 /** Options for the worker-governance-backed turn executor. */
 export interface WorkerGovernanceTurnExecutorOptions {
   /** Admitted image-default read for the same NanoHost generation used at launch. */
   readNanoHostEnvironment?: NanoHostEnvironmentRead | undefined;
   /** Joins the original Core submission to the admitted Native and Workspace placement. */
   admitNanoHostSubmission?: AdmitNanoHostSubmission | undefined;
+  /** Admitted Native recovery CAS, pinned to the current Core closing grant by the owner. */
+  commitNanoHostCloseout?: CommitNanoHostCloseout | undefined;
   /** Same current Goal/Task scope reader as other Worker effects. */
   goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'];
   /** Same operation interception owner used by authenticated agent and public callers. */
@@ -1167,6 +1185,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly coreDb: CoreDb | null;
   private readonly readNanoHostEnvironment: NanoHostEnvironmentRead | undefined;
   private readonly admitNanoHostSubmission: AdmitNanoHostSubmission | undefined;
+  private readonly commitNanoHostCloseout: CommitNanoHostCloseout | undefined;
   private readonly fileAdmission: FileStorageAdmission | undefined;
   private readonly createAgentSessionId: () => string;
   private readonly now: (() => string) | undefined;
@@ -1202,6 +1221,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.coreDb = options.coreDb ?? null;
     this.readNanoHostEnvironment = options.readNanoHostEnvironment;
     this.admitNanoHostSubmission = options.admitNanoHostSubmission;
+    this.commitNanoHostCloseout = options.commitNanoHostCloseout;
     this.fileAdmission = options.fileAdmission;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => allocateEntityId('as'));
     this.now = options.now;
@@ -5461,6 +5481,81 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
   }
 
+  /** Joins ordinary cleanup to the already decided grant and pins its original physical target. */
+  private prepareNanoHostCloseout(lifecycle: WorkerTurnBackendLifecycle) {
+    const coreDb = this.coreDb;
+    const read = this.readNanoHostEnvironment;
+    const commit = this.commitNanoHostCloseout;
+    const session = lifecycle.session!;
+    if (!coreDb || !read || !commit) throw nanoHostCloseoutHeld();
+    const original = readRetainedNanoHostSubmission(coreDb, session.attemptId);
+    if (!original || original.lease.attempt.phase !== 'closing' || original.lease.attempt.fenceRef)
+      throw nanoHostCloseoutHeld();
+    const { lease } = original;
+    const readCurrent = () =>
+      requireNanoHostObservation(
+        coreDb,
+        (sqlite) => {
+          const current = readNanoHostRecoveryLease(sqlite, lease);
+          const target = getNanoHostRuntimeTarget({ sqlite }, current.session.runtimeTargetId);
+          if (
+            !target?.ready ||
+            !target.freshEmpty ||
+            !target.predecessorFenced ||
+            target.deploymentId !== current.session.deploymentId ||
+            target.physicalEpoch !== current.session.originPhysicalEpoch ||
+            !isDeepStrictEqual(current.session, lifecycle.session)
+          )
+            throw nanoHostCloseoutHeld();
+          if (
+            current.session.state === 'physical-cleaned' &&
+            !readNanoHostPhysicalCleanupReceipt(sqlite, lease, target)
+          )
+            throw nanoHostCloseoutHeld();
+          return { ...current, target };
+        },
+        read
+      );
+    const { target } = readCurrent();
+    const observe = () => {
+      const current = readCurrent();
+      if (!isDeepStrictEqual(current.target, target)) throw nanoHostCloseoutHeld();
+      return current;
+    };
+    return {
+      observe,
+      advance: async (
+        stage:
+          | Extract<NanoHostRecoveryMutation, { kind: 'transition' }>['toState']
+          | 'workspace-handoff'
+          | 'cleaned',
+        observedAt: string,
+        expectedProof?: NanoHostWorkerRecoveryState
+      ) => {
+        const { session, proof } = observe();
+        if (expectedProof && !isDeepStrictEqual(proof, expectedProof)) throw nanoHostCloseoutHeld();
+        const expected = { lease, expectedSession: session, expectedRecovery: proof, observedAt };
+        const result = await commit(
+          stage === 'workspace-handoff'
+            ? { ...expected, kind: stage }
+            : stage === 'cleaned'
+              ? { ...expected, kind: 'finish-cleanup' }
+              : { ...expected, kind: 'transition', toState: stage, target }
+        );
+        if (
+          result.state !== 'ready' ||
+          result.value.attemptId !== session.attemptId ||
+          result.value.backendSessionId !== session.backendSessionId ||
+          (stage === 'workspace-handoff'
+            ? result.value.workspaceHandoffState !== 'complete'
+            : result.value.state !== stage)
+        )
+          throw nanoHostCloseoutHeld();
+        return result.value;
+      },
+    };
+  }
+
   /**
    * Physically cleans one exact backend identity and atomically projects only proven success.
    *
@@ -5491,29 +5586,49 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         current.value.backendSessionId !== expected.backendSessionId
       )
         throw new Error('Admitted NanoHost cleanup owner is unavailable.');
+      assertRestoredSession(environmentPackage, current.value, lifecycle.identity);
       lifecycle.session = current.value;
       lifecycle.physicalCleanedAt = current.value.physicalCleanedAt;
+      lifecycle.workspaceHandoffState = current.value.workspaceHandoffState;
     }
-    if (lifecycle.session?.state === 'cleaned') {
-      return;
-    }
+    if (lifecycle.session?.state === 'cleaned') return;
+    const closeout =
+      lifecycle.session && this.readNanoHostEnvironment
+        ? this.prepareNanoHostCloseout(lifecycle)
+        : null;
+    if (
+      closeout &&
+      (!workspaceDb ||
+        workspaceDb.dataRoot !== this.coreDb!.dataRoot ||
+        workspaceDb.workspaceId !== lifecycle.session!.workspaceId ||
+        lifecycle.session!.state === 'cleanup-pending' ||
+        lifecycle.session!.state === 'cleanup-failed')
+    )
+      throw nanoHostCloseoutHeld();
+
+    const advance = async (
+      state: 'cleanup-pending' | 'cleanup-failed' | 'physical-cleaned' | 'cleaned',
+      observedAt?: string,
+      expectedProof?: NanoHostWorkerRecoveryState
+    ) => {
+      const session = lifecycle.session!;
+      lifecycle.session = closeout
+        ? await closeout.advance(state, observedAt ?? this.currentTime(), expectedProof)
+        : await transitionWorkerBackendSessionState(this.coreDb!, {
+            fromState: session.state,
+            attemptId: session.attemptId,
+            ...(observedAt ? { now: () => observedAt } : this.now ? { now: this.now } : {}),
+            toState: state,
+          });
+    };
 
     // A live materialize refusal plus successful physical cleanup proves the unpublished handoff boundary.
     // Restart must derive its own exact proof instead of reconstructing this fact.
     const materializationNotPublished =
       failedCloseout && lifecycle.session?.state === 'materializing';
     if (!lifecycle.physicalCleanedAt) {
-      if (lifecycle.session) {
-        const session = lifecycle.session;
-        if (session.state !== 'cleanup-pending') {
-          lifecycle.session = await transitionWorkerBackendSessionState(this.coreDb!, {
-            fromState: session.state,
-            attemptId: session.attemptId,
-            ...(this.now ? { now: this.now } : {}),
-            toState: 'cleanup-pending',
-          });
-        }
-      }
+      if (lifecycle.session && lifecycle.session.state !== 'cleanup-pending')
+        await advance('cleanup-pending');
 
       if (!workspaceDb) throw new Error('Worker cleanup requires its native journal owner.');
       const cleanupJournal = await beginWorkerTurnJournalStep(
@@ -5522,6 +5637,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         environmentPackage.scope.turnId,
         'inspect-cleanup'
       );
+      if (closeout)
+        requireNanoHostCleanupInspection(workspaceDb, cleanupJournal, lifecycle.session!, 'intent');
+      const pendingProof = closeout?.observe().proof;
       try {
         await withLifecycleStageTelemetry(
           {
@@ -5539,14 +5657,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           }
         );
       } catch (error) {
-        if (lifecycle.session?.state === 'cleanup-pending') {
-          lifecycle.session = await transitionWorkerBackendSessionState(this.coreDb!, {
-            fromState: 'cleanup-pending',
-            attemptId: lifecycle.session.attemptId,
-            ...(this.now ? { now: this.now } : {}),
-            toState: 'cleanup-failed',
-          });
-        }
+        if (lifecycle.session?.state === 'cleanup-pending')
+          await advance('cleanup-failed', undefined, pendingProof);
         await endWorkerTurnJournalStep(
           store,
           workspaceDb,
@@ -5559,15 +5671,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         lifecycle.identity.backendSessionId,
       ]);
 
-      lifecycle.physicalCleanedAt = this.currentTime();
+      const observedAt = this.currentTime();
       if (lifecycle.session?.state === 'cleanup-pending') {
-        lifecycle.session = await transitionWorkerBackendSessionState(this.coreDb!, {
-          fromState: 'cleanup-pending',
-          attemptId: lifecycle.session.attemptId,
-          now: () => lifecycle.physicalCleanedAt!,
-          toState: 'physical-cleaned',
-        });
+        if (closeout)
+          requireNanoHostCleanupInspection(
+            workspaceDb,
+            cleanupJournal,
+            lifecycle.session,
+            'completed'
+          );
+        await advance('physical-cleaned', observedAt, pendingProof);
         lifecycle.physicalCleanedAt = lifecycle.session.physicalCleanedAt;
+      } else {
+        lifecycle.physicalCleanedAt = observedAt;
       }
     }
 
@@ -5593,25 +5709,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         materializationNotPublished,
         workspaceId: environmentPackage.scope.workspaceId,
       });
+      if (closeout && !projection.workspaceHandoffComplete) throw nanoHostCloseoutHeld();
       if (
         lifecycle.session?.workspaceHandoffState === 'pending' &&
         projection.workspaceHandoffComplete
       ) {
-        lifecycle.session = await markWorkerBackendWorkspaceHandoffComplete(this.coreDb!, {
-          attemptId: lifecycle.session.attemptId,
-          ...(this.now ? { now: this.now } : {}),
-        });
+        lifecycle.session = closeout
+          ? await closeout.advance('workspace-handoff', this.currentTime())
+          : await markWorkerBackendWorkspaceHandoffComplete(this.coreDb!, {
+              attemptId: lifecycle.session.attemptId,
+              ...(this.now ? { now: this.now } : {}),
+            });
       }
     }
 
-    if (lifecycle.session?.state === 'physical-cleaned' && workspaceDb) {
-      lifecycle.session = await transitionWorkerBackendSessionState(this.coreDb!, {
-        fromState: 'physical-cleaned',
-        attemptId: lifecycle.session.attemptId,
-        ...(this.now ? { now: this.now } : {}),
-        toState: 'cleaned',
-      });
-    }
+    if (lifecycle.session?.state === 'physical-cleaned' && workspaceDb) await advance('cleaned');
   }
 
   /**
@@ -6388,6 +6500,52 @@ function assertRestoredSession(
     session.runtimeTargetId !== identity.runtimeTargetId
   ) {
     throw new Error('Restart closeout backend session does not match its immutable lineage.');
+  }
+}
+
+function nanoHostCloseoutHeld(): TurnStartValidationError {
+  return new TurnStartValidationError(
+    'recovery_required',
+    'Admitted NanoHost cleanup requires recovery.',
+    409
+  );
+}
+
+/** Rechecks the original Workspace inspection before contact and again before the receipt CAS. */
+function requireNanoHostCleanupInspection(
+  workspaceDb: WorkspaceDb,
+  intent: ExecutionJournalIntent,
+  session: WorkerBackendSessionRecord,
+  state: 'intent' | 'completed'
+): void {
+  const db = openAdmittedWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
+  try {
+    const inspection = readExecutionJournalInvocation(db, {
+      execution: intent.execution.ref,
+      stepId: intent.stepId,
+    });
+    const { control, carriage } = inspection;
+    if (
+      inspection.state !== state ||
+      control.kind !== 'inspect-cleanup' ||
+      control.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+      control.workId !== session.turnId ||
+      control.attemptId !== session.attemptId ||
+      control.invocationId !== intent.control.invocationId ||
+      carriage.operation !== 'worker.inspect-cleanup' ||
+      carriage.bindingRef !== session.sandboxBindingRef ||
+      control.target?.targetId !== session.runtimeTargetId ||
+      control.target.backendKind !== session.backendKind ||
+      control.target.allocationRef !== session.sandboxBindingRef ||
+      !isDeepStrictEqual(control.inputRefs, [session.turnId, session.packageSnapshotId]) ||
+      !isDeepStrictEqual(
+        control.outputRefs,
+        state === 'completed' ? [session.backendSessionId] : []
+      )
+    )
+      throw nanoHostCloseoutHeld();
+  } finally {
+    db.sqlite.close();
   }
 }
 

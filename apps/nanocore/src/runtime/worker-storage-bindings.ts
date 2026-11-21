@@ -5,7 +5,6 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { CoreDb } from '../storage/db.js';
 import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
-import type { ControlWorkerStorageInput } from '../storage/worker-storage-binding-codecs.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   getNanoHostRuntimeTarget,
@@ -24,7 +23,7 @@ import {
 } from './worker-storage-binding-records.js';
 
 type WorkerStorageAttachmentCommand = Extract<
-  ControlWorkerStorageInput,
+  Parameters<ReturnType<typeof getControlStoreWorkerClient>['workerStorageBinding']>[1],
   { kind: 'create-and-reserve' | 'reserve-existing' | 'admit-contributor' | 'activate' }
 >;
 
