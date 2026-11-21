@@ -777,7 +777,7 @@ interface Opening {
   readonly promise: Promise<void>;
   readonly policyReads: Set<PolicyReadResource>;
   /** A second NanoHost tuple cannot rely on a write whose FULL ACK is outstanding. */
-  nanoHostWritePending?: true;
+  nanoHostWritePending?: true | 'core-image-read';
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
   communicationReader?: Database.Database;
@@ -3185,7 +3185,9 @@ class ControlStoreWorkerClient {
         query: (sqlite: Database.Database) => Value,
         ownPendingWrite = false
       ): Value => {
-        assertCurrent(ownPendingWrite);
+        // A Core image transaction pins the same Native reader without changing its target.
+        // Physical polls may observe it while other writers remain excluded.
+        assertCurrent(ownPendingWrite || opening.nanoHostWritePending === 'core-image-read');
         const physical = readPhysicalDatabaseIdentity(opening.path);
         if (
           !sqlite.open ||
@@ -7038,7 +7040,10 @@ class ControlStoreWorkerClient {
           !candidate.nanoHostTargetTransition &&
           !this.backupHold
         ) {
-          candidate.nanoHostWritePending = true;
+          candidate.nanoHostWritePending =
+            input.kind === 'image-intent' || input.kind === 'image-result'
+              ? 'core-image-read'
+              : true;
           nativeRead = candidate;
         }
       }
