@@ -1,7 +1,14 @@
-import { ActorRefSchema, PolicyDocumentV1Schema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  ActorRefSchema,
+  AgentSessionIdSchema,
+  ExecutionAttemptIdSchema,
+  PolicyDocumentV1Schema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { WorkerImageSettlementSchema } from '../runtime/worker-image-settlements-records.js';
+import { SchedulerExecutionAttemptSchema } from './execution-attempt-codecs.js';
 
 const text = z.string().min(1);
 const stepRef = z
@@ -33,6 +40,46 @@ export const ControlCoreImageResultSchema = z
   .strict();
 
 export type ControlCoreImageResult = z.infer<typeof ControlCoreImageResultSchema>;
+
+/** First submission names the attempt and the exact admitted Native placement. */
+export const ControlNanoHostFirstSubmissionInputSchema = z
+  .object({
+    attemptId: ExecutionAttemptIdSchema,
+    observedAt: z.string().datetime().optional(),
+    placement: z
+      .object({
+        runtimeTargetId: text,
+        identityId: text,
+        deploymentId: text,
+        physicalEpoch: z.string().regex(/^[0-9a-f]{64}$/),
+        connectionGeneration: z.number().int().positive().safe(),
+      })
+      .strict(),
+  })
+  .strict();
+/** The private Worker frame carries placement facts only, with peer handles supplied by the writer. */
+export type ControlNanoHostFirstSubmissionInput = z.infer<
+  typeof ControlNanoHostFirstSubmissionInputSchema
+>;
+
+/** A replay carries the original submitted attempt without another dispatch permission. */
+export const ControlNanoHostFirstSubmissionResultSchema = z
+  .object({
+    state: z.enum(['admitted-now', 'inspect-original']),
+    attempt: SchedulerExecutionAttemptSchema.extend({
+      backendId: z.literal('nanohost'),
+      agentSessionId: AgentSessionIdSchema,
+      inputRef: text,
+      bindingRef: text,
+      operationId: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+      deadline: z.string().datetime(),
+    }).strict(),
+  })
+  .strict();
+/** Complete submitted attempt and a decision state that distinguishes the first ACK from an inspection. */
+export type ControlNanoHostFirstSubmissionResult = z.infer<
+  typeof ControlNanoHostFirstSubmissionResultSchema
+>;
 
 /** Release-authored bounds are part of the fixed reviewed template, never operator configuration. */
 export const SECURITY_CONTAINMENT_LIMITS = Object.freeze({

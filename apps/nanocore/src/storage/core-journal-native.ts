@@ -11,15 +11,21 @@ import {
   deriveEntityId,
   type KernelAuditEvent,
 } from '@openkit/protocol';
-import { policyDigest } from '@openkit/protocol/digest';
+import { policyDigest, sha256Hex } from '@openkit/protocol/digest';
 import { auditEventFromRow, recordServerAuditEvent } from '../audit-events.js';
 import { validatePolicyDocument } from '../policy/statements.js';
+import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
-import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import {
+  EXECUTION_ATTEMPT_BUDGET_MS,
+  recordSchedulerExecutionGrantInDb,
+  requireSchedulerExecutionAttempt,
+} from '../runtime/execution-attempt-records.js';
 import {
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+  CORE_SCHEDULER_EXECUTION_DEFINITION,
   decodeExecutionJournalIntent,
   decodeExecutionJournalSpan,
   encodeExecutionJournalValue,
@@ -27,24 +33,36 @@ import {
   readExecutionJournalInvocation,
   readExecutionJournalLinkedInspections,
   readExecutionJournalRoot,
+  readKernelSchedulerGrantInDb,
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from '../runtime/execution-journal.js';
-import type { ExecutionStepRef } from '../runtime/execution-step-journal.js';
+import type {
+  ExecutionJournalIntent,
+  ExecutionStepRef,
+} from '../runtime/execution-step-journal.js';
+import { nanoHostStartupDeadline } from '../runtime/nanohost-attempt-clocks.js';
+import { readNanoHostSubmissionPlacement } from '../runtime/worker-backend-session-records.js';
+import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import type { NanoHostCoreReads } from './control-kernel-port.js';
 import { commandInputHash } from './control-store-input.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
   type ControlCoreImageResult,
   type ControlCoreJournalInput,
+  type ControlNanoHostFirstSubmissionInput,
+  type ControlNanoHostFirstSubmissionResult,
+  ControlNanoHostFirstSubmissionResultSchema,
   CoreJournalRefusal,
   readCoreJournalLineage,
   SECURITY_CONTAINMENT_LIMITS,
 } from './core-journal-codecs.js';
-import type { CoreDb } from './db.js';
+import type { CoreDb, WorkspaceDb } from './db.js';
+import { ExecutionAttemptRefusal } from './execution-attempt-codecs.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { recordContainmentGapInDb } from './security-canary-audit-native.js';
 import type { StorageResult } from './storage-owner.js';
+import { requireCompleteBackendWorkspaceHandleHandoff } from './workspace-handoff-read.js';
 
 function requireNanoHostEvidence<T>(result: StorageResult<'nanohost', T> | undefined): T {
   if (result?.state !== 'ready')
@@ -247,6 +265,172 @@ export function applyControlCoreImageResult(
     exclusionRefs: closes ? [] : root.exclusionRefs,
   });
   return digest;
+}
+
+/** Decides the ordinary NanoHost submit under the pinned Core, Native and Workspace owners. */
+export function admitNanoHostFirstSubmissionInDb(
+  coreDb: CoreDb,
+  input: ControlNanoHostFirstSubmissionInput,
+  readers: {
+    readonly nanoHost: Parameters<typeof readNanoHostSubmissionPlacement>[0] | null;
+    readonly workspace: WorkspaceDb | null;
+  }
+): ControlNanoHostFirstSubmissionResult {
+  if (!coreDb.sqlite.inTransaction || coreDb.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Execution grant requires the Core writer transaction.');
+  return coreDb.sqlite.transaction(() => {
+    const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, input.attemptId);
+    const { attemptId, agentSessionId, inputRef, bindingRef, workspaceId, threadId, turnId } =
+      attempt;
+    if (attempt.backendId !== 'nanohost' || !agentSessionId || !inputRef || !bindingRef)
+      throw new ExecutionAttemptRefusal('Submission has no finalized package or assigned binding.');
+    const operationId = commandInputHash({ attemptId, inputRef, operation: 'submit' });
+    const execution = { owner: { kind: 'server' as const }, executionId: attemptId };
+    const original = readKernelSchedulerGrantInDb(coreDb, execution, operationId);
+    if (
+      original &&
+      (original.deadline === null ||
+        attempt.operationId !== operationId ||
+        attempt.deadline !== original.deadline)
+    )
+      throw new ExecutionAttemptRefusal('Execution grant conflicts with its original operation.');
+
+    const observedAt = input.observedAt ?? new Date().toISOString();
+    const observed = Date.parse(observedAt);
+    if (
+      !original &&
+      (admission.status !== 'admitted' ||
+        !(
+          observed >= Date.parse(attempt.updatedAt) &&
+          observed < Date.parse(nanoHostStartupDeadline(attempt))
+        ))
+    )
+      throw new ExecutionAttemptRefusal('Original execution clock or admission is unavailable.');
+    // The original deadline recovers the first decision clock even when a replay arrives much later.
+    const submittedAt =
+      original && original.deadline
+        ? Date.parse(original.deadline) - EXECUTION_ATTEMPT_BUDGET_MS
+        : observed;
+    const traceId = sha256Hex(attemptId).slice(0, 32);
+    const rootSpan: ExecutionJournalIntent['span'] = {
+      traceId,
+      spanId: sha256Hex(`${attemptId}:submission`).slice(0, 16),
+      flags: 0,
+      name: 'NanoHost Worker submission',
+      kind: 'INTERNAL',
+      startTimeUnixNano: BigInt(Date.parse(attempt.createdAt)) * 1_000_000n,
+      endTimeUnixNano: null,
+      status: { code: 'UNSET' },
+      attributes: [],
+      droppedAttributesCount: 0,
+      events: [],
+      droppedEventsCount: 0,
+      links: [],
+      droppedLinksCount: 0,
+      instrumentationScope: {
+        name: 'openkit.nanocore.runtime',
+        attributes: [],
+        droppedAttributesCount: 0,
+      },
+      resource: { attributes: [], droppedAttributesCount: 0 },
+    };
+    const storage = admission.workerStorageChoice;
+    const placement = { ...input.placement, workspaceId, threadId, agentSessionId };
+    const proposal: ExecutionJournalIntent = {
+      execution: {
+        ref: execution,
+        definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+        workId: turnId,
+        fingerprint: admission.inputHash,
+        exclusionRefs: [
+          `workspace:${workspaceId}`,
+          `thread:${threadId}`,
+          `turn:${turnId}`,
+          `session:${agentSessionId}`,
+          ...(storage?.kind === 'selected' ? [storage.storageRef] : []),
+        ],
+        span: rootSpan,
+      },
+      stepId: 'submit',
+      parentStepId: null,
+      parent: null,
+      inspectedStep: null,
+      carriage: { operation: 'submit', requestId: operationId, sequence: null, bindingRef },
+      control: {
+        definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+        kind: 'admit',
+        target: {
+          backendKind: 'nanohost',
+          targetId: placement.runtimeTargetId,
+          allocationRef: bindingRef,
+        },
+        workId: turnId,
+        operationId,
+        invocationId: operationId,
+        attemptId,
+        actor: admission.triggerActor,
+        inputRefs: [inputRef],
+        outputRefs: [],
+        fingerprint: admission.inputHash,
+        permittingDecisionRef: null,
+        authorityRefs: [admission.queueEntryId, commandInputHash(placement)],
+        retryDeclarationRef: null,
+        retryPermitted: false,
+        deadlineUnixNano: null,
+        physicalFenceRefs: [],
+      },
+      span: {
+        ...rootSpan,
+        spanId: sha256Hex(operationId).slice(0, 16),
+        parentSpanId: rootSpan.spanId,
+        startTimeUnixNano: BigInt(submittedAt) * 1_000_000n,
+      },
+    };
+    const { state } = recordSchedulerExecutionGrantInDb(
+      coreDb,
+      {
+        attemptId,
+        operationId,
+        generation: String(placement.connectionGeneration),
+        proposal,
+        submission: true,
+        now: () => observedAt,
+      },
+      (grant) => {
+        const { nanoHost, workspace } = readers;
+        if (
+          !nanoHost ||
+          workspace?.workspaceId !== workspaceId ||
+          workspace.dataRoot !== coreDb.dataRoot
+        )
+          return false;
+        try {
+          const session = readNanoHostSubmissionPlacement(nanoHost, grant, placement);
+          if (!session) return false;
+          const pkg = findNamedAgentEnvironmentPackageSnapshot(
+            workspace,
+            workspaceId,
+            agentSessionId,
+            inputRef
+          )?.snapshot;
+          if (pkg?.scope.turnId !== turnId || pkg.scope.threadId !== threadId) return false;
+          requireCompleteBackendWorkspaceHandleHandoff(workspace, pkg, {
+            backendKind: session.backendKind,
+            backendVersion: session.backendVersion,
+            workerSessionId: session.backendSessionId,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    );
+    return ControlNanoHostFirstSubmissionResultSchema.parse({
+      state,
+      attempt: requireSchedulerExecutionAttempt(coreDb, attemptId),
+    });
+  })();
 }
 
 const containmentEvidenceAction = 'security.containment-evidence';
