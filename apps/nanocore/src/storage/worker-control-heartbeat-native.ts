@@ -16,7 +16,9 @@ import { recordNanoHostRecoveryHeartbeat } from './nanohost-recovery-native.js';
 import type { NanoHostWorkerCoordinates } from './nanohost-submitted-lease.js';
 import {
   inspectNanoHostWorkerBinding,
+  matchesNanoHostWorkerLineage,
   nanoHostWorkerBindingLiveness,
+  readOriginalNanoHostWorkerCoordinates,
 } from './nanohost-worker-binding.js';
 import {
   type ControlWorkerHeartbeatCommand,
@@ -32,7 +34,6 @@ function applyAdmittedNanoHostWorkerHeartbeat(
   original: NanoHostWorkerCoordinates,
   input: ControlWorkerHeartbeatCommand
 ): ControlWorkerHeartbeatResult {
-  assertControlProductWriter(sqlite);
   if (typeof input.tokenHash !== 'string') refuseBinding('binding-not-found');
   const payload = ControlWorkerHeartbeatPayloadSchema.parse(input.payload);
   const acceptedAt = payload.acceptedAt ?? new Date().toISOString();
@@ -99,6 +100,17 @@ function refuseBinding(
   );
 }
 
+function requireOriginalWorkerControlCoordinates(
+  db: CoreDb,
+  sqlite: Database.Database,
+  input: Pick<ControlWorkerHeartbeatInput, 'lineage' | 'sandboxBindingRef' | 'tokenHash'>
+): NanoHostWorkerCoordinates {
+  if (typeof input.tokenHash !== 'string') refuseBinding('binding-not-found');
+  const original = readOriginalNanoHostWorkerCoordinates(db, sqlite, input);
+  if (!original) refuseBinding('binding-not-found');
+  return original;
+}
+
 /** Applies reconnect adoption, the original fingerprint and attempt liveness in one existing savepoint. */
 export function applyControlWorkerHeartbeat(
   ...args:
@@ -110,9 +122,22 @@ export function applyControlWorkerHeartbeat(
           readonly input: ControlWorkerHeartbeatCommand;
         },
       ]
+    | [
+        admitted: {
+          readonly sqlite: Database.Database;
+          readonly coreDb: CoreDb;
+          readonly input: ControlWorkerHeartbeatCommand;
+        },
+      ]
 ): ControlWorkerHeartbeatResult {
   if (args.length === 1) {
-    const { sqlite, original, input } = args[0];
+    const admission = args[0];
+    const { sqlite, input } = admission;
+    assertControlProductWriter(sqlite);
+    const original =
+      'coreDb' in admission
+        ? requireOriginalWorkerControlCoordinates(admission.coreDb, sqlite, input)
+        : admission.original;
     return applyAdmittedNanoHostWorkerHeartbeat(sqlite, original, input);
   }
   const [db, input, content] = args;
@@ -213,7 +238,10 @@ function settleNanoHostWorkerHeartbeat(
 }
 
 /** Requires the current exact route-token family hashes on the deciding Core connection. */
-function assertWorkerControlHash(db: CoreDb, input: ControlWorkerHeartbeatInput): void {
+function assertWorkerControlHash(
+  db: CoreDb,
+  input: Pick<ControlWorkerHeartbeatInput, 'sandboxBindingRef' | 'tokenHash'>
+): void {
   // Credential proof remains valid only against the current exact attempt, not Main's earlier view.
   const hashes = db.sqlite
     .prepare(`SELECT worker_control_token_hash AS control, worker_inference_token_hash AS inference,
@@ -231,17 +259,35 @@ function assertWorkerControlHash(db: CoreDb, input: ControlWorkerHeartbeatInput)
     refuseBinding('binding-not-found');
 }
 
-/** Revalidates live authority after FIFO wait for a nonterminal publication stage. */
+/** Revalidates the original live worker-control authority for every nonterminal stage. */
 export function requireWorkerControlBinding(
   db: CoreDb,
-  input: ControlWorkerHeartbeatInput,
-  acceptedAt: string
+  input: Pick<ControlWorkerHeartbeatInput, 'lineage' | 'sandboxBindingRef' | 'tokenHash'>,
+  observedAt: string,
+  admitted?: {
+    readonly sqlite: Database.Database;
+    readonly recordLineage?: ControlWorkerHeartbeatInput['lineage'];
+  }
 ): void {
+  if (admitted) {
+    const { sqlite, recordLineage } = admitted;
+    const original = requireOriginalWorkerControlCoordinates(db, sqlite, input);
+    const native = inspectNanoHostWorkerBinding(sqlite, original, {
+      ...input,
+      tokenFamily: 'worker-control',
+    });
+    if (native.status === 'rejected') refuseBinding(native.reason);
+    if (recordLineage && !matchesNanoHostWorkerLineage(original, recordLineage))
+      refuseBinding('lineage-mismatch');
+    const live = nanoHostWorkerBindingLiveness(native, observedAt);
+    if (live.status === 'rejected') refuseBinding(live.reason);
+    return;
+  }
   assertWorkerControlHash(db, input);
   const resolution = resolveNanoHostAttemptTokenBinding(db, {
     lineage: input.lineage,
     sandboxBindingRef: input.sandboxBindingRef,
-    now: () => acceptedAt,
+    now: () => observedAt,
   });
   if (resolution.status === 'rejected') refuseBinding(resolution.reason);
 }

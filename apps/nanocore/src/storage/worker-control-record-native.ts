@@ -20,14 +20,26 @@ export function applyControlWorkerRecord(
     | [
         native: {
           readonly sqlite: Database.Database;
-          readonly lineage: ControlWorkerRecordInput['lineage'];
-          readonly payload: ControlWorkerRecordCommand['payload'];
+          readonly coreDb: CoreDb;
+          readonly input: ControlWorkerRecordCommand;
+          readonly observedAt?: string;
         },
       ]
 ): ControlWorkerRecordResult {
   if (args.length === 1) {
-    const { sqlite, lineage, payload } = args[0];
-    return applyNanoHostWorkerRecord(sqlite, lineage, payload);
+    const { sqlite, coreDb, input, observedAt } = args[0];
+    assertControlProductWriter(sqlite);
+    const payload = ControlWorkerRecordPayloadSchema.parse(input.payload);
+    const recordLineage =
+      payload.kind === 'record' &&
+      (payload.operation === 'event_append' || payload.operation === 'capability_summary')
+        ? payload.record.lineage
+        : undefined;
+    requireWorkerControlBinding(coreDb, input, observedAt ?? new Date().toISOString(), {
+      sqlite,
+      ...(recordLineage ? { recordLineage } : {}),
+    });
+    return applyNanoHostWorkerRecord(sqlite, input.lineage, payload);
   }
   const [db, input, content] = args;
   assertControlProductWriter(db.sqlite);
@@ -45,7 +57,6 @@ function applyNanoHostWorkerRecord(
   lineage: ControlWorkerRecordInput['lineage'],
   payload: ControlWorkerRecordCommand['payload']
 ): ControlWorkerRecordResult {
-  assertControlProductWriter(sqlite);
   const owner = { sqlite };
   if (payload.kind === 'sequence') {
     const result = acceptWorkerControlSequence(owner, { ...payload, lineage });

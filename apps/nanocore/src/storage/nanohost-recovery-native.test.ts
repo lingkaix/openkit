@@ -52,6 +52,7 @@ import {
 } from './nanohost-worker-binding.js';
 import type { ControlWorkerFinalStatusCommand } from './worker-control-final-status-codecs.js';
 import type { ControlWorkerHeartbeatCommand } from './worker-control-heartbeat-codecs.js';
+import type { ControlWorkerRecordCommand } from './worker-control-record-codecs.js';
 
 const created = '2026-11-21T00:00:00.000Z';
 const startupDeadline = '2026-11-21T00:01:00.000Z';
@@ -168,16 +169,22 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
       const sqlite = new Database(workerData.path, { fileMustExist: true });
       sqlite.pragma('synchronous = FULL');
       try {
-        const [native, heartbeat, final, harness, db] = await modules;
+        const [native, heartbeat, final, harness, db, record] = await modules;
         const result = sqlite.transaction(() => {
           if (command.kind === 'submit')
             return native.applyNanoHostWorkerSubmission(sqlite, command.input);
-          if (command.kind === 'dispatch') {
+          if (['dispatch', 'pinned-heartbeat', 'pinned-record'].includes(command.kind)) {
             const coreDb = db.openCoreReadDb(command.dataRoot);
             try {
-              return coreDb.sqlite.transaction(() =>
-                harness.applyControlHarnessLifecycle({ sqlite }, command.input, { coreDb })
-              )();
+              return coreDb.sqlite.transaction(() => {
+                if (command.kind === 'pinned-heartbeat')
+                  return heartbeat.applyControlWorkerHeartbeat({ sqlite, coreDb, input: command.input });
+                if (command.kind === 'pinned-record')
+                  return record.applyControlWorkerRecord({
+                    sqlite, coreDb, input: command.input, observedAt: command.observedAt,
+                  });
+                return harness.applyControlHarnessLifecycle({ sqlite }, command.input, { coreDb });
+              })();
             } finally {
               coreDb.sqlite.close();
             }
@@ -194,7 +201,7 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
         }).immediate();
         parentPort.postMessage({ ok: true, result });
       } catch (error) {
-        parentPort.postMessage({ ok: false, message: error.message });
+        parentPort.postMessage({ ok: false, message: error.message, code: error.code, status: error.status });
       } finally {
         sqlite.close();
       }
@@ -211,6 +218,7 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
           new URL('../../dist/storage/worker-control-final-status-native.js', import.meta.url).href,
           new URL('../../dist/storage/harness-lifecycle-native.js', import.meta.url).href,
           new URL('../../dist/storage/db.js', import.meta.url).href,
+          new URL('../../dist/storage/worker-control-record-native.js', import.meta.url).href,
         ],
       },
     }
@@ -222,7 +230,8 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
     const replied = once(worker, 'message');
     worker.postMessage(command);
     const [reply] = await replied;
-    if (!reply.ok) throw new Error(reply.message);
+    if (!reply.ok)
+      throw Object.assign(new Error(reply.message), { code: reply.code, status: reply.status });
     return reply.result;
   }
   const startup: NanoHostWorkerRecoveryState = {
@@ -798,7 +807,108 @@ it('resolves App and Gateway bindings from the retained Core grant and the admit
     status: 'accepted',
     replayOnly: false,
   });
+  const heartbeat = (input: ControlWorkerHeartbeatCommand) =>
+    f.send({ kind: 'pinned-heartbeat', dataRoot: root, input });
+  await expect(heartbeat(heartbeatPayload())).resolves.toMatchObject({
+    duplicate: false,
+    nextExpectedSequence: 1,
+  });
+  const sequence = {
+    ...binding,
+    payload: {
+      kind: 'sequence',
+      operation: 'supply_refresh_ack',
+      sequence: 0,
+      fingerprint: canonicalJsonText({
+        lineage,
+        sequence: 0,
+        refreshId: 'refresh',
+        status: 'applied',
+      }),
+    },
+  } satisfies ControlWorkerRecordCommand;
+  const record = (input: ControlWorkerRecordCommand) =>
+    f.send({ kind: 'pinned-record', dataRoot: root, input, observedAt: classifiedAt });
+  await expect(record({ ...sequence, tokenHash: 'b'.repeat(64) })).rejects.toMatchObject({
+    code: 'worker_control_unauthorized',
+    status: 401,
+  });
+  await expect(
+    record({ ...sequence, lineage: { ...lineage, requestId: 'another-request' } })
+  ).rejects.toMatchObject({ code: 'worker_control_lineage_mismatch', status: 403 });
+  const first = heartbeatPayload();
+  const running = {
+    ...first.payload.request,
+    sequence: 1,
+    body: { status: 'running' as const },
+  };
+  await expect(
+    heartbeat({ ...first, payload: { acceptedAt, request: running } })
+  ).resolves.toMatchObject({ duplicate: false, nextExpectedSequence: 2 });
+  const arm = f.read();
+  expect(arm.proof.lastWorkerSequence).toBe(1);
+  await f.mutate({
+    kind: 'arm-reconnect',
+    lease: retained!.lease,
+    expectedSession: arm.session,
+    expectedRecovery: arm.proof,
+    classifiedAt,
+    observedAt: classifiedAt,
+  });
+  await expect(record(sequence)).rejects.toMatchObject({
+    code: 'worker_control_reconnect_required',
+    status: 503,
+  });
+  await expect(
+    heartbeat({
+      ...first,
+      payload: {
+        acceptedAt: classifiedAt,
+        reconnectProcessKeyHash: processKeyHash,
+        request: { ...running, sequence: 2 },
+      },
+    })
+  ).resolves.toMatchObject({ duplicate: false, nextExpectedSequence: 3 });
+  await expect(record(sequence)).resolves.toEqual({
+    kind: 'sequence',
+    duplicate: false,
+    nextExpectedSequence: 1,
+  });
+  const readReceipts = () =>
+    f.owner.sqlite
+      .prepare(`SELECT record_json, accepted_at FROM worker_control_records
+      WHERE operation = 'supply_refresh_ack'`)
+      .all();
+  expect(readReceipts()).toEqual([]);
+  const receipt = {
+    ...binding,
+    payload: {
+      kind: 'record',
+      operation: 'supply_refresh_ack',
+      recordKey: '0',
+      sequence: 0,
+      acceptedAt: classifiedAt,
+      record: {
+        sequence: 0,
+        refreshId: 'refresh',
+        status: 'applied',
+        message: null,
+        acknowledgedAt: classifiedAt,
+      },
+    },
+  } satisfies ControlWorkerRecordCommand;
+  await expect(record(receipt)).resolves.toEqual({ kind: 'record' });
+  await f.owner.reopen();
+  await expect(record(sequence)).resolves.toMatchObject({ duplicate: true });
+  await expect(record(receipt)).resolves.toEqual({ kind: 'record' });
+  expect(readReceipts()).toEqual([
+    { record_json: JSON.stringify(receipt.payload.record), accepted_at: classifiedAt },
+  ]);
   markSchedulerExecutionAttemptClosing(core, { attemptId, cause: 'turn-cancelled', now });
+  await expect(record(sequence)).rejects.toMatchObject({
+    code: 'worker_control_lease_not_live',
+    status: 403,
+  });
   expect(resolveAdmittedNanoHostWorkerBinding(core, f.owner.sqlite, input, acceptedAt)).toEqual({
     status: 'rejected',
     reason: 'attempt-not-live',
