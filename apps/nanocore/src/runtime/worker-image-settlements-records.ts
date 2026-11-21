@@ -9,6 +9,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { z } from 'zod';
 import { controlStoreFor } from '../storage/control-store.js';
 import { commandInputHash } from '../storage/control-store-input.js';
+import type { ControlCoreJournalInput } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import * as schema from '../storage/schema/index.js';
 import {
@@ -16,6 +17,7 @@ import {
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from './execution-journal.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 
 /** An admitted connection to the image records, independent of Core journal authority. */
 type WorkerImageSettlementDb = { readonly sqlite: Database.Database };
@@ -154,6 +156,38 @@ export function insertWorkerImageSettlementInTransaction(
       writeRetainedV1({}).schemaVersion
     );
   return value;
+}
+
+/** Rechecks admitted placement and inserts only a result covered by the original decision. */
+export function settleAdmittedWorkerImageInTransaction(
+  owner: { readonly sqlite: Database.Database },
+  input: {
+    readonly settlement: WorkerImageSettlement;
+    readonly target: Extract<ControlCoreJournalInput, { kind: 'image-intent' }>['target'];
+    /** Exact outcome digest read back from the covering Core decision for an acquisition. */
+    readonly acquisitionDecisionDigest?: string;
+  }
+): void {
+  if (!owner.sqlite.inTransaction || owner.sqlite.readonly)
+    throw new Error('Image settlement requires the admitted NanoHost writer transaction.');
+  const { target } = input;
+  const settlement = WorkerImageSettlementSchema.parse(input.settlement);
+  const current = getNanoHostRuntimeTarget(owner, target.targetId);
+  if (
+    !current ||
+    !current.ready ||
+    !current.freshEmpty ||
+    !current.predecessorFenced ||
+    current.deploymentId !== target.deploymentId ||
+    current.identityId !== target.identityId ||
+    current.connectionGeneration !== target.connectionGeneration ||
+    current.physicalEpoch !== target.physicalEpoch ||
+    (settlement.operation === 'image.acquire' &&
+      commandInputHash(settlement) !== input.acquisitionDecisionDigest)
+  )
+    throw new WorkerImageSettlementDeferred();
+
+  insertWorkerImageSettlementInTransaction(owner, settlement);
 }
 
 /** Advances only the selected acquisition; existing build receipts and retained unjournaled results remain data. */

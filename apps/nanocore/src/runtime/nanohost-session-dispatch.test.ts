@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
 import { InMemorySpanExporter } from '@opentelemetry/sdk-trace';
+import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { getLocalUserId } from '../auth/identity.js';
@@ -19,7 +20,7 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { openCoreDb } from '../storage/db.js';
+import { openCoreDb, serverStoragePath } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
@@ -35,6 +36,7 @@ import {
 } from '../test-support/server-work-store.js';
 import { shutdownTestStoreWorker } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
+import { commandInputHash } from './idempotent-command.js';
 import type { NanoHostHarnessResult } from './nanohost-harness.js';
 import type { AllocateNanoHostRuntimeTargetConnectionGenerationInput } from './nanohost-runtime-target.js';
 import {
@@ -42,7 +44,13 @@ import {
   NANO_HOST_EFFECT_OPERATIONS,
   registerNanoHostSessionEffectRoutes,
   registerNanoHostSessionSemanticRoutes,
+  type SettleNanoHostPreparedImage,
 } from './nanohost-session-dispatch.js';
+import {
+  insertWorkerImageSettlementInTransaction,
+  settleAdmittedWorkerImageInTransaction,
+  type WorkerImageSettlement,
+} from './worker-image-settlements-records.js';
 
 function allocateDispatchTarget(
   fixture: ReturnType<typeof openNanoHostTestOwner>,
@@ -3018,8 +3026,10 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
-  it('keeps repeated prepared-image requests off the physical receiver without a mixed settlement owner', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-image-acquire-retry-')));
+  const preparedImageModes = ['held', 'admitted'] as const;
+  it.each(preparedImageModes)('carries prepared images over H2 (%s)', async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-image-acquire-retry-'));
+    const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
     const store = await createTestServerWorkStore(coreDb);
@@ -3032,16 +3042,62 @@ describe('authoritative NanoHost session dispatch', () => {
     );
     const publicationTurn = await store.createServerTurn(thread.id, 'Acquire one image.', actor);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({
-      coreDb,
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      sessionAuthority: authority,
-    });
     const target = {
       deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
       identityId: 'host-image-retry',
       targetId: 'host-image-retry',
     };
+    const physicalEpoch = 'a'.repeat(64);
+    const writeReceipt = (write: (sqlite: Database.Database) => void) => {
+      const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+        fileMustExist: true,
+      });
+      try {
+        sqlite.pragma('synchronous = FULL');
+        sqlite.transaction(() => write(sqlite)).immediate();
+      } finally {
+        sqlite.close();
+      }
+    };
+    const settlePreparedImage = vi.fn<SettleNanoHostPreparedImage>(async (request) => {
+      expect(request.target).toEqual({ ...target, physicalEpoch, connectionGeneration: 1 });
+      expect(request.originalExecution).toBeDefined();
+      const original = coreDb.sqlite
+        .prepare(`SELECT state FROM control_execution_steps
+                    WHERE execution_id = ? AND step_id = ?`)
+        .pluck()
+        .get(request.originalExecution!.execution.executionId, request.originalExecution!.stepId);
+      expect(original).toBe('intent');
+      // The fixture verifies the actual Core intent and exercises Native FULL settlement.
+      // The combined Worker frame owns the Core result decision in production.
+      writeReceipt((sqlite) => {
+        expect(() => settleAdmittedWorkerImageInTransaction({ sqlite }, request)).toThrow(
+          'Worker image settlement persistence is deferred.'
+        );
+        const acquisitionDecisionDigest = commandInputHash(request.settlement);
+        expect(() =>
+          settleAdmittedWorkerImageInTransaction(
+            { sqlite },
+            {
+              ...request,
+              acquisitionDecisionDigest,
+              target: { ...request.target, connectionGeneration: 2 },
+            }
+          )
+        ).toThrow('Worker image settlement persistence is deferred.');
+        settleAdmittedWorkerImageInTransaction(
+          { sqlite },
+          { ...request, acquisitionDecisionDigest }
+        );
+      });
+    });
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      nativeStorage: { state: 'ready', value: nanoHost },
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      sessionAuthority: authority,
+      ...(mode === 'admitted' ? { settlePreparedImage } : {}),
+    });
     await expect(
       transitionAdmittedNanoHostRuntimeTarget(nanoHost, {
         kind: 'allocate',
@@ -3095,9 +3151,19 @@ describe('authoritative NanoHost session dispatch', () => {
           status: Number(headers[':status']),
         };
       };
+      const corePrepare = vi.spyOn(coreDb.sqlite, 'prepare');
+      for (const operation of ['image.acquire', 'image.build']) {
+        const response = await post(`/api/nanohost/transport/effects/${operation}/result`, {
+          requestId: 'f'.repeat(64),
+          failureCode: 'effect_failed',
+        });
+        expect.soft(response).toEqual({ status: 503, body: '' });
+      }
+      const imageCoreReads = () =>
+        corePrepare.mock.calls.filter(([sql]) => /worker_image_settlements/i.test(sql));
+      expect(imageCoreReads()).toHaveLength(0);
       expect(
-        (await post('/api/nanohost/transport/session/readiness', { physicalEpoch: 'a'.repeat(64) }))
-          .status
+        (await post('/api/nanohost/transport/session/readiness', { physicalEpoch })).status
       ).toBe(204);
       const requestId = 'e'.repeat(64);
       const imageSettlement = {
@@ -3116,16 +3182,78 @@ describe('authoritative NanoHost session dispatch', () => {
           kind: 'image.acquire',
           requestId,
         });
-      for (const _attempt of [1, 2]) {
-        await expect(attempt()).rejects.toMatchObject({ status: 503 });
-        const idle = await post('/api/nanohost/transport/effects/image.acquire', {});
-        expect(idle).toEqual({ status: 204, body: '' });
+      const digest = `sha256:${'c'.repeat(64)}`;
+      const retainedId = 'f'.repeat(64);
+      const retainedPath = '/api/nanohost/transport/effects/image.build/result';
+      writeReceipt((sqlite) => {
+        const settlement: WorkerImageSettlement = {
+          ...imageSettlement,
+          requestId: retainedId,
+          operation: 'image.build',
+          outcome: { kind: 'success', imageDigest: digest },
+        };
+        insertWorkerImageSettlementInTransaction({ sqlite }, settlement);
+      });
+      expect(await post(retainedPath, { requestId: retainedId, digest })).toEqual({
+        status: 204,
+        body: '',
+      });
+      expect(
+        (await post(retainedPath, { requestId: retainedId, failureCode: 'effect_failed' })).status
+      ).toBe(409);
+      expect(imageCoreReads()).toHaveLength(0);
+      if (mode === 'held') {
+        for (const _attempt of [1, 2]) {
+          await expect(attempt()).rejects.toMatchObject({ status: 503 });
+          const idle = await post('/api/nanohost/transport/effects/image.acquire', {});
+          expect(idle).toEqual({ status: 204, body: '' });
+        }
+        expect(settlePreparedImage).not.toHaveBeenCalled();
+        return;
       }
+      const pending = attempt();
+      const acquirePath = '/api/nanohost/transport/effects/image.acquire';
+      let command = await post(acquirePath, {});
+      const deadline = performance.now() + 2_000;
+      while ((command.status === 204 || command.status === 503) && performance.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        command = await post(acquirePath, {});
+      }
+      expect(command.status, command.body).toBe(200);
+      expect(JSON.parse(command.body)).toEqual({ requestId, imageReference: 'openkit:test' });
+      expect(await post(`${acquirePath}/result`, { requestId, digest })).toEqual({
+        status: 204,
+        body: '',
+      });
+      await expect(pending).resolves.toEqual({ digest });
+      await expect(attempt()).resolves.toEqual({ digest });
+      expect(await post(`${acquirePath}/result`, { requestId, digest })).toEqual({
+        status: 204,
+        body: '',
+      });
+      expect(settlePreparedImage).toHaveBeenCalledOnce();
+      const inspectPath = '/api/nanohost/transport/effects/image.inspect';
+      const inspectionId = 'd'.repeat(64);
+      const inspection = dispatch.effect({
+        kind: 'image.inspect',
+        requestId: inspectionId,
+        input: { imageDigest: digest },
+      });
+      const inspect = await post(inspectPath, {});
+      expect(inspect.status).toBe(200);
+      expect(JSON.parse(inspect.body)).toEqual({ imageDigest: digest, requestId: inspectionId });
+      expect(await post(`${inspectPath}/result`, { digest, requestId: inspectionId })).toEqual({
+        status: 204,
+        body: '',
+      });
+      await expect(inspection).resolves.toMatchObject({ digest });
+      expect(imageCoreReads()).toHaveLength(0);
     } finally {
       client?.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await shutdownTestStoreWorker();
       coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
