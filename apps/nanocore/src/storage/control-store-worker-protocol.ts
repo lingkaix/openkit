@@ -116,6 +116,7 @@ import {
   type ControlWorkerRejectedEvidence,
   ControlWorkerRejectedEvidenceSchema,
 } from '../runtime/worker-control-rejected-evidence-codecs.js';
+import { WorkerImageSettlementSchema } from '../runtime/worker-image-settlements-records.js';
 import {
   type ControlMaterialCommandResult,
   ControlMaterialCommandResultSchema,
@@ -214,6 +215,8 @@ import type {
   ControlRecoverySafetyResult,
 } from './control-store-recovery.js';
 import {
+  type ControlCoreImageResult,
+  ControlCoreImageResultSchema,
   type ControlCoreJournalInput,
   ControlCoreJournalInputSchema,
   ControlCoreJournalRefusalSchema,
@@ -857,6 +860,15 @@ const nanoHostRecoveryClassificationInput = z.strictObject({
   classification: nanoHostRecoveryClassification,
 });
 
+const nanoHostPreparedImageResult = z.strictObject({
+  settlement: WorkerImageSettlementSchema,
+  target: ControlCoreImageResultSchema.shape.target,
+  acquisitionDecisionDigest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+});
+
 const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('transport'), input: ControlNanoHostTransportInputSchema }),
   z.strictObject({
@@ -875,6 +887,10 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
     input: ControlWorkerImageInputSchema.refine(
       (input) => input.kind === 'environment' || input.value.operation === 'image.build'
     ),
+  }),
+  z.strictObject({
+    kind: z.literal('prepared-image-result'),
+    input: nanoHostPreparedImageResult,
   }),
   z.strictObject({
     kind: z.literal('backend-session'),
@@ -910,6 +926,10 @@ export type NanoHostOwnerMutation =
       readonly input: z.output<typeof ControlHarnessLifecycleInputSchema.nanoHostLocal>;
     }
   | { readonly kind: 'worker-image'; readonly input: NanoHostLocalWorkerImageInput }
+  | {
+      readonly kind: 'prepared-image-result';
+      readonly input: z.infer<typeof nanoHostPreparedImageResult>;
+    }
   | { readonly kind: 'backend-session'; readonly input: NanoHostLocalBackendSessionInput }
   | {
       readonly kind: 'backend-session-materialize';
@@ -947,6 +967,7 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('settle-invalidation'), value: z.null() }),
   z.strictObject({ kind: z.literal('harness-lifecycle'), value: z.null() }),
   z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),
+  z.strictObject({ kind: z.literal('prepared-image-result'), value: z.null() }),
   z.strictObject({ kind: z.literal('backend-session'), value: ControlBackendSessionResultSchema }),
   z.strictObject({
     kind: z.literal('backend-session-materialize'),
@@ -1485,7 +1506,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'worker-storage-binding'; readonly input: ControlWorkerStorageInput }
       | {
           readonly operation: 'core-journal';
-          readonly input: ControlCoreJournalInput;
+          readonly input: ControlCoreJournalInput | ControlCoreImageResult;
           readonly nanoHostOwnerIdentity?: string;
         }
       | { readonly operation: 'worker-image'; readonly input: ControlWorkerImageInput }
@@ -3304,7 +3325,8 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       (value.nanoHostOwnerIdentity === undefined ||
         (typeof value.nanoHostOwnerIdentity === 'string' &&
           /^\d+:\d+$/.test(value.nanoHostOwnerIdentity))) &&
-      ControlCoreJournalInputSchema.safeParse(value.input).success &&
+      (ControlCoreJournalInputSchema.safeParse(value.input).success ||
+        ControlCoreImageResultSchema.safeParse(value.input).success) &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'worker-image')

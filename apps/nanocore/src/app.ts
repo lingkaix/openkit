@@ -28,6 +28,7 @@ import {
   isSealedTurnTerminal,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { NativeEnvironmentRecordSchema } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
@@ -193,6 +194,7 @@ import {
   executeCapturedPendingCall,
   prepareCapturedPendingCall,
 } from './runtime/captured-pending-call.js';
+import { publishCoreJournal } from './runtime/core-journal-owner.js';
 import { listOpenSchedulerExecutionAttempts } from './runtime/execution-attempt-records.js';
 import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempts.js';
 import { createGoalCoordinator, type GoalWorkerCandidate } from './runtime/goal-coordinator.js';
@@ -212,6 +214,7 @@ import {
   type NanoHostSessionDispatch,
   registerNanoHostSessionEffectRoutes,
   registerNanoHostSessionSemanticRoutes,
+  type SettleNanoHostPreparedImage,
 } from './runtime/nanohost-session-dispatch.js';
 import {
   assertAgentManifestSupportsModel,
@@ -243,6 +246,10 @@ import { rebuildWorkerControlGatewaySessions } from './runtime/worker-control-re
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
 import { createWorkerEnvironmentRuntimeEffects } from './runtime/worker-environment-runtime-effects.js';
 import {
+  WorkerImageSettlementConflict,
+  WorkerImageSettlementDeferred,
+} from './runtime/worker-image-settlements-records.js';
+import {
   createDefaultWorkerMcpGateway,
   type WorkerMcpGateway,
 } from './runtime/worker-mcp-gateway.js';
@@ -269,7 +276,10 @@ import {
   type NanoHostOwnerBinding,
   readAdmittedNanoHostAttempt,
 } from './storage/control-store-worker-client.js';
-import { readContainmentEvidenceHandoff } from './storage/core-journal-native.js';
+import {
+  readContainmentEvidenceHandoff,
+  readCoreImageAcquisitionRef,
+} from './storage/core-journal-native.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
 import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
@@ -698,6 +708,8 @@ export async function prepareNanoHostOwner(
       readPendingNanoHostEpochRetirement,
     },
     {
+      // Activation has already rechecked its Administrator and exact candidate audiences.
+      verifyImagePublication: (input) => input.kind === 'environment',
       verifyWorkspaceHandoff(session) {
         let workspace: WorkspaceDb | undefined;
         try {
@@ -737,6 +749,43 @@ export async function prepareNanoHostOwner(
         },
       }
     : owner;
+}
+
+/** Publishes the original image result only after its exact Core acquisition decision. */
+export async function settlePreparedNanoHostImage(
+  coreDb: CoreDb | undefined,
+  storage: NanoHostAppStorage,
+  { settlement, target, originalExecution }: Parameters<SettleNanoHostPreparedImage>[0]
+): Promise<void> {
+  if (!coreDb || storage.state !== 'ready' || storage.value.dataRoot !== resolve(coreDb.dataRoot))
+    throw new WorkerImageSettlementDeferred();
+  const { owner } = storage.value;
+  try {
+    let acquisitionDecisionDigest: string | undefined;
+    if (settlement.operation === 'image.acquire') {
+      const ref = originalExecution ?? readCoreImageAcquisitionRef(coreDb, settlement.requestId);
+      if (!ref || ref.execution.owner.kind !== 'server') throw new WorkerImageSettlementDeferred();
+      const decision = await publishCoreJournal(coreDb, {
+        kind: 'image-result',
+        ref: {
+          execution: { owner: { kind: 'server' }, executionId: ref.execution.executionId },
+          stepId: ref.stepId,
+        },
+        settlement: { ...settlement, operation: 'image.acquire' },
+        target,
+      });
+      if (!decision) throw new WorkerImageSettlementDeferred();
+      acquisitionDecisionDigest = decision;
+    }
+    await owner.settlePreparedImage({
+      settlement,
+      target,
+      ...(acquisitionDecisionDigest === undefined ? {} : { acquisitionDecisionDigest }),
+    });
+  } catch (error) {
+    if (error instanceof WorkerImageSettlementConflict) throw error;
+    throw new WorkerImageSettlementDeferred();
+  }
 }
 
 /** Captures the exact Native restart windows from the same selection used by Worker routes. */
@@ -1276,6 +1325,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       fileAdmission,
       nativeStorage: nanoHostStorage,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+      settlePreparedImage: (input) =>
+        settlePreparedNanoHostImage(options.coreDb, nanoHostStorage, input),
       sessionAuthority: nanohostTransportSessionAuthority,
     });
   const releaseIdentity = options.releaseIdentity ?? {
@@ -1337,6 +1388,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ? createWorkerEnvironmentActivation({
           coreDb: options.coreDb,
           readNanoHost: readNanoHostEnvironment,
+          ...(nanoHostStorage.state === 'ready'
+            ? {
+                admitImageEnvironment: (candidate, measurement) =>
+                  nanoHostStorage.value.owner.workerImage({
+                    kind: 'environment',
+                    candidate,
+                    environment: NativeEnvironmentRecordSchema.parse(measurement),
+                  }),
+              }
+            : {}),
           store: sharedStore,
           preparation: workerEnvironmentPreparation,
           runtimeEffects: workerEnvironmentRuntimeEffects,

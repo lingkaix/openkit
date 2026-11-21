@@ -121,7 +121,10 @@ import {
 import { ProjectWorkerBackendCleanupInputSchema } from '../runtime/worker-backend-cleanup-codecs.js';
 import { projectWorkerBackendCleanupInDb } from '../runtime/worker-backend-cleanup-projection.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
-import { WorkerImageSettlementConflict } from '../runtime/worker-image-settlements-records.js';
+import {
+  settleAdmittedWorkerImageInTransaction,
+  WorkerImageSettlementConflict,
+} from '../runtime/worker-image-settlements-records.js';
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {
   prepareWorkerRuntimeProvenance,
@@ -947,7 +950,9 @@ function domainRefusal(
     const kind =
       request.mutation.kind === 'backend-session-materialize'
         ? 'backend-session'
-        : request.mutation.kind;
+        : request.mutation.kind === 'prepared-image-result'
+          ? 'worker-image'
+          : request.mutation.kind;
     if (
       kind === 'harness-lifecycle' ||
       kind === 'worker-image' ||
@@ -1889,6 +1894,18 @@ function applyNanoHostOwnerMutation(
         kind: mutation.kind,
         value: applyControlWorkerImage({ sqlite }, mutation.input),
       };
+    case 'prepared-image-result': {
+      const { settlement, target, acquisitionDecisionDigest } = mutation.input;
+      settleAdmittedWorkerImageInTransaction(
+        { sqlite },
+        {
+          settlement,
+          target,
+          ...(acquisitionDecisionDigest === undefined ? {} : { acquisitionDecisionDigest }),
+        }
+      );
+      return { kind: mutation.kind, value: null };
+    }
     case 'backend-session':
       return {
         kind: mutation.kind,
@@ -2057,7 +2074,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
           lanes.add(request.input.lineage.turnId);
           lanes.add(`session:${request.input.lineage.agentSessionId}`);
         }
-      } else if (request.input.kind === 'image-abandon') {
+      } else if (request.input.kind === 'image-abandon' || request.input.kind === 'image-result') {
         if (!owner.scopeDb) throw new ControlProductPreconditionError();
         lanes.add(readExecutionJournalRoot(owner.scopeDb, request.input.ref.execution).workId);
       } else lanes.add(decodeExecutionJournalIntent(request.input.intentJson).execution.workId);

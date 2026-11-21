@@ -18,6 +18,7 @@ import {
   prepareServerWorkOwner,
   readNanoHostRestartCensus,
   restoreWorkspaceDeletionMutationAdmission,
+  settlePreparedNanoHostImage,
 } from './app.js';
 import { createBetterAuth, resolveBetterAuthSecret } from './auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from './auth/bootstrap-ensure.js';
@@ -229,6 +230,7 @@ const nanoHostSessionDispatch = createNanoHostSessionDispatch({
   get nativeStorage() {
     return nanoHostStorage;
   },
+  settlePreparedImage: (input) => settlePreparedNanoHostImage(coreDb, nanoHostStorage, input),
   sessionAuthority: nanohostTransportSessionAuthority,
 });
 
