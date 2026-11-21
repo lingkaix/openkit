@@ -38,6 +38,7 @@ import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-us
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import type { NanoHostCoreReads } from './control-kernel-port.js';
 import { controlStoreFor } from './control-store.js';
 import {
   ControlStoreWorkerError,
@@ -119,12 +120,23 @@ function discoveryIntent(index: number): ExecutionJournalIntent {
   };
 }
 
+const emptyDrainingOwner: NanoHostCoreReads = {
+  readTarget: () => ({ state: 'ready', value: null }),
+  readBackendSession: () => ({ state: 'ready', value: null }),
+  readResident: () => ({ state: 'ready', value: null }),
+  listDrainingResidents: () => ({ state: 'ready', value: { bindings: [], next: null } }),
+};
+
 describe('Core execution candidate discovery', () => {
   it('rediscovers a commit queued as the last empty page completes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-execution-finishing-wake-'));
     const db = openCoreDb(dataRoot);
     const advanceIdleCleanup = vi.fn(async () => {});
-    const reconciler = new ExecutionReconciler({ coreDb: db, advanceIdleCleanup });
+    const reconciler = new ExecutionReconciler({
+      coreDb: db,
+      nanoHost: emptyDrainingOwner,
+      advanceIdleCleanup,
+    });
     const prepared = discoveryIntent(1);
     const committed: ExecutionJournalIntent = {
       ...prepared,
@@ -175,7 +187,11 @@ describe('Core execution candidate discovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-execution-wake-'));
     const db = openCoreDb(dataRoot);
     const advanceIdleCleanup = vi.fn(async () => {});
-    const reconciler = new ExecutionReconciler({ coreDb: db, advanceIdleCleanup });
+    const reconciler = new ExecutionReconciler({
+      coreDb: db,
+      nanoHost: emptyDrainingOwner,
+      advanceIdleCleanup,
+    });
     const read = journalOwner.listExecutionCandidates;
     const discovered: string[] = [];
     const projections: journalOwner.ExecutionCandidate[] = [];

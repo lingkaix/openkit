@@ -1,5 +1,4 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { compareCodeUnits } from '@openkit/protocol';
 import { policyDigest } from '@openkit/protocol/digest';
@@ -19,11 +18,7 @@ import {
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from '../runtime/execution-journal.js';
-import { nonClosedSandboxAttempts } from '../runtime/idle-cleanup-records.js';
-import { nanoHostSandboxIdFromBackendSessionId } from '../runtime/nanohost-effect-identity.js';
-import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
-import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
-import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
+import type { NanoHostCoreReads } from './control-kernel-port.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
   type ControlCoreJournalInput,
@@ -35,12 +30,20 @@ import type { CoreDb } from './db.js';
 import { insertEvidenceBundle } from './evidence-bundle-records.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { recordContainmentGapInDb } from './security-canary-audit-native.js';
+import type { StorageResult } from './storage-owner.js';
+
+function requireNanoHostEvidence<T>(result: StorageResult<'nanohost', T> | undefined): T {
+  if (result?.state !== 'ready')
+    throw new CoreJournalRefusal('Admitted NanoHost evidence is unavailable.');
+  return result.value;
+}
 
 /** Decides one original Core journal tuple against current rows inside its savepoint and FULL commit. */
 export function applyControlCoreJournal(
   db: CoreDb,
   input: ControlCoreJournalInput,
-  publication?: NativeRuntimePolicyPublication
+  publication?: NativeRuntimePolicyPublication,
+  nanoHost?: NanoHostCoreReads
 ): string | null {
   assertControlProductWriter(db.sqlite);
   if (
@@ -54,7 +57,7 @@ export function applyControlCoreJournal(
     input.kind === 'containment-stop' ||
     input.kind === 'containment-stop-outcome'
   ) {
-    return applyContainmentJournal(db, input, publication);
+    return applyContainmentJournal(db, input, publication, nanoHost);
   }
   if (input.kind === 'image-abandon') {
     abandonCoreImageJournal(db, input.ref, input.accepted);
@@ -84,7 +87,7 @@ export function applyControlCoreJournal(
     return null;
   }
   if (input.kind === 'image-intent') {
-    const target = getNanoHostRuntimeTarget(db, input.target.targetId);
+    const target = requireNanoHostEvidence(nanoHost?.readTarget(input.target.targetId));
     const binding = `nanohost-target/v1:${input.target.deploymentId}:${input.target.targetId}:${input.target.connectionGeneration}:${input.target.physicalEpoch}`;
     if (
       !target ||
@@ -115,112 +118,8 @@ export function applyControlCoreJournal(
       writeExecutionJournalIntent(db, intent, input.processWitness)
     );
   }
-  const attempt = requireSchedulerExecutionAttempt(db, input.attemptId);
-  const anchor = getWorkerBackendSession(db, input.attemptId);
-  const target = getNanoHostRuntimeTarget(db, input.identity.runtimeTargetId);
-  const identity = anchor && {
-    agentSessionId: anchor.agentSessionId,
-    backendKind: 'openshell',
-    backendSessionId: anchor.backendSessionId,
-    deploymentId: anchor.deploymentId,
-    packageSnapshotId: anchor.packageSnapshotId,
-    runtimeTargetId: anchor.runtimeTargetId,
-    stagingDirectoryRef: anchor.stagingDirectoryRef,
-    transientProviderInstanceId: anchor.transientProviderInstanceId,
-  };
-  if (
-    attempt.phase !== 'closed' ||
-    !attempt.fenceRef ||
-    !anchor ||
-    !isDeepStrictEqual(identity, input.identity) ||
-    anchor.workspaceId !== attempt.workspaceId ||
-    anchor.threadId !== attempt.threadId ||
-    anchor.turnId !== attempt.turnId ||
-    anchor.agentSessionId !== attempt.agentSessionId ||
-    anchor.packageSnapshotId !== attempt.inputRef ||
-    anchor.sandboxBindingRef !== attempt.bindingRef ||
-    anchor.originPhysicalEpoch !== input.originPhysicalEpoch ||
-    !target?.predecessorFenced ||
-    !target.ready ||
-    !target.freshEmpty ||
-    target.physicalEpoch !== input.originPhysicalEpoch ||
-    !/^[0-9a-f]{64}$/.test(input.originPhysicalEpoch)
-  )
-    throw new CoreJournalRefusal(
-      'Core idle cleanup has no exact closed resident provenance or current Epoch.'
-    );
-  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, input.attemptId);
-  if (
-    input.package.workspaceId !== anchor.workspaceId ||
-    input.package.threadId !== anchor.threadId ||
-    input.package.turnId !== anchor.turnId ||
-    input.package.agentSessionId !== anchor.agentSessionId ||
-    input.package.snapshotId !== anchor.packageSnapshotId ||
-    !isDeepStrictEqual(input.package.triggerActor, admission.triggerActor) ||
-    !isDeepStrictEqual(intent.control.actor, admission.triggerActor)
-  )
-    throw new CoreJournalRefusal(
-      'Core idle cleanup immutable package actor or physical lineage conflicts.'
-    );
-  const sandbox = db.sqlite
-    .prepare(`SELECT sandbox_runtime_id AS id, origin_physical_epoch AS origin,
-    runtime_target_id AS targetId, drain_state AS drainState FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?`)
-    .get(input.sandboxBindingRef) as
-    | { id: string; origin: string; targetId: string; drainState: string }
-    | undefined;
-  if (!sandbox)
-    throw new CoreJournalRefusal('Core idle cleanup requires a positive resident binding.');
-  if (
-    sandbox.origin !== input.originPhysicalEpoch ||
-    sandbox.targetId !== input.identity.runtimeTargetId ||
-    (input.sandboxId !== undefined &&
-      input.sandboxId !== nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId)) ||
-    (['bridge.close', 'sandbox.delete'].includes(intent.carriage.operation) &&
-      sandbox.drainState !== 'draining') ||
-    nonClosedSandboxAttempts(
-      db,
-      input.backendId,
-      { scope: input.package, snapshotId: input.package.snapshotId },
-      input.identity.runtimeTargetId,
-      input.originPhysicalEpoch,
-      nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId)
-    ).length !== 0 ||
-    db.sqlite
-      .prepare(`SELECT 1 FROM harness_instance_records WHERE sandbox_runtime_id = ?
-      AND (active_turn_count <> 0 OR operation_state IN ('queued', 'dispatched')) LIMIT 1`)
-      .get(sandbox.id)
-  )
-    throw new CoreJournalRefusal('Core idle cleanup resident is stale or has live work.');
-  if (
-    intent.execution.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
-    !['bridge.close', 'sandbox.delete', 'workspace.collect', 'file.export'].includes(
-      intent.carriage.operation
-    ) ||
-    intent.carriage.bindingRef !== input.sandboxBindingRef ||
-    intent.control.attemptId !== input.attemptId ||
-    intent.control.target?.allocationRef !== input.sandboxBindingRef ||
-    intent.control.target?.targetId !== input.identity.runtimeTargetId ||
-    intent.control.deadlineUnixNano === null ||
-    intent.control.deadlineUnixNano <= BigInt(Date.now()) * 1_000_000n
-  )
-    throw new CoreJournalRefusal('Core idle cleanup resident is stale or has live work.');
-  if (
-    db.sqlite
-      .prepare('SELECT 1 FROM control_executions WHERE id = ?')
-      .get(intent.execution.ref.executionId)
-  )
-    throw new CoreJournalRefusal(
-      'Core idle cleanup key already exists; inspect retained result only.',
-      'idle_cleanup_result_only'
-    );
-  if (input.predecessor) {
-    const prior = db.sqlite
-      .prepare('SELECT revision FROM control_executions WHERE id = ?')
-      .get(input.predecessor.ref.execution.executionId) as { revision: number } | undefined;
-    if (prior?.revision !== input.predecessor.revision)
-      throw new CoreJournalRefusal('Idle cleanup predecessor changed before delete admission.');
-  }
-  return encodeExecutionJournalValue(writeExecutionJournalIntent(db, intent, input.processWitness));
+  // New idle effects require a covering Core reservation of the physical scope.
+  throw new CoreJournalRefusal('Idle cleanup requires an original Core scope reservation.');
 }
 
 type ContainmentInput = Extract<
@@ -243,7 +142,8 @@ type ContainmentInput = Extract<
 function applyContainmentJournal(
   db: CoreDb,
   input: ContainmentInput,
-  publication: NativeRuntimePolicyPublication | undefined
+  publication: NativeRuntimePolicyPublication | undefined,
+  nanoHost?: NanoHostCoreReads
 ): string | null {
   const document = validatePolicyDocument(input.policy);
   const revision = policyDigest(document);
@@ -258,7 +158,9 @@ function applyContainmentJournal(
     )
       throw new CoreJournalRefusal('Containment cleanup lost its original intent.');
     const attempt = requireSchedulerExecutionAttempt(db, original.control.attemptId);
-    const anchor = getWorkerBackendSession(db, attempt.attemptId);
+    const anchor = requireNanoHostEvidence(
+      nanoHost?.readBackendSession({ attemptId: attempt.attemptId })
+    );
     if (
       !anchor ||
       attempt.operationId !== original.control.operationId ||
@@ -269,11 +171,7 @@ function applyContainmentJournal(
       !original.control.physicalFenceRefs.includes(anchor.originPhysicalEpoch)
     )
       throw new CoreJournalRefusal('Containment cleanup lost its original physical owner.');
-    const resident = db.sqlite
-      .prepare(
-        'SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref=? AND origin_physical_epoch=?'
-      )
-      .get(anchor.sandboxBindingRef, anchor.originPhysicalEpoch);
+    const resident = requireNanoHostEvidence(nanoHost?.readResident(anchor.sandboxBindingRef));
     const proved = !resident && anchor.state === 'cleaned' && anchor.physicalCleanedAt !== null;
     const root = readExecutionJournalRoot(db, original.ref.execution);
     if (original.state !== 'intent') {
