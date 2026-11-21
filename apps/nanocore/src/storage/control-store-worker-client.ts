@@ -778,8 +778,10 @@ interface Opening {
   nanoHostTargetTransition?: true;
   nanoHostReader?: Promise<Database.Database>;
   readNanoHost?: NanoHostOwnerBinding['read'];
-  materializeNanoHostBackend?(
-    input: Extract<ControlBackendSessionInput, { kind: 'materializing' }>
+  prepareNanoHostBackend?(
+    input:
+      | Extract<ControlBackendSessionInput, { kind: 'materializing' }>
+      | NanoHostLocalBackendSessionInput
   ): Promise<ControlBackendSessionResult>;
   /** Request-local capture enrollment stays with this existing physical Workspace owner. */
   captureReads?: CaptureReadGeneration;
@@ -3386,8 +3388,16 @@ class ControlStoreWorkerClient {
         });
       };
 
-      opening.materializeNanoHostBackend = (input) => {
+      opening.prepareNanoHostBackend = async (input) => {
         const original = structuredClone(input);
+        if (original.kind === 'handoff') {
+          return withCoreHold(
+            async () => (await write({ kind: 'backend-session', input: original })).value
+          );
+        }
+        if (original.kind === 'transition') {
+          return (await write({ kind: 'backend-session', input: original })).value;
+        }
         return withCoreHold(
           async (coreIdentity) =>
             (
@@ -7445,8 +7455,12 @@ class ControlStoreWorkerClient {
   ): Promise<ControlBackendSessionResult> {
     try {
       if (
-        input.kind === 'materializing' &&
-        process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR !== '1'
+        process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR !== '1' &&
+        (input.kind === 'materializing' ||
+          input.kind === 'handoff' ||
+          (input.kind === 'transition' &&
+            input.fromState === 'materializing' &&
+            input.toState === 'materialized'))
       ) {
         const core = this.openings.get(database);
         const root =
@@ -7455,9 +7469,11 @@ class ControlStoreWorkerClient {
             : undefined;
         const native =
           root && this.openings.get(`server-owner:${serverStoragePath(root, 'nanohost')}`);
-        if (!native || !native.materializeNanoHostBackend)
+        if (!native || !native.prepareNanoHostBackend)
           throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-        return await native.materializeNanoHostBackend(input);
+        return await native.prepareNanoHostBackend(
+          input.kind === 'transition' ? { ...input, toState: 'materialized' } : input
+        );
       }
       const reply =
         process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
