@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { allocateEntityId } from '@openkit/protocol';
-import { seedDemoWorkspaceDataRoot, seedSyntheticLocalSchedulerTarget } from './demo-data.js';
+import {
+  confirmFixtureAssistantContext,
+  seedDemoWorkspaceDataRoot,
+  seedSyntheticLocalSchedulerTarget,
+} from './demo-data.js';
+import { startFixtureAssistantProvider } from './simulator-inference.js';
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const repoRoot = resolve(webRoot, '../..');
@@ -38,6 +43,8 @@ export interface IsolatedWebStackOptions {
   mode?: 'local' | 'server';
   /** Whether the simulator should be used. */
   useSimulator?: boolean;
+  /** Confirms context Policy as the local fixture owner and supplies a loopback Assistant provider. */
+  withAssistant?: boolean;
 }
 
 /** Owner identity created by the disposable server bootstrap ceremony. */
@@ -74,6 +81,7 @@ export async function startIsolatedWebStack(
   const coreUrl = `http://127.0.0.1:${corePort}`;
   const webUrl = `http://127.0.0.1:${webPort}`;
   const mode = options.mode ?? 'local';
+  let assistantProvider: Awaited<ReturnType<typeof startFixtureAssistantProvider>> | undefined;
 
   try {
     await Promise.all([
@@ -98,12 +106,15 @@ export async function startIsolatedWebStack(
     }
 
     if (mode === 'local') {
-      await seedDemoWorkspaceDataRoot(dataRoot);
+      if (options.withAssistant) assistantProvider = await startFixtureAssistantProvider();
+      await seedDemoWorkspaceDataRoot(dataRoot, assistantProvider?.baseUrl);
+      if (assistantProvider) await confirmFixtureAssistantContext(dataRoot);
     }
   } catch (error) {
-    await Promise.allSettled(
-      cleanupRoots.map((root) => rm(root, { force: true, recursive: true }))
-    );
+    await Promise.allSettled([
+      ...(assistantProvider ? [assistantProvider.stop()] : []),
+      ...cleanupRoots.map((root) => rm(root, { force: true, recursive: true })),
+    ]);
     throw error;
   }
 
@@ -170,7 +181,10 @@ export async function startIsolatedWebStack(
       stopProcess(core),
       ...(web ? [stopProcess(web, useWebProcessGroup ? web.pid : undefined)] : []),
     ]);
-    await Promise.all(cleanupRoots.map((root) => rm(root, { force: true, recursive: true })));
+    await Promise.all([
+      ...(assistantProvider ? [assistantProvider.stop()] : []),
+      ...cleanupRoots.map((root) => rm(root, { force: true, recursive: true })),
+    ]);
   };
 
   try {

@@ -94,6 +94,8 @@ The package `test` command remains the full-suite command. Adding `-- <file>` to
 
 The local simulator fixture seeds only the current native RuntimeTarget readiness evidence after Core startup; retired scheduler baseline and capacity rows are not fixture prerequisites. Scheduler fixtures use the current FIFO admission schema and its closed denial reasons.
 
+Local Web specs that require an Assistant reply pass `withAssistant: true` to `startIsolatedWebStack`. The fixture confirms the context Policy as the local owner and serves a deterministic reply through a loopback Provider.
+
 Run alongside NanoCore for the product loop:
 
 ```bash

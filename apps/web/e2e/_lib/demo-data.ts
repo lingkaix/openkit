@@ -12,15 +12,53 @@ import { seedSimulatorInferenceConfig } from './simulator-inference.js';
  * Writes the explicit Demo Workspace fixture used by local-mode Web e2e tests.
  *
  * @param dataRoot NanoCore data root to seed.
+ * @param providerBaseUrl Optional loopback Assistant provider for a configured-chat test.
  * @returns Resolves after the fixture records and storage owners are ready for boot.
  * @throws When fixture files or authority persistence fails.
  */
-export async function seedDemoWorkspaceDataRoot(dataRoot: string): Promise<void> {
+export async function seedDemoWorkspaceDataRoot(
+  dataRoot: string,
+  providerBaseUrl?: string
+): Promise<void> {
   await seedSharedDemoWorkspaceDataRoot(dataRoot);
   await seedCommunicationOwner(dataRoot);
-  await seedSimulatorInferenceConfig(dataRoot);
+  await seedSimulatorInferenceConfig(dataRoot, providerBaseUrl);
   await seedDemoWorkspaceAuthority(dataRoot);
   await seedSimulatorAgent(dataRoot);
+}
+
+/**
+ * Uses the fixture owner's normal proposal and confirmation to admit Assistant context Policy.
+ *
+ * Call while NanoCore is stopped so the fixture can release the native writer before boot.
+ *
+ * @param dataRoot Disposable local data root with canonical owner authority.
+ */
+export async function confirmFixtureAssistantContext(dataRoot: string): Promise<void> {
+  const [
+    { openCoreDb },
+    { FsStore },
+    { createRuntimeConfigManager },
+    { confirmContextDefaults },
+    { shutdownControlStoreWorkerClient },
+  ] = await Promise.all([
+    import('../../../nanocore/dist/storage/db.js'),
+    import('../../../nanocore/dist/lib/store.js'),
+    import('../../../nanocore/dist/config/runtime-config.js'),
+    import('../../../nanocore/dist/test-support/confirm-context-defaults.js'),
+    import('../../../nanocore/dist/storage/control-store-worker-client.js'),
+  ]);
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    await confirmContextDefaults(
+      coreDb,
+      new FsStore({ dataRoot }),
+      createRuntimeConfigManager({ dataRoot })
+    );
+  } finally {
+    coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+  }
 }
 
 /** Provisions Communication because the seeded Core is already an existing root at boot. */
