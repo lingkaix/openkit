@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -12,7 +12,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { expect, it, vi } from 'vitest';
 import {
@@ -34,14 +35,23 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
   markSchedulerExecutionAttemptClosing,
+  requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
 import {
+  NANO_HOST_HEARTBEAT_BUDGET_MS,
+  nanoHostStartupDeadline,
+} from './runtime/nanohost-attempt-clocks.js';
+import {
   createNanoHostHarnessRuntime,
-  dispatchNanoHostHarnessOperation,
   openNanoHostAgentSessionBinding,
-  settleNanoHostHarnessOperation,
 } from './runtime/nanohost-harness.js';
+import {
+  dispatchNanoHostHarnessOperation,
+  prepareNanoHostHarnessOperation,
+  queueNanoHostHarnessOperation,
+  settleNanoHostHarnessOperation,
+} from './runtime/nanohost-harness-records.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import {
   createWorkerStorageBinding,
@@ -56,7 +66,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from './storage/db.js';
 import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { WORKSPACE_BACKUP_POLICY } from './storage/workspace-backup.js';
@@ -69,16 +79,18 @@ import {
   resumeWorkspaceRecoveryOwner,
 } from './storage/workspace-recovery-journal.js';
 import { finishWorkspaceRecoveryAtCore } from './storage/workspace-restore.js';
-import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { recordTestAgentEnvironmentPackage } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
-import {
-  queueTestPreparedHarnessOperation,
-  recordTestExecutionAttempt,
-} from './test-support/execution-attempt.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { submitTestNanoHostWorkerLease } from './test-support/nanohost-worker-lease.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recoveryJournalFact } from './test-support/recovery-journal.js';
@@ -215,6 +227,7 @@ it.each([
   let releaseClose = () => {};
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     const userId = ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     if (personal) await ensureUserQuickChatWorkspace({ coreDb, store, userId });
@@ -322,6 +335,7 @@ it('resumes an exact fenced request after its registry transition without ordina
   const gateway = createDefaultWorkerMcpGateway(coreDb);
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Fenced deletion restart');
@@ -643,6 +657,7 @@ it('refuses running work before admission and preserves exact deletion retry aft
 
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Deletion fixture');
@@ -880,6 +895,7 @@ it.each([
 
   try {
     applyMigrations(coreDb);
+    const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace(`${blocker} fixture`);
@@ -891,16 +907,23 @@ it.each([
     const timestamp = new Date().toISOString();
     let retainedPackage: { path: string; bytes: Buffer } | null = null;
     if (blocker === 'scheduler recovery evidence') {
-      insertDeletionQuiescenceLease(coreDb, {
+      const recovery = insertDeletionQuiescenceLease(coreDb, {
         recoveryState: 'needs-evidence',
         status: 'closing',
         suffix: 'deletion_recovery',
         workspaceId: workspace.id,
       });
+      retainDeletionQuiescenceBackend(coreDb, {
+        ...recovery,
+        physicalCleanedAt: timestamp,
+        state: 'cleaned',
+        suffix: 'deletion_recovery',
+      });
     } else if (blocker === 'physical worker cleanup') {
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO worker_backend_sessions (
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            `INSERT INTO worker_backend_sessions (
              attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
              package_snapshot_id, backend_kind, deployment_id, backend_session_id,
              runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
@@ -915,8 +938,9 @@ it.each([
              'server/runtime/deletion-backend',
              'complete', 'physical-cleaned', ?, ?, ?
            )`
-        )
-        .run(workspace.id, 'a'.repeat(64), timestamp, timestamp, timestamp);
+          )
+          .run(workspace.id, 'a'.repeat(64), timestamp, timestamp, timestamp)
+      );
     } else if (blocker === 'idle ready native binding') {
       const suffix = 'deletion_idle_native';
       const thread = await store.createThread(workspace.id, 'Idle native resident');
@@ -946,7 +970,7 @@ it.each([
         updatedAt: timestamp,
       });
       const target = await recordTestNativeRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await createNanoHostHarnessRuntime(nanoHostStorage.value.owner, {
         maxActiveTurns: 1,
         adapterId: 'codex',
         adapterVersion: 'test',
@@ -971,34 +995,48 @@ it.each([
         threadId: thread.id,
         workspaceId: workspace.id,
       };
-      await openNanoHostAgentSessionBinding(coreDb, { ...binding, timestamp });
+      await openNanoHostAgentSessionBinding(nanoHostStorage.value.owner, { ...binding, timestamp });
       const { harnessInstanceId, ...sessionOpen } = binding;
-      await queueTestPreparedHarnessOperation(coreDb, {
-        body: { ...sessionOpen, adapterId: 'codex', resume: null },
-        harnessInstanceId,
-        operation: 'session.open',
-        timestamp,
-      });
-      const command = (await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-deletion-idle',
-      }))!;
-      expect(command).not.toBeNull();
-      await settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-deletion-idle',
-        timestamp,
-        result: {
-          schemaVersion: 2,
-          harnessInstanceId: command.harnessInstanceId,
-          operationId: command.operationId,
-          sequence: command.sequence,
-          disposition: 'succeeded',
-          body: {
-            state: 'open',
-            maxActiveTurns: 1,
-            nativeHandleState: 'ready',
-            nativeHandleDigest: 'a'.repeat(64),
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+        const owner = { sqlite };
+        const queued = {
+          body: { ...sessionOpen, adapterId: 'codex', resume: null },
+          harnessInstanceId,
+          operation: 'session.open' as const,
+          timestamp,
+        };
+        queueNanoHostHarnessOperation(
+          coreDb,
+          { ...queued, prepared: prepareNanoHostHarnessOperation(coreDb, queued, owner) },
+          owner
+        );
+        const command = dispatchNanoHostHarnessOperation(
+          coreDb,
+          { sandboxIntegrationBindingRef: 'integration-binding-deletion-idle' },
+          { owner }
+        )!;
+        expect(command).not.toBeNull();
+        settleNanoHostHarnessOperation(
+          coreDb,
+          {
+            sandboxIntegrationBindingRef: 'integration-binding-deletion-idle',
+            timestamp,
+            result: {
+              schemaVersion: 2,
+              harnessInstanceId: command.harnessInstanceId,
+              operationId: command.operationId,
+              sequence: command.sequence,
+              disposition: 'succeeded',
+              body: {
+                state: 'open',
+                maxActiveTurns: 1,
+                nativeHandleState: 'ready',
+                nativeHandleDigest: 'a'.repeat(64),
+              },
+            },
           },
-        },
+          owner
+        );
       });
       const path = join(
         dataRoot,
@@ -1012,11 +1050,13 @@ it.each([
       );
       retainedPackage = { path, bytes: readFileSync(path) };
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT lifecycle_state, native_handle_state FROM agent_session_runtime_bindings'
-          )
-          .get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT lifecycle_state, native_handle_state FROM agent_session_runtime_bindings'
+            )
+            .get()
+        )
       ).toEqual({ lifecycle_state: 'open', native_handle_state: 'ready' });
     } else {
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
@@ -1105,10 +1145,7 @@ function insertDeletionQuiescenceLease(
     workspaceId: string;
   }
 ): {
-  agentSessionId: string;
-  packageSnapshotId: string;
-  threadId: string;
-  turnId: string;
+  workerRecovery: string;
 } {
   const timestamp = new Date().toISOString();
   const threadId = input.threadId ?? testEntityId('th', `thread_${input.suffix}`);
@@ -1126,16 +1163,19 @@ function insertDeletionQuiescenceLease(
     requestedAgentId: 'agent_codex_host',
     now: () => timestamp,
   });
-  const attempt = recordTestExecutionAttempt(coreDb, {
+  const attempt = submitTestNanoHostWorkerLease(
+    coreDb,
     entry,
-    attemptId: testEntityId('attempt', `lease_${input.suffix}`),
-    agentSessionId,
-    inputRef: packageSnapshotId,
-    bindingRef: `sandbox_${input.suffix}`,
-    sessionCompatibilityKey: 'c'.repeat(64),
-    operationId: `original:${input.suffix}`,
-    now: () => timestamp,
-  });
+    `sandbox_${input.suffix}`,
+    {
+      agentSessionId,
+      packageSnapshotId,
+      workerControlTokenHash: randomBytes(32).toString('hex'),
+      workerInferenceTokenHash: randomBytes(32).toString('hex'),
+      workerCapabilityTokenHash: randomBytes(32).toString('hex'),
+    },
+    { attemptId: testEntityId('attempt', `lease_${input.suffix}`) }
+  );
   markSchedulerExecutionAttemptClosing(coreDb, {
     attemptId: attempt.attemptId,
     cause:
@@ -1147,58 +1187,50 @@ function insertDeletionQuiescenceLease(
     outcomeRef: `turn:${turnId}:failed`,
     now: () => timestamp,
   });
-  coreDb.sqlite
-    .prepare('UPDATE scheduler_execution_attempts SET recovery_state = ? WHERE attempt_id = ?')
-    .run(input.recoveryState, attempt.attemptId);
-  return { agentSessionId, packageSnapshotId, threadId, turnId };
+  const startupDeadline = nanoHostStartupDeadline(attempt);
+  const workerRecovery = canonicalJsonText({
+    version: 1,
+    sessionCompatibilityKey: 'c'.repeat(64),
+    startupDeadline,
+    heartbeatTimeoutMs: NANO_HOST_HEARTBEAT_BUDGET_MS,
+    heartbeatDeadline: startupDeadline,
+    lastAcceptedHeartbeatAt: null,
+    lastWorkerSequence: null,
+    workerProcessKeyHash: null,
+    recoveryState: input.recoveryState,
+    recoveryDeadline: null,
+  });
+  return { workerRecovery };
 }
 
-function insertDeletionQuiescenceBackend(
+function retainDeletionQuiescenceBackend(
   coreDb: ReturnType<typeof openCoreDb>,
   input: {
-    agentSessionId: string;
-    packageSnapshotId: string;
     physicalCleanedAt: string | null;
     state: string;
     suffix: string;
-    threadId: string;
-    turnId: string;
-    workspaceId: string;
+    workerRecovery: string;
   }
 ): void {
-  const timestamp = new Date().toISOString();
-  coreDb.sqlite
-    .prepare(
-      `INSERT INTO worker_backend_sessions (
-         attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
-         package_snapshot_id, backend_kind, deployment_id, backend_session_id,
-         runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
-         staging_directory_ref, workspace_handoff_state, state,
-         physical_cleaned_at, created_at, updated_at
-       ) VALUES (
-         ?, ?, ?, ?, ?, ?, 'test', ?, ?, ?, ?,
-         '{"imageRef":"openkit/test:deletion"}', ?, ?,
-         'complete', ?, ?, ?, ?
-       )`
-    )
-    .run(
-      testEntityId('attempt', `lease_${input.suffix}`),
-      input.workspaceId,
-      input.threadId,
-      input.turnId,
-      input.agentSessionId,
-      input.packageSnapshotId,
-      `deployment_${input.suffix}`,
-      `backend_${input.suffix}`,
-      `target_${input.suffix}`,
-      'a'.repeat(64),
-      `sandbox_${input.suffix}`,
-      `server/runtime/${input.suffix}`,
-      input.state,
-      input.physicalCleanedAt,
-      timestamp,
-      timestamp
-    );
+  const attemptId = testEntityId('attempt', `lease_${input.suffix}`);
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    const result = sqlite
+      .prepare(`UPDATE worker_backend_sessions
+        SET state = ?, physical_cleaned_at = ?, worker_recovery_json = ? WHERE attempt_id = ?`)
+      .run(input.state, input.physicalCleanedAt, input.workerRecovery, attemptId);
+    if (result.changes !== 1) throw new Error('Fixture is missing its admitted backend session.');
+  });
+}
+
+function deletionFixtureRecoveryState(coreDb: ReturnType<typeof openCoreDb>, attemptId: string) {
+  return readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    sqlite
+      .prepare(
+        "SELECT json_extract(worker_recovery_json, '$.recoveryState') FROM worker_backend_sessions WHERE attempt_id = ?"
+      )
+      .pluck()
+      .get(attemptId)
+  );
 }
 
 /**
@@ -1246,6 +1278,7 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
 
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Failed cleaned lease fixture');
@@ -1255,18 +1288,17 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
       workspaceId: workspace.id,
     });
     for (const suffix of suffixes) {
-      const lineage = insertDeletionQuiescenceLease(coreDb, {
+      const recovery = insertDeletionQuiescenceLease(coreDb, {
         recoveryState: 'needs-evidence',
         status: 'failed',
         suffix,
         workspaceId: workspace.id,
       });
-      insertDeletionQuiescenceBackend(coreDb, {
-        ...lineage,
+      retainDeletionQuiescenceBackend(coreDb, {
+        ...recovery,
         physicalCleanedAt,
         state: 'cleaned',
         suffix,
-        workspaceId: workspace.id,
       });
       await closeDeletionQuiescenceAttempt(coreDb, suffix);
     }
@@ -1303,14 +1335,11 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
       deletion: { phase: 'cleaned', status: 'deleted', workspaceId: workspace.id },
     });
     expect(
-      coreDb.sqlite
-        .prepare(
-          `SELECT phase, recovery_state AS recoveryState, fence_ref AS fenceRef
-           FROM scheduler_execution_attempts
-           WHERE attempt_id IN (${suffixes.map(() => '?').join(', ')})
-           ORDER BY rowid`
-        )
-        .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
+      suffixes.map((suffix) => {
+        const attemptId = testEntityId('attempt', `lease_${suffix}`);
+        const { phase, fenceRef } = requireSchedulerExecutionAttempt(coreDb, attemptId);
+        return { phase, fenceRef, recoveryState: deletionFixtureRecoveryState(coreDb, attemptId) };
+      })
     ).toEqual(
       suffixes.map((suffix) => ({
         recoveryState: 'needs-evidence',
@@ -1319,14 +1348,16 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
       }))
     );
     expect(
-      coreDb.sqlite
-        .prepare(
-          `SELECT state, physical_cleaned_at AS physicalCleanedAt
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            `SELECT state, physical_cleaned_at AS physicalCleanedAt
            FROM worker_backend_sessions
            WHERE attempt_id IN (${suffixes.map(() => '?').join(', ')})
            ORDER BY rowid`
-        )
-        .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
+          )
+          .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
+      )
     ).toEqual(suffixes.map(() => ({ physicalCleanedAt, state: 'cleaned' })));
   } finally {
     coreDb.sqlite.close();
@@ -1344,6 +1375,7 @@ it('refuses deletion when one of five failed attempts remains closing without re
 
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Sibling unproved lease fixture');
@@ -1353,22 +1385,20 @@ it('refuses deletion when one of five failed attempts remains closing without re
       workspaceId: workspace.id,
     });
     for (const suffix of suffixes) {
-      const lineage = insertDeletionQuiescenceLease(coreDb, {
+      const recovery = insertDeletionQuiescenceLease(coreDb, {
         recoveryState: 'needs-evidence',
         status: 'failed',
         suffix,
         workspaceId: workspace.id,
       });
-      if (suffix !== 'sibling_unproved') {
-        insertDeletionQuiescenceBackend(coreDb, {
-          ...lineage,
-          physicalCleanedAt,
-          state: 'cleaned',
-          suffix,
-          workspaceId: workspace.id,
-        });
-        await closeDeletionQuiescenceAttempt(coreDb, suffix);
-      }
+      const unproved = suffix === 'sibling_unproved';
+      retainDeletionQuiescenceBackend(coreDb, {
+        ...recovery,
+        physicalCleanedAt: unproved ? null : physicalCleanedAt,
+        state: unproved ? 'launching' : 'cleaned',
+        suffix,
+      });
+      if (!unproved) await closeDeletionQuiescenceAttempt(coreDb, suffix);
     }
     const app = createApp({
       coreDb,
@@ -1418,14 +1448,11 @@ it('refuses deletion when one of five failed attempts remains closing without re
         .get(workspace.id)
     ).toEqual({ revision: 1, status: 'active' });
     expect(
-      coreDb.sqlite
-        .prepare(
-          `SELECT phase, recovery_state AS recoveryState, fence_ref AS fenceRef
-           FROM scheduler_execution_attempts
-           WHERE attempt_id IN (${suffixes.map(() => '?').join(', ')})
-           ORDER BY rowid`
-        )
-        .all(...suffixes.map((suffix) => testEntityId('attempt', `lease_${suffix}`)))
+      suffixes.map((suffix) => {
+        const attemptId = testEntityId('attempt', `lease_${suffix}`);
+        const { phase, fenceRef } = requireSchedulerExecutionAttempt(coreDb, attemptId);
+        return { phase, fenceRef, recoveryState: deletionFixtureRecoveryState(coreDb, attemptId) };
+      })
     ).toEqual(
       suffixes.map((suffix) => ({
         recoveryState: 'needs-evidence',
@@ -1492,6 +1519,7 @@ it.each([
 
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace(`${fixture.suffix} fixture`);
@@ -1500,29 +1528,26 @@ it.each([
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const lineage = insertDeletionQuiescenceLease(coreDb, {
+    const recovery = insertDeletionQuiescenceLease(coreDb, {
       recoveryState: 'needs-evidence',
       status: fixture.leaseStatus,
       suffix: fixture.suffix,
       workspaceId: workspace.id,
     });
     // Establish an intact private cleanup observation before any deliberate corruption.
-    insertDeletionQuiescenceBackend(coreDb, {
-      ...lineage,
+    retainDeletionQuiescenceBackend(coreDb, {
+      ...recovery,
       physicalCleanedAt: new Date().toISOString(),
       state: 'cleaned',
       suffix: fixture.suffix,
-      workspaceId: workspace.id,
     });
     if (fixture.leaseStatus === 'failed') {
       await closeDeletionQuiescenceAttempt(coreDb, fixture.suffix);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT phase, fence_ref AS fenceRef, disposition, terminal_cause AS cause FROM scheduler_execution_attempts WHERE attempt_id = ?'
-          )
-          .get(testEntityId('attempt', `lease_${fixture.suffix}`))
-      ).toEqual({
+      const { phase, fenceRef, disposition, terminalCause } = requireSchedulerExecutionAttempt(
+        coreDb,
+        testEntityId('attempt', `lease_${fixture.suffix}`)
+      );
+      expect({ phase, fenceRef, disposition, cause: terminalCause }).toEqual({
         phase: 'closed',
         fenceRef: `self-check:${testEntityId('attempt', `lease_${fixture.suffix}`)}`,
         disposition: 'unknown',
@@ -1530,28 +1555,36 @@ it.each([
       });
     }
     if (fixture.backend === 'missing') {
-      coreDb.sqlite
-        .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
-        .run(testEntityId('attempt', `lease_${fixture.suffix}`));
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
+          .run(testEntityId('attempt', `lease_${fixture.suffix}`))
+      );
     } else if (fixture.backend === 'mismatched-thread') {
-      coreDb.sqlite
-        .prepare('UPDATE worker_backend_sessions SET thread_id = ? WHERE attempt_id = ?')
-        .run(
-          testEntityId('th', `thread_other_${fixture.suffix}`),
-          testEntityId('attempt', `lease_${fixture.suffix}`)
-        );
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare('UPDATE worker_backend_sessions SET thread_id = ? WHERE attempt_id = ?')
+          .run(
+            testEntityId('th', `thread_other_${fixture.suffix}`),
+            testEntityId('attempt', `lease_${fixture.suffix}`)
+          )
+      );
     } else if (fixture.backend === 'physical-cleaned') {
-      coreDb.sqlite
-        .prepare(
-          "UPDATE worker_backend_sessions SET state = 'physical-cleaned' WHERE attempt_id = ?"
-        )
-        .run(testEntityId('attempt', `lease_${fixture.suffix}`));
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            "UPDATE worker_backend_sessions SET state = 'physical-cleaned' WHERE attempt_id = ?"
+          )
+          .run(testEntityId('attempt', `lease_${fixture.suffix}`))
+      );
     } else if (fixture.backend === 'cleaned-without-timestamp') {
-      coreDb.sqlite
-        .prepare(
-          'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
-        )
-        .run(testEntityId('attempt', `lease_${fixture.suffix}`));
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
+          )
+          .run(testEntityId('attempt', `lease_${fixture.suffix}`))
+      );
     }
     const app = createApp({
       coreDb,
@@ -1600,15 +1633,15 @@ it.each([
         .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
         .get(workspace.id)
     ).toEqual({ revision: 1, status: 'active' });
-    expect(
-      coreDb.sqlite
-        .prepare(
-          `SELECT phase, recovery_state AS recoveryState
-           FROM scheduler_execution_attempts
-           WHERE attempt_id = ?`
-        )
-        .get(testEntityId('attempt', `lease_${fixture.suffix}`))
-    ).toEqual({
+    expect({
+      ...coreDb.sqlite
+        .prepare('SELECT phase FROM scheduler_execution_attempts WHERE attempt_id = ?')
+        .get(testEntityId('attempt', `lease_${fixture.suffix}`)),
+      recoveryState: deletionFixtureRecoveryState(
+        coreDb,
+        testEntityId('attempt', `lease_${fixture.suffix}`)
+      ),
+    }).toEqual({
       recoveryState: 'needs-evidence',
       phase: fixture.leaseStatus === 'failed' ? 'closed' : 'closing',
     });
@@ -1672,6 +1705,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
 
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const now = Date.now();
     coreDb.sqlite
@@ -1971,6 +2005,7 @@ it.each(['export', 'closure', 'staged-contradiction'] as const)(
     const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
     try {
       applyMigrations(coreDb);
+      await openAdmittedTestNanoHost(coreDb);
       ensureLocalUser(coreDb);
       const store = new FsStore({ dataRoot });
       const workspace = await store.createWorkspace(`${crashPoint} crash fixture`);
@@ -2098,6 +2133,7 @@ it('preserves private Thread ownership only through the exact current deletion r
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const ownerUserId = 'usr_00000000-0000-7000-8000-000000000001';
     const privateOwnerUserId = testEntityId('usr', 'deletion-private-history-owner');
@@ -2223,6 +2259,7 @@ it('retains a Thread-owned retrieval trace in the verified operational deletion 
 
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Deletion retrieval trace fixture');
@@ -2391,6 +2428,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
 
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Terminal deletion fixture');
@@ -2862,10 +2900,11 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
 });
 
 /** Builds one ordinary project through the same public Store and membership owners as the existing route cases. */
-async function nativeDeletionRouteFixture() {
+async function nativeDeletionRouteFixture(admitNanoHost = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-deletion-native-route-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  if (admitNanoHost) await openAdmittedTestNanoHost(coreDb);
   const actorId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Native deletion route');
@@ -3245,13 +3284,15 @@ function deletionStorageFixture(
   f: Awaited<ReturnType<typeof nativeDeletionRouteFixture>>,
   contributor = { responsibleUserId: 'removed-user', threadId: 'private-thread' }
 ) {
-  const db = openCoreDb(f.dataRoot);
+  const db = {
+    sqlite: new Database(serverStoragePath(f.dataRoot, 'nanohost'), { fileMustExist: true }),
+  };
   db.sqlite
     .prepare(`INSERT INTO nanohost_runtime_targets (
     target_id, identity_id, deployment_id, connection_generation,
-    predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-  ) VALUES ('delete-target', 'delete-identity', 'delete-deployment', 1, 1, 1, 1, ?, 1)`)
-    .run('2026-11-18T00:00:00.000Z');
+    predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+  ) VALUES ('delete-target', 'delete-identity', 'delete-deployment', 1, 1, 1, 1, ?, ?, 1)`)
+    .run('a'.repeat(64), '2026-11-18T00:00:00.000Z');
   const binding = createWorkerStorageBinding(db, {
     workspaceId: f.workspace.id,
     runtimeTargetId: 'delete-target',
@@ -3278,7 +3319,7 @@ function deletionStorageFixture(
     layout: binding.layout,
     authorizeContributor: () => true,
   });
-  // No Host materialization took place; release the exact Core-only reservation.
+  // No Host materialization took place; release the exact unmaterialized reservation.
   releaseWorkerStorageAttachment(db, {
     storageRef: reserved.storageRef,
     expectedRevision: reserved.revision,
@@ -3352,11 +3393,23 @@ function unavailableDeletionStorageRead(
   f: Awaited<ReturnType<typeof nativeDeletionRouteFixture>>,
   table: 'bindings' | 'contributors'
 ): () => void {
-  const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
-  const read = vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql) => {
-    if (sql.includes(`worker_storage_${table}`))
-      throw new Error('Injected Worker storage ledger read failure.');
-    return prepare(sql);
+  const worker = getControlStoreWorkerClient();
+  const readAdmitted = worker.readAdmittedNanoHost.bind(worker);
+  const read = vi.spyOn(worker, 'readAdmittedNanoHost').mockImplementation((dataRoot, query) => {
+    if (dataRoot !== f.dataRoot) return readAdmitted(dataRoot, query);
+    return readAdmitted(dataRoot, (sqlite) => {
+      const prepare = sqlite.prepare.bind(sqlite);
+      const fault = vi.spyOn(sqlite, 'prepare').mockImplementation((sql) => {
+        if (sql.includes(`worker_storage_${table}`))
+          throw new Error('Injected Worker storage ledger read failure.');
+        return prepare(sql);
+      });
+      try {
+        return query(sqlite);
+      } finally {
+        fault.mockRestore();
+      }
+    });
   });
   return () => read.mockRestore();
 }
@@ -3459,7 +3512,7 @@ it.each(['retained', 'unreadable', 'already-removed-staging'])(
     const f = await nativeDeletionRouteFixture();
     const write = deletionRequestOwner.writeWorkspaceDeletionRequest;
     const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
-    let db: ReturnType<typeof openCoreDb> | undefined;
+    let db: ReturnType<typeof deletionStorageFixture>['db'] | undefined;
     let restoreRead: (() => void) | undefined;
     try {
       phaseWrite.mockImplementation((root, record) => {
@@ -3476,9 +3529,10 @@ it.each(['retained', 'unreadable', 'already-removed-staging'])(
       const stagingRoot = join(f.dataRoot, retained.stagingRelativePath!);
       expect(existsSync(stagingRoot)).toBe(true);
       ({ db } = deletionStorageFixture(f));
-      if (shape === 'unreadable') restoreRead = unavailableDeletionStorageRead(f, 'bindings');
       if (shape === 'already-removed-staging') rmSync(stagingRoot, { recursive: true });
       await shutdownControlStoreWorkerClient();
+      await reopenAdmittedTestNanoHost(f.coreDb);
+      if (shape === 'unreadable') restoreRead = unavailableDeletionStorageRead(f, 'bindings');
       // Rebuild serving composition from retained files after the native owner shuts down.
       const restarted = createApp({
         coreDb: f.coreDb,
@@ -3539,9 +3593,8 @@ it.each(['retained', 'unreadable', 'already-removed-staging'])(
 it.each([true, false])(
   'requires admitted empty Worker storage evidence before Workspace deletion (owner %s)',
   async (admitted) => {
-    const f = await nativeDeletionRouteFixture();
+    const f = await nativeDeletionRouteFixture(admitted);
     try {
-      if (admitted) await openAdmittedTestNanoHost(f.coreDb);
       const response = await f.invoke();
       if (admitted) {
         expect(response.status, await response.clone().text()).toBe(200);
@@ -3582,7 +3635,7 @@ it('admits deletion with proved purged Worker storage without disclosing hidden 
 
 it('replays historical cleaned requests without rewriting them when Worker storage is retained', async () => {
   const f = await nativeDeletionRouteFixture();
-  let db: ReturnType<typeof openCoreDb> | undefined;
+  let db: ReturnType<typeof deletionStorageFixture>['db'] | undefined;
   try {
     const first = await f.invoke();
     expect(first.status, await first.clone().text()).toBe(200);
@@ -3607,7 +3660,7 @@ it.each(['fenced', 'closure-sealed', 'staged', 'deleted'] as const)(
     const f = await nativeDeletionRouteFixture();
     const write = deletionRequestOwner.writeWorkspaceDeletionRequest;
     const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
-    let db: ReturnType<typeof openCoreDb> | undefined;
+    let db: ReturnType<typeof deletionStorageFixture>['db'] | undefined;
     try {
       phaseWrite.mockImplementation((root, record) => {
         const result = write(root, record);
@@ -3779,6 +3832,7 @@ it('resumes exact deleted request after repairing a read fault over owner-proved
     expect(retained.phase).toBe('deleted');
     const stagingRoot = join(f.dataRoot, retained.stagingRelativePath!);
     await shutdownControlStoreWorkerClient();
+    await reopenAdmittedTestNanoHost(f.coreDb);
     restoreRead = unavailableDeletionStorageRead(f, 'bindings');
     const restarted = createApp({
       coreDb: f.coreDb,

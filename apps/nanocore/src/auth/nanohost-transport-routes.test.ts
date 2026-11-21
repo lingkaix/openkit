@@ -14,21 +14,29 @@ import {
   ADMINISTRATION_OPERATION_DEFINITIONS,
   operationMcpEligible,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createCoreClient } from '../../../../packages/core-client/src/index.js';
 import { listServerAuditEvents } from '../audit-events.js';
 import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  fenceNanoHostRuntimeTargetAfterRestart,
-  recordNanoHostRuntimeTargetConnectionClose,
-  upsertNanoHostRuntimeTarget,
+import type {
+  AllocateNanoHostRuntimeTargetConnectionGenerationInput,
+  RecordNanoHostRuntimeTargetConnectionCloseInput,
+  UpsertNanoHostRuntimeTargetInput,
 } from '../runtime/nanohost-runtime-target.js';
+import { mutateNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDataRootAdminOperationImplementations } from '../storage/data-root-admin-operations.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, serverStoragePath } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import type { ControlRuntimeTargetInput } from '../storage/runtime-target-codecs.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { remoteMcpInvocation } from '../test-support/remote-mcp-invocation.js';
@@ -93,14 +101,82 @@ function insertTokenOwnerUser(coreDb: CoreDb): void {
     .run(now, now);
 }
 
+const nativeFixtures = new WeakMap<
+  CoreDb,
+  { storage: Awaited<ReturnType<typeof openAdmittedTestNanoHost>>; sqlite: Database.Database }
+>();
+
+/** Opens the shipped owner for route calls and a separate connection for synthetic fixture rows. */
+async function admitTransportFixture(coreDb: CoreDb) {
+  const storage = await openAdmittedTestNanoHost(coreDb);
+  const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+    fileMustExist: true,
+  });
+  nativeFixtures.set(coreDb, { storage, sqlite });
+  onTestFinished(() => sqlite.close());
+  return storage;
+}
+
+/** Stages the observation record for these read-route cases through the Native record owner. */
+function transitionFixtureTarget(coreDb: CoreDb, input: ControlRuntimeTargetInput) {
+  return mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+    mutateNanoHostRuntimeTarget({ sqlite }, input)
+  );
+}
+
+async function allocateFixtureTarget(
+  coreDb: CoreDb,
+  input: AllocateNanoHostRuntimeTargetConnectionGenerationInput
+) {
+  const target = await transitionFixtureTarget(coreDb, { kind: 'allocate', ...input });
+  if (!target) throw new Error('Fixture RuntimeTarget was not allocated.');
+  return target;
+}
+
+async function readyFixtureTarget(
+  coreDb: CoreDb,
+  {
+    targetId,
+    identityId,
+    deploymentId,
+    observedAt,
+    connectionGeneration,
+    predecessorFenced,
+    ready,
+    freshEmpty,
+    physicalEpoch,
+  }: UpsertNanoHostRuntimeTargetInput
+) {
+  return transitionFixtureTarget(coreDb, {
+    kind: 'ready',
+    targetId,
+    identityId,
+    deploymentId,
+    observedAt,
+    connectionGeneration,
+    predecessorFenced,
+    ready,
+    freshEmpty,
+    physicalEpoch,
+  });
+}
+
+async function closeFixtureTarget(
+  coreDb: CoreDb,
+  input: RecordNanoHostRuntimeTargetConnectionCloseInput
+) {
+  return transitionFixtureTarget(coreDb, { kind: 'close', ...input });
+}
+
 /** Inserts one exact active NanoHost identity fixture. */
 function insertActiveNanoHostIdentity(
   coreDb: CoreDb,
   identityId: string,
   deploymentId: string
 ): void {
-  coreDb.sqlite
-    .prepare(
+  nativeFixtures
+    .get(coreDb)!
+    .sqlite.prepare(
       `INSERT INTO nanohost_integration_identities (
         identity_id, deployment_id, status, created_at
       ) VALUES (?, ?, 'active', ?)`
@@ -170,6 +246,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
@@ -183,6 +260,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         coreDb,
         dataRoot,
         mode: 'server',
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: config },
       });
       const adminHeaders = { authorization: `Bearer ${admin.secret}` };
@@ -251,7 +330,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         expect(boundary.response.status, boundary.name).toBe(boundary.status);
       }
 
-      const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      const allocated = await allocateFixtureTarget(coreDb, {
         targetId: config.identityId,
         identityId: config.identityId,
         deploymentId: config.deploymentId,
@@ -277,7 +356,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         physicalEpoch: null,
         observedAt: '2026-08-15T01:02:02.000Z',
       });
-      await upsertNanoHostRuntimeTarget(coreDb, {
+      await readyFixtureTarget(coreDb, {
         targetId: config.identityId,
         identityId: config.identityId,
         deploymentId: config.deploymentId,
@@ -334,8 +413,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
           value: 'dep_00000000-0000-712b-9705-a4a780652f9e',
         },
       ]) {
-        coreDb.sqlite
-          .prepare(`UPDATE nanohost_runtime_targets SET ${mismatch.column} = ?`)
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(`UPDATE nanohost_runtime_targets SET ${mismatch.column} = ?`)
           .run(mismatch.value);
         const mismatchResponse = await configuredApp.request(
           ...operationRequest(
@@ -361,8 +441,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
             leakedMismatch: false,
             status: 404,
           });
-        coreDb.sqlite
-          .prepare(`UPDATE nanohost_runtime_targets SET ${mismatch.column} = ?`)
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(`UPDATE nanohost_runtime_targets SET ${mismatch.column} = ?`)
           .run(mismatch.column === 'identity_id' ? config.identityId : config.deploymentId);
       }
     } finally {
@@ -378,6 +459,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -390,6 +472,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         coreDb,
         dataRoot,
         mode: 'server',
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: configuredNanoHost(slotRoot) },
       });
       const sink = {
@@ -430,8 +514,11 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(readFileSync(sink.companionPath, 'utf8')).toContain('issuance_generation=1');
       expect(statSync(sink.companionPath).mode & 0o777).toBe(0o600);
       expect(
-        coreDb.sqlite
-          .prepare('SELECT identity_id, deployment_id, status FROM nanohost_integration_identities')
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(
+            'SELECT identity_id, deployment_id, status FROM nanohost_integration_identities'
+          )
           .all()
       ).toEqual([
         {
@@ -472,6 +559,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const occupiedSecret = 'ok' + 't_occupied_enroll_secret_aaaaaaaaaaaaaaaaaaaaaa';
       const occupiedCompanion = [
@@ -494,6 +582,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         coreDb,
         dataRoot,
         mode: 'server',
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: configuredNanoHost(slotRoot) },
       });
       const response = await app.request(
@@ -518,7 +608,10 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(readFileSync(join(slotRoot, 'A.token'), 'utf8')).toBe(occupiedSecret);
       expect(readFileSync(join(slotRoot, 'A.meta'), 'utf8')).toBe(occupiedCompanion);
       expect(
-        coreDb.sqlite.prepare('SELECT identity_id FROM nanohost_integration_identities').all()
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare('SELECT identity_id FROM nanohost_integration_identities')
+          .all()
       ).toEqual([]);
     } finally {
       await shutdownControlStoreWorkerClient();
@@ -533,6 +626,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       writeFileSync(blocked, 'not-a-directory');
       const admin = createOpenKitAccessTokenRecord(coreDb, {
@@ -546,6 +640,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         coreDb,
         dataRoot,
         mode: 'server',
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: {
           nanohost: {
             ...configuredNanoHost(dataRoot),
@@ -578,8 +674,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
         )
       );
       const body = (await response.json()) as Record<string, unknown>;
-      const rows = coreDb.sqlite
-        .prepare('SELECT token_id, status FROM nanohost_transport_tokens')
+      const rows = nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare('SELECT token_id, status FROM nanohost_transport_tokens')
         .all() as Array<{ status: string; token_id: string }>;
 
       expect(response.status).toBeGreaterThanOrEqual(400);
@@ -587,15 +684,19 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(body).not.toHaveProperty('token');
       for (const row of rows) {
         expect(row.status).not.toBe('active');
-        const record = coreDb.sqlite
-          .prepare('SELECT token_hash FROM nanohost_transport_tokens WHERE token_id = ?')
+        const record = nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare('SELECT token_hash FROM nanohost_transport_tokens WHERE token_id = ?')
           .get(row.token_id) as { token_hash: string };
         // Hash-only row remains; verification of any secret must fail once revoked.
         expect(record.token_hash).toMatch(/^sha256:/);
       }
       expect(rows.every((row) => row.status === 'revoked') || rows.length === 0).toBe(true);
       expect(
-        coreDb.sqlite.prepare('SELECT identity_id FROM nanohost_integration_identities').all()
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare('SELECT identity_id FROM nanohost_integration_identities')
+          .all()
       ).toEqual([]);
     } finally {
       await shutdownControlStoreWorkerClient();
@@ -610,6 +711,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -623,6 +725,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         dataRoot,
         mode: 'server',
         nanohostTransportSessionAuthority: createNanoHostTransportSessionAuthority(),
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: configuredNanoHost(slotRoot) },
       });
 
@@ -697,9 +801,13 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const issuedSecret = readFileSync(issueSink.secretPath, 'utf8');
       expect(
         (
-          await verifyNanoHostTransportTokenRecord(coreDb, issuedSecret, {
-            now: new Date('2026-08-08T00:00:00.000Z'),
-          })
+          await verifyNanoHostTransportTokenRecord(
+            nativeFixtures.get(coreDb)!.storage.value,
+            issuedSecret,
+            {
+              now: new Date('2026-08-08T00:00:00.000Z'),
+            }
+          )
         )?.tokenId
       ).toBe(issueBody.record.tokenId);
 
@@ -802,6 +910,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
@@ -816,6 +925,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         dataRoot,
         mode: 'server',
         nanohostTransportSessionAuthority: createNanoHostTransportSessionAuthority(),
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: config },
       });
       const headers = {
@@ -868,8 +979,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
         )
       );
       expect(revokePredecessor.status).toBe(200);
-      const retainedTokens = coreDb.sqlite
-        .prepare(
+      const retainedTokens = nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare(
           `SELECT token_id, predecessor_token_id, token_hash
            FROM nanohost_transport_tokens
            WHERE owner_nanohost_identity_id = ? AND deployment_id = ?
@@ -881,34 +993,53 @@ describe('NanoHost transport App API safe-sink routes', () => {
         token_id: string;
       }>;
       expect(retainedTokens).toHaveLength(2);
-      const foreignDeploymentToken = await createNanoHostTransportTokenRecord(coreDb, {
-        deploymentId: config.deploymentId,
-        expiresAt: '2026-09-08T00:00:00.000Z',
-        ownerNanoHostIdentityId: config.identityId,
-        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-      });
-      coreDb.sqlite
-        .prepare('UPDATE nanohost_transport_tokens SET deployment_id = ? WHERE token_id = ?')
+      const foreignDeploymentToken = await createNanoHostTransportTokenRecord(
+        nativeFixtures.get(coreDb)!.storage.value,
+        {
+          deploymentId: config.deploymentId,
+          expiresAt: '2026-09-08T00:00:00.000Z',
+          ownerNanoHostIdentityId: config.identityId,
+          responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        }
+      );
+      nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare('UPDATE nanohost_transport_tokens SET deployment_id = ? WHERE token_id = ?')
         .run('deploy_foreign', foreignDeploymentToken.tokenId);
-      const foreignIdentityToken = await createNanoHostTransportTokenRecord(coreDb, {
-        deploymentId: config.deploymentId,
-        expiresAt: '2026-09-08T00:00:00.000Z',
-        ownerNanoHostIdentityId: config.identityId,
-        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-      });
-      coreDb.sqlite
-        .prepare(
+      const foreignIdentityToken = await createNanoHostTransportTokenRecord(
+        nativeFixtures.get(coreDb)!.storage.value,
+        {
+          deploymentId: config.deploymentId,
+          expiresAt: '2026-09-08T00:00:00.000Z',
+          ownerNanoHostIdentityId: config.identityId,
+          responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        }
+      );
+      nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare(
           'UPDATE nanohost_transport_tokens SET owner_nanohost_identity_id = ? WHERE token_id = ?'
         )
         .run('integration_nanohost_foreign', foreignIdentityToken.tokenId);
       expect(
-        (await revokeNanoHostTransportTokenRecord(coreDb, foreignDeploymentToken.tokenId))?.status
+        (
+          await revokeNanoHostTransportTokenRecord(
+            nativeFixtures.get(coreDb)!.storage.value,
+            foreignDeploymentToken.tokenId
+          )
+        )?.status
       ).toBe('revoked');
       expect(
-        (await revokeNanoHostTransportTokenRecord(coreDb, foreignIdentityToken.tokenId))?.status
+        (
+          await revokeNanoHostTransportTokenRecord(
+            nativeFixtures.get(coreDb)!.storage.value,
+            foreignIdentityToken.tokenId
+          )
+        )?.status
       ).toBe('revoked');
-      const foreignTokenHashes = coreDb.sqlite
-        .prepare(
+      const foreignTokenHashes = nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare(
           `SELECT token_hash
            FROM nanohost_transport_tokens
            WHERE token_id IN (?, ?)
@@ -1001,17 +1132,22 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const config = configuredNanoHost(slotRoot);
       insertActiveNanoHostIdentity(coreDb, config.identityId, config.deploymentId);
-      const token = await createNanoHostTransportTokenRecord(coreDb, {
-        deploymentId: config.deploymentId,
-        expiresAt: '2026-09-08T00:00:00.000Z',
-        ownerNanoHostIdentityId: config.identityId,
-        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-      });
-      coreDb.sqlite
-        .prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
+      const token = await createNanoHostTransportTokenRecord(
+        nativeFixtures.get(coreDb)!.storage.value,
+        {
+          deploymentId: config.deploymentId,
+          expiresAt: '2026-09-08T00:00:00.000Z',
+          ownerNanoHostIdentityId: config.identityId,
+          responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        }
+      );
+      nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
         .run(config.identityId);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -1026,15 +1162,21 @@ describe('NanoHost transport App API safe-sink routes', () => {
         dataRoot,
         mode: 'server',
         nanohostTransportSessionAuthority: authority,
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: config },
       });
 
       expect(
-        await verifyNanoHostTransportTokenRecord(coreDb, token.secret, {
-          channel: 'nanohost-transport',
-          now: new Date('2026-08-08T00:01:00.000Z'),
-          source: 'session-admit',
-        })
+        await verifyNanoHostTransportTokenRecord(
+          nativeFixtures.get(coreDb)!.storage.value,
+          token.secret,
+          {
+            channel: 'nanohost-transport',
+            now: new Date('2026-08-08T00:01:00.000Z'),
+            source: 'session-admit',
+          }
+        )
       ).toBeNull();
       const admission = await app.request('/api/nanohost/transport/session/admit', {
         method: 'POST',
@@ -1046,10 +1188,13 @@ describe('NanoHost transport App API safe-sink routes', () => {
       });
       expect(admission.status).toBe(401);
       expect(authority.authoritativeGeneration(config.identityId)).toBeNull();
-      expect(coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()).toEqual([]);
       expect(
-        coreDb.sqlite
-          .prepare(
+        nativeFixtures.get(coreDb)!.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()
+      ).toEqual([]);
+      expect(
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(
             `SELECT last_used_at, last_used_channel, last_used_source
              FROM nanohost_transport_tokens WHERE token_id = ?`
           )
@@ -1069,12 +1214,16 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
       expect(response.status).toBe(500);
       expect(await response.text()).toBe('Internal Server Error');
-      expect(coreDb.sqlite.prepare('SELECT * FROM nanohost_integration_identities').all()).toEqual(
-        []
-      );
       expect(
-        coreDb.sqlite
-          .prepare('SELECT token_id, status, revoked_at FROM nanohost_transport_tokens')
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare('SELECT * FROM nanohost_integration_identities')
+          .all()
+      ).toEqual([]);
+      expect(
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare('SELECT token_id, status, revoked_at FROM nanohost_transport_tokens')
           .all()
       ).toEqual([{ revoked_at: null, status: 'active', token_id: token.tokenId }]);
       expect(
@@ -1095,20 +1244,26 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const config = configuredNanoHost(slotRoot);
       insertActiveNanoHostIdentity(coreDb, config.identityId, config.deploymentId);
-      const retained = await createNanoHostTransportTokenRecord(coreDb, {
-        deploymentId: config.deploymentId,
-        expiresAt: '2026-09-08T00:00:00.000Z',
-        ownerNanoHostIdentityId: config.identityId,
-        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-      });
-      coreDb.sqlite
-        .prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
+      const retained = await createNanoHostTransportTokenRecord(
+        nativeFixtures.get(coreDb)!.storage.value,
+        {
+          deploymentId: config.deploymentId,
+          expiresAt: '2026-09-08T00:00:00.000Z',
+          ownerNanoHostIdentityId: config.identityId,
+          responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        }
+      );
+      nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
         .run(config.identityId);
-      const tokensBefore = coreDb.sqlite
-        .prepare(
+      const tokensBefore = nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare(
           `SELECT token_id, status, revoked_at
            FROM nanohost_transport_tokens ORDER BY token_id`
         )
@@ -1124,6 +1279,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         coreDb,
         dataRoot,
         mode: 'server',
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: config },
       });
 
@@ -1147,8 +1304,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(
-        coreDb.sqlite
-          .prepare(
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(
             `SELECT token_id, status, revoked_at
              FROM nanohost_transport_tokens ORDER BY token_id`
           )
@@ -1179,6 +1337,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
       try {
         applyMigrations(coreDb);
+        const nanoHostStorage = await admitTransportFixture(coreDb);
         insertTokenOwnerUser(coreDb);
         const config = configuredNanoHost(slotRoot);
         const admin = createOpenKitAccessTokenRecord(coreDb, {
@@ -1193,6 +1352,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
           dataRoot,
           mode: 'server',
           nanohostTransportSessionAuthority: createNanoHostTransportSessionAuthority(),
+          nanoHostStorage,
+          enableNanoHostEnrollment: true,
           openKitConfig: { nanohost: config },
         });
         const headers = {
@@ -1216,7 +1377,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         expect(enrolled.status).toBe(201);
 
         if (failure === 'database') {
-          coreDb.sqlite.exec(
+          nativeFixtures.get(coreDb)!.sqlite.exec(
             `CREATE TRIGGER test_fail_nanohost_decommission
              BEFORE UPDATE OF status ON nanohost_transport_tokens
              WHEN NEW.status = 'revoked'
@@ -1247,11 +1408,15 @@ describe('NanoHost transport App API safe-sink routes', () => {
           )
         ).toEqual([]);
 
-        const identity = coreDb.sqlite
-          .prepare('SELECT status FROM nanohost_integration_identities WHERE identity_id = ?')
+        const identity = nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(
+            'SELECT status FROM nanohost_integration_identities WHERE identity_id = ?'
+          )
           .get(config.identityId) as { status: string };
-        const token = coreDb.sqlite
-          .prepare('SELECT status FROM nanohost_transport_tokens')
+        const token = nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare('SELECT status FROM nanohost_transport_tokens')
           .get() as {
           status: string;
         };
@@ -1279,6 +1444,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       writeFileSync(blocked, 'not-a-directory');
       insertActiveNanoHostIdentity(
@@ -1297,6 +1463,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         coreDb,
         dataRoot,
         mode: 'server',
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: {
           nanohost: {
             ...configuredNanoHost(dataRoot),
@@ -1329,8 +1497,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
         )
       );
       const body = (await response.json()) as Record<string, unknown>;
-      const rows = coreDb.sqlite
-        .prepare('SELECT status FROM nanohost_transport_tokens')
+      const rows = nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare('SELECT status FROM nanohost_transport_tokens')
         .all() as Array<{ status: string }>;
 
       expect(response.status).toBeGreaterThanOrEqual(400);
@@ -1355,6 +1524,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
       try {
         applyMigrations(coreDb);
+        const nanoHostStorage = await admitTransportFixture(coreDb);
         insertTokenOwnerUser(coreDb);
         const config = configuredNanoHost(slotRoot);
         const retainedIdentityId = otherIdentity ? 'integration_nanohost_other' : config.identityId;
@@ -1362,17 +1532,22 @@ describe('NanoHost transport App API safe-sink routes', () => {
           ? 'dep_00000000-0000-7706-9387-f2c9db8deac7'
           : config.deploymentId;
         insertActiveNanoHostIdentity(coreDb, retainedIdentityId, retainedDeploymentId);
-        const retained = await createNanoHostTransportTokenRecord(coreDb, {
-          deploymentId: retainedDeploymentId,
-          expiresAt: '2026-09-08T00:00:00.000Z',
-          ownerNanoHostIdentityId: retainedIdentityId,
-          responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-        });
-        coreDb.sqlite
-          .prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
+        const retained = await createNanoHostTransportTokenRecord(
+          nativeFixtures.get(coreDb)!.storage.value,
+          {
+            deploymentId: retainedDeploymentId,
+            expiresAt: '2026-09-08T00:00:00.000Z',
+            ownerNanoHostIdentityId: retainedIdentityId,
+            responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          }
+        );
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
           .run(retainedIdentityId);
-        const historyBefore = coreDb.sqlite
-          .prepare(
+        const historyBefore = nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(
             `SELECT token_id, status, owner_nanohost_identity_id, deployment_id
              FROM nanohost_transport_tokens ORDER BY token_id`
           )
@@ -1388,6 +1563,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
           coreDb,
           dataRoot,
           mode: 'server',
+          nanoHostStorage,
+          enableNanoHostEnrollment: true,
           openKitConfig: { nanohost: config },
         });
         const response = await app.request(
@@ -1412,11 +1589,15 @@ describe('NanoHost transport App API safe-sink routes', () => {
         expect(response.status).toBeGreaterThanOrEqual(400);
         expect(JSON.stringify(body)).not.toMatch(/okt_/);
         expect(
-          coreDb.sqlite.prepare('SELECT identity_id FROM nanohost_integration_identities').all()
+          nativeFixtures
+            .get(coreDb)!
+            .sqlite.prepare('SELECT identity_id FROM nanohost_integration_identities')
+            .all()
         ).toEqual([]);
         expect(
-          coreDb.sqlite
-            .prepare(
+          nativeFixtures
+            .get(coreDb)!
+            .sqlite.prepare(
               `SELECT token_id, status, owner_nanohost_identity_id, deployment_id
                FROM nanohost_transport_tokens ORDER BY token_id`
             )
@@ -1446,6 +1627,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
@@ -1460,6 +1642,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         dataRoot,
         mode: 'server',
         nanohostTransportSessionAuthority: createNanoHostTransportSessionAuthority(),
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: config },
       });
       const enrolled = await app.request(
@@ -1533,6 +1717,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
@@ -1547,6 +1732,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         dataRoot,
         mode: 'server',
         nanohostTransportSessionAuthority: createNanoHostTransportSessionAuthority(),
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: config },
       });
       const headers = {
@@ -1572,8 +1759,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const first = await enroll();
       expect(first.status).toBe(201);
       const firstTokenId = ((await first.json()) as { record: { tokenId: string } }).record.tokenId;
-      const original = coreDb.sqlite
-        .prepare(
+      const original = nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare(
           `SELECT identity_id, deployment_id, status, created_at, decommissioned_at
            FROM nanohost_integration_identities`
         )
@@ -1602,8 +1790,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(reenrolled.status).toBe(201);
       expect(reenrollBody.record.tokenId).not.toBe(firstTokenId);
       expect(
-        coreDb.sqlite
-          .prepare(
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(
             `SELECT identity_id, deployment_id, status, created_at, decommissioned_at
              FROM nanohost_integration_identities`
           )
@@ -1618,8 +1807,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
         },
       ]);
       expect(
-        coreDb.sqlite
-          .prepare(
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(
             `SELECT token_id, status FROM nanohost_transport_tokens ORDER BY issued_at, token_id`
           )
           .all()
@@ -1641,6 +1831,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 
     try {
       applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
       insertTokenOwnerUser(coreDb);
       const config = configuredNanoHost(slotRoot);
       const admin = createOpenKitAccessTokenRecord(coreDb, {
@@ -1649,8 +1840,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      coreDb.sqlite
-        .prepare(
+      nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare(
           `INSERT INTO nanohost_integration_identities (
             identity_id, deployment_id, status, created_at, decommissioned_at
           ) VALUES (?, ?, 'decommissioned', ?, ?)`
@@ -1673,9 +1865,16 @@ describe('NanoHost transport App API safe-sink routes', () => {
         this: Worker,
         ...args: Parameters<Worker['postMessage']>
       ) {
-        const message = args[0] as { operation?: string; input?: { kind?: string } };
+        const message = args[0] as {
+          operation?: string;
+          mutation?: { kind: string; input: { kind?: string } };
+        };
         // The real native enrollment is posted only after the exclusive slot write.
-        if (message.operation === 'nanohost-transport' && message.input?.kind === 'enroll') {
+        if (
+          message.operation === 'nanohost-owner' &&
+          message.mutation?.kind === 'transport' &&
+          message.mutation.input.kind === 'enroll'
+        ) {
           expect(existsSync(join(slotRoot, 'A.token'))).toBe(true);
           writeFileSync(join(slotRoot, 'A.meta'), foreignCompanion, { mode: 0o600 });
         }
@@ -1688,6 +1887,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
         coreDb,
         dataRoot,
         mode: 'server',
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
         openKitConfig: { nanohost: config },
       });
       const response = await app.request(
@@ -1715,8 +1916,11 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(existsSync(join(slotRoot, 'A.meta'))).toBe(true);
       expect(readFileSync(join(slotRoot, 'A.meta'), 'utf8')).toBe(foreignCompanion);
       expect(
-        coreDb.sqlite
-          .prepare(`SELECT identity_id, deployment_id, status FROM nanohost_integration_identities`)
+        nativeFixtures
+          .get(coreDb)!
+          .sqlite.prepare(
+            `SELECT identity_id, deployment_id, status FROM nanohost_integration_identities`
+          )
           .all()
       ).toEqual([
         {
@@ -1734,13 +1938,17 @@ describe('NanoHost transport App API safe-sink routes', () => {
 });
 
 /** Supplies explicit deployment authority, configured sinks and a real typed client for the cutover checks. */
-function administrationFixture(acceptingProductWork = true) {
+async function administrationFixture(acceptingProductWork = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-projections-'));
   const slotRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-projection-slots-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  const nanoHostStorage = await admitTransportFixture(coreDb);
   insertTokenOwnerUser(coreDb);
-  const config = configuredNanoHost(slotRoot);
+  const config = {
+    ...configuredNanoHost(slotRoot),
+    deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+  };
   const admin = createOpenKitAccessTokenRecord(coreDb, {
     expiresAt: '2999-01-01T00:00:00.000Z',
     ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -1753,6 +1961,8 @@ function administrationFixture(acceptingProductWork = true) {
     coreDb,
     dataRoot,
     mode: 'server',
+    nanoHostStorage,
+    enableNanoHostEnrollment: true,
     openKitConfig: { nanohost: config },
     getBootReadiness: () => ({ ...createBootReadinessSnapshot(), acceptingProductWork }),
   });
@@ -1785,27 +1995,31 @@ function administrationFixture(acceptingProductWork = true) {
       isError: body.result.isError === true,
     };
   }
-  return { dataRoot, slotRoot, coreDb, config, admin, headers, app, client, mcp };
+  return { dataRoot, slotRoot, coreDb, config, admin, headers, app, client, mcp, nanoHostStorage };
 }
 
 describe('definition-derived deployment administration cutover', () => {
   it.each(['close', 'restart', 'revoke'] as const)(
     'projects the stored physical Epoch through native, HTTP, MCP and CLI reads after %s',
     async (loss) => {
-      const f = administrationFixture();
+      const f = await administrationFixture();
       try {
         const physicalEpoch = '0123456789abcdef'.repeat(4);
         insertActiveNanoHostIdentity(f.coreDb, f.config.identityId, f.config.deploymentId);
-        const transport = await createNanoHostTransportTokenRecord(f.coreDb, {
-          deploymentId: f.config.deploymentId,
-          expiresAt: '2999-01-01T00:00:00.000Z',
-          ownerNanoHostIdentityId: f.config.identityId,
-          responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-        });
+        const transport = await createNanoHostTransportTokenRecord(
+          nativeFixtures.get(f.coreDb)!.storage.value,
+          {
+            deploymentId: f.config.deploymentId,
+            expiresAt: '2999-01-01T00:00:00.000Z',
+            ownerNanoHostIdentityId: f.config.identityId,
+            responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          }
+        );
         const native = createNanoHostOperationImplementations({
           coreDb: f.coreDb,
           mode: 'server',
           nanoHostConfig: f.config,
+          readNanoHostTarget: createNanoHostCoreReads(f.nanoHostStorage.value.owner).readTarget,
         });
         // @ts-expect-error The bundled CLI catalog is JavaScript.
         const { operationCatalog } = await import('../../../../skills/openkit-operations.mjs');
@@ -1814,11 +2028,13 @@ describe('definition-derived deployment administration cutover', () => {
         )!;
         /** Checks all real public projections without changing the stored observation or credential owner. */
         async function expectObservation(expected: Record<string, unknown>): Promise<void> {
-          const targetBefore = f.coreDb.sqlite
-            .prepare('SELECT * FROM nanohost_runtime_targets')
+          const targetBefore = nativeFixtures
+            .get(f.coreDb)!
+            .sqlite.prepare('SELECT * FROM nanohost_runtime_targets')
             .all();
-          const tokensBefore = f.coreDb.sqlite
-            .prepare('SELECT * FROM nanohost_transport_tokens')
+          const tokensBefore = nativeFixtures
+            .get(f.coreDb)!
+            .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
             .all();
           expect(native['nanohost.runtime-target']()).toEqual(expected);
           expect(await f.client.operations['nanohost.runtime-target']({})).toEqual(expected);
@@ -1829,12 +2045,18 @@ describe('definition-derived deployment administration cutover', () => {
             result: expected,
           });
           expect(await cli.handler({ client: f.client }, {})).toEqual(expected);
-          expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()).toEqual(
-            targetBefore
-          );
-          expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
-            tokensBefore
-          );
+          expect(
+            nativeFixtures
+              .get(f.coreDb)!
+              .sqlite.prepare('SELECT * FROM nanohost_runtime_targets')
+              .all()
+          ).toEqual(targetBefore);
+          expect(
+            nativeFixtures
+              .get(f.coreDb)!
+              .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+              .all()
+          ).toEqual(tokensBefore);
           expect(readdirSync(f.slotRoot)).toEqual([]);
         }
         const identity = {
@@ -1842,11 +2064,11 @@ describe('definition-derived deployment administration cutover', () => {
           identityId: f.config.identityId,
           deploymentId: f.config.deploymentId,
         };
-        const first = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+        const first = await allocateFixtureTarget(f.coreDb, {
           ...identity,
           observedAt: '2026-10-03T00:00:00.000Z',
         });
-        await upsertNanoHostRuntimeTarget(f.coreDb, {
+        await readyFixtureTarget(f.coreDb, {
           ...identity,
           connectionGeneration: first.connectionGeneration,
           predecessorFenced: true,
@@ -1868,7 +2090,7 @@ describe('definition-derived deployment administration cutover', () => {
         await expectObservation(ready);
 
         // Allocation loses readiness until the existing owner accepts the successor's proof.
-        const successor = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+        const successor = await allocateFixtureTarget(f.coreDb, {
           ...identity,
           observedAt: '2026-10-03T00:00:02.000Z',
         });
@@ -1882,13 +2104,13 @@ describe('definition-derived deployment administration cutover', () => {
           physicalEpoch: null,
           observedAt: '2026-10-03T00:00:02.000Z',
         });
-        await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+        await closeFixtureTarget(f.coreDb, {
           targetId: identity.targetId,
           closedGeneration: first.connectionGeneration,
           authoritativeGeneration: successor.connectionGeneration,
           observedAt: '2026-10-03T00:00:03.000Z',
         });
-        await upsertNanoHostRuntimeTarget(f.coreDb, {
+        await readyFixtureTarget(f.coreDb, {
           ...identity,
           connectionGeneration: successor.connectionGeneration,
           predecessorFenced: true,
@@ -1897,7 +2119,7 @@ describe('definition-derived deployment administration cutover', () => {
           physicalEpoch,
           observedAt: '2026-10-03T00:00:04.000Z',
         });
-        await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+        await closeFixtureTarget(f.coreDb, {
           targetId: identity.targetId,
           closedGeneration: first.connectionGeneration,
           authoritativeGeneration: successor.connectionGeneration,
@@ -1911,21 +2133,22 @@ describe('definition-derived deployment administration cutover', () => {
 
         let observedAt = '2026-10-03T00:00:06.000Z';
         if (loss === 'close') {
-          await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+          await closeFixtureTarget(f.coreDb, {
             targetId: identity.targetId,
             closedGeneration: successor.connectionGeneration,
             authoritativeGeneration: null,
             observedAt,
           });
         } else if (loss === 'restart') {
-          await fenceNanoHostRuntimeTargetAfterRestart(f.coreDb, observedAt);
+          await transitionFixtureTarget(f.coreDb, { kind: 'restart', observedAt });
         } else {
           await f.client.operations['credential.revoke']({
             kind: 'nanohost-transport',
             id: transport.tokenId,
           });
-          const stored = f.coreDb.sqlite
-            .prepare('SELECT observed_at FROM nanohost_runtime_targets')
+          const stored = nativeFixtures
+            .get(f.coreDb)!
+            .sqlite.prepare('SELECT observed_at FROM nanohost_runtime_targets')
             .get() as { observed_at: string };
           observedAt = stored.observed_at;
           expect(Date.parse(observedAt)).not.toBeNaN();
@@ -1947,7 +2170,7 @@ describe('definition-derived deployment administration cutover', () => {
   );
 
   it('refuses caller-selected RuntimeTarget input and non-administrator reads without exposing a stored Epoch', async () => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
       const physicalEpoch = 'fedcba9876543210'.repeat(4);
       const identity = {
@@ -1955,11 +2178,11 @@ describe('definition-derived deployment administration cutover', () => {
         identityId: f.config.identityId,
         deploymentId: f.config.deploymentId,
       };
-      const target = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+      const target = await allocateFixtureTarget(f.coreDb, {
         ...identity,
         observedAt: '2026-10-03T00:00:00.000Z',
       });
-      await upsertNanoHostRuntimeTarget(f.coreDb, {
+      await readyFixtureTarget(f.coreDb, {
         ...identity,
         connectionGeneration: target.connectionGeneration,
         predecessorFenced: true,
@@ -1968,7 +2191,10 @@ describe('definition-derived deployment administration cutover', () => {
         physicalEpoch,
         observedAt: '2026-10-03T00:00:01.000Z',
       });
-      const targetBefore = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all();
+      const targetBefore = nativeFixtures
+        .get(f.coreDb)!
+        .sqlite.prepare('SELECT * FROM nanohost_runtime_targets')
+        .all();
       for (const input of [
         { targetId: f.config.identityId },
         { identityId: f.config.identityId },
@@ -1997,13 +2223,19 @@ describe('definition-derived deployment administration cutover', () => {
         workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       });
       insertActiveNanoHostIdentity(f.coreDb, f.config.identityId, f.config.deploymentId);
-      const transport = await createNanoHostTransportTokenRecord(f.coreDb, {
-        deploymentId: f.config.deploymentId,
-        expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerNanoHostIdentityId: f.config.identityId,
-        responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-      });
-      const tokensBefore = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
+      const transport = await createNanoHostTransportTokenRecord(
+        nativeFixtures.get(f.coreDb)!.storage.value,
+        {
+          deploymentId: f.config.deploymentId,
+          expiresAt: '2999-01-01T00:00:00.000Z',
+          ownerNanoHostIdentityId: f.config.identityId,
+          responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        }
+      );
+      const tokensBefore = nativeFixtures
+        .get(f.coreDb)!
+        .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+        .all();
       for (const denied of [
         { headers: {}, status: 401 },
         { headers: { authorization: `Bearer ${readonly.secret}` }, status: 403 },
@@ -2023,12 +2255,15 @@ describe('definition-derived deployment administration cutover', () => {
           expect(body).not.toContain(hidden);
         }
       }
-      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()).toEqual(
-        targetBefore
-      );
-      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
-        tokensBefore
-      );
+      expect(
+        nativeFixtures.get(f.coreDb)!.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()
+      ).toEqual(targetBefore);
+      expect(
+        nativeFixtures
+          .get(f.coreDb)!
+          .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+          .all()
+      ).toEqual(tokensBefore);
       expect(readdirSync(f.slotRoot)).toEqual([]);
     } finally {
       await shutdownControlStoreWorkerClient();
@@ -2037,10 +2272,10 @@ describe('definition-derived deployment administration cutover', () => {
   });
 
   it('executes the family across client and MCP with redacted sinks, derived CLI metadata and CLI inventory execution', async () => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
       // The internal Tool is still the fixed RuntimeTarget read; growing the tables never selects enrollment.
-      const generation = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+      const generation = await allocateFixtureTarget(f.coreDb, {
         targetId: f.config.identityId,
         identityId: f.config.identityId,
         deploymentId: f.config.deploymentId,
@@ -2178,9 +2413,12 @@ describe('definition-derived deployment administration cutover', () => {
   });
 
   it('removes every authenticated former binding without touching Token rows or sink files', async () => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
-      const before = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
+      const before = nativeFixtures
+        .get(f.coreDb)!
+        .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+        .all();
       for (const [method, path] of [
         ['POST', '/api/app/nanohost/enroll'],
         ['GET', '/api/app/nanohost/runtime-target'],
@@ -2202,9 +2440,12 @@ describe('definition-derived deployment administration cutover', () => {
         expect(response.status, `${method} ${path}`).toBe(404);
         expect(await response.text()).toBe('404 Not Found');
       }
-      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
-        before
-      );
+      expect(
+        nativeFixtures
+          .get(f.coreDb)!
+          .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+          .all()
+      ).toEqual(before);
       expect(readdirSync(f.slotRoot)).toEqual([]);
       expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
     } finally {
@@ -2214,7 +2455,7 @@ describe('definition-derived deployment administration cutover', () => {
   });
 
   it('gates every new HTTP and MCP mutation before Token, identity, sink or backup effects', async () => {
-    const f = administrationFixture(false);
+    const f = await administrationFixture(false);
     try {
       for (const [id, input] of Object.entries({
         'nanohost.enroll': { expiresAt: '2999-01-01T00:00:00.000Z' },
@@ -2236,9 +2477,17 @@ describe('definition-derived deployment administration cutover', () => {
           result: { code: 'product_work_unavailable' },
         });
       }
-      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual([]);
       expect(
-        f.coreDb.sqlite.prepare('SELECT * FROM nanohost_integration_identities').all()
+        nativeFixtures
+          .get(f.coreDb)!
+          .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+          .all()
+      ).toEqual([]);
+      expect(
+        nativeFixtures
+          .get(f.coreDb)!
+          .sqlite.prepare('SELECT * FROM nanohost_integration_identities')
+          .all()
       ).toEqual([]);
       expect(readdirSync(f.slotRoot)).toEqual([]);
       expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
@@ -2252,7 +2501,7 @@ describe('definition-derived deployment administration cutover', () => {
   });
 
   it('refuses every operation under a readonly bearer before changing retained Token rows, identity or sinks', async () => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
       const enrolled = await f.client.operations['nanohost.enroll']({
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -2264,9 +2513,13 @@ describe('definition-derived deployment administration cutover', () => {
         workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       });
       const headers = { authorization: `Bearer ${readonly.secret}` };
-      const tokensBefore = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
-      const identitiesBefore = f.coreDb.sqlite
-        .prepare('SELECT * FROM nanohost_integration_identities')
+      const tokensBefore = nativeFixtures
+        .get(f.coreDb)!
+        .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+        .all();
+      const identitiesBefore = nativeFixtures
+        .get(f.coreDb)!
+        .sqlite.prepare('SELECT * FROM nanohost_integration_identities')
         .all();
       const sinkBefore = readFileSync(f.config.credentialSlots.A.secretPath);
       const companionBefore = readFileSync(f.config.credentialSlots.A.companionPath);
@@ -2304,11 +2557,17 @@ describe('definition-derived deployment administration cutover', () => {
           },
         });
       }
-      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
-        tokensBefore
-      );
       expect(
-        f.coreDb.sqlite.prepare('SELECT * FROM nanohost_integration_identities').all()
+        nativeFixtures
+          .get(f.coreDb)!
+          .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+          .all()
+      ).toEqual(tokensBefore);
+      expect(
+        nativeFixtures
+          .get(f.coreDb)!
+          .sqlite.prepare('SELECT * FROM nanohost_integration_identities')
+          .all()
       ).toEqual(identitiesBefore);
       expect(readFileSync(f.config.credentialSlots.A.secretPath)).toEqual(sinkBefore);
       expect(readFileSync(f.config.credentialSlots.A.companionPath)).toEqual(companionBefore);
@@ -2326,15 +2585,18 @@ describe('definition-derived deployment administration cutover', () => {
   ])(
     'preserves the $refusal rotation refusal on HTTP and MCP without changing Token rows or slot bytes',
     async ({ refusal, status, code }) => {
-      const f = administrationFixture();
+      const f = await administrationFixture();
       try {
         insertActiveNanoHostIdentity(f.coreDb, f.config.identityId, f.config.deploymentId);
-        const retained = await createNanoHostTransportTokenRecord(f.coreDb, {
-          deploymentId: f.config.deploymentId,
-          expiresAt: '2999-01-01T00:00:00.000Z',
-          ownerNanoHostIdentityId: f.config.identityId,
-          responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-        });
+        const retained = await createNanoHostTransportTokenRecord(
+          nativeFixtures.get(f.coreDb)!.storage.value,
+          {
+            deploymentId: f.config.deploymentId,
+            expiresAt: '2999-01-01T00:00:00.000Z',
+            ownerNanoHostIdentityId: f.config.identityId,
+            responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          }
+        );
         const tokenId =
           refusal === 'unproved-slot'
             ? retained.tokenId
@@ -2352,8 +2614,9 @@ describe('definition-derived deployment administration cutover', () => {
           ].join('\n'),
           { mode: 0o600 }
         );
-        const tokensBefore = f.coreDb.sqlite
-          .prepare('SELECT * FROM nanohost_transport_tokens')
+        const tokensBefore = nativeFixtures
+          .get(f.coreDb)!
+          .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
           .all();
         const secretBefore = readFileSync(f.config.credentialSlots.A.secretPath);
         const companionBefore = readFileSync(f.config.credentialSlots.A.companionPath);
@@ -2362,18 +2625,24 @@ describe('definition-derived deployment administration cutover', () => {
         );
         expect(response.status).toBe(status);
         expect(await response.json()).toMatchObject({ code });
-        expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
-          tokensBefore
-        );
+        expect(
+          nativeFixtures
+            .get(f.coreDb)!
+            .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+            .all()
+        ).toEqual(tokensBefore);
         expect(readFileSync(f.config.credentialSlots.A.secretPath)).toEqual(secretBefore);
         expect(readFileSync(f.config.credentialSlots.A.companionPath)).toEqual(companionBefore);
         expect(readdirSync(f.slotRoot).sort()).toEqual(['A.meta', 'A.token']);
         expect(
           await f.mcp('openkit_call', { operation: 'nanohost.token-rotate', input: { tokenId } })
         ).toMatchObject({ isError: true, result: { code } });
-        expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
-          tokensBefore
-        );
+        expect(
+          nativeFixtures
+            .get(f.coreDb)!
+            .sqlite.prepare('SELECT * FROM nanohost_transport_tokens')
+            .all()
+        ).toEqual(tokensBefore);
         expect(readFileSync(f.config.credentialSlots.A.secretPath)).toEqual(secretBefore);
         expect(readFileSync(f.config.credentialSlots.A.companionPath)).toEqual(companionBefore);
         expect(readdirSync(f.slotRoot).sort()).toEqual(['A.meta', 'A.token']);
