@@ -274,7 +274,12 @@ import {
   NanoHostOwnerRefusalSchema,
   readControlSchemaApplicationInput,
   type ServerOwnerDescriptor,
+  type ServerWorkOwnerMutation,
 } from './control-store-worker-protocol.js';
+import {
+  applyServerWorkOwnerMutation,
+  serverWorkOwnerSupports,
+} from './control-store-worker-server-work.js';
 import { CoreJournalRefusal } from './core-journal-codecs.js';
 import { applyControlCoreJournal } from './core-journal-native.js';
 import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
@@ -472,6 +477,7 @@ type WriteCommand = Extract<
       | 'runtime-policy-publication'
       | 'communication-owner'
       | 'nanohost-owner'
+      | 'server-work-owner'
       | 'nanohost-transport'
       | 'worker-control-evidence'
       | 'generative-presentation'
@@ -1517,6 +1523,25 @@ function applyNanoHostOwnerMutation(
         value: applyControlWorkerStorageBinding({ sqlite }, mutation.input),
       };
   }
+}
+
+/** Verifies the native Server-work opening before touching its original rows. */
+function runServerWorkOwnerMutation(
+  owner: OwnedDatabase,
+  openingRequestId: number,
+  mutation: ServerWorkOwnerMutation
+) {
+  const file = lstatSync(owner.path, { throwIfNoEntry: false });
+  if (
+    owner.serverOwner !== 'server-work' ||
+    owner.openingRequestId !== openingRequestId ||
+    !file?.isFile() ||
+    file.nlink !== 1 ||
+    `${file.dev}:${file.ino}` !== owner.identity ||
+    realpathSync(owner.path) !== owner.path
+  )
+    throw new ServerOwnerAdmissionError('recovery-required');
+  return applyServerWorkOwnerMutation(owner.sqlite, mutation);
 }
 
 /** Clears only this owner's scheduling handles; no other Workspace is paused. */
@@ -3482,6 +3507,14 @@ function flush(owner: OwnedDatabase): void {
               operation: 'vault',
               result,
             };
+          } else if (request.operation === 'server-work-owner') {
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'server-work-owner',
+              result: runServerWorkOwnerMutation(owner, request.openingRequestId, request.mutation),
+            };
           } else if (request.operation === 'nanohost-owner') {
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -4715,6 +4748,14 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       reply(failure(value.id, 'not-open'));
       return;
     }
+    const splitMutation =
+      value.operation === 'communication-owner'
+        ? 'communication'
+        : value.operation === 'server-work-owner'
+          ? 'server-work'
+          : value.operation === 'nanohost-owner'
+            ? 'nanohost'
+            : undefined;
     if (
       value.operation === 'communication-owner' &&
       !CommunicationWriterCommandSchema.safeParse(value.mutation).success
@@ -4723,16 +4764,18 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       return;
     }
     if (
-      value.operation === 'communication-owner'
-        ? owner.serverOwner !== 'communication'
-        : value.operation === 'nanohost-owner'
-          ? owner.serverOwner !== 'nanohost'
-          : owner.serverOwner &&
-            value.operation !== 'close' &&
-            value.operation !== 'checkpoint' &&
-            value.operation !== 'reclaim'
+      splitMutation
+        ? owner.serverOwner !== splitMutation
+        : owner.serverOwner &&
+          value.operation !== 'close' &&
+          value.operation !== 'checkpoint' &&
+          value.operation !== 'reclaim'
     ) {
       reply(failure(value.id, 'precondition'));
+      return;
+    }
+    if (value.operation === 'server-work-owner' && !serverWorkOwnerSupports(value.mutation)) {
+      reply(failure(value.id, 'owner-unsupported'));
       return;
     }
     if (
@@ -4770,6 +4813,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'vault' ||
       value.operation === 'communication-owner' ||
       value.operation === 'nanohost-owner' ||
+      value.operation === 'server-work-owner' ||
       value.operation === 'nanohost-transport' ||
       value.operation === 'worker-control-evidence' ||
       value.operation === 'generative-presentation' ||

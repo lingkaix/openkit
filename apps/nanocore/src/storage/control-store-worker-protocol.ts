@@ -5,9 +5,12 @@ import {
   ApplyKnowledgeSchemaResponseSchema,
   GoalViewSchema,
   PreviewKnowledgeSchemaResponseSchema,
+  type ServerEvidenceBundleRecord,
+  ServerEvidenceBundleRecordSchema,
 } from '@openkit/app-api-schemas';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import {
+  ActorRefSchema,
   AuditEventSchema,
   deriveEntityId,
   ItemSchema,
@@ -300,6 +303,11 @@ import {
   type ControlServerAdminTokenDefault,
   ControlServerAdminTokenDefaultSchema,
 } from './server-admin-token-default-codecs.js';
+import type {
+  ServerCallAdmission,
+  ServerWorkIntent,
+  ServerWorkReceipt,
+} from './server-work-port.js';
 import type { StorageResult } from './storage-owner.js';
 import {
   type ControlThreadReadMembershipWire,
@@ -913,6 +921,104 @@ export const NanoHostOwnerRefusalSchema = z.union([
   ControlWorkerStorageRefusalSchema.extend(nanoHostOwnerOperation),
 ]);
 
+const serverWorkDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const serverWorkIntentFields = {
+  deploymentId: z.string().min(1),
+  sourceOwner: z.literal('server-work'),
+  occurrenceKey: z.string().min(1),
+  requestId: z.string().min(1),
+  expectedGeneration: z.string().min(1).nullable(),
+  inputDigest: serverWorkDigest,
+};
+const serverWorkTarget = z.strictObject({
+  actor: ActorRefSchema,
+  credentialRef: z.string().min(1).nullable(),
+  recordRef: z.string().min(1),
+});
+const serverThreadTarget = serverWorkTarget.extend({ threadId: z.string().min(1) });
+const serverCallTarget = serverWorkTarget.extend({ callId: z.string().min(1) });
+const serverCallAdmission = z.strictObject({
+  ...serverWorkIntentFields,
+  verb: z.literal('admit-call'),
+  target: serverCallTarget.extend({
+    threadId: z.string().min(1).nullable(),
+    turnId: z.string().min(1).nullable(),
+    routeRef: z.string().min(1),
+    budgetRef: z.string().min(1).nullable(),
+  }),
+});
+const serverWorkIntent = z.union([
+  z.strictObject({
+    ...serverWorkIntentFields,
+    verb: z.literal('admit-thread'),
+    target: serverThreadTarget,
+  }),
+  z.strictObject({
+    ...serverWorkIntentFields,
+    verb: z.enum(['admit-turn', 'settle-turn']),
+    target: serverThreadTarget.extend({ turnId: z.string().min(1) }),
+  }),
+  serverCallAdmission,
+  z.strictObject({
+    ...serverWorkIntentFields,
+    verb: z.enum(['settle-call', 'settle-usage']),
+    target: serverCallTarget,
+  }),
+]);
+const serverWorkAppliedReceipt = z.strictObject({
+  intent: serverWorkIntent,
+  receiptDigest: serverWorkDigest,
+  disposition: z.literal('applied'),
+  result: z.strictObject({ decisionRef: z.string().min(1) }),
+});
+const serverWorkReceipt = z.discriminatedUnion('disposition', [
+  serverWorkAppliedReceipt,
+  z.strictObject({
+    intent: serverWorkIntent,
+    receiptDigest: serverWorkDigest,
+    disposition: z.literal('refused'),
+    reason: z.string().min(1),
+  }),
+]);
+const serverWorkOwnerMutationSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('stage'),
+    intent: serverWorkIntent,
+    payload: z.string().max(CONTROL_PRODUCT_LIMITS.payloadBytes),
+  }),
+  z.strictObject({ kind: z.literal('settle'), receipt: serverWorkReceipt }),
+  z.strictObject({
+    kind: z.literal('claim-contact'),
+    receipt: serverWorkAppliedReceipt.extend({ intent: serverCallAdmission }),
+  }),
+  z.strictObject({
+    kind: z.literal('publish-containment'),
+    record: ServerEvidenceBundleRecordSchema.extend({ rawEvidenceRefs: z.tuple([]) }),
+  }),
+]);
+
+export type ServerWorkOwnerMutation =
+  | { readonly kind: 'stage'; readonly intent: ServerWorkIntent; readonly payload: string }
+  | { readonly kind: 'settle'; readonly receipt: ServerWorkReceipt }
+  | {
+      readonly kind: 'claim-contact';
+      readonly receipt: Extract<ServerWorkReceipt<ServerCallAdmission>, { disposition: 'applied' }>;
+    }
+  | { readonly kind: 'publish-containment'; readonly record: ServerEvidenceBundleRecord };
+
+const serverWorkOwnerResultSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('stage'), value: z.null() }),
+  z.strictObject({ kind: z.literal('settle'), value: z.null() }),
+  z.strictObject({ kind: z.literal('publish-containment'), value: z.null() }),
+  z.strictObject({
+    kind: z.literal('claim-contact'),
+    value: z.strictObject({ state: z.enum(['claimed-now', 'refused', 'inspect-original']) }),
+  }),
+]);
+
+/** One result from the original Server work mutation's covering FULL commit. */
+export type ServerWorkOwnerMutationResult = z.infer<typeof serverWorkOwnerResultSchema>;
+
 /**
  * Trusted internal database-worker requests.
  *
@@ -1014,6 +1120,11 @@ export type ControlWorkerCommand =
           readonly policyRead?: true;
         }
       | { readonly operation: 'nanohost-transport'; readonly input: ControlNanoHostTransportInput }
+      | {
+          readonly operation: 'server-work-owner';
+          readonly openingRequestId: number;
+          readonly mutation: ServerWorkOwnerMutation;
+        }
       | {
           readonly operation: 'nanohost-owner';
           readonly openingRequestId: number;
@@ -1436,6 +1547,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'recovery-safety';
       readonly result: ControlRecoverySafetyResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'server-work-owner';
+      readonly result: ServerWorkOwnerMutationResult;
     }
   | {
       readonly status: 'ok';
@@ -2022,6 +2138,11 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'runtime-policy-publication')
     return RuntimePolicyPublicationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'vault') return ControlVaultResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'server-work-owner')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      serverWorkOwnerResultSchema.safeParse(reply.result).success
+    );
   if (reply.operation === 'nanohost-owner')
     return (
       exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
@@ -2647,6 +2768,25 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       boundedInput = { kind: parsed.data.kind, record };
     }
     return Buffer.byteLength(JSON.stringify(boundedInput)) <= CONTROL_PRODUCT_LIMITS.payloadBytes;
+  }
+  if (value.operation === 'server-work-owner') {
+    if (
+      !exactFields(value, [...scoped, 'openingRequestId', 'mutation']) ||
+      !Number.isSafeInteger(value.openingRequestId) ||
+      (value.openingRequestId as number) < 0
+    )
+      return false;
+    const mutation = serverWorkOwnerMutationSchema.safeParse(value.mutation);
+    if (!mutation.success) return false;
+    if (mutation.data.kind === 'stage') {
+      // Bound the original UTF-8 draft separately from the envelope's JSON escaping.
+      const { payload, ...metadata } = mutation.data;
+      return (
+        Buffer.byteLength(payload) <= CONTROL_PRODUCT_LIMITS.payloadBytes &&
+        Buffer.byteLength(JSON.stringify(metadata)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+      );
+    }
+    return Buffer.byteLength(JSON.stringify(mutation.data)) <= CONTROL_PRODUCT_LIMITS.payloadBytes;
   }
   if (value.operation === 'nanohost-owner')
     return (
