@@ -1,6 +1,7 @@
 import { ActorRefSchema, PolicyDocumentV1Schema, WorkspaceIdSchema } from '@openkit/protocol';
 import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
+import { WorkerImageSettlementSchema } from '../runtime/worker-image-settlements-records.js';
 
 const text = z.string().min(1);
 const stepRef = z
@@ -11,6 +12,28 @@ const stepRef = z
     stepId: text,
   })
   .strict();
+const imageTarget = z
+  .object({
+    targetId: text,
+    identityId: text,
+    deploymentId: text,
+    connectionGeneration: z.number().int().positive().safe(),
+    physicalEpoch: text,
+  })
+  .strict();
+
+/** Exact result frame for the original acquisition under the current admitted NanoHost read. */
+export const ControlCoreImageResultSchema = z
+  .object({
+    kind: z.literal('image-result'),
+    ref: stepRef,
+    settlement: WorkerImageSettlementSchema.extend({ operation: z.literal('image.acquire') }),
+    target: imageTarget,
+  })
+  .strict();
+
+export type ControlCoreImageResult = z.infer<typeof ControlCoreImageResultSchema>;
+
 /** Release-authored bounds are part of the fixed reviewed template, never operator configuration. */
 export const SECURITY_CONTAINMENT_LIMITS = Object.freeze({
   version: 'containment/v1',
@@ -91,15 +114,7 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
       kind: z.literal('image-intent'),
       intentJson: text,
       processWitness: text,
-      target: z
-        .object({
-          targetId: text,
-          identityId: text,
-          deploymentId: text,
-          connectionGeneration: z.number().int().positive().safe(),
-          physicalEpoch: text,
-        })
-        .strict(),
+      target: imageTarget,
     })
     .strict(),
   z.object({ kind: z.literal('image-abandon'), ref: stepRef, accepted: z.boolean() }).strict(),
@@ -173,7 +188,7 @@ export function readCoreJournalLineage(inputRefs: readonly string[]): WorkerLine
 export class CoreJournalRefusal extends Error {
   constructor(
     message: string,
-    readonly reasonCode?: 'idle_cleanup_result_only'
+    readonly reasonCode?: 'idle_cleanup_result_only' | 'image_result_conflict'
   ) {
     super(message);
   }
@@ -185,6 +200,6 @@ export const ControlCoreJournalRefusalSchema = z
     code: z.literal('core_journal_refused'),
     message: text,
     status: z.literal(409),
-    reasonCode: z.literal('idle_cleanup_result_only').optional(),
+    reasonCode: z.enum(['idle_cleanup_result_only', 'image_result_conflict']).optional(),
   })
   .strict();
