@@ -10,7 +10,7 @@ import type { CoreDb } from './db.js';
 import type { ControlWorkerImageInput } from './worker-image-codecs.js';
 
 /** Runs an image tuple that can complete in the NanoHost file alone. */
-export function applyNanoHostLocalWorkerImage(
+function applyNanoHostLocalWorkerImage(
   owner: { readonly sqlite: Database.Database },
   input: ControlWorkerImageInput
 ): null {
@@ -25,8 +25,12 @@ export function applyNanoHostLocalWorkerImage(
 }
 
 /** The current Core path also settles the original image-acquisition journal step. */
-export function applyControlWorkerImage(db: CoreDb, input: ControlWorkerImageInput): null {
-  if (input.kind === 'environment') return applyNanoHostLocalWorkerImage(db, input);
+export function applyControlWorkerImage(
+  db: CoreDb | { readonly scope: 'nanohost'; readonly sqlite: Database.Database },
+  input: ControlWorkerImageInput
+): null {
+  if (db.scope === 'nanohost' || input.kind === 'environment')
+    return applyNanoHostLocalWorkerImage(db, input);
   assertControlProductWriter(db.sqlite);
   writeWorkerImageSettlementInTransaction(db, input.value, db.sqlite);
   return null;

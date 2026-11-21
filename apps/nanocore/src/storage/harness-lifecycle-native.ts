@@ -15,65 +15,62 @@ import { workspaceDbPath } from './fs-layout.js';
 import {
   type ControlHarnessLifecycleInput,
   HarnessLifecycleRefusal,
-  isNanoHostLocalHarnessLifecycleInput,
-  type NanoHostLocalHarnessLifecycleInput,
   RetainedRuntimeEnvCheckVersionSchema,
 } from './harness-lifecycle-codecs.js';
 
-/** Applies a local Harness tuple on the worker's admitted NanoHost handle. */
-export function applyNanoHostLocalHarnessLifecycle(
+/** Applies a tuple whose predicates and writes are local to the admitted owner. */
+function applyLocalHarnessLifecycle(
   owner: { readonly sqlite: Database.Database },
-  input: NanoHostLocalHarnessLifecycleInput
-): null {
-  assertControlProductWriter(owner.sqlite);
-  try {
-    switch (input.kind) {
-      case 'runtime.create':
-        records.createNanoHostHarnessRuntime(owner, presentControlFacts(input));
-        return null;
-      case 'sandbox.remove-for-harness':
-        records.removeNanoHostSandboxRuntimeForHarness(owner, input.harnessInstanceId);
-        return null;
-      case 'sandbox.remove-by-binding':
-        records.removeNanoHostSandboxRuntimeByBinding(owner, input.sandboxBindingRef);
-        return null;
-      case 'harness.drain':
-        records.drainNanoHostHarnessAdmission(owner, input);
-        return null;
-      case 'session-binding.initialize-check-versions':
-      case 'session-binding.append-check-version':
-        publishRuntimeCheckVersion(owner, input);
-        return null;
-      case 'sandbox.drain':
-        records.drainNanoHostSandboxAdmission(owner, input);
-        return null;
-      case 'sandbox.fence':
-        records.fenceNanoHostSandboxRuntime(owner, presentControlFacts(input));
-        return null;
-      case 'session-binding.open':
-        records.openNanoHostAgentSessionBinding(owner, presentControlFacts(input));
-        return null;
-      case 'measured-identity.copy':
-        records.copyNanoHostMeasuredHarnessIdentity(owner, input);
-        return null;
-      case 'operation.expire':
-        records.expireNanoHostHarnessQueuedOperation(owner, input);
-        return null;
-      case 'operation.unknown':
-        records.markNanoHostHarnessOperationUnknown(owner, input);
-        return null;
-    }
-  } catch (error) {
-    refuseHarnessLifecycle(error);
+  input: ControlHarnessLifecycleInput
+): null | undefined {
+  switch (input.kind) {
+    case 'runtime.create':
+      records.createNanoHostHarnessRuntime(owner, presentControlFacts(input));
+      return null;
+    case 'sandbox.remove-for-harness':
+      records.removeNanoHostSandboxRuntimeForHarness(owner, input.harnessInstanceId);
+      return null;
+    case 'sandbox.remove-by-binding':
+      records.removeNanoHostSandboxRuntimeByBinding(owner, input.sandboxBindingRef);
+      return null;
+    case 'harness.drain':
+      records.drainNanoHostHarnessAdmission(owner, input);
+      return null;
+    case 'session-binding.initialize-check-versions':
+    case 'session-binding.append-check-version':
+      publishRuntimeCheckVersion(owner, input);
+      return null;
+    case 'sandbox.drain':
+      records.drainNanoHostSandboxAdmission(owner, input);
+      return null;
+    case 'sandbox.fence':
+      records.fenceNanoHostSandboxRuntime(owner, presentControlFacts(input));
+      return null;
+    case 'session-binding.open':
+      records.openNanoHostAgentSessionBinding(owner, presentControlFacts(input));
+      return null;
+    case 'measured-identity.copy':
+      records.copyNanoHostMeasuredHarnessIdentity(owner, input);
+      return null;
+    case 'operation.expire':
+      records.expireNanoHostHarnessQueuedOperation(owner, input);
+      return null;
+    case 'operation.unknown':
+      records.markNanoHostHarnessOperationUnknown(owner, input);
+      return null;
   }
 }
 
-/** Applies an existing Harness tuple inside the Core transition savepoint. */
-export function applyControlHarnessLifecycle(db: CoreDb, input: ControlHarnessLifecycleInput) {
-  if (isNanoHostLocalHarnessLifecycleInput(input))
-    return applyNanoHostLocalHarnessLifecycle(db, input);
+/** Applies an owner-local tuple or the retained mixed Core authority path inside its savepoint. */
+export function applyControlHarnessLifecycle(
+  db: CoreDb | { readonly scope: 'nanohost'; readonly sqlite: Database.Database },
+  input: ControlHarnessLifecycleInput
+) {
   assertControlProductWriter(db.sqlite);
   try {
+    const local = applyLocalHarnessLifecycle(db, input);
+    if (local === null) return local;
+    if (db.scope !== 'core') throw new Error('Harness tuple requires deciding Core authority.');
     switch (input.kind) {
       case 'sandbox.claim-idle-drain':
         claimIdleSandboxDrain(db, input);
@@ -97,6 +94,7 @@ export function applyControlHarnessLifecycle(db: CoreDb, input: ControlHarnessLi
         records.acknowledgeNanoHostHarnessResult(db, input);
         return null;
     }
+    throw new Error('Harness tuple has no native operation.');
   } catch (error) {
     refuseHarnessLifecycle(error);
   }
