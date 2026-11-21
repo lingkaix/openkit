@@ -269,6 +269,7 @@ import {
   endWorkerTurnJournalStep,
   hasCompletedWorkerTurnCollection,
   WorkerGovernanceTurnExecutor,
+  type WorkerGovernanceTurnExecutorOptions,
 } from './worker-governance-turn-executor.js';
 import { requireMatchingWorkerReleaseIdentity } from './worker-release-identity.js';
 import {
@@ -383,6 +384,7 @@ export interface CreateConfiguredTurnExecutorOptions {
     | {
         readonly owner: StorageResult<'nanohost', NanoHostLifecycleOwner>;
         readonly admitSubmission?: AdmitNanoHostSubmission;
+        readonly commitCloseout?: WorkerGovernanceTurnExecutorOptions['commitNanoHostCloseout'];
         readonly writeStorageAttachment?: WriteNanoHostStorageAttachment;
         readonly harnessTurnLifecycle?: AdmittedNanoHostHarnessTurnLifecycle;
         readonly advanceIdleCleanup?: (selection: IdleCleanupSelection) => Promise<void>;
@@ -641,6 +643,7 @@ function createNanoHostWorkerLifecycleRuntime(
           coreDb,
           readNanoHostEnvironment,
           admitNanoHostSubmission: nanoHostRecovery?.admitSubmission,
+          commitNanoHostCloseout: nanoHostRecovery?.commitCloseout,
           ...(readRuntimeConfig ? { readRuntimeConfig } : {}),
           ...(policyInterception ? { policyInterception } : {}),
           ...(goalTaskPolicy ? { goalTaskPolicy } : {}),

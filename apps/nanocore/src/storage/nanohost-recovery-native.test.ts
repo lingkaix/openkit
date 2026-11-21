@@ -1,13 +1,16 @@
+import { randomUUID } from 'node:crypto';
 // openkit-test-platform: posix
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { canonicalJsonText } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import { expect, it, onTestFinished } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
+import { FsStore } from '../lib/store.js';
 import { recordCoreHarnessConsumption } from '../runtime/core-journal-records.js';
 import {
   bindSchedulerExecutionAttemptSession,
@@ -15,20 +18,29 @@ import {
   finalizeSchedulerExecutionAttemptInput,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionGrantInDb,
+  requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
 import { CORE_SCHEDULER_EXECUTION_DEFINITION } from '../runtime/execution-journal.js';
 import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
+import { listWorkspaceRuntimeEvidence } from '../runtime/runtime-evidence.js';
 import {
   getWorkerBackendSession,
   readNanoHostWorkerRouteBinding,
 } from '../runtime/worker-backend-session-records.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
+import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
+import {
+  prepareWorkerTurnJournalIntents,
+  WorkerGovernanceTurnExecutor,
+} from '../runtime/worker-governance-turn-executor.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { createTestWorkspaceDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { commandInputHash } from './control-store-input.js';
 import { openCoreDb } from './db.js';
@@ -625,18 +637,43 @@ it('requires the exact Core final decision and replays only the same retained Na
   ).toBeUndefined();
 });
 
-it('resolves App and Gateway bindings from the retained Core grant and the admitted Native proof', async () => {
+async function admitOriginal(prepareWorkspace = false) {
   const f = await queuedSubmission();
   const root = mkdtempSync(join(tmpdir(), 'nanohost-original-binding-'));
   const core = openCoreDb(root);
-  onTestFinished(() => {
-    core.sqlite.close();
-    rmSync(root, { recursive: true, force: true });
-  });
+  onTestFinished(() => disposeTestStore(root, core));
   applyMigrations(core);
   const userId = ensureLocalUser(core);
   recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId: userId });
   const actor = { kind: 'user' as const, id: userId };
+  const store = prepareWorkspace ? new FsStore({ dataRoot: root }) : null;
+  await store
+    ?.importWorkspaceSnapshot({
+      workspace: {
+        id: workspaceId,
+        name: 'Native Closeout',
+        kind: 'general',
+        status: 'active',
+        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        createdAt: created,
+        updatedAt: created,
+      },
+      notebookInitialization: {
+        requestId: randomUUID(),
+        producer: actor,
+        instructionReference: 'fixture:native-closeout',
+      },
+      threads: [],
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+    })
+    .catch((cause: unknown) => {
+      throw new Error('Publish exact test Workspace.', { cause });
+    });
   const entry = createSchedulerAdmissionEntry(core, {
     queueEntryId: 'native-join-queue',
     backendId: 'nanohost',
@@ -800,6 +837,11 @@ it('resolves App and Gateway bindings from the retained Core grant and the admit
     sequence: f.input.command.sequence,
   });
   await expect(dispatch()).resolves.toBeNull();
+  return { f, root, core, store, actor, input, now, retained };
+}
+
+it('resolves App and Gateway bindings from the retained Core grant and the admitted Native proof', async () => {
+  const { core, f, input, now, root, retained } = await admitOriginal();
   expect(
     resolveAdmittedNanoHostWorkerBinding(core, f.owner.sqlite, input, acceptedAt)
   ).toMatchObject({ status: 'accepted', attempt: { attemptId } });
@@ -919,3 +961,128 @@ it('resolves App and Gateway bindings from the retained Core grant and the admit
     cancellationOnly: true,
   });
 });
+
+it.each(['completed', 'lost-result', 'contradictory-result'] as const)(
+  'uses the original Workspace cleanup result for the Native release receipt (%s)',
+  async (outcome) => {
+    const { actor, core, f, root, store: fixtureStore } = await admitOriginal(true);
+    const store = fixtureStore!;
+    const workspace = createTestWorkspaceDb(root, workspaceId);
+    onTestFinished(() => workspace.sqlite.close());
+    await expect(
+      store.createThread(workspaceId, 'Original closeout', threadId)
+    ).resolves.toMatchObject({ id: threadId });
+    await expect(
+      store.createTurn(workspaceId, threadId, 'Complete the original cleanup.', actor, null, {
+        turnId,
+      })
+    ).resolves.toMatchObject({ id: turnId });
+    await store.createAgentSession({
+      agentId: 'agent_worker',
+      createdAt: created,
+      environmentPackageSnapshotId: inputRef,
+      id: agentSessionId,
+      message: null,
+      status: 'busy',
+      threadId,
+      updatedAt: created,
+      workspaceId,
+    });
+    await store.updateTurn(turnId, { agentSessionId });
+    const prepared = await recordTestAgentEnvironmentPackage(workspace, {
+      suffix: 'native-live-closeout',
+      triggerActor: actor,
+      workspaceInputIds: [],
+    });
+    const environmentPackage = AgentEnvironmentPackageSchema.parse({
+      ...prepared,
+      snapshotId: inputRef,
+      scope: { ...prepared.scope, workspaceId, threadId, turnId, agentSessionId, requestId: null },
+    });
+    const session = f.read().session;
+    const intents = prepareWorkerTurnJournalIntents(
+      workspace,
+      environmentPackage,
+      requireSchedulerExecutionAttempt(core, attemptId),
+      { backendKind: 'openshell', targetId, allocationRef: bindingRef }
+    );
+    for (const intent of intents) {
+      await expect(
+        store.writeWorkspaceExecutionJournalIntent(workspaceId, intent)
+      ).resolves.toMatchObject({ state: 'intent' });
+    }
+    markSchedulerExecutionAttemptClosing(core, {
+      attemptId,
+      cause: 'turn-completed',
+      now: () => classifiedAt,
+    });
+    const retained = readRetainedNanoHostSubmission(core, attemptId)!;
+    const target = getNanoHostRuntimeTarget(f.owner, targetId)!;
+    const commit = vi.fn(async (mutation: NanoHostRecoveryMutation) => {
+      if (mutation.kind === 'finish-cleanup')
+        expect(listWorkspaceRuntimeEvidence(workspace, workspaceId)).toContainEqual(
+          expect.objectContaining({ phase: 'teardown', turnId, completedAt: classifiedAt })
+        );
+      return { state: 'ready' as const, value: await f.mutate(mutation) };
+    });
+    const cleanupSession = vi.fn(async () => {
+      if (outcome === 'lost-result') throw new Error('original cleanup acknowledgement lost');
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend: { cleanupSession } as unknown as WorkerGovernanceBackend,
+      coreDb: core,
+      readNanoHostEnvironment: (read) => ({ state: 'ready', value: read(f.owner.sqlite) }),
+      commitNanoHostCloseout: commit,
+      now: () => classifiedAt,
+    });
+    const lifecycle = {
+      identity: { ...session, backendKind: 'openshell' as const },
+      physicalCleanedAt: null,
+      session,
+      workspaceHandoffState: session.workspaceHandoffState,
+    };
+    const clean = () =>
+      // biome-ignore lint/complexity/useLiteralKeys: Exercise the existing owner closeout entry directly.
+      executor['cleanupBackendLifecycle'](store, lifecycle, workspace, environmentPackage, {
+        kind: 'openshell',
+        capabilities: [],
+        dynamicCapabilities: [],
+      });
+    if (outcome === 'contradictory-result') {
+      const settle = store.settleWorkspaceExecutionJournalStep.bind(store);
+      vi.spyOn(store, 'settleWorkspaceExecutionJournalStep').mockImplementation(
+        (id, input, consume) => settle(id, { ...input, outputRefs: ['another-backend'] }, consume)
+      );
+    }
+    if (outcome === 'completed') {
+      await expect(clean()).resolves.toBeUndefined();
+      expect(
+        commit.mock.calls.map(([stage]) =>
+          stage.kind === 'transition' ? stage.toState : stage.kind
+        )
+      ).toEqual(['cleanup-pending', 'physical-cleaned', 'finish-cleanup']);
+      await f.owner.reopen();
+      expect(
+        readNanoHostPhysicalCleanupReceipt(f.owner.sqlite, retained.lease, target)
+      ).toMatchObject({
+        grant: retained.lease.grant,
+        session: { state: 'cleaned', backendSessionId: session.backendSessionId },
+        observedAt: classifiedAt,
+      });
+    } else {
+      await expect(clean()).rejects.toThrow(
+        outcome === 'lost-result'
+          ? 'original cleanup acknowledgement lost'
+          : 'cleanup requires recovery'
+      );
+      expect(readNanoHostPhysicalCleanupReceipt(f.owner.sqlite, retained.lease, target)).toBeNull();
+      await expect(clean()).rejects.toThrow('cleanup requires recovery');
+    }
+    expect(cleanupSession).toHaveBeenCalledExactlyOnceWith(lifecycle.identity);
+    expect(
+      commit.mock.calls.every(
+        ([mutation]) => canonicalJsonText(mutation.lease) === canonicalJsonText(retained.lease)
+      )
+    ).toBe(true);
+  }
+);
