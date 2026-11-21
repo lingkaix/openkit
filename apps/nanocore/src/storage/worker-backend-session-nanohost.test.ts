@@ -14,6 +14,7 @@ import {
   transitionWorkerBackendSessionState,
   type WorkerBackendSessionRecord,
 } from '../runtime/worker-backend-session-records.js';
+import { createNanoHostCoreReads } from './nanohost-core-reads.js';
 import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 
 const migrationsFolder = fileURLToPath(
@@ -179,4 +180,17 @@ it('reopens exact NanoHost backend sessions and records cleanup and handoff inde
   sqlite.close();
   sqlite = new Database(path, { fileMustExist: true, readonly: true });
   expect(listWorkerBackendSessions({ sqlite })).toStrictEqual(settled);
+  const observations = createNanoHostCoreReads({
+    read: (query) => ({ state: 'ready', value: query(sqlite) }),
+  });
+  expect(observations.readBackendSession({ attemptId: original.attemptId })).toStrictEqual({
+    state: 'ready',
+    value: handedOff,
+  });
+  expect(
+    observations.readBackendSession({ packageSnapshotId: sibling.packageSnapshotId })
+  ).toStrictEqual({
+    state: 'ready',
+    value: siblingCleaned,
+  });
 });
