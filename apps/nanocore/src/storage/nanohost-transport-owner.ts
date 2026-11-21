@@ -5,6 +5,7 @@ import type {
   ControlNanoHostTransportInput,
   ControlNanoHostTransportResult,
 } from '../auth/nanohost-transport-codecs.js';
+import type { NanoHostRuntimeTargetRecord } from '../runtime/nanohost-runtime-target-records.js';
 import type { ControlHarnessLifecycleInputSchema } from './harness-lifecycle-codecs.js';
 import type { NanoHostRuntimeTargetEpochKernel } from './nanohost-epoch-invalidation.js';
 import {
@@ -21,6 +22,10 @@ import type { StorageResult } from './storage-owner.js';
 export interface AdmittedNanoHostTransportStorage {
   readonly owner: {
     read<Value>(query: (sqlite: Database.Database) => Value): StorageResult<'nanohost', Value>;
+    /** Reads only the admitted RuntimeTarget when a separate Native write is awaiting its ACK. */
+    readRuntimeTarget?(
+      targetId: string
+    ): StorageResult<'nanohost', NanoHostRuntimeTargetRecord | null>;
     transport(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
     harnessLifecycle(
       input: z.output<typeof ControlHarnessLifecycleInputSchema.nanoHostLocal>

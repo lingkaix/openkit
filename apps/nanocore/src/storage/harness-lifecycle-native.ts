@@ -25,12 +25,7 @@ import {
 export function applyControlHarnessLifecycle(
   owner: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
   input: ControlHarnessLifecycleInput,
-  admitted?: {
-    readonly coreDb: CoreDb;
-    readonly submission?: NonNullable<
-      Parameters<typeof records.dispatchNanoHostHarnessOperation>[2]
-    >['submission'];
-  }
+  admitted?: { readonly coreDb: CoreDb }
 ) {
   assertControlProductWriter(owner.sqlite);
   if (
@@ -54,9 +49,12 @@ export function applyControlHarnessLifecycle(
                 sandboxIntegrationBindingRef: input.sandboxIntegrationBindingRef,
                 ...(input.observedAt === undefined ? {} : { now: () => input.observedAt! }),
               },
-              { owner, ...(admitted.submission ? { submission: admitted.submission } : {}) }
+              { owner }
             )
           )();
+        break;
+      case 'operation.settle':
+        if (admitted) return records.settleNanoHostHarnessOperation(admitted.coreDb, input, owner);
         break;
       case 'runtime.create':
         records.createNanoHostHarnessRuntime(owner, presentControlFacts(input));

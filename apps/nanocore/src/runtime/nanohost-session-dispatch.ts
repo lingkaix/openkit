@@ -1657,10 +1657,18 @@ async function settleNanoHostFileExport(
 
 /** Rechecks one process-local readiness observation against its durable current owner. */
 function requireCurrentReadiness(readiness: NanoHostPhysicalReadiness): string {
+  const { runtimeTarget } = readiness;
+  const owner = runtimeTarget.nativeStorage?.owner;
+  if (owner?.readRuntimeTarget) {
+    const result = owner.readRuntimeTarget(runtimeTarget.targetId);
+    if (result.state !== 'ready')
+      throw effectTransportError(503, 'NanoHost RuntimeTarget storage is unavailable.');
+    return assertCurrentReadiness(readiness, result.value);
+  }
   return assertCurrentReadiness(
     readiness,
-    readRuntimeTargetOwner(readiness.runtimeTarget, (owner) =>
-      getNanoHostRuntimeTarget(owner, readiness.runtimeTarget.targetId)
+    readRuntimeTargetOwner(runtimeTarget, (owner) =>
+      getNanoHostRuntimeTarget(owner, runtimeTarget.targetId)
     )
   );
 }
@@ -1671,6 +1679,7 @@ function assertCurrentReadiness(
 ): string {
   if (
     !target ||
+    target.targetId !== readiness.runtimeTarget.targetId ||
     target.identityId !== readiness.runtimeTarget.identityId ||
     target.deploymentId !== readiness.runtimeTarget.deploymentId ||
     target.connectionGeneration !== readiness.connectionGeneration ||

@@ -23,7 +23,10 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, serverStoragePath } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import {
+  type AdmittedNanoHostTransportStorage,
+  transitionAdmittedNanoHostRuntimeTarget,
+} from '../storage/nanohost-transport-owner.js';
 import { createHttpTelemetryMiddleware, shutdownTelemetry, startTelemetry } from '../telemetry.js';
 import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -39,6 +42,7 @@ import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import type { NanoHostHarnessResult } from './nanohost-harness.js';
 import type { AllocateNanoHostRuntimeTargetConnectionGenerationInput } from './nanohost-runtime-target.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import {
   createNanoHostSessionDispatch,
   NANO_HOST_EFFECT_OPERATIONS,
@@ -3258,12 +3262,78 @@ describe('authoritative NanoHost session dispatch', () => {
   });
 });
 
+it('polls across a materialization ACK hold using only the exact RuntimeTarget reader', async () => {
+  let materializationPending = false;
+  let exact: 'current' | 'unavailable' | 'changed' = 'current';
+  const unavailable = {
+    state: 'unavailable',
+    owner: 'nanohost',
+    reason: 'recovery-required',
+  } as const;
+  const genericDuringHold = vi.fn();
+  const effect = new AbortController();
+  const f = await privateLoginDispatchFixture({
+    withNativeStorage(storage) {
+      const owner = {
+        ...storage.owner,
+        read<Value>(read: Parameters<typeof storage.owner.read<Value>>[0]) {
+          if (!materializationPending) return storage.owner.read(read);
+          genericDuringHold();
+          return unavailable;
+        },
+        readRuntimeTarget(targetId: string) {
+          if (exact === 'unavailable') return unavailable;
+          return storage.owner.read((sqlite) => {
+            const current = getNanoHostRuntimeTarget({ sqlite }, targetId);
+            return exact === 'changed' && current
+              ? { ...current, connectionGeneration: current.connectionGeneration + 1 }
+              : current;
+          });
+        },
+      };
+      return { ...storage, owner };
+    },
+  });
+  try {
+    const path = '/api/nanohost/transport/effects/image.acquire';
+    const requestId = 'e'.repeat(64);
+    const digest = `sha256:${'f'.repeat(64)}`;
+    const pending = f.dispatch.effect({
+      kind: 'image.acquire',
+      requestId,
+      input: { imageReference: 'openkit:test' },
+      signal: effect.signal,
+    });
+    // Settle even after a failed assertion so the registered effect never outlives the fixture.
+    void pending.catch(() => undefined);
+    materializationPending = true;
+    expect((await f.post(path, '{}'))[':status']).toBe(200);
+    expect(genericDuringHold).not.toHaveBeenCalled();
+    materializationPending = false;
+    expect((await f.post(`${path}/result`, JSON.stringify({ requestId, digest })))[':status']).toBe(
+      204
+    );
+    await expect(pending).resolves.toMatchObject({ digest });
+    exact = 'unavailable';
+    expect((await f.post(path, '{}'))[':status']).toBe(503);
+    exact = 'changed';
+    expect((await f.post(path, '{}'))[':status']).toBe(409);
+  } finally {
+    effect.abort();
+    await f.close();
+  }
+});
+
 /** Real H2/readiness composition; Login defaults to denial, with an optional real result consumer. */
 async function privateLoginDispatchFixture(
   options: Pick<
     Parameters<typeof registerNanoHostSessionSemanticRoutes>[0],
     'harnessResultSettled'
-  > = {}
+  > & {
+    readonly withNativeStorage?: (
+      storage: AdmittedNanoHostTransportStorage
+    ) => AdmittedNanoHostTransportStorage;
+  } = {}
 ) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-private-login-dispatch-'));
   const nanoHost = openNanoHostTestOwner();
@@ -3287,9 +3357,13 @@ async function privateLoginDispatchFixture(
     coreDb,
     dispatch,
     nanoHostConfig: target,
-    nativeStorage: { state: 'ready', value: nanoHost.storage },
+    nativeStorage: {
+      state: 'ready',
+      value: options.withNativeStorage?.(nanoHost.storage) ?? nanoHost.storage,
+    },
     ...(options.harnessResultSettled ? { harnessResultSettled: options.harnessResultSettled } : {}),
   });
+  if (options.withNativeStorage) registerNanoHostSessionEffectRoutes({ app, dispatch });
   const listener = getRequestListener(app.fetch);
   let physicalConnection: object | undefined;
   const server = createHttp2Server((request, response) => {

@@ -1010,12 +1010,82 @@ export async function acceptPreparedWorkerTurnContextPackage(input: {
   return acceptedTrace;
 }
 
-/**
- * Options for the worker-governance-backed turn executor.
- */
+type WorkerSubmissionAttempt = Awaited<ReturnType<typeof recordSchedulerExecutionOperation>>;
+
+/** The first FULL Core decision permits dispatch. An original inspection carries no new authority. */
+export type AdmitNanoHostSubmission = (input: {
+  readonly attemptId: string;
+  readonly observedAt?: string;
+}) => Promise<{
+  readonly state: 'admitted-now' | 'inspect-original';
+  readonly attempt: WorkerSubmissionAttempt;
+}>;
+
+/** Recovery owns an unresolved original submission. This invocation has no cleanup authority. */
+class NanoHostSubmissionHeld extends TurnStartValidationError {
+  constructor() {
+    super('recovery_required', 'Inspect the original NanoHost submission before continuing.', 503);
+  }
+}
+
+/** Runs the existing submit continuation only with the recorded original operation. */
+export async function withPreparedWorkerSubmission<Value>(
+  input: {
+    readonly coreDb: CoreDb;
+    readonly attemptId: string;
+    readonly inputRef: string;
+    readonly bindingRef: string;
+    readonly now?: (() => string) | undefined;
+    readonly native?: { readonly admit: AdmitNanoHostSubmission | undefined } | undefined;
+  },
+  submit: (attempt: WorkerSubmissionAttempt) => Promise<Value>
+): Promise<Value> {
+  const operationId = commandInputHash({
+    attemptId: input.attemptId,
+    inputRef: input.inputRef,
+    operation: 'submit',
+  });
+  if (input.native) {
+    const admit = input.native.admit;
+    if (!admit) throw new NanoHostSubmissionHeld();
+    let decision: Awaited<ReturnType<AdmitNanoHostSubmission>>;
+    try {
+      decision = await admit({
+        attemptId: input.attemptId,
+        ...(input.now ? { observedAt: input.now() } : {}),
+      });
+    } catch {
+      throw new NanoHostSubmissionHeld();
+    }
+    const { attempt } = decision;
+    if (
+      decision.state !== 'admitted-now' ||
+      attempt.attemptId !== input.attemptId ||
+      attempt.inputRef !== input.inputRef ||
+      attempt.bindingRef !== input.bindingRef ||
+      attempt.operationId !== operationId ||
+      attempt.backendId !== 'nanohost' ||
+      attempt.phase !== 'open' ||
+      !attempt.deadline
+    )
+      throw new NanoHostSubmissionHeld();
+    return await submit(attempt);
+  }
+  const attempt = await recordSchedulerExecutionOperation(input.coreDb, {
+    attemptId: input.attemptId,
+    operationId,
+    submission: true,
+    ...(input.now ? { now: input.now } : {}),
+  });
+  return await submit(attempt);
+}
+
+/** Options for the worker-governance-backed turn executor. */
 export interface WorkerGovernanceTurnExecutorOptions {
   /** Admitted image-default read for the same NanoHost generation used at launch. */
   readNanoHostEnvironment?: NanoHostEnvironmentRead | undefined;
+  /** Joins the original Core submission to the admitted Native and Workspace placement. */
+  admitNanoHostSubmission?: AdmitNanoHostSubmission | undefined;
   /** Same current Goal/Task scope reader as other Worker effects. */
   goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'];
   /** Same operation interception owner used by authenticated agent and public callers. */
@@ -1096,6 +1166,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   public readonly executionBackend: import('./execution-backend.js').ExecutionBackend;
   private readonly coreDb: CoreDb | null;
   private readonly readNanoHostEnvironment: NanoHostEnvironmentRead | undefined;
+  private readonly admitNanoHostSubmission: AdmitNanoHostSubmission | undefined;
   private readonly fileAdmission: FileStorageAdmission | undefined;
   private readonly createAgentSessionId: () => string;
   private readonly now: (() => string) | undefined;
@@ -1130,6 +1201,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     };
     this.coreDb = options.coreDb ?? null;
     this.readNanoHostEnvironment = options.readNanoHostEnvironment;
+    this.admitNanoHostSubmission = options.admitNanoHostSubmission;
     this.fileAdmission = options.fileAdmission;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => allocateEntityId('as'));
     this.now = options.now;
@@ -4054,55 +4126,64 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         this.currentTime()
       );
       preparedWorkerContext?.assertCurrentKnowledgeOverview();
-      const submission = await recordSchedulerExecutionOperation(this.coreDb!, {
-        attemptId: context.attemptId!,
-        operationId: commandInputHash({
-          attemptId: context.attemptId,
-          inputRef: environmentPackage.snapshotId,
-          operation: 'submit',
-        }),
-        submission: true,
-        ...(this.now ? { now: this.now } : {}),
-      });
-      if (backendLifecycle.session && !this.readNanoHostEnvironment)
-        backendLifecycle.session = await markWorkerBackendSessionLaunching(this.coreDb!, {
-          attemptId: backendLifecycle.session.attemptId,
-          ...(this.now ? { now: this.now } : {}),
-        });
+      const native =
+        this.readNanoHostEnvironment || this.admitNanoHostSubmission
+          ? { admit: this.admitNanoHostSubmission }
+          : undefined;
       let observation: Awaited<
         ReturnType<import('./execution-backend.js').ExecutionBackend['submit']>
       >;
       const submissionWorkspaceId = workspaceDb.workspaceId;
-      workspaceDb.sqlite.close();
-      workspaceDb = null;
       try {
         try {
-          assertAgentWorkNotPaused(
-            this.readRuntimeConfig?.().openKitConfig.security?.pauseAgentWork
+          observation = await withPreparedWorkerSubmission(
+            {
+              coreDb: this.coreDb!,
+              attemptId: executionAttempt.attemptId,
+              bindingRef: executionAttempt.bindingRef,
+              inputRef: environmentPackage.snapshotId,
+              now: this.now,
+              native,
+            },
+            async (submission) => {
+              if (launchLifecycle.session && !native)
+                launchLifecycle.session = await markWorkerBackendSessionLaunching(this.coreDb!, {
+                  attemptId: launchLifecycle.session.attemptId,
+                  ...(this.now ? { now: this.now } : {}),
+                });
+              workspaceDb!.sqlite.close();
+              workspaceDb = null;
+              assertAgentWorkNotPaused(
+                this.readRuntimeConfig?.().openKitConfig.security?.pauseAgentWork
+              );
+              submissionInvoked = true;
+              const observed = await this.executionBackend.submit({
+                ...schedulerExecutionCorrelation(submission),
+                deadline: submission.deadline!,
+                ...(!existingAgentSession && runtimeFileCredentials.length > 0
+                  ? { credentialBindings: runtimeFileCredentials.map(workerCredentialFileBinding) }
+                  : {}),
+              });
+              const accepted = await acceptSchedulerExecutionObservation(this.coreDb!, observed);
+              if (!accepted || observed.disposition !== 'accepted')
+                throw new Error(
+                  'Native submission is unresolved; inspect its original operation without replay.'
+                );
+              return observed;
+            }
           );
-          submissionInvoked = true;
-          observation = await this.executionBackend.submit({
-            ...schedulerExecutionCorrelation(submission),
-            deadline: submission.deadline!,
-            ...(!existingAgentSession && runtimeFileCredentials.length > 0
-              ? { credentialBindings: runtimeFileCredentials.map(workerCredentialFileBinding) }
-              : {}),
-          });
-          const accepted = await acceptSchedulerExecutionObservation(this.coreDb!, observation);
-          if (!accepted || observation.disposition !== 'accepted')
-            throw new Error(
-              'Native submission is unresolved; inspect its original operation without replay.'
-            );
         } finally {
           // Publish the accepted observation before the Scheduler inspects its exact attempt.
           // Definite and unknown failures still release this invocation's preparation claim.
           context.onSubmissionSettled?.();
         }
       } catch (error) {
-        try {
-          workspaceDb = this.openWorkspaceDb(submissionWorkspaceId);
-        } catch (readError) {
-          errors.push(readError);
+        if (!workspaceDb) {
+          try {
+            workspaceDb = this.openWorkspaceDb(submissionWorkspaceId);
+          } catch (readError) {
+            errors.push(readError);
+          }
         }
         throw error;
       }
@@ -4201,6 +4282,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
       backendCleanupRequired = false;
     } catch (error) {
+      if (error instanceof NanoHostSubmissionHeld) {
+        workspaceDb?.sqlite.close();
+        throw error;
+      }
       primaryFailed = true;
       primaryError = asWorkerArtifactTurnError(error);
     }
