@@ -11,6 +11,7 @@ import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { admitTestNativeEnvironmentForRoot } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createTestCoreDb, disposeTestStore } from './test-support/store.js';
@@ -42,7 +43,9 @@ async function admitDirectTask() {
   const store = await createDemoStore({ dataRoot });
   const native = await createNativeTaskAdmissionFixture(coreDb, store);
   const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const app = createAppWithWorkspaceAuthority({
+    nanoHostStorage,
     coreDb,
     dataRoot,
     store,

@@ -144,7 +144,6 @@ import {
   openNanoHostAgentSessionBinding,
   readNanoHostThreadAgentSessionBinding,
 } from './runtime/nanohost-harness.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import {
@@ -182,8 +181,14 @@ import * as canonicalWrites from './storage/canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from './storage/nanohost-transport-owner.js';
 import { findAcceptedRecurringOccurrenceForQueue } from './storage/recurring-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import {
@@ -196,7 +201,7 @@ import { recordTestExecutionAttempt } from './test-support/execution-attempt.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from './test-support/native-environment.js';
 import {
@@ -269,6 +274,16 @@ function recordMcpWorkerLineage(
       outcomeRef: null,
     })?.disposition
   ).toBe('accepted');
+}
+
+/** Observes the admitted physical binding for a suite-owned Thread fixture. */
+function readFixtureThreadBinding(
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof readNanoHostThreadAgentSessionBinding>[1]
+) {
+  return readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    readNanoHostThreadAgentSessionBinding({ sqlite }, input)
+  );
 }
 
 /** One closed Demo data root. MCP route fixtures copy it instead of migrating and seeding again. */
@@ -1270,10 +1285,14 @@ describe('worker MCP routes', () => {
         identityId: 'capture-wait',
         targetId: 'capture-wait',
       };
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      const nativeStorage = await openAdmittedTestNanoHost(coreDb);
+      const allocated = await transitionAdmittedNanoHostRuntimeTarget(nativeStorage.value, {
+        kind: 'allocate',
         ...target,
         observedAt: '2026-10-05T00:00:00.000Z',
       });
+      if (allocated.state !== 'ready' || !allocated.value)
+        throw new Error('Capture fixture RuntimeTarget was not allocated.');
       let admit!: (physical: object) => void;
       const physicalReady = new Promise<object>((resolve) => {
         admit = resolve;
@@ -1285,6 +1304,7 @@ describe('worker MCP routes', () => {
       const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
       const dispatch = createNanoHostSessionDispatch({
         coreDb,
+        nativeStorage,
         sessionAuthority: authority,
         fileAdmission,
       });
@@ -1363,7 +1383,7 @@ describe('worker MCP routes', () => {
         await dispatch.readiness!(
           physical,
           Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-          { ...target, coreDb }
+          { ...target, coreDb, nativeStorage: nativeStorage.value }
         );
         await client.connect(
           new StreamableHTTPClientTransport(
@@ -2191,7 +2211,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => snapshot,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const nativeStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
       const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
       const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
@@ -2324,7 +2344,7 @@ describe('worker MCP routes', () => {
           timestamp,
         }));
         for (const binding of bindingInputs.slice(0, 3))
-          await openNanoHostAgentSessionBinding(coreDb, binding);
+          await openNanoHostAgentSessionBinding(nativeStorage.value.owner, binding);
         const [peerSession, , withdrawnSession, foreignSession] = sessions as [
           (typeof sessions)[number],
           (typeof sessions)[number],
@@ -2499,7 +2519,7 @@ describe('worker MCP routes', () => {
           requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
           sessions: sessions.map((session) => store.getAgentSession(session.id)),
           bindings: threads.map((thread) =>
-            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+            readFixtureThreadBinding(coreDb, { workspaceId, threadId: thread.id })
           ),
           commands: commands.mock.calls.length,
           effects: native.effects.length,
@@ -2667,7 +2687,7 @@ describe('worker MCP routes', () => {
           requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
           sessions: sessions.map((session) => store.getAgentSession(session.id)),
           bindings: threads.map((thread) =>
-            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+            readFixtureThreadBinding(coreDb, { workspaceId, threadId: thread.id })
           ),
           commands: commands.mock.calls.length,
           effects: native.effects.length,
@@ -2687,7 +2707,7 @@ describe('worker MCP routes', () => {
         await second.launched.promise;
         await native.waitForStartup(native.executor.nativeLineage!.turnId);
         const target = await recordTestNativeRuntimeTarget(coreDb);
-        await createNanoHostHarnessRuntime(coreDb, {
+        await createNanoHostHarnessRuntime(nativeStorage.value.owner, {
           adapterId: 'codex',
           adapterVersion: 'test',
           harnessBindingRef: 'harness_binding_foreign',
@@ -2702,9 +2722,9 @@ describe('worker MCP routes', () => {
           runtimeTargetId: target.targetId,
           timestamp,
         });
-        await openNanoHostAgentSessionBinding(coreDb, bindingInputs[3]!);
+        await openNanoHostAgentSessionBinding(nativeStorage.value.owner, bindingInputs[3]!);
         expect(
-          readNanoHostThreadAgentSessionBinding(coreDb, {
+          readFixtureThreadBinding(coreDb, {
             workspaceId,
             threadId: threads[3]!.id,
           })
@@ -2712,7 +2732,7 @@ describe('worker MCP routes', () => {
         const beforeAudience = {
           ...before,
           bindings: threads.map((thread) =>
-            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+            readFixtureThreadBinding(coreDb, { workspaceId, threadId: thread.id })
           ),
           commands: commands.mock.calls.length,
           effects: native.effects.length,
@@ -2854,7 +2874,7 @@ describe('worker MCP routes', () => {
           requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
           sessions: sessions.map((session) => store.getAgentSession(session.id)),
           bindings: threads.map((thread) =>
-            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+            readFixtureThreadBinding(coreDb, { workspaceId, threadId: thread.id })
           ),
           commands: commands.mock.calls.length,
           effects: native.effects.length,
@@ -2868,9 +2888,9 @@ describe('worker MCP routes', () => {
             })
           ).structuredContent!.turns
         ).toEqual([expect.objectContaining({ id: queued.id, status: 'pending' })]);
-        // Deliberately lose only this valid, unstarted Core binding; no physical close is claimed.
-        coreDb.sqlite.transaction(() => {
-          const { changes } = coreDb.sqlite
+        // Lose only the valid, unstarted binding; the fixture claims no physical close.
+        mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+          const { changes } = sqlite
             .prepare(`DELETE FROM agent_session_runtime_bindings
             WHERE agent_session_runtime_binding_id = ? AND agent_session_id = ?
               AND workspace_id = ? AND thread_id = ?
@@ -2878,9 +2898,9 @@ describe('worker MCP routes', () => {
               AND current_turn_id IS NULL AND current_attempt_id IS NULL`)
             .run('binding_withdrawn', withdrawnSession.id, workspaceId, threads[2]!.id);
           expect(changes).toBe(1);
-        })();
+        });
         expect(
-          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: threads[2]!.id })
+          readFixtureThreadBinding(coreDb, { workspaceId, threadId: threads[2]!.id })
         ).toBeNull();
         await expect(
           laterClient.callTool({ name: 'work_peer_read', arguments: { handle: withdrawnHandle } })
@@ -2965,7 +2985,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => configuration,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const app = createApp({
         coreDb,
         store,
@@ -3129,7 +3149,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => configuration,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const app = createApp({
         coreDb,
         store,
@@ -3386,7 +3406,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: readConfiguration,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       if (scenario === 'containment-check' || consumer) {
         fs.mkdirSync(join(dataRoot, 'config'), { recursive: true });
         writeFileSync(join(dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
@@ -4112,7 +4132,7 @@ describe('worker MCP routes', () => {
     const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => runtimeConfig,
     });
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const taskApp = createApp({
       coreDb,
       store,
@@ -4757,7 +4777,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => runtimeConfig,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
       const callTool = vi.spyOn(workerMcpGateway, 'callTool');
       const app = createApp({
@@ -5110,7 +5130,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => snapshot,
       });
-      admitTestNativeEnvironment(coreDb, manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, manifest);
       const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
       const app = createApp({
         coreDb,
@@ -5406,7 +5426,7 @@ describe('worker MCP routes', () => {
       });
       let nativeRestore: Promise<void> | undefined;
       const restoreNative = () => (nativeRestore ??= native.restore());
-      admitTestNativeEnvironment(coreDb, snapshot.agentManifests[0]!);
+      await admitTestNativeEnvironmentForRoot(coreDb, snapshot.agentManifests[0]!);
       const captureApp = createApp({
         coreDb,
         store,
@@ -8495,7 +8515,7 @@ async function createMcpCommitFixture(
     const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => configuration,
     });
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const entry = findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId: turn.id });
     if (!entry) throw new Error('Native recurring Turn has no scheduler owner.');
     const candidate = allocateEntityId('as');

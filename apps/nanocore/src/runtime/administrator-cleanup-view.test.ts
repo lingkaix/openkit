@@ -8,6 +8,7 @@ import {
   AdministratorCleanupItemSchema,
   AdministratorCleanupSourceObservationSchema,
 } from '@openkit/app-api-schemas';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -22,8 +23,15 @@ import {
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, serverStoragePath } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import type { ControlRuntimeTargetInput } from '../storage/runtime-target-codecs.js';
+import {
+  openAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
@@ -36,22 +44,17 @@ import {
   openNanoHostAgentSessionBinding,
 } from './nanohost-harness.js';
 import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  recordNanoHostRuntimeTargetConnectionClose,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
-import {
   getWorkerBackendSession,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
-import { createWorkerStorageBinding as createLegacyWorkerStorageBinding } from './worker-storage-binding-records.js';
 import {
-  createAndReserveWorkerStorageAttachment,
+  createWorkerStorageBinding,
   getWorkerStorageBinding,
   markWorkerStoragePurgePending,
+  reserveWorkerStorageAttachment,
   settleWorkerStoragePurge,
-} from './worker-storage-bindings.js';
+} from './worker-storage-binding-records.js';
 
 // The reader stays synchronous. This test-only prelude gates the real native owner,
 // then signals only after its actual SQLite COMMIT returns.
@@ -138,7 +141,30 @@ const OWNER_PATHS = [
   'docs/specs/20260910-persistent_worker_volumes.md',
 ];
 const PRIVATE = 'private-cleanup-canary';
+type NativeFixture = {
+  storage: Awaited<ReturnType<typeof openAdmittedTestNanoHost>>;
+  sqlite: Database.Database;
+};
+const nativeFixtures = new Map<string, NativeFixture>();
 const fixtures: Array<{ coreDb: CoreDb; dataRoot: string }> = [];
+
+function nativeFixture(coreDb: CoreDb): NativeFixture {
+  return nativeFixtures.get(coreDb.dataRoot)!;
+}
+
+function fixtureDeployment(coreDb: CoreDb) {
+  return readDataRootLayoutMarker(coreDb.dataRoot).deploymentId;
+}
+
+async function fixtureTarget(coreDb: CoreDb, input: ControlRuntimeTargetInput) {
+  const result = await transitionAdmittedNanoHostRuntimeTarget(
+    nativeFixture(coreDb).storage.value,
+    input
+  );
+  if (result.state !== 'ready' || !result.value)
+    throw new Error('Fixture RuntimeTarget did not settle.');
+  return result.value;
+}
 
 /** Builds current identity, Token, Workspace and NanoHost authority through their real owners. */
 async function fixture() {
@@ -147,6 +173,9 @@ async function fixture() {
   fixtures.push({ coreDb, dataRoot });
   applyMigrations(coreDb);
   coreDb.sqlite.pragma('journal_mode = WAL');
+  const storage = await openAdmittedTestNanoHost(coreDb);
+  const sqlite = new Database(serverStoragePath(dataRoot, 'nanohost'), { fileMustExist: true });
+  nativeFixtures.set(dataRoot, { storage, sqlite });
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -171,14 +200,19 @@ async function fixture() {
     tokenId: token.tokenId,
     tokenScope: 'server-admin',
   };
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-    deploymentId: testEntityId('dep', 'deployment_cleanup'),
+  const target = await fixtureTarget(coreDb, {
+    kind: 'allocate',
+    deploymentId: fixtureDeployment(coreDb),
     identityId: 'identity_cleanup',
     targetId: 'target_cleanup',
     observedAt: CREATED,
   });
-  await upsertNanoHostRuntimeTarget(coreDb, {
-    ...target,
+  await fixtureTarget(coreDb, {
+    kind: 'ready',
+    connectionGeneration: target.connectionGeneration,
+    deploymentId: target.deploymentId,
+    identityId: target.identityId,
+    targetId: target.targetId,
     freshEmpty: true,
     predecessorFenced: true,
     ready: true,
@@ -190,7 +224,7 @@ async function fixture() {
 
 /** Creates one opaque native Sandbox record for a UTF-8 byte-budget proof. */
 async function sandbox(coreDb: CoreDb, sandboxId: string): Promise<void> {
-  await createNanoHostHarnessRuntime(coreDb, {
+  await createNanoHostHarnessRuntime(nativeFixture(coreDb).storage.value.owner, {
     adapterId: 'pi',
     adapterVersion: '1',
     harnessInstanceId: 'harness_cleanup',
@@ -244,7 +278,7 @@ async function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
       agentSessionId: execution.agentSessionId!,
       backendKind: 'openshell',
       backendSessionId: PRIVATE,
-      deploymentId: testEntityId('dep', 'deployment_cleanup'),
+      deploymentId: fixtureDeployment(coreDb),
       packageSnapshotId: execution.inputRef!,
       runtimeTargetId: 'target_cleanup',
       stagingDirectoryRef: `server/runtime/${PRIVATE}`,
@@ -260,7 +294,7 @@ async function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
     sandboxBindingRef: execution.bindingRef!,
     now: () => CREATED,
   });
-  await createNanoHostHarnessRuntime(coreDb, {
+  await createNanoHostHarnessRuntime(nativeFixture(coreDb).storage.value.owner, {
     adapterId: 'pi',
     adapterVersion: '1',
     harnessInstanceId: 'harness_cleanup',
@@ -275,7 +309,7 @@ async function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
     runtimeTargetId: 'target_cleanup',
     timestamp: CREATED,
   });
-  await openNanoHostAgentSessionBinding(coreDb, {
+  await openNanoHostAgentSessionBinding(nativeFixture(coreDb).storage.value.owner, {
     agentSessionCompatibilityKey: 'b'.repeat(64),
     agentSessionId: execution.agentSessionId!,
     agentSessionRuntimeBindingId: 'binding_cleanup',
@@ -286,8 +320,8 @@ async function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
     timestamp: CREATED,
   });
   // Retained pre-admission idle records have no contributors; this isolated fixture has no live writer.
-  const storage = createLegacyWorkerStorageBinding(coreDb, {
-    deploymentId: testEntityId('dep', 'deployment_cleanup'),
+  const storage = createWorkerStorageBinding(nativeFixture(coreDb), {
+    deploymentId: fixtureDeployment(coreDb),
     layout: {
       family: 'worker',
       version: '1',
@@ -305,9 +339,34 @@ async function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
 }
 
 /** Calls the runtime seam with trusted context and fixed public ceilings. */
-async function read(input: ReturnType<typeof fixture>, maxEntries = 100, maxBytes = 262144) {
+async function read(
+  input: Awaited<ReturnType<typeof fixture>>,
+  maxEntries = 100,
+  maxBytes = 262144,
+  unavailableTable?: (typeof TABLES)[number]
+) {
   const result = await readRuntimeCleanupView({
     coreDb: input.coreDb,
+    nanoHostCleanupOwner: {
+      state: 'ready',
+      value: {
+        read: (query) =>
+          nativeFixture(input.coreDb).storage.value.owner.read((sqlite) => {
+            if (!unavailableTable) return query(sqlite);
+            const prepare = sqlite.prepare.bind(sqlite);
+            const fault = vi.spyOn(sqlite, 'prepare').mockImplementation((sql) => {
+              if (sql.includes(unavailableTable))
+                throw new Error(`unavailable_${unavailableTable}`);
+              return prepare(sql);
+            });
+            try {
+              return query(sqlite);
+            } finally {
+              fault.mockRestore();
+            }
+          }),
+      },
+    },
     actor: input.actor,
     now: new Date(NOW),
     maxEntries,
@@ -319,17 +378,17 @@ async function read(input: ReturnType<typeof fixture>, maxEntries = 100, maxByte
   return result;
 }
 
-/** Captures all persisted Core rows independently of the projected field whitelist. */
+/** Captures both journals independently of the projected field whitelist. */
 function rows(coreDb: CoreDb) {
-  const tables = coreDb.sqlite
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-    .all() as Array<{ name: string }>;
-  return tables.map(({ name }) => ({
-    name,
-    rows: coreDb.sqlite
-      .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`)
-      .all(),
-  }));
+  return [coreDb.sqlite, nativeFixture(coreDb).sqlite].map((sqlite) => {
+    const tables = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+      .all() as Array<{ name: string }>;
+    return tables.map(({ name }) => ({
+      name,
+      rows: sqlite.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`).all(),
+    }));
+  });
 }
 
 /** Captures file identities and bytes, including unexpected discoveries or cleanup results. */
@@ -349,6 +408,8 @@ afterEach(async () => {
   snapshotNativeInterception.gate = undefined;
   vi.restoreAllMocks();
   for (const entry of fixtures.splice(0)) {
+    nativeFixtures.get(entry.dataRoot)?.sqlite.close();
+    nativeFixtures.delete(entry.dataRoot);
     if (entry.coreDb.sqlite.open) entry.coreDb.sqlite.close();
     rmSync(entry.dataRoot, { recursive: true, force: true });
   }
@@ -449,23 +510,26 @@ describe('administrator runtime cleanup view', () => {
   it('records backend physical cleanup with its original proof timestamp and exact source target', async () => {
     const input = await fixture();
     const { execution } = await populate(input.coreDb);
-    await transitionWorkerBackendSessionState(input.coreDb, {
+    await nativeFixture(input.coreDb).storage.value.owner.backendSession({
+      kind: 'transition',
       attemptId: execution.attemptId,
       fromState: 'materializing',
       toState: 'cleanup-pending',
-      now: () => CREATED,
+      observedAt: CREATED,
     });
-    await transitionWorkerBackendSessionState(input.coreDb, {
+    await nativeFixture(input.coreDb).storage.value.owner.backendSession({
+      kind: 'transition',
       attemptId: execution.attemptId,
       fromState: 'cleanup-pending',
       toState: 'physical-cleaned',
-      now: () => CREATED,
+      observedAt: CREATED,
     });
-    await transitionWorkerBackendSessionState(input.coreDb, {
+    await nativeFixture(input.coreDb).storage.value.owner.backendSession({
+      kind: 'transition',
       attemptId: execution.attemptId,
       fromState: 'physical-cleaned',
       toState: 'cleaned',
-      now: () => NOW,
+      observedAt: NOW,
     });
     const result = await read(input);
     const backend = result.items.find((item) => item.source === 'backend-session')!;
@@ -490,8 +554,8 @@ describe('administrator runtime cleanup view', () => {
   it('keeps contradictory backend state and proof explicit instead of inferring cleanup', async () => {
     const input = await fixture();
     await populate(input.coreDb);
-    input.coreDb.sqlite
-      .prepare('UPDATE worker_backend_sessions SET physical_cleaned_at = ?')
+    nativeFixture(input.coreDb)
+      .sqlite.prepare('UPDATE worker_backend_sessions SET physical_cleaned_at = ?')
       .run(CREATED);
     const result = await read(input);
     const backend = result.items.find((item) => item.source === 'backend-session')!;
@@ -502,7 +566,8 @@ describe('administrator runtime cleanup view', () => {
   it('preserves stale Epoch uncertainty when current connection readiness is lost', async () => {
     const input = await fixture();
     await populate(input.coreDb);
-    await recordNanoHostRuntimeTargetConnectionClose(input.coreDb, {
+    await fixtureTarget(input.coreDb, {
+      kind: 'close',
       targetId: 'target_cleanup',
       closedGeneration: 1,
       authoritativeGeneration: null,
@@ -520,19 +585,22 @@ describe('administrator runtime cleanup view', () => {
   it('preserves a recorded historical backend cleanup receipt after current readiness is lost', async () => {
     const input = await fixture();
     const { execution } = await populate(input.coreDb);
-    await transitionWorkerBackendSessionState(input.coreDb, {
+    await nativeFixture(input.coreDb).storage.value.owner.backendSession({
+      kind: 'transition',
       attemptId: execution.attemptId,
       fromState: 'materializing',
       toState: 'cleanup-pending',
-      now: () => CREATED,
+      observedAt: CREATED,
     });
-    await transitionWorkerBackendSessionState(input.coreDb, {
+    await nativeFixture(input.coreDb).storage.value.owner.backendSession({
+      kind: 'transition',
       attemptId: execution.attemptId,
       fromState: 'cleanup-pending',
       toState: 'physical-cleaned',
-      now: () => CREATED,
+      observedAt: CREATED,
     });
-    await recordNanoHostRuntimeTargetConnectionClose(input.coreDb, {
+    await fixtureTarget(input.coreDb, {
+      kind: 'close',
       targetId: 'target_cleanup',
       closedGeneration: 1,
       authoritativeGeneration: null,
@@ -555,14 +623,19 @@ describe('administrator runtime cleanup view', () => {
   it('reports a different freshly admitted physical Epoch without manufacturing cleanup proof', async () => {
     const input = await fixture();
     await populate(input.coreDb);
-    const successor = await allocateNanoHostRuntimeTargetConnectionGeneration(input.coreDb, {
+    const successor = await fixtureTarget(input.coreDb, {
+      kind: 'allocate',
       targetId: 'target_cleanup',
       identityId: 'identity_cleanup',
-      deploymentId: testEntityId('dep', 'deployment_cleanup'),
+      deploymentId: fixtureDeployment(input.coreDb),
       observedAt: NOW,
     });
-    await upsertNanoHostRuntimeTarget(input.coreDb, {
-      ...successor,
+    await fixtureTarget(input.coreDb, {
+      kind: 'ready',
+      connectionGeneration: successor.connectionGeneration,
+      deploymentId: successor.deploymentId,
+      identityId: successor.identityId,
+      targetId: successor.targetId,
       physicalEpoch: 'e'.repeat(64),
       freshEmpty: true,
       predecessorFenced: true,
@@ -580,7 +653,7 @@ describe('administrator runtime cleanup view', () => {
   it('records retained-storage purge only from the exact settled purge timestamp', async () => {
     const input = await fixture();
     const { storage } = await populate(input.coreDb);
-    const pending = await markWorkerStoragePurgePending(input.coreDb, {
+    const pending = markWorkerStoragePurgePending(nativeFixture(input.coreDb), {
       storageRef: storage.storageRef,
       expectedRevision: storage.revision,
       now: CREATED,
@@ -588,19 +661,21 @@ describe('administrator runtime cleanup view', () => {
         Boolean(requireCurrentDeploymentAdmin(input.coreDb, input.actor, new Date(NOW))),
       hasSurvivingReferences: () =>
         Boolean(
-          input.coreDb.sqlite
-            .prepare('SELECT 1 FROM worker_storage_contributors WHERE storage_ref = ? LIMIT 1')
+          nativeFixture(input.coreDb)
+            .sqlite.prepare(
+              'SELECT 1 FROM worker_storage_contributors WHERE storage_ref = ? LIMIT 1'
+            )
             .get(storage.storageRef)
         ),
     });
-    const settled = await settleWorkerStoragePurge(input.coreDb, {
+    const settled = settleWorkerStoragePurge(nativeFixture(input.coreDb), {
       storageRef: storage.storageRef,
       expectedRevision: pending.revision,
       outcome: 'purged',
       now: CREATED,
     });
-    input.coreDb.sqlite
-      .prepare('UPDATE worker_storage_bindings SET updated_at = ? WHERE storage_ref = ?')
+    nativeFixture(input.coreDb)
+      .sqlite.prepare('UPDATE worker_storage_bindings SET updated_at = ? WHERE storage_ref = ?')
       .run(NOW, storage.storageRef);
     const result = await read(input);
     const item = result.items.find((entry) => entry.source === 'worker-storage')!;
@@ -708,10 +783,16 @@ describe('administrator runtime cleanup view', () => {
     await populate(input.coreDb);
     const prepare = input.coreDb.sqlite.prepare.bind(input.coreDb.sqlite);
     vi.spyOn(input.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
-      if (sql.includes(table)) throw new Error(`unavailable_${table}`);
+      if (table === 'scheduler_execution_attempts' && sql.includes(table))
+        throw new Error(`unavailable_${table}`);
       return prepare(sql);
     });
-    const result = await read(input);
+    const result = await read(
+      input,
+      100,
+      262144,
+      table === 'scheduler_execution_attempts' ? undefined : table
+    );
     const source = SOURCES[TABLES.indexOf(table)];
     expect(result.sources.find((entry) => entry.source === source)).toEqual({
       source,
@@ -728,9 +809,11 @@ describe('administrator runtime cleanup view', () => {
   it('withholds malformed required identity and unknown owner state without leaking invalid rows', async () => {
     const input = await fixture();
     await populate(input.coreDb);
-    input.coreDb.sqlite.prepare("UPDATE worker_backend_sessions SET thread_id = ''").run();
-    input.coreDb.sqlite
-      .prepare('UPDATE agent_session_runtime_bindings SET lifecycle_state = ?')
+    nativeFixture(input.coreDb)
+      .sqlite.prepare("UPDATE worker_backend_sessions SET thread_id = ''")
+      .run();
+    nativeFixture(input.coreDb)
+      .sqlite.prepare('UPDATE agent_session_runtime_bindings SET lifecycle_state = ?')
       .run(PRIVATE);
     const result = await read(input);
     for (const source of ['backend-session', 'agent-session-binding']) {
@@ -800,7 +883,17 @@ describe('administrator runtime cleanup view', () => {
       'conversation',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    const restricted = await createAndReserveWorkerStorageAttachment(input.coreDb, {
+    const owner = nativeFixture(input.coreDb);
+    const created = createWorkerStorageBinding(owner, {
+      deploymentId: fixtureDeployment(input.coreDb),
+      layout: empty.layout,
+      now: CREATED,
+      runtimeTargetId: 'target_cleanup',
+      workspaceId: workspace.id,
+    });
+    const restricted = reserveWorkerStorageAttachment(owner, {
+      storageRef: created.storageRef,
+      expectedRevision: created.revision,
       agentSessionId: testEntityId('as', 'private_storage_session'),
       authorizeContributor: (contributor) =>
         isThreadIdVisible(
@@ -809,7 +902,6 @@ describe('administrator runtime cleanup view', () => {
           contributor.threadId,
           contributor.responsibleUserId
         ),
-      deploymentId: testEntityId('dep', 'deployment_cleanup'),
       layout: empty.layout,
       now: CREATED,
       purpose: 'work',
@@ -823,9 +915,10 @@ describe('administrator runtime cleanup view', () => {
     input.coreDb.sqlite.close();
     input.coreDb = openCoreDb(input.dataRoot);
     fixtures[fixtures.length - 1]!.coreDb = input.coreDb;
-    expect(getWorkerStorageBinding(input.coreDb, { storageRef: restricted.storageRef })).toEqual(
-      restricted
-    );
+    nativeFixture(input.coreDb).storage = await reopenAdmittedTestNanoHost(input.coreDb);
+    expect(
+      getWorkerStorageBinding(nativeFixture(input.coreDb), { storageRef: restricted.storageRef })
+    ).toEqual(restricted);
     const before = files(input.dataRoot);
     const result = await read(input);
     expect(JSON.stringify(result)).not.toContain(restricted.storageRef);
@@ -947,14 +1040,20 @@ describe('administrator runtime cleanup view', () => {
   it('does not mutate SQLite or files, including unknown cleanup records and inert filesystem entries', async () => {
     const input = await fixture();
     await populate(input.coreDb);
-    input.coreDb.sqlite.prepare("UPDATE worker_storage_bindings SET state = 'unknown'").run();
-    input.coreDb.sqlite
-      .prepare(
+    nativeFixture(input.coreDb)
+      .sqlite.prepare("UPDATE worker_storage_bindings SET state = 'unknown'")
+      .run();
+    nativeFixture(input.coreDb)
+      .sqlite.prepare(
         "UPDATE sandbox_runtime_records SET cleanup_state = 'unknown', health_state = 'unknown'"
       )
       .run();
     writeFileSync(join(input.dataRoot, 'orphan-cleanup-canary'), PRIVATE);
     const beforeRows = rows(input.coreDb);
+    // Allocate the Native reader's WAL read mark before measuring file bytes.
+    nativeFixture(input.coreDb).storage.value.owner.read((sqlite) =>
+      sqlite.transaction(() => sqlite.prepare('SELECT count(*) FROM sqlite_master').get())()
+    );
     const beforeFiles = files(input.dataRoot);
     input.coreDb.sqlite.pragma('query_only = ON');
     const result = await read(input);
@@ -972,8 +1071,8 @@ describe('administrator runtime cleanup view', () => {
     input.coreDb.sqlite.close();
     input.coreDb = openCoreDb(input.dataRoot);
     fixtures[fixtures.length - 1]!.coreDb = input.coreDb;
-    input.coreDb.sqlite
-      .prepare("UPDATE worker_backend_sessions SET state = 'cleanup-failed', updated_at = ?")
+    nativeFixture(input.coreDb)
+      .sqlite.prepare("UPDATE worker_backend_sessions SET state = 'cleanup-failed', updated_at = ?")
       .run(NOW);
     const result = await read(input);
     expect(result.items.find((item) => item.source === 'backend-session')).toMatchObject({
@@ -1014,7 +1113,7 @@ describe('administrator runtime cleanup view', () => {
           Atomics.store(gate, 2, 1);
           Atomics.notify(gate, 2);
           const wait = Atomics.wait(gate, 3, 0, 5000);
-          const committed = getWorkerBackendSession(concurrent, execution.attemptId);
+          const committed = getWorkerBackendSession(nativeFixture(concurrent), execution.attemptId);
           committedBeforeReaderResumed =
             wait !== 'timed-out' &&
             Atomics.load(gate, 3) === 1 &&

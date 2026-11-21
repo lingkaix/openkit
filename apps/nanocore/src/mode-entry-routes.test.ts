@@ -63,7 +63,11 @@ import {
 import { openCoreDb, openWorkspaceDb, serverStoragePath } from './storage/db.js';
 import { ensureConfigTemplateSurface } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
-import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import {
   createApp,
@@ -80,7 +84,7 @@ import {
   SELECTED_CHOICE,
 } from './test-support/mode-entry-fixture.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
@@ -106,7 +110,11 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
   /** Completes the fixture's real target publication before scheduler admission can observe it. */
   public static async create(fixtureOptions: { coreDb?: ReturnType<typeof openCoreDb> } = {}) {
     const executor = new CompletingTurnExecutor(fixtureOptions);
-    if (fixtureOptions.coreDb) await recordTestNativeRuntimeTarget(fixtureOptions.coreDb);
+    if (fixtureOptions.coreDb) {
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+      onTestFinished(() => vi.unstubAllEnvs());
+      await recordTestNativeRuntimeTarget(fixtureOptions.coreDb);
+    }
     return executor;
   }
 
@@ -541,9 +549,11 @@ describe('conversation.submit worker storage choice', () => {
     const workerSetup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, workerSetup.manifest);
     const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
+      nanoHostStorage,
       dataRoot,
       fileAdmission: native.fileAdmission,
       workerControlGateway: native.workerControlGateway,
@@ -766,9 +776,11 @@ describe('conversation.submit worker storage choice', () => {
       return execution;
     });
     const workerSetup = createTestAgentSetup();
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, workerSetup.manifest);
     const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
+      nanoHostStorage,
       fileAdmission,
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
       store,
@@ -970,9 +982,11 @@ describe('task.start objective limit', () => {
     const workerSetup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, workerSetup.manifest);
     const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
+      nanoHostStorage,
       dataRoot,
       fileAdmission: native.fileAdmission,
       workerControlGateway: native.workerControlGateway,
@@ -1074,9 +1088,11 @@ describe('conversation.submit worker acceptance wait', () => {
     const workerSetup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, workerSetup.manifest);
     const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
+      nanoHostStorage,
       dataRoot,
       fileAdmission: native.fileAdmission,
       workerControlGateway: native.workerControlGateway,
@@ -1344,6 +1360,7 @@ describe('conversation.submit worker acceptance wait', () => {
       const restarted = createAppWithWorkspaceAuthority({
         agentManifests: [workerSetup.manifest],
         coreDb,
+        nanoHostStorage,
         dataRoot,
         fileAdmission: native.fileAdmission,
         workerControlGateway: native.workerControlGateway,
@@ -1408,9 +1425,11 @@ describe('conversation.submit worker acceptance wait', () => {
       const workerSetup = createTestAgentSetup({
         requiredCapabilities: ['trusted-worker-inference-relay'],
       });
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, workerSetup.manifest);
       const app = createAppWithWorkspaceAuthority({
         agentManifests: [workerSetup.manifest],
         coreDb,
+        nanoHostStorage,
         dataRoot,
         fileAdmission: native.fileAdmission,
         workerControlGateway: native.workerControlGateway,
@@ -1644,9 +1663,11 @@ describe('conversation.submit worker acceptance wait', () => {
       const workerSetup = createTestAgentSetup({
         requiredCapabilities: ['trusted-worker-inference-relay'],
       });
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, workerSetup.manifest);
       const app = createAppWithWorkspaceAuthority({
         agentManifests: [workerSetup.manifest],
         coreDb,
+        nanoHostStorage,
         dataRoot,
         fileAdmission: native.fileAdmission,
         workerControlGateway: native.workerControlGateway,
@@ -1751,7 +1772,9 @@ describe('conversation.submit worker acceptance wait', () => {
         executor.completion.resolve();
         await expect(executor.execution).rejects.toBeDefined();
         await Promise.allSettled(workerLoops);
-        const nativeFinal = getWorkerControlAcceptedFinalStatus(coreDb, executor.nativeLineage!);
+        const nativeFinal = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerControlAcceptedFinalStatus({ sqlite }, executor.nativeLineage!)
+        );
         const current = store.getTurnById(turnId);
         const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, workerScope);
         const workspaceDb = openWorkspaceDb(dataRoot, workerScope.workspaceId);
@@ -1873,9 +1896,11 @@ describe('mode command failure diagnostics', () => {
       const store = await createDemoStore({ dataRoot });
       const setup = createTestAgentSetup({ imageRef: `sha256:${'d'.repeat(64)}` });
       const executor = await CompletingTurnExecutor.create({ coreDb });
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const app = createApp({
         coreDb,
         dataRoot,
+        nanoHostStorage,
         store,
         turnExecutor: executor,
         runtimeConfigManager: createRuntimeConfigManager({
@@ -1923,9 +1948,9 @@ describe('mode command failure diagnostics', () => {
             )
           : await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Task admission');
       // The generic App fixture admits synthetic defaults; retain acquisition but remove admission.
-      coreDb.sqlite
-        .prepare('UPDATE worker_image_settlements SET native_environment_json = NULL')
-        .run();
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite.prepare('UPDATE worker_image_settlements SET native_environment_json = NULL').run()
+      );
       // Bypass this module's automatic admission wrapper at the actual scheduler preview seam.
       const actual = await vi.importActual<typeof import('./runtime/agent-environment.js')>(
         './runtime/agent-environment.js'
@@ -1936,6 +1961,7 @@ describe('mode command failure diagnostics', () => {
           agentSessionId: input.freshAgentSessionId,
           triggerActor: input.turn.triggerActor,
           coreDb,
+          readNanoHostEnvironment: nanoHostStorage.value.owner.read,
           backend: { kind: 'openshell' },
         });
         throw new Error('Missing image admission unexpectedly succeeded.');
@@ -2853,14 +2879,8 @@ describe('route B queued Task receipts', () => {
       const store = await createDemoStore({ dataRoot });
       const executor = new HoldingTurnExecutor(coreDb);
       const setup = createTestAgentSetup();
-      const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const nativePath = serverStoragePath(dataRoot, 'nanohost');
-      const sqlite = new Database(nativePath, { fileMustExist: true });
-      try {
-        admitTestNativeEnvironment({ sqlite }, setup.manifest);
-      } finally {
-        sqlite.close();
-      }
       const options = prepareTestAppOptions({
         dataRoot,
         store,
@@ -2949,10 +2969,16 @@ describe('route B queued Task receipts', () => {
               statuses: ['queued', 'admitted', 'cancelled', 'denied'],
             }).map((row) => row.turnId)
           ).toEqual([admittedId]);
-          await vi.waitFor(() =>
-            expect(
-              observeExecutionAttempts(coreDb).find((a) => a.turn_id === admittedId)
-            ).toMatchObject({
+          await vi.waitFor(() => {
+            const attempt = observeExecutionAttempts(coreDb).find((a) => a.turn_id === admittedId);
+            const observed = attempt
+              ? attemptRecords.requireSchedulerExecutionAttempt(coreDb, attempt.attempt_id)
+              : undefined;
+            expect({
+              ...attempt,
+              outcome_ref: observed?.outcomeRef,
+              fence_ref: observed?.fenceRef,
+            }).toMatchObject({
               phase: 'closed',
               disposition: 'not_accepted',
               agent_session_id: null,
@@ -2961,8 +2987,8 @@ describe('route B queued Task receipts', () => {
               operation_id: null,
               outcome_ref: null,
               fence_ref: null,
-            })
-          );
+            });
+          });
           const checkpointDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
           try {
             if (entry === 'selected-conversation') {
