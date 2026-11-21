@@ -27,9 +27,9 @@ Core: [AgentSession](../core/agent-session.md), [Sandbox](../core/sandbox.md).
 
 ## Runtime
 
-The pin uses first-party native ACP over local stdio. The client SDK is 2.2.0 on stable ACP v1, against server SDK 1.4.0. The typed agent context is the actual connection. There is no narrower SDK wire, bridge, upward ACP, or generic daemon ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)). Client major 2 does not select ACP protocol 2.
+The pin uses first-party native ACP over local stdio. The client SDK is 2.7.0 on stable ACP v1, against server SDK 1.4.0. The typed agent context is the actual connection. There is no narrower SDK wire, bridge, upward ACP, or generic daemon ([four native runtime adapters](../decisions/20260929-four_native_runtime_adapters.md)). Client major 2 does not select ACP protocol 2.
 
-The runtime CLI is `dsh` 0.2.1-rc.5 plus the ACP client 2.2.0. The image installs that runtime on the shim resolution closure. Native profile composition helpers come from the same runtime closure. Smoke checks the pins, the path, and the non-root shared image.
+The runtime CLI is `dsh` 0.2.1-rc.5 plus the ACP client 2.7.0. The image installs that runtime on the shim resolution closure. Native profile composition helpers come from the same runtime closure. Smoke checks the pins, the path, and the non-root shared image.
 
 ## Launch And Session Mapping
 

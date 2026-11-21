@@ -567,8 +567,8 @@ importers:
   packages/worker-shim:
     dependencies:
       '@agentclientprotocol/sdk':
-        specifier: 2.2.0
-        version: 2.2.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
+        specifier: 2.7.0
+        version: 2.7.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
       '@openkit/codex-app-server-schema':
         specifier: workspace:*
         version: link:../codex-app-server-schema
@@ -633,8 +633,8 @@ packages:
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
-  '@agentclientprotocol/sdk@2.2.0':
-    resolution: {integrity: sha512-o1+eDQVb05yzPY+5v54awHyONU1oeLsbLVavkwrMQaZDuJDh/38pQiXJS4ix4d6QA3Y4bU0lHFRjwg99KKKSaQ==}
+  '@agentclientprotocol/sdk@2.7.0':
+    resolution: {integrity: sha512-oXdQq0plWv3iOg01zJghNZRSuyWeMYxOgWIaSdwg1BZe2ZAC9LRhNDi023lNYxXq1zVIpQjIp8P6AfsxpvxF6g==}
     peerDependencies:
       '@modelcontextprotocol/server': ^2.4.0
       zod: ^3.25.76 || ^4.0.0
@@ -7724,7 +7724,7 @@ snapshots:
     dependencies:
       zod: 4.6.7
 
-  '@agentclientprotocol/sdk@2.2.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)':
+  '@agentclientprotocol/sdk@2.7.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
     optionalDependencies:

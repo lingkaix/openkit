@@ -26,7 +26,7 @@
     "format": "biome check --write ."
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "2.2.0",
+    "@agentclientprotocol/sdk": "2.7.0",
     "@openkit/codex-app-server-schema": "workspace:*",
     "@openkit/config-schema": "workspace:*",
     "@openkit/protocol": "workspace:*",
