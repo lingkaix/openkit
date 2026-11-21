@@ -185,6 +185,10 @@ import {
 } from '../runtime/execution-journal.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import type { AdmittedNanoHostAttemptRecovery } from '../runtime/nanohost-attempt-recovery.js';
+import {
+  getNanoHostRuntimeTarget,
+  type NanoHostRuntimeTargetRecord,
+} from '../runtime/nanohost-runtime-target-records.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type { ControlPendingCommandResult } from '../runtime/pending-requests.js';
 import type {
@@ -630,6 +634,9 @@ export interface NanoHostOwnerBinding
   > {
   transport(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
   enrollTransport: NanoHostAdministratorEnroll;
+  readRuntimeTarget(
+    targetId: string
+  ): StorageResult<'nanohost', NanoHostRuntimeTargetRecord | null>;
   harnessLifecycle(
     input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
   ): Promise<void>;
@@ -777,7 +784,7 @@ interface Opening {
   readonly promise: Promise<void>;
   readonly policyReads: Set<PolicyReadResource>;
   /** A second NanoHost tuple cannot rely on a write whose FULL ACK is outstanding. */
-  nanoHostWritePending?: true | 'core-image-read';
+  nanoHostWritePending?: true | 'core-image-read' | 'backend-session-materialize';
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
   communicationReader?: Database.Database;
@@ -3210,6 +3217,23 @@ class ControlStoreWorkerClient {
         }
       };
       opening.readNanoHost = read;
+      const readRuntimeTarget: NanoHostOwnerBinding['readRuntimeTarget'] = (targetId) => {
+        try {
+          if (!gate.enabled()) return disabled;
+          if (opening.nanoHostTargetTransition)
+            throw new ControlStoreWorkerError('busy', 'not-committed');
+          // Materialization only mutates backend sessions. Other owner reads wait for its ACK.
+          return {
+            state: 'ready',
+            value: readCurrent(
+              (handle) => getNanoHostRuntimeTarget({ sqlite: handle }, targetId),
+              opening.nanoHostWritePending === 'backend-session-materialize'
+            ),
+          };
+        } catch (error) {
+          return serverOwnerUnavailable(owner, error);
+        }
+      };
       const verifyPost = (mutation: NanoHostOwnerMutation): boolean => {
         assertCurrent(true);
         switch (mutation.kind) {
@@ -3235,7 +3259,8 @@ class ControlStoreWorkerClient {
         mutation: NanoHostOwnerMutation & { kind: Kind }
       ): Promise<Extract<NanoHostOwnerMutationResult, { kind: Kind }>> => {
         assertCurrent();
-        opening.nanoHostWritePending = true;
+        opening.nanoHostWritePending =
+          mutation.kind === 'backend-session-materialize' ? mutation.kind : true;
         try {
           const reply = (await this.request(
             { operation: 'nanohost-owner', database, openingRequestId, mutation },
@@ -3472,6 +3497,7 @@ class ControlStoreWorkerClient {
         value: {
           transport: async (input) => (await write({ kind: 'transport', input })).value,
           enrollTransport,
+          readRuntimeTarget,
           harnessLifecycle: async (input) => {
             await write({ kind: 'harness-lifecycle', input });
           },
