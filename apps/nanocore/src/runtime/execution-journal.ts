@@ -1754,13 +1754,93 @@ export function readKernelSchedulerGrantInDb(
   return readRetainedKernelSchedulerGrant(db, execution, operationId)?.grant ?? null;
 }
 
+function executionClockAllowsOperation(
+  clock: ExecutionInvocation['clock'],
+  now: bigint,
+  expiry: bigint
+): boolean {
+  if (now < clock.admittedUnixNano || now >= expiry) return false;
+  if (clock.processWitness !== processWitness) return true;
+  const elapsed = process.hrtime.bigint() - clock.admittedMonotonicNano;
+  return elapsed >= 0n && clock.admittedUnixNano + elapsed < expiry;
+}
+
+interface AcknowledgedSchedulerPreparation {
+  readonly operationId: string;
+  readonly actor: ExecutionStepControl['actor'];
+  readonly turnId: string;
+  readonly admissionHash: string;
+  readonly started: bigint;
+  readonly startupDeadline: bigint;
+}
+
+function acknowledgedSchedulerPreparationAllowsSubmission(
+  db: CoreDb,
+  attemptId: string,
+  preparation: AcknowledgedSchedulerPreparation,
+  now: bigint
+): boolean {
+  const execution: ExecutionJournalRef = {
+    owner: { kind: 'server' },
+    executionId: `scheduler-lifecycle:${attemptId}`,
+  };
+  const claim = storedStep(db, { execution, stepId: 'claim' });
+  if (
+    claim.root.definitionVersion !== CORE_SCHEDULER_LIFECYCLE_DEFINITION ||
+    claim.root.phase !== 'open' ||
+    claim.root.workId !== preparation.turnId ||
+    claim.root.fingerprint !== preparation.admissionHash ||
+    claim.control.kind !== 'admit' ||
+    claim.control.operationId !== null ||
+    !claim.invocation.carriage.schedulerPreparation ||
+    claim.span.startTimeUnixNano !== preparation.started
+  )
+    return false;
+
+  const latest = db.sqlite.prepare(`
+    SELECT step_id AS stepId FROM control_execution_steps
+    WHERE execution_id = ? AND json_extract(control_json, '$.kind') = ?
+    ORDER BY ordinal DESC LIMIT 1
+  `);
+  const intentRef = latest.get(execution.executionId, 'deliver-start') as
+    | { stepId: string }
+    | undefined;
+  const observationRef = latest.get(execution.executionId, 'observe') as
+    | { stepId: string }
+    | undefined;
+  if (!intentRef || !observationRef) return false;
+  const intent = storedStep(db, { execution, stepId: intentRef.stepId });
+  const observation = storedStep(db, { execution, stepId: observationRef.stepId });
+  if (
+    intent.control.operationId !== preparation.operationId ||
+    observation.control.operationId !== preparation.operationId ||
+    !(claim.row.ordinal < intent.row.ordinal && intent.row.ordinal < observation.row.ordinal) ||
+    !(
+      preparation.started <= intent.span.startTimeUnixNano &&
+      intent.span.startTimeUnixNano <= observation.span.startTimeUnixNano &&
+      observation.span.startTimeUnixNano <= now
+    )
+  )
+    return false;
+
+  return [claim, intent, observation].every(
+    ({ row, control, invocation }) =>
+      row.state === 'completed' &&
+      control.attemptId === attemptId &&
+      control.fingerprint === preparation.admissionHash &&
+      isDeepStrictEqual(control.actor, preparation.actor) &&
+      executionClockAllowsOperation(invocation.clock, now, preparation.startupDeadline)
+  );
+}
+
 /** Check the retained anchor for another effect without renewing its original deadline. */
 export function kernelSchedulerGrantClockAllowsOperation(
   db: CoreDb,
   execution: ExecutionJournalRef,
   submitted: boolean,
   now: bigint,
-  deadline: bigint
+  deadline: bigint,
+  preparation?: AcknowledgedSchedulerPreparation
 ): boolean {
   const first = db.sqlite
     .prepare(`
@@ -1769,20 +1849,23 @@ export function kernelSchedulerGrantClockAllowsOperation(
     ORDER BY ordinal LIMIT 1
   `)
     .get(execution.executionId, submitted ? 1 : 0) as { operationId: string } | undefined;
-  const original = first && readRetainedKernelSchedulerGrant(db, execution, first.operationId);
+  // NanoHost preparation effects can already be acknowledged in the generic lifecycle.
+  if (!first)
+    return (
+      !submitted &&
+      preparation !== undefined &&
+      acknowledgedSchedulerPreparationAllowsSubmission(db, execution.executionId, preparation, now)
+    );
+  const original = readRetainedKernelSchedulerGrant(db, execution, first.operationId);
   if (!original) return false;
   const { control, invocation } = storedStep(db, { execution, stepId: original.stepId });
-  const { clock } = invocation;
   const expiry =
     original.grant.deadline === null &&
     control.deadlineUnixNano !== null &&
     control.deadlineUnixNano < deadline
       ? control.deadlineUnixNano
       : deadline;
-  if (now < clock.admittedUnixNano || now >= expiry) return false;
-  if (clock.processWitness !== processWitness) return true;
-  const elapsed = process.hrtime.bigint() - clock.admittedMonotonicNano;
-  return elapsed >= 0n && clock.admittedUnixNano + elapsed < expiry;
+  return executionClockAllowsOperation(invocation.clock, now, expiry);
 }
 
 /** Retains one grant in the native transaction that decides access to the original operation. */

@@ -75,7 +75,9 @@ import {
   finalizeSchedulerExecutionAttemptInput,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionGrantInDb,
+  recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import {
   admitKernelInputInDb,
@@ -587,7 +589,7 @@ describe('persisted execution journal contracts', () => {
     }
   );
 
-  it('decides the first NanoHost submission from both owners and inspects a lost ACK without redispatch', async () => {
+  it('decides the first NanoHost submission after acknowledged session.open and inspects a lost ACK without redispatch', async () => {
     const f = journalFixture();
     const workspaceId = testEntityId('ws', 'first-submission');
     const workspace = openWorkspaceDb(f.root, workspaceId);
@@ -611,6 +613,9 @@ describe('persisted execution journal contracts', () => {
     const bindingRef = 'sandbox-binding-first-submit';
     const attemptId = testEntityId('attempt', 'first-submit');
     const operationId = commandInputHash({ attemptId, inputRef, operation: 'submit' });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    onTestFinished(() => vi.useRealTimers());
+    vi.setSystemTime(new Date(createdAt));
     const entry = createSchedulerAdmissionEntry(f.db, {
       backendId: 'nanohost',
       queueEntryId: 'first-submit-queue',
@@ -744,10 +749,37 @@ describe('persisted execution journal contracts', () => {
       )
       .immediate();
     refused({ ...input, placement: { ...placement, connectionGeneration: 2 } });
+    vi.setSystemTime(new Date('2026-11-20T08:00:01.000Z'));
+    const sessionOpenOperation = commandInputHash({
+      attemptId,
+      operation: 'session.open',
+      body: { agentSessionId, threadId, workspaceId },
+    });
+    const pending = recordSchedulerExecutionOperation(f.db, {
+      attemptId,
+      operationId: sessionOpenOperation,
+    });
+    expect(pending).toMatchObject({ operationId: sessionOpenOperation, disposition: 'unknown' });
+    vi.setSystemTime(new Date('2026-11-20T08:00:02.000Z'));
+    const unsettled = history();
+    expect(() => submit({ ...input, observedAt: new Date().toISOString() })).toThrow(
+      'Original execution clock is unavailable or expired.'
+    );
+    expect(history()).toEqual(unsettled);
+    const accepted = acceptSchedulerExecutionObservation(f.db, {
+      ...schedulerExecutionCorrelation(pending),
+      disposition: 'accepted',
+      execution: 'pending',
+      fenceRef: null,
+      outcomeRef: null,
+    });
+    expect(accepted).toMatchObject({ operationId: sessionOpenOperation, disposition: 'accepted' });
+    vi.setSystemTime(new Date(observedAt));
+    const prepared = history();
     expect(() => submit({ ...input, observedAt: '2026-11-20T08:25:00.000Z' })).toThrow(
       'Original execution clock or admission is unavailable.'
     );
-    expect(history()).toEqual(before);
+    expect(history()).toEqual(prepared);
     const first = submit();
     expect(first).toMatchObject({
       state: 'admitted-now',
