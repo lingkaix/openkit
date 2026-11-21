@@ -337,6 +337,7 @@ export async function createNativeTaskAdmissionFixture(
     nanoHostRecovery: {
       owner: { state: 'ready', value: owner },
       admitSubmission: owner.firstSubmission,
+      readWorkerCompletion: owner.readWorkerCompletion,
       harnessTurnLifecycle: harnessWriter,
       writeStorageAttachment: owner.writeStorageAttachment,
       commitCloseout: owner.classifyRecovery,
