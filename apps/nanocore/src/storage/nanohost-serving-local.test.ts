@@ -14,10 +14,7 @@ import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target-records.js';
-import {
-  ControlHarnessLifecycleInputSchema,
-  NanoHostLocalHarnessLifecycleInputSchema,
-} from './harness-lifecycle-codecs.js';
+import { ControlHarnessLifecycleInputSchema } from './harness-lifecycle-codecs.js';
 
 it('admits only owner-local Harness tuples and commits them on the NanoHost file', async () => {
   const timestamp = '2026-11-21T00:00:00.000Z';
@@ -54,10 +51,10 @@ it('admits only owner-local Harness tuples and commits them on the NanoHost file
       timestamp,
       workspaceId: 'workspace-native',
     },
-  ].map((input) => NanoHostLocalHarnessLifecycleInputSchema.parse(input));
+  ].map((input) => ControlHarnessLifecycleInputSchema.nanoHostLocal.parse(input));
   const restore = { kind: 'sandbox.restore-admission', sandboxRuntimeId: 'sandbox-runtime' };
   expect(ControlHarnessLifecycleInputSchema.safeParse(restore).success).toBe(true);
-  expect(NanoHostLocalHarnessLifecycleInputSchema.safeParse(restore).success).toBe(false);
+  expect(ControlHarnessLifecycleInputSchema.nanoHostLocal.safeParse(restore).success).toBe(false);
 
   const root = mkdtempSync(join(tmpdir(), 'openkit-nanohost-serving-local-'));
   const path = join(root, 'state.sqlite');
@@ -91,14 +88,20 @@ it('admits only owner-local Harness tuples and commits them on the NanoHost file
       const assert = require('node:assert/strict');
       const { workerData } = require('node:worker_threads');
       (async () => {
-        const { applyNanoHostLocalHarnessLifecycle } = await import(workerData.handler);
+        const { applyControlHarnessLifecycle } = await import(workerData.handler);
         const sqlite = new (require(workerData.sqlite))(workerData.path, { fileMustExist: true });
         try {
           sqlite.pragma('foreign_keys = ON');
           sqlite.pragma('synchronous = FULL');
+          assert.throws(
+            () => sqlite.transaction(() =>
+              applyControlHarnessLifecycle({ sqlite }, workerData.restore)
+            ).immediate(),
+            { message: 'Control product transition precondition failed.' }
+          );
           for (const input of workerData.inputs) {
             assert.equal(sqlite.transaction(() =>
-              applyNanoHostLocalHarnessLifecycle({ sqlite }, input)
+              applyControlHarnessLifecycle({ sqlite }, input)
             ).immediate(), null);
           }
         } finally {
@@ -111,6 +114,7 @@ it('admits only owner-local Harness tuples and commits them on the NanoHost file
         workerData: {
           handler: new URL('../../dist/storage/harness-lifecycle-native.js', import.meta.url).href,
           inputs,
+          restore,
           path,
           sqlite: createRequire(import.meta.url).resolve('better-sqlite3'),
         },

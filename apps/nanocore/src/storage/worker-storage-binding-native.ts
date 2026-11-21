@@ -13,12 +13,13 @@ import {
   workerStorageSchedulerRows,
 } from '../runtime/worker-storage-binding-records.js';
 import { presentControlFacts } from './control-store-input.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import type { ControlWorkerStorageInput } from './worker-storage-binding-codecs.js';
 
 /** Applies the binding CAS against an admitted NanoHost handle after its external authority decision. */
-export function applyNanoHostLocalWorkerStorageBinding(
+function applyLocalWorkerStorageBinding(
   owner: { readonly sqlite: Database.Database },
   input: Exclude<ControlWorkerStorageInput, { kind: 'purge-pending' }>
 ) {
@@ -52,10 +53,14 @@ export function applyNanoHostLocalWorkerStorageBinding(
   }
 }
 
-/** Runs the existing Core transition for the current serve path and its purge census. */
-export function applyControlWorkerStorageBinding(db: CoreDb, input: ControlWorkerStorageInput) {
-  if (input.kind !== 'purge-pending') return applyNanoHostLocalWorkerStorageBinding(db, input);
+/** Applies the binding tuple on the admitted owner. The purge census requires Core. */
+export function applyControlWorkerStorageBinding(
+  db: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
+  input: ControlWorkerStorageInput
+) {
+  if (input.kind !== 'purge-pending') return applyLocalWorkerStorageBinding(db, input);
   assertControlProductWriter(db.sqlite);
+  if (db.scope !== 'core') throw new ControlProductPreconditionError();
   if (!isDeepStrictEqual(workerStorageSchedulerRows(db, input.storageRef), input.schedulerRows))
     throw new WorkerStorageBindingError(
       'purge_blocked',

@@ -46,8 +46,7 @@ export const RetainedRuntimeEnvCheckVersionSchema =
       Number(value.targetEnvVarName !== undefined) + Number(value.targetPath !== undefined) === 1
   );
 
-/** Exact private Harness tuples; every domain lineage and replay predicate stays in the existing record body. */
-export const ControlHarnessLifecycleInputSchema = z.discriminatedUnion('kind', [
+const harnessLifecycleInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('runtime.create'),
@@ -233,7 +232,7 @@ export const ControlHarnessLifecycleInputSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 /** Exact domain input, with no SQL, callback or executable selector. */
-export type ControlHarnessLifecycleInput = z.infer<typeof ControlHarnessLifecycleInputSchema>;
+export type ControlHarnessLifecycleInput = z.infer<typeof harnessLifecycleInputSchema>;
 
 const nanoHostLocalHarnessKinds = [
   'runtime.create',
@@ -250,32 +249,22 @@ const nanoHostLocalHarnessKinds = [
   'operation.unknown',
 ] as const satisfies readonly ControlHarnessLifecycleInput['kind'][];
 
-/** Tuples whose durable predicates and writes all belong to the admitted NanoHost owner. */
-export type NanoHostLocalHarnessLifecycleInput = Extract<
-  ControlHarnessLifecycleInput,
-  { kind: (typeof nanoHostLocalHarnessKinds)[number] }
->;
-
 const nanoHostLocalHarnessKindSet: ReadonlySet<ControlHarnessLifecycleInput['kind']> = new Set(
   nanoHostLocalHarnessKinds
 );
 
-export function isNanoHostLocalHarnessLifecycleInput(
-  input: ControlHarnessLifecycleInput
-): input is NanoHostLocalHarnessLifecycleInput {
-  return nanoHostLocalHarnessKindSet.has(input.kind);
-}
-
-/** Uses the same tuple codecs on the private NanoHost owner worker. */
-export const NanoHostLocalHarnessLifecycleInputSchema =
-  ControlHarnessLifecycleInputSchema.transform((input, context) => {
-    if (isNanoHostLocalHarnessLifecycleInput(input)) return input;
-    context.addIssue({
-      code: 'custom',
-      message: 'Harness tuple requires deciding Core authority.',
-    });
-    return z.NEVER;
-  });
+/** Original Harness codec and its constrained NanoHost projection share the same tuple definitions. */
+export const ControlHarnessLifecycleInputSchema = Object.assign(harnessLifecycleInputSchema, {
+  nanoHostLocal: harnessLifecycleInputSchema.refine(
+    (
+      input
+    ): input is Extract<
+      ControlHarnessLifecycleInput,
+      { kind: (typeof nanoHostLocalHarnessKinds)[number] }
+    > => nanoHostLocalHarnessKindSet.has(input.kind),
+    'Harness tuple requires deciding Core authority.'
+  ),
+});
 
 /** Existing method results only; void publication is represented by null on the private peer. */
 export const ControlHarnessLifecycleResultSchema = z.union([

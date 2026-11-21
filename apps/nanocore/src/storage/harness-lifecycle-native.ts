@@ -8,23 +8,24 @@ import { nanoHostSandboxIdFromBackendSessionId } from '../runtime/nanohost-effec
 import * as records from '../runtime/nanohost-harness-records.js';
 import { listWorkspaceReconciliationRecords } from '../runtime/workspace-reconciliation-read.js';
 import { presentControlFacts } from './control-store-input.js';
-import { openControlStoreProductReadHandle } from './control-store-product-records.js';
+import {
+  ControlProductPreconditionError,
+  openControlStoreProductReadHandle,
+} from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';
 import {
   type ControlHarnessLifecycleInput,
   HarnessLifecycleRefusal,
-  isNanoHostLocalHarnessLifecycleInput,
-  type NanoHostLocalHarnessLifecycleInput,
   RetainedRuntimeEnvCheckVersionSchema,
 } from './harness-lifecycle-codecs.js';
 
-/** Applies a local Harness tuple on the worker's admitted NanoHost handle. */
-export function applyNanoHostLocalHarnessLifecycle(
-  owner: { readonly sqlite: Database.Database },
-  input: NanoHostLocalHarnessLifecycleInput
-): null {
+/** Applies a Harness tuple on the admitted owner. Mixed decisions require the Core binding. */
+export function applyControlHarnessLifecycle(
+  owner: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
+  input: ControlHarnessLifecycleInput
+) {
   assertControlProductWriter(owner.sqlite);
   try {
     switch (input.kind) {
@@ -66,35 +67,30 @@ export function applyNanoHostLocalHarnessLifecycle(
   } catch (error) {
     refuseHarnessLifecycle(error);
   }
-}
 
-/** Applies an existing Harness tuple inside the Core transition savepoint. */
-export function applyControlHarnessLifecycle(db: CoreDb, input: ControlHarnessLifecycleInput) {
-  if (isNanoHostLocalHarnessLifecycleInput(input))
-    return applyNanoHostLocalHarnessLifecycle(db, input);
-  assertControlProductWriter(db.sqlite);
+  if (owner.scope !== 'core') throw new ControlProductPreconditionError();
   try {
     switch (input.kind) {
       case 'sandbox.claim-idle-drain':
-        claimIdleSandboxDrain(db, input);
+        claimIdleSandboxDrain(owner, input);
         return null;
       case 'harness.claim-idle-capture-drain':
-        claimIdleCaptureDrain(db, input);
+        claimIdleCaptureDrain(owner, input);
         return null;
       case 'sandbox.restore-admission':
-        restoreSandboxAdmission(db, input.sandboxRuntimeId);
+        restoreSandboxAdmission(owner, input.sandboxRuntimeId);
         return null;
       case 'operation.queue':
-        return records.queueNanoHostHarnessOperation(db, input);
+        return records.queueNanoHostHarnessOperation(owner, input);
       case 'operation.dispatch':
-        return records.dispatchNanoHostHarnessOperation(db, {
+        return records.dispatchNanoHostHarnessOperation(owner, {
           sandboxIntegrationBindingRef: input.sandboxIntegrationBindingRef,
           ...(input.observedAt === undefined ? {} : { now: () => input.observedAt! }),
         });
       case 'operation.settle':
-        return records.settleNanoHostHarnessOperation(db, input);
+        return records.settleNanoHostHarnessOperation(owner, input);
       case 'result.acknowledge':
-        records.acknowledgeNanoHostHarnessResult(db, input);
+        records.acknowledgeNanoHostHarnessResult(owner, input);
         return null;
     }
   } catch (error) {
