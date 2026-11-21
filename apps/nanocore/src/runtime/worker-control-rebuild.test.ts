@@ -23,17 +23,21 @@ import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-st
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
+import { submitTestNanoHostWorkerLease } from '../test-support/nanohost-worker-lease.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { materializeRuntimeImage } from '../worker-environments/worker-environment-preparation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import {
+  closeSchedulerExecutionAttemptWithFence,
+  markSchedulerExecutionAttemptClosing,
+  schedulerExecutionCorrelation,
+} from './execution-attempt-records.js';
 import { commandInputHash } from './idempotent-command.js';
-import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
 import { hashWorkerRouteToken, WorkerControlGateway } from './worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './worker-control-rebuild.js';
 import { writeWorkerControlAcceptedRecord } from './worker-control-records.js';
@@ -231,24 +235,19 @@ async function createRestorableWorkerControlFixture(
   const workerInferenceToken = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
   const workerCapabilityToken = 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
 
-  recordTestExecutionAttempt(coreDb, {
+  submitTestNanoHostWorkerLease(
+    coreDb,
     entry,
-    attemptId: testEntityId('attempt', 'lease_restore_1'),
-    agentSessionId: options.attemptAgentSessionId ?? environmentPackage.scope.agentSessionId,
-    inputRef: environmentPackage.snapshotId,
-    bindingRef: sandboxBindingRef,
-    sessionCompatibilityKey: 'sha256:restore-1',
-    operationId: 'submit_restore_1',
-    now: () => '2026-07-13T00:00:04.000Z',
-  });
-  bindNanoHostAttemptRouteTokenHashes(coreDb, {
-    attemptId: testEntityId('attempt', 'lease_restore_1'),
-    now: () => '2026-07-13T00:00:05.000Z',
     sandboxBindingRef,
-    workerCapabilityTokenHash: hashWorkerRouteToken(workerCapabilityToken),
-    workerControlTokenHash: hashWorkerRouteToken(workerControlToken),
-    workerInferenceTokenHash: hashWorkerRouteToken(workerInferenceToken),
-  });
+    {
+      agentSessionId: options.attemptAgentSessionId ?? environmentPackage.scope.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      workerCapabilityTokenHash: hashWorkerRouteToken(workerCapabilityToken),
+      workerControlTokenHash: hashWorkerRouteToken(workerControlToken),
+      workerInferenceTokenHash: hashWorkerRouteToken(workerInferenceToken),
+    },
+    { attemptId: testEntityId('attempt', 'lease_restore_1'), nativePath: nanoHost.sqlite.name }
+  );
 
   return {
     coreDb,
@@ -372,11 +371,22 @@ describe('worker control gateway restart hydration', () => {
       turnId: scope.turnId,
       workspaceId: scope.workspaceId,
     };
-    fixture.coreDb.sqlite
-      .prepare(`UPDATE scheduler_execution_attempts
-      SET phase = 'closed', terminal_cause = 'turn-completed', fence_ref = ?
-      WHERE attempt_id = ?`)
-      .run('fixture-original-fence', testEntityId('attempt', 'lease_restore_1'));
+    const closing = markSchedulerExecutionAttemptClosing(fixture.coreDb, {
+      attemptId: testEntityId('attempt', 'lease_restore_1'),
+      cause: 'turn-completed',
+    });
+    closeSchedulerExecutionAttemptWithFence(fixture.coreDb, {
+      correlation: schedulerExecutionCorrelation(closing),
+      fenceRef: 'fixture-original-fence',
+      proof: {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      },
+    });
     const gateway = new WorkerControlGateway();
     const read = fixture.nanoHost.storage.owner.read;
     expect(rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway, read).state).toBe('ready');
