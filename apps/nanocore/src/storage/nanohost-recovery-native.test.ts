@@ -642,7 +642,11 @@ it('resolves App and Gateway bindings from the retained Core grant and the admit
     droppedEventsCount: 0,
     links: [],
     droppedLinksCount: 0,
-    instrumentationScope: { name: 'openkit.fixture', attributes: [], droppedAttributesCount: 0 },
+    instrumentationScope: {
+      name: 'nanohost-k8-fixture',
+      attributes: [],
+      droppedAttributesCount: 0,
+    },
     resource: { attributes: [], droppedAttributesCount: 0 },
   };
   const intent: ExecutionJournalIntent = {

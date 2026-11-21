@@ -154,6 +154,7 @@ import {
   nanoHostSandboxIdFromBackendSessionId,
 } from './nanohost-effect-identity.js';
 import {
+  type AdmittedNanoHostHarnessTurnLifecycle,
   acknowledgeNanoHostHarnessResult,
   appendNanoHostRuntimeCheckVersion,
   claimNanoHostIdleCaptureDrain,
@@ -378,6 +379,7 @@ export interface CreateConfiguredTurnExecutorOptions {
   nanoHostRecovery?:
     | {
         readonly owner: StorageResult<'nanohost', NanoHostLifecycleOwner>;
+        readonly harnessTurnLifecycle?: AdmittedNanoHostHarnessTurnLifecycle;
         readonly advanceIdleCleanup?: (selection: IdleCleanupSelection) => Promise<void>;
       }
     | undefined;
@@ -593,7 +595,8 @@ function createNanoHostWorkerLifecycleRuntime(
     fileAdmission,
     releaseIdentity,
     configuredProviderReader,
-    nanoHostOwner
+    nanoHostOwner,
+    nanoHostRecovery?.harnessTurnLifecycle
   );
   const advanceIdleCleanup = async (selection: IdleCleanupSelection): Promise<void> => {
     if (!nanoHostRecovery) return await backend.advanceIdleCleanup(selection);
@@ -1160,7 +1163,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly fileAdmission?: FileStorageAdmission,
     private readonly releaseIdentity?: ReleaseBuildIdentity,
     private readonly readProviderAccessShape?: WorkerProviderAccessShapeReader,
-    private readonly nanoHostOwner?: StorageResult<'nanohost', NanoHostLifecycleOwner>
+    private readonly nanoHostOwner?: StorageResult<'nanohost', NanoHostLifecycleOwner>,
+    private readonly admittedHarnessTurn?: AdmittedNanoHostHarnessTurnLifecycle
   ) {}
 
   private unavailableNanoHostRuntime(): never {
@@ -1175,6 +1179,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const owner = this.nanoHostOwner;
     if (!owner) return this.coreDb;
     return owner.state === 'ready' ? owner.value : this.unavailableNanoHostRuntime();
+  }
+
+  private harnessTurnLifecycle(): AdmittedNanoHostHarnessTurnLifecycle | undefined {
+    if (!this.nanoHostOwner) return undefined;
+    if (this.nanoHostOwner.state !== 'ready' || !this.admittedHarnessTurn)
+      this.unavailableNanoHostRuntime();
+    return this.admittedHarnessTurn;
   }
 
   /** Runs native observations against the acknowledged owner generation during split serving. */
@@ -1613,11 +1624,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       disposition: unsent ? 'refused' : 'unknown',
       body: { reasonCode: unsent ? 'stale' : 'outcome_unknown' },
     };
-    await settleNanoHostHarnessOperation(this.coreDb, {
-      result,
-      sandboxIntegrationBindingRef: session.sharedHarness.sandbox.sandboxIntegrationBindingRef,
-      timestamp: new Date().toISOString(),
-    });
+    await settleNanoHostHarnessOperation(
+      this.coreDb,
+      {
+        result,
+        sandboxIntegrationBindingRef: session.sharedHarness.sandbox.sandboxIntegrationBindingRef,
+        timestamp: new Date().toISOString(),
+      },
+      this.harnessTurnLifecycle()
+    );
     if (unsent) await pending.steer!.control.complete(taskSteerRefusal(error));
     await this.acceptHarnessResult(result);
     return null;
@@ -1770,12 +1785,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost idle close result has no exact Core consumer.');
       result = { ...result, body: parseHarnessResultBody(pending.operation, result) };
       // This is replay validation only: the deciding Core transaction already consumed the result.
-      await acknowledgeNanoHostHarnessResult(this.coreDb, {
-        result,
-        harnessBindingRef: session.harnessBindingRef,
-        consumerReceipt: JSON.stringify(pending.coreIdleClose.authority),
-        timestamp: new Date().toISOString(),
-      });
+      await acknowledgeNanoHostHarnessResult(
+        this.coreDb,
+        {
+          result,
+          harnessBindingRef: session.harnessBindingRef,
+          consumerReceipt: JSON.stringify(pending.coreIdleClose.authority),
+          timestamp: new Date().toISOString(),
+        },
+        this.harnessTurnLifecycle()
+      );
     } else {
       const journal = pending.journal;
       if (pending.sequence !== result.sequence || !journal?.child || !journal.reader)
@@ -2120,12 +2139,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       executionId: child.execution.ref.executionId,
       stepId: consume.stepId,
     });
-    await acknowledgeNanoHostHarnessResult(this.coreDb, {
-      result,
-      harnessBindingRef,
-      consumerReceipt: receipt,
-      timestamp: new Date().toISOString(),
-    });
+    await acknowledgeNanoHostHarnessResult(
+      this.coreDb,
+      {
+        result,
+        harnessBindingRef,
+        consumerReceipt: receipt,
+        timestamp: new Date().toISOString(),
+      },
+      this.harnessTurnLifecycle()
+    );
     const consumed = await journal.reader!.readInvocation({
       execution: consume.execution.ref,
       stepId: consume.stepId,
@@ -9324,6 +9347,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     body: Readonly<Record<string, unknown>>,
     steer?: { readonly target: TaskSteerTarget; readonly control: TaskSteerControl }
   ): Promise<Readonly<Record<string, unknown>>> {
+    const harnessTurnLifecycle = this.harnessTurnLifecycle();
     const admittedUnixMs = Date.now();
     const admittedMonotonicMs = performance.now();
     // Original cancellation and terminal cleanup join only their predecessor steer in the
@@ -9444,13 +9468,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             timestamp: new Date().toISOString(),
           });
           pending.coreIdleClose!.prepared = prepared;
-          pending.sequence = await queueNanoHostHarnessOperation(this.coreDb, {
-            prepared,
-            body,
-            harnessInstanceId: session.harnessInstanceId,
-            operation,
-            timestamp: new Date().toISOString(),
-          });
+          pending.sequence = await queueNanoHostHarnessOperation(
+            this.coreDb,
+            {
+              prepared,
+              body,
+              harnessInstanceId: session.harnessInstanceId,
+              operation,
+              timestamp: new Date().toISOString(),
+            },
+            harnessTurnLifecycle
+          );
           return await result;
         });
       } finally {
@@ -9587,13 +9615,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           performance.now() >= pending.deadlineMonotonicMs
         )
           throw new Error('NanoHost original Harness allowance ended before queue publication.');
-        pending.sequence = await queueNanoHostHarnessOperation(this.coreDb, {
-          prepared,
-          body,
-          harnessInstanceId: session.harnessInstanceId,
-          operation,
-          timestamp: new Date().toISOString(),
-        });
+        pending.sequence = await queueNanoHostHarnessOperation(
+          this.coreDb,
+          {
+            prepared,
+            body,
+            harnessInstanceId: session.harnessInstanceId,
+            operation,
+            timestamp: new Date().toISOString(),
+          },
+          harnessTurnLifecycle
+        );
         return await result;
       });
       await endWorkerTurnJournalStep(

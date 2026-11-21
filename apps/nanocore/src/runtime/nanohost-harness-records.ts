@@ -1571,13 +1571,17 @@ export function expireNanoHostHarnessQueuedOperation(
  */
 export function settleNanoHostHarnessOperation(
   coreDb: CoreDb,
-  input: SettleNanoHostHarnessOperationInput
+  input: SettleNanoHostHarnessOperationInput,
+  admittedOwner?: NanoHostHarnessDb
 ): 'settled' | 'replayed' {
   input = { ...input, result: HarnessResultEnvelopeReaderSchema.parse(input.result) };
+  const owner = admittedOwner ?? coreDb;
+  if (admittedOwner && !owner.sqlite.inTransaction)
+    throw new Error('NanoHost Harness settlement requires the admitted writer transaction.');
 
   try {
     const harness = requireHarnessForIntegration(
-      coreDb,
+      owner,
       input.sandboxIntegrationBindingRef,
       input.result.harnessInstanceId
     );
@@ -1663,9 +1667,7 @@ export function settleNanoHostHarnessOperation(
     }
     const consumerContext =
       harness.operation === 'session.close'
-        ? requireNanoHostObservation(coreDb, (sqlite) =>
-            readHarnessConsumerContext({ sqlite }, harness)
-          )
+        ? readHarnessConsumerContext(owner, harness)
         : undefined;
     // An idle AgentSession close is Core binding lifecycle work, not historical Turn work.
     // Consume its exact receipt in this same physical-state/capacity transaction before ACK.
@@ -1674,16 +1676,22 @@ export function settleNanoHostHarnessOperation(
         ? readJsonObject(harness.command_body_json)
         : null;
     const idleConsumerReceipt = command
-      ? readNanoHostIdleCloseAuthority(coreDb, {
-          harnessInstanceId: harness.harness_instance_id,
-          harnessBindingRef: harness.harness_binding_ref,
-          agentSessionId: requireIdentity(command.agentSessionId, 'close AgentSession'),
-          agentSessionRuntimeBindingId: requireIdentity(
-            command.agentSessionRuntimeBindingId,
-            'close binding'
-          ),
-        })
+      ? readNanoHostIdleCloseAuthority(
+          coreDb,
+          {
+            harnessInstanceId: harness.harness_instance_id,
+            harnessBindingRef: harness.harness_binding_ref,
+            agentSessionId: requireIdentity(command.agentSessionId, 'close AgentSession'),
+            agentSessionRuntimeBindingId: requireIdentity(
+              command.agentSessionRuntimeBindingId,
+              'close binding'
+            ),
+          },
+          owner
+        )
       : null;
+    if (admittedOwner && idleConsumerReceipt !== null)
+      throw new Error('NanoHost idle close requires its original Core deciding writer.');
     const resultJson = canonicalJson({
       ...input.result,
       ...(consumerContext ? { consumerContext } : {}),
@@ -1708,14 +1716,14 @@ export function settleNanoHostHarnessOperation(
     ) {
       // Admission stops here. Sandbox cleanup stays clean so the live owner can issue the first
       // wider delete; an unknown fence would skip that delete.
-      drainNanoHostHarnessAdmissionInTransaction(coreDb, {
+      drainNanoHostHarnessAdmissionInTransaction(owner, {
         harnessBindingRef: harness.harness_binding_ref,
         timestamp: input.timestamp,
       });
     }
     if (input.result.disposition === 'unknown') {
-      setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp);
-      const retainedUnknown = coreDb.sqlite
+      setHarnessUnknown(owner, harness.harness_instance_id, input.timestamp);
+      const retainedUnknown = owner.sqlite
         .prepare(`UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?
           WHERE harness_instance_id = ? AND operation_state = 'unknown'
             AND operation_id = ? AND operation_sequence = ?`)
@@ -1730,9 +1738,9 @@ export function settleNanoHostHarnessOperation(
         throw new Error('NanoHost Harness unknown receipt changed concurrently.');
     } else {
       if (input.result.disposition === 'succeeded') {
-        projectSuccessfulResult(coreDb, harness, input.result.body, input.timestamp);
+        projectSuccessfulResult(owner, harness, input.result.body, input.timestamp);
       }
-      const update = coreDb.sqlite
+      const update = owner.sqlite
         .prepare(
           `UPDATE harness_instance_records
          SET operation_state = 'settled', result_json = ?, result_fingerprint = ?,
@@ -1778,7 +1786,7 @@ export function markNanoHostHarnessOperationUnknown(
 
 /** Projects operation-specific success without giving a Harness result product terminal authority. */
 function projectSuccessfulResult(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   harness: HarnessRow,
   body: Readonly<Record<string, unknown>>,
   timestamp: string
@@ -1798,7 +1806,7 @@ function projectSuccessfulResult(
   const bindingId = command.agentSessionRuntimeBindingId;
   if (typeof bindingId !== 'string') {
     if (harness.operation === 'harness.drain') {
-      coreDb.sqlite
+      owner.sqlite
         .prepare(
           "UPDATE harness_instance_records SET drain_state = 'draining' WHERE harness_instance_id = ?"
         )
@@ -1807,13 +1815,13 @@ function projectSuccessfulResult(
     }
     throw new Error('NanoHost Harness operation has no AgentSession binding.');
   }
-  const retainedBinding = coreDb.sqlite
+  const retainedBinding = owner.sqlite
     .prepare(`SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings
     WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`)
     .get(bindingId, harness.harness_instance_id);
   if (retainedBinding) readRetainedV1(retainedBinding, () => retainedBinding);
   if (harness.operation === 'session.close') {
-    const removed = coreDb.sqlite
+    const removed = owner.sqlite
       .prepare(
         `DELETE FROM agent_session_runtime_bindings
          WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?
@@ -1825,7 +1833,7 @@ function projectSuccessfulResult(
     }
     // A failed Turn inspection can leave the binding holding its Turn slot until this close.
     const releasedTurns = removed.currentTurnId === null ? 0 : 1;
-    const released = coreDb.sqlite
+    const released = owner.sqlite
       .prepare(
         `UPDATE harness_instance_records
          SET open_session_count = open_session_count - 1, active_turn_count = active_turn_count - ?
@@ -1845,7 +1853,7 @@ function projectSuccessfulResult(
   }
   const nativeHandleState = body.nativeHandleState;
   const nativeHandleDigest = body.nativeHandleDigest;
-  const bindingState = coreDb.sqlite
+  const bindingState = owner.sqlite
     .prepare(
       `SELECT lifecycle_state AS lifecycleState FROM agent_session_runtime_bindings
        WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`
@@ -1855,7 +1863,7 @@ function projectSuccessfulResult(
     throw new Error('NanoHost Harness result binding is missing.');
   }
   if (harness.operation === 'turn.start') {
-    const started = coreDb.sqlite
+    const started = owner.sqlite
       .prepare(
         `UPDATE agent_session_runtime_bindings
          SET lifecycle_state = 'active', current_turn_id = ?, current_attempt_id = ?, native_environment_applied = 1,
@@ -1874,7 +1882,7 @@ function projectSuccessfulResult(
         harness.harness_instance_id,
         command.turnSequence
       );
-    const occupied = coreDb.sqlite
+    const occupied = owner.sqlite
       .prepare(
         'UPDATE harness_instance_records SET active_turn_count = active_turn_count + 1 WHERE harness_instance_id = ? AND active_turn_count < max_active_turns'
       )
@@ -1893,7 +1901,7 @@ function projectSuccessfulResult(
     body.cleanupState === 'clean' &&
     (body.state === 'open' || body.state === 'failed')
   ) {
-    const inspected = coreDb.sqlite
+    const inspected = owner.sqlite
       .prepare(
         `UPDATE agent_session_runtime_bindings
          SET lifecycle_state = ?, current_turn_id = NULL, current_attempt_id = NULL,
@@ -1908,7 +1916,7 @@ function projectSuccessfulResult(
         bindingId,
         harness.harness_instance_id
       );
-    const released = coreDb.sqlite
+    const released = owner.sqlite
       .prepare(
         'UPDATE harness_instance_records SET active_turn_count = active_turn_count - 1 WHERE harness_instance_id = ? AND active_turn_count > 0'
       )
@@ -1918,7 +1926,7 @@ function projectSuccessfulResult(
     }
     return;
   }
-  coreDb.sqlite
+  owner.sqlite
     .prepare(
       `UPDATE agent_session_runtime_bindings
        SET lifecycle_state = ?, native_handle_state = ?, native_handle_digest = ?, updated_at = ?
@@ -2249,17 +2257,18 @@ export function readNanoHostIdleCloseAuthority(
     readonly harnessBindingRef: string;
     readonly agentSessionId: string;
     readonly agentSessionRuntimeBindingId: string;
-  }
+  },
+  owner: NanoHostHarnessDb = coreDb
 ): {
   readonly workspaceId: string;
   readonly threadId: string;
   readonly agentSessionId: string;
   readonly agentSessionRuntimeBindingId: string;
 } | null {
-  const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+  const harness = requireHarnessByBinding(owner, input.harnessBindingRef);
   if (harness.harness_instance_id !== input.harnessInstanceId)
     throw new Error('NanoHost idle close Harness binding conflicts.');
-  const binding = coreDb.sqlite
+  const binding = owner.sqlite
     .prepare(`SELECT schema_version AS schemaVersion, workspace_id AS workspaceId,
       thread_id AS threadId, agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
       current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId
@@ -2579,7 +2588,8 @@ export function acknowledgeNanoHostHarnessResult(
     readonly harnessBindingRef: string;
     readonly consumerReceipt: string;
     readonly timestamp: string;
-  }
+  },
+  owner: NanoHostHarnessDb = coreDb
 ): void {
   const incoming = HarnessResultEnvelopeReaderSchema.parse(input.result);
   const consumer = harnessConsumerSchema.parse(
@@ -2588,7 +2598,7 @@ export function acknowledgeNanoHostHarnessResult(
   const consumerReceipt = canonicalJson(consumer);
 
   try {
-    const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+    const harness = requireHarnessByBinding(owner, input.harnessBindingRef);
     const receipt = readRetainedHarnessResult(harness);
     if (
       !receipt ||
@@ -2660,9 +2670,7 @@ export function acknowledgeNanoHostHarnessResult(
     );
     const context =
       receipt.retained.consumerContext === undefined
-        ? requireNanoHostObservation(coreDb, (sqlite) =>
-            readHarnessConsumerContext({ sqlite }, harness)
-          )
+        ? readHarnessConsumerContext(owner, harness)
         : receipt.retained.consumerContext;
     if (!context || typeof context !== 'object' || Array.isArray(context))
       throw new Error('NanoHost Harness consumer namespace is missing.');
@@ -2818,13 +2826,13 @@ function requireHarnessByBinding(owner: NanoHostHarnessDb, harnessBindingRef: st
 
 /** Reads one NanoCore-selected Harness through its owning Sandbox Integration. */
 function requireHarnessForIntegration(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   sandboxIntegrationBindingRef: string,
   harnessInstanceId: string
 ): HarnessRow {
   requireIdentity(sandboxIntegrationBindingRef, 'Sandbox Integration binding');
   requireIdentity(harnessInstanceId, 'Harness');
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(
       `SELECT h.*, h.schema_version AS schemaVersion FROM harness_instance_records h
        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id

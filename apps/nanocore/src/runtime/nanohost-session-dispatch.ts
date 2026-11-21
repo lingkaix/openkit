@@ -31,6 +31,7 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { OperationError } from '../operation-error.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import type { ControlCoreJournalInput } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import { readNanoHostObservation } from '../storage/nanohost-observation-reader.js';
 import {
@@ -63,6 +64,7 @@ import {
   nanoHostSandboxIdFromBackendSessionId,
 } from './nanohost-effect-identity.js';
 import {
+  type AdmittedNanoHostHarnessTurnLifecycle,
   dispatchNanoHostHarnessOperation,
   markNanoHostHarnessOperationUnknown,
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
@@ -91,7 +93,6 @@ import {
   type WorkerImageSettlementIdentity,
   WorkerImageSettlementIdentitySchema,
   WorkerImageSettlementSchema,
-  writeWorkerImageSettlement,
 } from './worker-image-settlements.js';
 import {
   projectWorkerReleaseIdentity,
@@ -333,12 +334,22 @@ export interface NanoHostResultOnlySettlement {
   readonly result: unknown;
 }
 
+/** Publishes the original Native result after the matching Core acquisition decision, if required. */
+export type SettleNanoHostPreparedImage = (input: {
+  readonly settlement: WorkerImageSettlement;
+  readonly target: Extract<ControlCoreJournalInput, { kind: 'image-intent' }>['target'];
+  readonly originalExecution?: ExecutionStepRef;
+}) => Promise<void>;
+
 /** Dependencies for authoritative session dispatch. */
 export interface CreateNanoHostSessionDispatchInput {
   /** Existing server database used for preparation-image settlement and cleaned-delete correlation. */
   readonly coreDb?: CoreDb | undefined;
   /** Selected App/boot storage. A getter can expose the acknowledgement after construction. */
   readonly nativeStorage?: StorageResult<'nanohost', AdmittedNanoHostTransportStorage>;
+
+  /** The original Core and NanoHost deciding stages; absence prevents new prepared-image work. */
+  readonly settlePreparedImage?: SettleNanoHostPreparedImage;
 
   /** Shared Core disk reserve and all in-flight file-write capacity. */
   readonly fileAdmission?: FileStorageAdmission;
@@ -544,14 +555,10 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
   /** The exact owner selection supplied by the serving gate. */
   readonly nativeStorage?: StorageResult<'nanohost', AdmittedNanoHostTransportStorage>;
   /** The mixed dispatch and result paths require the original deciding Core receipt. */
-  readonly nativeHarnessLifecycle?: {
-    dispatch(
-      input: Parameters<typeof dispatchNanoHostHarnessOperation>[1]
-    ): ReturnType<typeof dispatchNanoHostHarnessOperation>;
-    settle(
-      input: Parameters<typeof settleNanoHostHarnessOperation>[1]
-    ): ReturnType<typeof settleNanoHostHarnessOperation>;
-  };
+  readonly nativeHarnessLifecycle?: Pick<
+    AdmittedNanoHostHarnessTurnLifecycle,
+    'dispatch' | 'settle'
+  >;
   /** Dispatcher shared with effect producers and native transport routes. */
   readonly dispatch: NanoHostSessionDispatch;
   /** Live runtime owner that binds dispatch-time Turn credentials before carriage. */
@@ -644,7 +651,7 @@ export function createNanoHostSessionDispatch(
   const completedEffectPollConnections = new WeakSet<object>();
   let currentReadiness: NanoHostPhysicalReadiness | null = null;
   const requireImageDecidingStorage = () => {
-    if (input.nativeStorage || !currentReadiness || currentReadiness.runtimeTarget.nativeStorage)
+    if (!input.settlePreparedImage)
       throw effectTransportError(503, 'NanoHost image deciding storage is unavailable.');
   };
   let harnessLoginHandler: NanoHostHarnessLoginHandler | undefined;
@@ -716,11 +723,11 @@ export function createNanoHostSessionDispatch(
           if (!input.coreDb || !['image.acquire', 'image.build'].includes(operation)) {
             throw new Error('Preparation image settlement is unavailable for this effect.');
           }
-          // Prepared images need a covering Core decision and a Native settlement ACK.
-          requireImageDecidingStorage();
-          const known = readWorkerImageSettlement(input.coreDb, requestId);
+          const known = readPreparedImageSettlement(currentReadiness, requestId);
           if (known)
             return settledImageResult(known, request.imageSettlement, requestId, operation);
+          // New carriage needs the original Core decision and a Native settlement ACK.
+          requireImageDecidingStorage();
         }
         let command: Readonly<Record<string, unknown>>;
         if (operation === 'reference.import') {
@@ -998,7 +1005,6 @@ export function createNanoHostSessionDispatch(
         }
         if (!expectation.imageSettlement) continue;
         WorkerImageSettlementIdentitySchema.parse(expectation.imageSettlement);
-        requireImageDecidingStorage();
         if (!input.coreDb || !['image.acquire', 'image.build'].includes(expectation.kind)) {
           throw new Error('Preparation image settlement recovery is unavailable.');
         }
@@ -1017,22 +1023,26 @@ export function createNanoHostSessionDispatch(
           'NanoHost result-only expectations must be one image group or one cleanup origin group.'
         );
       }
-      if (input.coreDb) {
+      const readRetainedResult = (): NanoHostResultOnlySettlement | undefined => {
         for (const expectation of expectations) {
           if (!expectation.imageSettlement) continue;
-          const known = readWorkerImageSettlement(input.coreDb, expectation.requestId);
-          if (!known) continue;
-          return Promise.resolve({
-            kind: expectation.kind,
-            result: settledImageResult(
-              known,
-              expectation.imageSettlement,
-              expectation.requestId,
-              expectation.kind
-            ),
-          });
+          const known = readPreparedImageSettlement(currentReadiness, expectation.requestId);
+          if (known)
+            return {
+              kind: expectation.kind,
+              result: settledImageResult(
+                known,
+                expectation.imageSettlement,
+                expectation.requestId,
+                expectation.kind
+              ),
+            };
         }
-      }
+      };
+      const retainedResult = readRetainedResult();
+      if (retainedResult) return Promise.resolve(retainedResult);
+      if (expectations.some(({ imageSettlement }) => imageSettlement))
+        requireImageDecidingStorage();
       for (const expectation of expectations) {
         if (
           !['bridge.close', 'image.acquire', 'image.build', 'sandbox.delete'].includes(
@@ -1050,23 +1060,8 @@ export function createNanoHostSessionDispatch(
         }
       }
       const register = () => {
-        if (input.coreDb) {
-          for (const expectation of expectations) {
-            if (!expectation.imageSettlement) continue;
-            requireImageDecidingStorage();
-            const known = readWorkerImageSettlement(input.coreDb, expectation.requestId);
-            if (known)
-              return Promise.resolve({
-                kind: expectation.kind,
-                result: settledImageResult(
-                  known,
-                  expectation.imageSettlement,
-                  expectation.requestId,
-                  expectation.kind
-                ),
-              });
-          }
-        }
+        const retained = readRetainedResult();
+        if (retained) return Promise.resolve(retained);
         for (const expectation of expectations) {
           if (
             pendingEffects.has(expectation.kind) &&
@@ -1351,7 +1346,8 @@ export function createNanoHostSessionDispatch(
         physicalConnection,
         operation,
         result,
-        telemetryHeaders
+        telemetryHeaders,
+        input.settlePreparedImage
       );
     },
 
@@ -1661,9 +1657,18 @@ async function settleNanoHostFileExport(
 
 /** Rechecks one process-local readiness observation against its durable current owner. */
 function requireCurrentReadiness(readiness: NanoHostPhysicalReadiness): string {
-  const target = readRuntimeTargetOwner(readiness.runtimeTarget, (owner) =>
-    getNanoHostRuntimeTarget(owner, readiness.runtimeTarget.targetId)
+  return assertCurrentReadiness(
+    readiness,
+    readRuntimeTargetOwner(readiness.runtimeTarget, (owner) =>
+      getNanoHostRuntimeTarget(owner, readiness.runtimeTarget.targetId)
+    )
   );
+}
+
+function assertCurrentReadiness(
+  readiness: NanoHostPhysicalReadiness,
+  target: ReturnType<typeof getNanoHostRuntimeTarget>
+): string {
   if (
     !target ||
     target.identityId !== readiness.runtimeTarget.identityId ||
@@ -1688,6 +1693,28 @@ function readRuntimeTargetOwner<Value>(
   if (result.state !== 'ready')
     throw effectTransportError(503, 'NanoHost RuntimeTarget storage is unavailable.');
   return result.value;
+}
+
+/** Samples receipts only on the acknowledged owner of the current physical connection. */
+function readPreparedImageSettlement(
+  readiness: NanoHostPhysicalReadiness | null | undefined,
+  requestId: string
+): WorkerImageSettlement | null {
+  if (!readiness?.runtimeTarget.nativeStorage) throw new WorkerImageSettlementDeferred();
+  const receipt = readiness.runtimeTarget.nativeStorage.owner.read((sqlite) =>
+    sqlite
+      .transaction(() => {
+        const owner = { sqlite };
+        assertCurrentReadiness(
+          readiness,
+          getNanoHostRuntimeTarget(owner, readiness.runtimeTarget.targetId)
+        );
+        return readWorkerImageSettlement(owner, requestId);
+      })
+      .deferred()
+  );
+  if (receipt.state !== 'ready') throw new WorkerImageSettlementDeferred();
+  return receipt.value;
 }
 
 /** Checks disposal eligibility only; cleaned state is not proof of prior dispatch or settlement. */
@@ -1744,9 +1771,15 @@ async function settleNanoHostCorrelatedResult(
   physicalConnection: object,
   operation: NanoHostEffectOperation,
   result: Readonly<Record<string, unknown>>,
-  telemetryHeaders: Headers | undefined
+  telemetryHeaders: Headers | undefined,
+  settlePreparedImage: SettleNanoHostPreparedImage | undefined
 ): Promise<void> {
   requireAuthoritativeSession(sessionAuthority, physicalConnection);
+  const isPreparedImageOperation = operation === 'image.acquire' || operation === 'image.build';
+  const imageReadiness = isPreparedImageOperation
+    ? readyPhysicalConnections.get(physicalConnection)
+    : undefined;
+  if (isPreparedImageOperation && !imageReadiness) throw new WorkerImageSettlementDeferred();
   if (operation === 'workspace.collect') {
     const pending = pendingEffects.get(operation);
     if (!pending?.accepted || !pending.command)
@@ -1797,16 +1830,8 @@ async function settleNanoHostCorrelatedResult(
   const resultJson = JSON.stringify(resultBody);
   const pending = pendingEffects.get(operation);
   if (!pending) {
-    if (operation === 'image.acquire' || operation === 'image.build') {
-      const nativeStorage =
-        readyPhysicalConnections.get(physicalConnection)?.runtimeTarget.nativeStorage;
-      const native = nativeStorage?.owner.read((sqlite) =>
-        readWorkerImageSettlement({ sqlite }, requestId)
-      );
-      if (native?.state === 'unavailable') throw new WorkerImageSettlementDeferred();
-      const known = native
-        ? native.value
-        : sessionCoreDb && readWorkerImageSettlement(sessionCoreDb, requestId);
+    if (imageReadiness) {
+      const known = readPreparedImageSettlement(imageReadiness, requestId);
       if (known) {
         if (
           known.operation !== operation ||
@@ -1817,7 +1842,7 @@ async function settleNanoHostCorrelatedResult(
         return;
       }
     }
-    if (sessionCoreDb) {
+    if (sessionCoreDb && !imageReadiness) {
       const retained = sessionCoreDb.sqlite
         .prepare(`SELECT execution_id, step_id
         FROM control_execution_steps
@@ -1935,7 +1960,8 @@ async function settleNanoHostCorrelatedResult(
       outcome: imageSettlementOutcome(resultBody),
     });
     const coreDb = sessionCoreDb;
-    if (!coreDb) throw new Error('Missing image settlement database.');
+    if (!coreDb || !imageReadiness?.runtimeTarget.nativeStorage || !settlePreparedImage)
+      throw new WorkerImageSettlementDeferred();
     try {
       if (pending.imageExecution) {
         const original = await createExecutionStepJournalReader(coreDb, {
@@ -1945,7 +1971,25 @@ async function settleNanoHostCorrelatedResult(
         if (original.state === 'intent' && original.remainingMs <= 0)
           await pending.imageExecution.abandon(true);
       }
-      await writeWorkerImageSettlement(coreDb, settlement);
+      requireAuthoritativeSession(sessionAuthority, physicalConnection);
+      requireCurrentReadiness(imageReadiness);
+      const { runtimeTarget, connectionGeneration, physicalEpoch } = imageReadiness;
+      await settlePreparedImage({
+        settlement,
+        target: {
+          deploymentId: runtimeTarget.deploymentId,
+          identityId: runtimeTarget.identityId,
+          targetId: runtimeTarget.targetId,
+          connectionGeneration,
+          physicalEpoch,
+        },
+        ...(pending.imageExecution ? { originalExecution: pending.imageExecution.ref } : {}),
+      });
+      requireAuthoritativeSession(sessionAuthority, physicalConnection);
+      const retained = readPreparedImageSettlement(imageReadiness, requestId);
+      if (!retained) throw new WorkerImageSettlementDeferred();
+      if (JSON.stringify(retained) !== JSON.stringify(settlement))
+        throw new WorkerImageSettlementConflict();
     } catch (error) {
       if (error instanceof WorkerImageSettlementConflict) throw error;
       const deferred = new WorkerImageSettlementDeferred();

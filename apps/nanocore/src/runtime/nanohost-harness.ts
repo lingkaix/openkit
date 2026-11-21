@@ -144,13 +144,27 @@ export async function copyNanoHostMeasuredHarnessIdentity(
   await publishLocalHarness(writer, { ...input, kind: 'measured-identity.copy' });
 }
 
+/** Split live Harness decisions bound to one acknowledged Core and NanoHost pair. */
+export interface AdmittedNanoHostHarnessTurnLifecycle {
+  queue(input: Parameters<typeof Records.queueNanoHostHarnessOperation>[1]): Promise<number>;
+  dispatch(
+    input: Parameters<typeof Records.dispatchNanoHostHarnessOperation>[1]
+  ): Promise<Records.NanoHostHarnessCommand | null>;
+  settle(
+    input: Parameters<typeof Records.settleNanoHostHarnessOperation>[1]
+  ): Promise<'settled' | 'replayed'>;
+  acknowledge(input: Parameters<typeof Records.acknowledgeNanoHostHarnessResult>[1]): Promise<void>;
+}
+
 /** Queues only the exact prepared tuple; existing enqueue diagnostics include the owning FULL acknowledgement. */
 export async function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
-  input: Parameters<typeof Records.queueNanoHostHarnessOperation>[1]
+  input: Parameters<typeof Records.queueNanoHostHarnessOperation>[1],
+  admitted?: AdmittedNanoHostHarnessTurnLifecycle
 ): Promise<number> {
   const startedAt = performance.now();
   try {
+    if (admitted) return await admitted.queue(input);
     return (await publishHarness(coreDb, {
       kind: 'operation.queue',
       prepared: input.prepared,
@@ -202,8 +216,10 @@ export async function expireNanoHostHarnessQueuedOperation(
 /** Commits the existing operation.settle tuple through the Core owner before returning. */
 export async function settleNanoHostHarnessOperation(
   coreDb: CoreDb,
-  input: Parameters<typeof Records.settleNanoHostHarnessOperation>[1]
+  input: Parameters<typeof Records.settleNanoHostHarnessOperation>[1],
+  admitted?: AdmittedNanoHostHarnessTurnLifecycle
 ): Promise<'settled' | 'replayed'> {
+  if (admitted) return admitted.settle(input);
   return (await publishHarness(coreDb, { ...input, kind: 'operation.settle' })) as
     | 'settled'
     | 'replayed';
@@ -220,8 +236,10 @@ export async function markNanoHostHarnessOperationUnknown(
 /** Commits the existing result.acknowledge tuple through the Core owner before returning. */
 export async function acknowledgeNanoHostHarnessResult(
   coreDb: CoreDb,
-  input: Parameters<typeof Records.acknowledgeNanoHostHarnessResult>[1]
+  input: Parameters<typeof Records.acknowledgeNanoHostHarnessResult>[1],
+  admitted?: AdmittedNanoHostHarnessTurnLifecycle
 ): Promise<void> {
+  if (admitted) return admitted.acknowledge(input);
   await publishHarness(coreDb, { ...input, kind: 'result.acknowledge' });
 }
 

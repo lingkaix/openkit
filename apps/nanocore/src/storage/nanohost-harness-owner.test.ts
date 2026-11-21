@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,19 +8,26 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { expect, it } from 'vitest';
+import { readCoreHarnessConsumption } from '../runtime/core-journal-records.js';
 import {
+  acknowledgeNanoHostHarnessResult,
   copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
   listNanoHostMeasuredHarnessIdentities,
   openNanoHostAgentSessionBinding,
+  prepareNanoHostHarnessOperation,
   readNanoHostMeasuredHarnessIdentity,
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeForHarness,
+  settleNanoHostHarnessOperation,
 } from '../runtime/nanohost-harness-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { openCoreDb } from './db.js';
+import { applyMigrations } from './migrate.js';
 
 const timestamp = '2026-11-20T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
@@ -237,4 +245,135 @@ it('refuses a contradicting live digest copy and leaves an exact copy idempotent
       otherDigest
     );
   });
+});
+
+it('settles the original session-open result on Native and consumes it only on Core', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-k8-harness-core-'));
+  const core = openCoreDb(root);
+  try {
+    applyMigrations(core);
+    withHarnessOwner((owner, reopenReadOnly) => {
+      const runtime = runtimeFacts('open');
+      const session = {
+        ...sessionFacts('open'),
+        agentSessionId: testEntityId('as', 'live-harness-open'),
+        threadId: testEntityId('th', 'live-harness-open'),
+        workspaceId: testEntityId('ws', 'live-harness-open'),
+      };
+      const command = owner.sqlite
+        .transaction(() => {
+          createNanoHostHarnessRuntime(owner, { ...runtime, maxActiveTurns: 1 });
+          openNanoHostAgentSessionBinding(owner, session);
+          const prepared = prepareNanoHostHarnessOperation(
+            core,
+            {
+              harnessInstanceId: runtime.harnessInstanceId,
+              operation: 'session.open',
+              timestamp,
+              body: {
+                adapterId: runtime.adapterId,
+                agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
+                agentSessionId: session.agentSessionId,
+                agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+                effectiveSetupGeneration: session.effectiveSetupGeneration,
+                threadId: session.threadId,
+                workspaceId: session.workspaceId,
+                resume: null,
+              },
+            },
+            owner
+          ).command;
+          // This fixture starts at the existing Worker dispatch ACK boundary.
+          const bytes = JSON.stringify(prepared.body);
+          owner.sqlite
+            .prepare(`UPDATE harness_instance_records
+            SET operation = 'session.open', operation_state = 'dispatched',
+                operation_id = ?, operation_sequence = ?, command_body_json = ?, command_fingerprint = ?
+            WHERE harness_instance_id = ?`)
+            .run(
+              prepared.operationId,
+              prepared.sequence,
+              bytes,
+              createHash('sha256').update(bytes).digest('hex'),
+              runtime.harnessInstanceId
+            );
+          return prepared;
+        })
+        .immediate();
+      const input = {
+        sandboxIntegrationBindingRef: runtime.sandboxIntegrationBindingRef,
+        timestamp,
+        result: {
+          schemaVersion: 2 as const,
+          harnessInstanceId: runtime.harnessInstanceId,
+          operationId: command.operationId,
+          sequence: command.sequence,
+          disposition: 'succeeded' as const,
+          body: {
+            state: 'open',
+            nativeHandleState: 'pending',
+            nativeHandleDigest: null,
+            maxActiveTurns: 1,
+          },
+        },
+      };
+      const settle = () =>
+        owner.sqlite
+          .transaction(() => settleNanoHostHarnessOperation(core, input, owner))
+          .immediate();
+      expect(settle()).toBe('settled');
+      expect(settle()).toBe('replayed');
+      const fingerprint = owner.sqlite
+        .prepare('SELECT result_fingerprint FROM harness_instance_records')
+        .pluck()
+        .get() as string;
+      const key = {
+        harnessBindingRef: runtime.harnessBindingRef,
+        operationId: command.operationId,
+        sequence: command.sequence,
+        resultFingerprint: fingerprint,
+      };
+      expect(readCoreHarnessConsumption(core, key)).toBeNull();
+      expect(
+        owner.sqlite
+          .prepare('SELECT lifecycle_state FROM agent_session_runtime_bindings')
+          .pluck()
+          .get()
+      ).toBe('open');
+
+      reopenReadOnly();
+      const consumerReceipt = JSON.stringify({
+        workspaceId: session.workspaceId,
+        turnId: 'turn-open',
+        executionId: 'execution-open',
+        stepId: 'consume-open',
+      });
+      const acknowledge = (receipt: string) =>
+        core.sqlite
+          .transaction(() =>
+            acknowledgeNanoHostHarnessResult(
+              core,
+              { ...input, harnessBindingRef: key.harnessBindingRef, consumerReceipt: receipt },
+              owner
+            )
+          )
+          .immediate();
+      acknowledge(consumerReceipt);
+      acknowledge(consumerReceipt);
+      expect(JSON.parse(readCoreHarnessConsumption(core, key)!)).toEqual(
+        JSON.parse(consumerReceipt)
+      );
+      expect(() => acknowledge(consumerReceipt.replace('turn-open', 'other-turn'))).toThrow(
+        /conflicts/
+      );
+      expect(
+        core.sqlite
+          .prepare("SELECT name FROM sqlite_schema WHERE name = 'harness_instance_records'")
+          .get()
+      ).toBeUndefined();
+    });
+  } finally {
+    core.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
