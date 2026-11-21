@@ -10,11 +10,6 @@ import {
   requireNanoHostExecutionAttempt,
   resolveNanoHostAttemptTokenBinding,
 } from './runtime/nanohost-attempt-records.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from './runtime/nanohost-runtime-target.js';
 import { runSchedulerRecoveryMaintenance } from './runtime/scheduler-restart-recovery.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import {
@@ -34,9 +29,11 @@ import {
 } from './scheduler-records';
 import { openCoreDb } from './storage/db';
 import { applyMigrations } from './storage/migrate';
+import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from './test-support/release-identity.js';
 import { schedulerFixtureInput as fixtureSchedulerInput } from './test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -62,20 +59,11 @@ function createMigratedCoreDb() {
 async function seedBackendRuntimeTarget(
   coreDb: ReturnType<typeof createMigratedCoreDb>
 ): Promise<void> {
-  if (getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) return;
-  const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
     deploymentId: 'deployment-test',
     identityId: 'identity-test',
-    observedAt: '2026-07-05T00:00:00.000Z',
-    targetId: 'runtime-target-test',
-  });
-  await upsertNanoHostRuntimeTarget(coreDb, {
-    ...allocated,
-    freshEmpty: true,
-    observedAt: '2026-07-05T00:00:01.000Z',
-    physicalEpoch: 'a'.repeat(64),
-    predecessorFenced: true,
-    ready: true,
+    allocationAt: '2026-07-05T00:00:00.000Z',
+    readyAt: '2026-07-05T00:00:01.000Z',
   });
 }
 
@@ -87,7 +75,8 @@ async function seedBackendRuntimeTarget(
  */
 function createPreparedAttempt(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
-  fixtureKey: string
+  fixtureKey: string,
+  submitted = true
 ) {
   const attemptId = testEntityId('attempt', fixtureKey);
   const suffix = fixtureKey.replace('lease_', '');
@@ -106,7 +95,7 @@ function createPreparedAttempt(
     requestedAgentId: 'agent_worker',
     now: () => '2026-07-05T00:00:00.000Z',
   });
-  recordTestExecutionAttempt(coreDb, {
+  return recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId,
     agentSessionId: testEntityId('as', `session_${suffix}`),
@@ -114,9 +103,8 @@ function createPreparedAttempt(
     bindingRef: `lease-binding:${attemptId}`,
     sessionCompatibilityKey: `sha256:${suffix}`,
     now: () => '2026-07-05T00:00:02.000Z',
-    operationId: `fixture-submit:${attemptId}`,
+    ...(submitted ? { operationId: `fixture-submit:${attemptId}` } : {}),
   });
-  return requireNanoHostExecutionAttempt(coreDb, attemptId);
 }
 
 /** Observes exact admission and attempt bytes when terminal ownership is contradictory. */
@@ -986,7 +974,7 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createPreparedAttempt(coreDb, 'lease_cleanup_barrier');
+      const prepared = createPreparedAttempt(coreDb, 'lease_cleanup_barrier', false);
       await seedBackendRuntimeTarget(coreDb);
       await recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
@@ -1008,6 +996,12 @@ describe('scheduler records', () => {
         },
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_cleanup_barrier')}`,
+      });
+      attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
+        attemptId: prepared.attemptId,
+        operationId: `fixture-submit:${prepared.attemptId}`,
+        submission: true,
+        now: () => '2026-07-05T00:00:02.000Z',
       });
 
       expect(
@@ -1084,6 +1078,7 @@ describe('scheduler records', () => {
       const coreDb = createMigratedCoreDb();
 
       try {
+        await openAdmittedTestNanoHost(coreDb);
         createPreparedAttempt(coreDb, `lease_missing_anchor_${status}`);
         if (status === 'active') {
           acceptNanoHostAttemptHeartbeat(coreDb, {
@@ -1123,7 +1118,7 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createPreparedAttempt(coreDb, 'lease_cleanup_grace');
+      const prepared = createPreparedAttempt(coreDb, 'lease_cleanup_grace', false);
       await seedBackendRuntimeTarget(coreDb);
       await recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
@@ -1145,6 +1140,12 @@ describe('scheduler records', () => {
         },
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_cleanup_grace')}`,
+      });
+      attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
+        attemptId: prepared.attemptId,
+        operationId: `fixture-submit:${prepared.attemptId}`,
+        submission: true,
+        now: () => '2026-07-05T00:00:02.000Z',
       });
       beginOwnedAttemptCloseout(coreDb, {
         attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
@@ -1342,7 +1343,7 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      createPreparedAttempt(coreDb, 'lease_anchored_startup_timeout');
+      const prepared = createPreparedAttempt(coreDb, 'lease_anchored_startup_timeout', false);
       await seedBackendRuntimeTarget(coreDb);
       await recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
@@ -1364,6 +1365,12 @@ describe('scheduler records', () => {
         },
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_anchored_startup_timeout')}`,
+      });
+      attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
+        attemptId: prepared.attemptId,
+        operationId: `fixture-submit:${prepared.attemptId}`,
+        submission: true,
+        now: () => '2026-07-05T00:00:02.000Z',
       });
 
       expect(

@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
+import { readAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage } from '../test-support/agent-environment';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -17,16 +19,15 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
+import {
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
+} from './execution-attempt-records.js';
 import { acceptNanoHostAttemptHeartbeat } from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target';
 import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessions';
 import { getWorkerBackendSession, listWorkerBackendSessions } from './worker-backend-sessions.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
@@ -41,6 +42,8 @@ import {
   updateBackendWorkspaceHandleCleanupStatus,
 } from './workspace-sync-records';
 import { listBackendWorkspaceHandles } from './workspace-sync-records.js';
+
+afterEach(shutdownControlStoreWorkerClient);
 
 /** Creates an isolated migrated Core database for scheduler maintenance tests. */
 async function createMigratedCoreDb() {
@@ -119,7 +122,9 @@ function recordCanonicalWorkspaceHandoff(
   const coreDb = openCoreDb(workspaceDb.dataRoot);
   let backendSessionId: string;
   try {
-    const owner = listWorkerBackendSessions(coreDb).find(
+    const owner = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      listWorkerBackendSessions({ sqlite })
+    ).find(
       (record) =>
         record.agentSessionId === environmentPackage.scope.agentSessionId &&
         record.packageSnapshotId === environmentPackage.snapshotId
@@ -193,17 +198,22 @@ async function dispatchLease(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     now: () => '2026-07-05T00:00:01.000Z',
   });
-  recordTestExecutionAttempt(coreDb, {
+  const attempt = recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId: testEntityId('attempt', `lease_${suffix}`),
     agentSessionId: testEntityId('as', `as_${suffix}`),
     inputRef: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
     bindingRef: `lease-binding:lease_${suffix}`,
     sessionCompatibilityKey: 'c'.repeat(64),
-    operationId: `original:${suffix}`,
     now: () => '2026-07-05T00:00:02.000Z',
   });
   await recordBackendSession(coreDb, suffix);
+  recordSchedulerExecutionOperation(coreDb, {
+    attemptId: attempt.attemptId,
+    operationId: `original:${suffix}`,
+    submission: true,
+    now: () => '2026-07-05T00:00:02.000Z',
+  });
 }
 
 /** The Native recovery subject owns Workspace projection; only its product terminal callback is modeled here. */
@@ -225,22 +235,12 @@ async function recordBackendSession(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string
 ): Promise<void> {
-  if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: 'deployment-test',
-      identityId: 'identity-test',
-      observedAt: '2026-07-05T00:00:00.000Z',
-      targetId: 'runtime-target-test',
-    });
-    await upsertNanoHostRuntimeTarget(coreDb, {
-      ...allocated,
-      freshEmpty: true,
-      observedAt: '2026-07-05T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-  }
+  await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
+    deploymentId: 'deployment-test',
+    identityId: 'identity-test',
+    allocationAt: '2026-07-05T00:00:00.000Z',
+    readyAt: '2026-07-05T00:00:01.000Z',
+  });
   await recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
     backendVersion: '0.0.80',
@@ -307,13 +307,15 @@ function expectUnprovedWorkspaceReconciliation(
     expect(record.collectedOutputManifestIds).toEqual([]);
     expect(['unknown', 'unavailable']).toContain(record.backendReachability.status);
     if (record.retentionDecision === 'retain-backend') {
-      const backend = getWorkerBackendSession(
-        coreDb,
-        (
-          coreDb.sqlite
-            .prepare('SELECT attempt_id FROM scheduler_execution_attempts WHERE turn_id = ?')
-            .get(environmentPackage.scope.turnId) as { attempt_id: string }
-        ).attempt_id
+      const backend = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession(
+          { sqlite },
+          (
+            coreDb.sqlite
+              .prepare('SELECT attempt_id FROM scheduler_execution_attempts WHERE turn_id = ?')
+              .get(environmentPackage.scope.turnId) as { attempt_id: string }
+          ).attempt_id
+        )
       );
       expect(
         backend,
@@ -753,7 +755,9 @@ describe('scheduler lease maintenance service', () => {
       expect(recovery.reconcileAcceptedFinalStatus).toHaveBeenCalledTimes(3);
       expect(recovery.cleanupBackendSession).not.toHaveBeenCalled();
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_release_timeout'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_release_timeout'))
+        )
       ).toMatchObject({
         state: 'materializing',
         physicalCleanedAt: null,

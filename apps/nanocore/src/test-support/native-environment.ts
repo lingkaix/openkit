@@ -22,6 +22,7 @@ import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyServerOwnerJournal } from '../storage/migrate.js';
 import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import type { ControlRuntimeTargetInput } from '../storage/runtime-target-codecs.js';
 import { materializeRuntimeImage } from '../worker-environments/worker-environment-preparation.js';
 
 /** Populates metadata-only fixtures through the raw record leaf; this does not prove native image publication. */
@@ -220,4 +221,17 @@ export async function recordTestNativeRuntimeTarget(
   if (ready.state !== 'ready') throw new Error(`NanoHost target readiness: ${ready.reason}`);
   if (!ready.value) throw new Error('NanoHost target readiness was not recorded.');
   return ready.value;
+}
+
+/** Applies an exact RuntimeTarget generation change in a disposable admitted root. */
+export async function transitionTestNativeRuntimeTarget(
+  coreDb: CoreDb,
+  original: ControlRuntimeTargetInput
+) {
+  const { openAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
+  const { value: storage } = await openAdmittedTestNanoHost(coreDb);
+  const result = await transitionAdmittedNanoHostRuntimeTarget(storage, original);
+  if (result.state !== 'ready') throw new Error(`NanoHost fixture transition: ${result.reason}`);
+  if (!result.value) throw new Error('NanoHost fixture transition has no current target.');
+  return result.value;
 }
