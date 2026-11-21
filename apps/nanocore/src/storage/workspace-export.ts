@@ -186,6 +186,11 @@ export const WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES = [
     reason:
       'non-portable execution control state; operational backup and MOVE retain Workspace database bytes',
   },
+  {
+    table: 'workspace_work_inputs',
+    reason:
+      'original scheduler input bytes are retained in operational backup and MOVE as Workspace database state',
+  },
 ] as const;
 
 /** Input for offline workspace export verification. */

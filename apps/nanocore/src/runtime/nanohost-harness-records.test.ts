@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+  schedulerAdmissionInputHash,
+} from '../scheduler-records.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import {
   ControlStoreWorkerError,
@@ -3449,7 +3453,7 @@ describe('private NanoHost Harness records', () => {
     const coreDb = await openActiveTurnDb('openkit-harness-interrupt-lineage-');
     try {
       const body = { ...interruptBody(), purpose: 'interrupt' };
-      const expectRejected = async (reason: string) => {
+      const expectRejected = async (reason: string, message?: string) => {
         await expect(
           queueNanoHostHarnessOperation(coreDb, {
             body,
@@ -3458,7 +3462,7 @@ describe('private NanoHost Harness records', () => {
             timestamp: now,
           }),
           reason
-        ).rejects.toThrow();
+        ).rejects.toThrow(message);
         expect(harnessOperation(coreDb)).toEqual({ operation: 'turn.start', state: 'settled' });
       };
       for (const [column, wrongValue, originalValue] of [
@@ -3482,10 +3486,55 @@ describe('private NanoHost Harness records', () => {
           .run(originalValue, 'agent-session-binding-1');
       }
 
+      const attemptId = testEntityId('attempt', 'lease-1');
+      const parent = requireSchedulerAdmissionEntry(coreDb, 'queue-1');
+      const { workspaceId, threadId, turnId } = parent;
+      const updateScope = coreDb.sqlite.prepare(`UPDATE scheduler_execution_attempts
+        SET queue_entry_id = ?, workspace_id = ?, thread_id = ?, turn_id = ? WHERE attempt_id = ?`);
+      const insertDecoy = coreDb.sqlite.prepare(`INSERT INTO scheduler_admission_entries
+        (queue_entry_id, backend_id, input_hash, trigger_actor_json, workspace_roots_json,
+         workspace_id, thread_id, turn_id, input_id, input_digest, requested_agent_id, enqueued_at, status)
+        VALUES (@queueEntryId, @backendId, @inputHash, @actorJson, '[]', @workspaceId, @threadId,
+                @turnId, @inputId, @digest, @requestedAgentId, @enqueuedAt, 'cancelled')`);
+      for (const [column, target] of [
+        ['workspace_id', { workspaceId: testEntityId('ws', 'workspace-other'), threadId, turnId }],
+        ['thread_id', { workspaceId, threadId: testEntityId('th', 'thread-other'), turnId }],
+        ['turn_id', { workspaceId, threadId, turnId: testEntityId('tu', 'turn-other') }],
+      ] as const) {
+        const queueEntryId = `decoy-queue-${column}`;
+        const inputRef = schedulerFixtureInput(
+          target.workspaceId,
+          target.turnId,
+          'Decoy admission'
+        );
+        const draft = {
+          ...target,
+          queueEntryId,
+          backendId: parent.backendId,
+          requestedAgentId: parent.requestedAgentId,
+          triggerActor: parent.triggerActor,
+          inputRef,
+        };
+        insertDecoy.run({
+          ...draft,
+          inputHash: schedulerAdmissionInputHash(draft),
+          actorJson: JSON.stringify(draft.triggerActor),
+          inputId: inputRef.inputId,
+          digest: inputRef.digest,
+          enqueuedAt: parent.enqueuedAt,
+        });
+        updateScope.run(
+          queueEntryId,
+          target.workspaceId,
+          target.threadId,
+          target.turnId,
+          attemptId
+        );
+        await expectRejected(column, 'conflicts with the live lease lineage');
+        updateScope.run(parent.queueEntryId, workspaceId, threadId, turnId, attemptId);
+      }
+
       for (const [column, wrongValue, originalValue] of [
-        ['workspace_id', testEntityId('ws', 'workspace-other'), testEntityId('ws', 'workspace-1')],
-        ['thread_id', testEntityId('th', 'thread-other'), testEntityId('th', 'thread-1')],
-        ['turn_id', testEntityId('tu', 'turn-other'), testEntityId('tu', 'turn-1')],
         [
           'agent_session_id',
           testEntityId('as', 'agent-session-other'),
@@ -3496,11 +3545,11 @@ describe('private NanoHost Harness records', () => {
       ] as const) {
         coreDb.sqlite
           .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
-          .run(wrongValue, testEntityId('attempt', 'lease-1'));
+          .run(wrongValue, attemptId);
         await expectRejected(column);
         coreDb.sqlite
           .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
-          .run(originalValue, testEntityId('attempt', 'lease-1'));
+          .run(originalValue, attemptId);
       }
 
       recordFinalStatus(coreDb, 'completed', 'completed');

@@ -1850,6 +1850,11 @@ describe('workspace export verifier', () => {
           reason:
             'non-portable execution control state; operational backup and MOVE retain Workspace database bytes',
         },
+        {
+          table: 'workspace_work_inputs',
+          reason:
+            'original scheduler input bytes are retained in operational backup and MOVE as Workspace database state',
+        },
       ]);
     } finally {
       workspaceDb.sqlite.close();

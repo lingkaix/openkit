@@ -84,6 +84,8 @@ Recurring Workspace families in Core SQLite are captured under the Workspace mut
 
 System-managed Vault material, provider/runtime credentials, session cookies, and access tokens MUST NOT appear in an export. Resolved agent setup exports only a strict non-secret redacted whitelist (`setup-ledger.ts`). Active/removed memberships, invitations, auth sessions, personal preferences, user-local notifications, deployment-local command receipts, Pending Request lifecycle tables, snapshot coordination, execution journals (`control_executions`, `control_execution_steps`), derived SQLite databases/indexes, staging roots, caches, scheduler queues, execution attempts, backend residency, and native AgentSession handles/host paths/compatibility keys/policy-snapshot bindings/storage-slot references are excluded or reduced to redacted summaries.
 
+The analytical export excludes `workspace_work_inputs`, which holds original scheduler input bytes for admission and replay. Operational backup and MOVE retain those rows as Workspace database state.
+
 ### Restore
 
 #### Backup And Restore
