@@ -127,7 +127,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       { resolveAgentEnvironmentPackageMetadata, resolveAgentSessionCompatibilityKey },
       { requireAgentEnvironmentPackageSnapshot },
       { SimulatedTurnExecutor },
-      { createSchedulerAdmissionEntry },
+      { createTestQueueEntry },
       attempts,
       nativeAttempts,
       { createDefaultWorkerControlGateway },
@@ -141,7 +141,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       import('../../nanocore/dist/runtime/agent-environment.js'),
       import('../../nanocore/dist/runtime/aep-snapshot-ledger.js'),
       import('../../nanocore/dist/lib/simulator.js'),
-      import('../../nanocore/dist/scheduler-records.js'),
+      import('../../nanocore/dist/test-support/scheduler-admissions.js'),
       import('../../nanocore/dist/runtime/execution-attempt-records.js'),
       import('../../nanocore/dist/runtime/nanohost-attempt-records.js'),
       import('../../nanocore/dist/app.js'),
@@ -181,7 +181,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     };
     const preparedPackage = resolveAgentEnvironmentPackageMetadata(preparation);
     const sessionCompatibilityKey = resolveAgentSessionCompatibilityKey(preparation);
-    const entry = createSchedulerAdmissionEntry(coreDb, {
+    const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `generative-browser-${randomUUID()}`,
       requestId: admissionRequestId,
@@ -189,7 +189,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       workspaceId,
       threadId,
       turnId: turn.id,
-      turnInput,
+      text: turnInput,
       requestedAgentId: agentId,
     });
     const attempt = attempts.createSchedulerExecutionAttempt(coreDb, {
