@@ -740,17 +740,17 @@ export function removeNanoHostSandboxRuntimeByBinding(
  * A crash after this commit and before the first wider effect is dispatched cannot be told from
  * a crash after that effect was sent, so a later process must not invent a fresh delete.
  *
- * @param coreDb Core database that owns the Harness row.
+ * @param owner Admitted NanoHost handle that owns the Harness row.
  * @param input Harness binding and the settlement timestamp.
  */
 export function drainNanoHostHarnessAdmission(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: { readonly harnessBindingRef: string; readonly timestamp: string }
 ): void {
   requireIdentity(input.harnessBindingRef, 'Harness binding');
 
   try {
-    drainNanoHostHarnessAdmissionInTransaction(coreDb, input);
+    drainNanoHostHarnessAdmissionInTransaction(owner, input);
   } catch (error) {
     throw error;
   }
@@ -758,14 +758,14 @@ export function drainNanoHostHarnessAdmission(
 
 /** Applies one admission fence inside the caller's write transaction. */
 function drainNanoHostHarnessAdmissionInTransaction(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: { readonly harnessBindingRef: string; readonly timestamp: string }
 ): void {
-  const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+  const harness = requireHarnessByBinding(owner, input.harnessBindingRef);
   if (harness.lifecycle_state === 'failed' && harness.drain_state === 'draining') {
     return;
   }
-  const update = coreDb.sqlite
+  const update = owner.sqlite
     .prepare(
       `UPDATE harness_instance_records
        SET lifecycle_state = 'failed', drain_state = 'draining', updated_at = ?
@@ -809,7 +809,7 @@ export function drainNanoHostSandboxAdmission(
 
 /** Fences one uncertain Sandbox and drains its Harness without changing scheduler capacity. */
 export function fenceNanoHostSandboxRuntime(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: FenceNanoHostSandboxRuntimeInput
 ): void {
   if ((input.harnessBindingRef ? 1 : 0) + (input.sandboxBindingRef ? 1 : 0) !== 1) {
@@ -823,7 +823,7 @@ export function fenceNanoHostSandboxRuntime(
   }
 
   try {
-    fenceNanoHostSandboxRuntimeInTransaction(coreDb, input);
+    fenceNanoHostSandboxRuntimeInTransaction(owner, input);
   } catch (error) {
     throw error;
   }
@@ -1509,15 +1509,15 @@ export function dispatchNanoHostHarnessOperation(
 
 /** Expires one exact queued command before it can be delivered. */
 export function expireNanoHostHarnessQueuedOperation(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: ExpireNanoHostHarnessQueuedOperationInput
 ): void {
   try {
-    const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+    const harness = requireHarnessByBinding(owner, input.harnessBindingRef);
     if (harness.operation_state !== 'queued') {
       throw new Error('NanoHost Harness enqueue expiry does not match a queued operation.');
     }
-    setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp, 'queued');
+    setHarnessUnknown(owner, harness.harness_instance_id, input.timestamp, 'queued');
   } catch (error) {
     throw error;
   }
@@ -1719,17 +1719,17 @@ export function settleNanoHostHarnessOperation(
 
 /** Marks one exact dispatched operation unknown and drains the Harness before capacity returns. */
 export function markNanoHostHarnessOperationUnknown(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: MarkNanoHostHarnessOperationUnknownInput
 ): void {
   requireSha256(input.operationId, 'Harness operation id');
 
   try {
-    const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+    const harness = requireHarnessByBinding(owner, input.harnessBindingRef);
     if (harness.operation_state !== 'dispatched' || harness.operation_id !== input.operationId) {
       throw new Error('NanoHost Harness unknown result does not match a dispatched operation.');
     }
-    setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp);
+    setHarnessUnknown(owner, harness.harness_instance_id, input.timestamp);
   } catch (error) {
     throw error;
   }
@@ -2667,13 +2667,13 @@ function requireHarnessResult(
 
 /** Widens uncertain execution to the existing Harness admission fence. */
 function setHarnessUnknown(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   harnessInstanceId: string,
   timestamp: string,
   fromState: 'queued' | 'dispatched' = 'dispatched'
 ): void {
-  const harness = requireHarness(coreDb, harnessInstanceId);
-  const update = coreDb.sqlite
+  const harness = requireHarness(owner, harnessInstanceId);
+  const update = owner.sqlite
     .prepare(
       `UPDATE harness_instance_records
        SET operation_state = 'unknown', lifecycle_state = 'failed',
@@ -2684,7 +2684,7 @@ function setHarnessUnknown(
   if (update.changes !== 1) {
     throw new Error('NanoHost Harness unknown cleanup transition changed concurrently.');
   }
-  fenceNanoHostSandboxRuntimeInTransaction(coreDb, {
+  fenceNanoHostSandboxRuntimeInTransaction(owner, {
     harnessBindingRef: harness.harness_binding_ref,
     timestamp,
   });
@@ -2692,16 +2692,16 @@ function setHarnessUnknown(
 
 /** Applies one Sandbox/Harness fence inside the caller's write transaction. */
 function fenceNanoHostSandboxRuntimeInTransaction(
-  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
   input: FenceNanoHostSandboxRuntimeInput
 ): void {
   const sandbox = input.sandboxBindingRef
-    ? (coreDb.sqlite
+    ? (owner.sqlite
         .prepare(
           'SELECT sandbox_runtime_id AS sandboxRuntimeId FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?'
         )
         .get(input.sandboxBindingRef) as { readonly sandboxRuntimeId: string } | undefined)
-    : (coreDb.sqlite
+    : (owner.sqlite
         .prepare(
           `SELECT s.sandbox_runtime_id AS sandboxRuntimeId
            FROM sandbox_runtime_records s
@@ -2712,13 +2712,13 @@ function fenceNanoHostSandboxRuntimeInTransaction(
   if (!sandbox) {
     return;
   }
-  const harnesses = coreDb.sqlite
+  const harnesses = owner.sqlite
     .prepare(
       'SELECT schema_version AS schemaVersion FROM harness_instance_records WHERE sandbox_runtime_id = ?'
     )
     .all(sandbox.sandboxRuntimeId);
   for (const harness of harnesses) readRetainedV1(harness, () => harness);
-  const sandboxUpdate = coreDb.sqlite
+  const sandboxUpdate = owner.sqlite
     .prepare(
       `UPDATE sandbox_runtime_records
        SET lifecycle_state = 'failed', health_state = 'unknown', drain_state = 'draining',
@@ -2729,7 +2729,7 @@ function fenceNanoHostSandboxRuntimeInTransaction(
   if (sandboxUpdate.changes !== 1) {
     throw new Error('NanoHost Sandbox fence changed concurrently.');
   }
-  coreDb.sqlite
+  owner.sqlite
     .prepare(
       `UPDATE harness_instance_records
        SET lifecycle_state = 'failed', drain_state = 'draining', updated_at = ?
@@ -2752,9 +2752,9 @@ function requireHarness(owner: NanoHostHarnessDb, harnessInstanceId: string): Ha
 }
 
 /** Reads one Harness by the current private bridge binding. */
-function requireHarnessByBinding(coreDb: CoreDb, harnessBindingRef: string): HarnessRow {
+function requireHarnessByBinding(owner: NanoHostHarnessDb, harnessBindingRef: string): HarnessRow {
   requireIdentity(harnessBindingRef, 'Harness binding');
-  const row = coreDb.sqlite
+  const row = owner.sqlite
     .prepare(
       'SELECT *, schema_version AS schemaVersion FROM harness_instance_records WHERE harness_binding_ref = ?'
     )
