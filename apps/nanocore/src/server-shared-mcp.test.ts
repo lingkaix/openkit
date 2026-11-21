@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, watch } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { serve } from '@hono/node-server';
@@ -504,6 +504,54 @@ async function workspaceStdioFixture(initializing = false) {
     descendantFile,
     requestFile,
   };
+}
+
+/**
+ * One failure bound shared by all of a case's marker waits, counted from the first wait, for
+ * markers whose producing call is still pending: half of the 30 s test budget, leaving room for
+ * the revocation and cleanup. The write event ends a passing wait.
+ */
+const MARKER_FAILURE_MS = 15_000;
+
+/**
+ * Waits for a fixture child's marker file event. The marker is the ordering signal; the call that
+ * should produce it settling first is an immediate failure, never a reason to keep waiting, and a
+ * still-pending call fails at the case's shared deadline so the test body reaches its cleanup.
+ */
+async function waitForMarker(
+  path: string,
+  ready: () => boolean,
+  settled: Promise<unknown>,
+  deadlineAt: number
+) {
+  let changed = Promise.withResolvers<'changed'>();
+  const watcher = watch(dirname(path), (_event, name) => {
+    if (name === basename(path)) changed.resolve('changed');
+  });
+  const ended = settled.then(
+    () => 'settled' as const,
+    () => 'settled' as const
+  );
+  let expiry: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<'expired'>((resolve) => {
+    expiry = setTimeout(() => resolve('expired'), Math.max(0, deadlineAt - Date.now()));
+  });
+  try {
+    while (!ready()) {
+      const outcome = await Promise.race([changed.promise, ended, expired]);
+      changed = Promise.withResolvers<'changed'>();
+      if (ready()) break;
+      if (outcome === 'settled')
+        throw new Error(`${basename(path)} was not written before its call settled.`);
+      if (outcome === 'expired')
+        throw new Error(
+          `${basename(path)} was not written within ${MARKER_FAILURE_MS} ms of the first marker wait while its call was pending.`
+        );
+    }
+  } finally {
+    clearTimeout(expiry);
+    watcher.close();
+  }
 }
 
 /** Checks the normalized refusal while excluding broken authentication or test routing. */
@@ -1186,6 +1234,7 @@ describe.skipIf(process.platform === 'win32')(
         let childPid = 0;
         let activity: Promise<unknown> | undefined;
         let gatewayOutcome: Promise<unknown> | undefined;
+        let discovered: Promise<unknown> | undefined;
         let mutation: Promise<unknown> | undefined;
         let deadline: ReturnType<typeof setTimeout> | undefined;
         let refusedSignal: ReturnType<typeof vi.spyOn> | undefined;
@@ -1216,7 +1265,9 @@ describe.skipIf(process.platform === 'win32')(
                 );
               activity = gatewayOutcome.then(() => undefined);
             } else {
-              await f.workerMcpGateway.listTools({ ...admitted, signal: undefined });
+              // Discovery returns after the fresh child is up: its marker must already exist.
+              discovered = f.workerMcpGateway.listTools({ ...admitted, signal: undefined });
+              await discovered;
             }
           } else {
             pending = f.worker.call('resident');
@@ -1225,15 +1276,26 @@ describe.skipIf(process.platform === 'win32')(
               () => undefined
             );
           }
-          await vi.waitFor(() => expect(existsSync(f.pidFile)).toBe(true));
+          const markerDeadline = Date.now() + MARKER_FAILURE_MS;
+          // The child writes its PID after process start and SDK import: wait for that write, not a fixed window.
+          await waitForMarker(
+            f.pidFile,
+            () => existsSync(f.pidFile) && readFileSync(f.pidFile, 'utf8') !== '',
+            (pending ?? gatewayOutcome ?? discovered)!,
+            markerDeadline
+          );
           childPid = Number(readFileSync(f.pidFile, 'utf8'));
           expect(Number.isInteger(childPid) && childPid > 1).toBe(true);
           expect(kill(childPid, 0)).toBe(true);
           if (phase === 'in-flight') {
-            await vi.waitFor(() => {
-              expect(existsSync(f.requestFile)).toBe(true);
-              expect(readFileSync(f.requestFile, 'utf8')).toContain('timeout');
-            });
+            await waitForMarker(
+              f.requestFile,
+              () =>
+                existsSync(f.requestFile) &&
+                readFileSync(f.requestFile, 'utf8').includes('timeout'),
+              gatewayOutcome,
+              markerDeadline
+            );
           }
           const descendant =
             phase === 'initializing'
