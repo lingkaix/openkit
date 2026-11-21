@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { canonicalIdentifierName } from '@openkit/protocol';
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type { ControlKernelStore } from './control-kernel-port.js';
-import type { NanoHostRuntimeTargetTransition } from './nanohost-epoch-invalidation-native.js';
+import type { NanoHostRuntimeTargetTransition } from './nanohost-epoch-invalidation-codecs.js';
 import type {
   NanoHostEpochInvalidation,
   NanoHostEpochReceipt,
