@@ -3955,6 +3955,17 @@ function normalizeWorkerMcpRouteError(error: unknown): WorkerControlGatewayError
     return new OperationError(classified.code, classified.message, classified.status, {
       cause: error,
     });
+  // #969 diagnostic (unlanded): name the unclassified error behind the generic refusal.
+  if (process.env.FLAKE_DIAG) {
+    const e = error as {
+      constructor?: { name?: string };
+      code?: unknown;
+      message?: unknown;
+      stack?: unknown;
+      cause?: unknown;
+    };
+    console.error('FLAKE-DIAG-969', e?.constructor?.name, e?.code, e?.message, e?.stack, e?.cause);
+  }
   return new WorkerControlGatewayError('mcp-call-failed', 'MCP tool call failed.', 503);
 }
 

@@ -7,7 +7,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 describe('worker MCP routes', () => {
   it.for([capturedOutcomeCases[3]])(
     'starts a definition-derived $entry, observes attention, responds and delivers the captured outcome once',
-    { timeout: 60_000 },
+    { timeout: 60_000, repeats: Number(process.env.FLAKE_REPEATS ?? 0) },
     assertCapturedOutcome
   );
 });
