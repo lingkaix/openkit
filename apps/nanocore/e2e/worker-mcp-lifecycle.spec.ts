@@ -789,9 +789,16 @@ async function settlePendingImage<T>(
   acquire: boolean
 ): Promise<T> {
   let failure: unknown = null;
-  void pending.catch((error: unknown) => {
-    failure = error;
-  });
+  let finished = false;
+  void pending.then(
+    () => {
+      finished = true;
+    },
+    (error: unknown) => {
+      failure = error;
+      finished = true;
+    }
+  );
   if (acquire) {
     const image = await waitForEffect(host, 'image.acquire', () => failure);
     assert.equal(image.command.imageReference, runtimeImage.ref);
@@ -817,6 +824,20 @@ async function settlePendingImage<T>(
       workingDirectory: '/workspace',
     },
   });
+  if (!acquire) {
+    // The native host sweeps fixed lanes after the image result while activation publishes defaults.
+    // This fresh activation has no resident storage inspection to deliver.
+    do {
+      throwIfFailed(failure);
+      const storagePoll = await pollEffect(host, 'storage.inspect');
+      assert.equal(
+        storagePoll.status,
+        204,
+        responseFailure('Activation storage.inspect poll', storagePoll)
+      );
+      if (!finished) await sleep(2);
+    } while (!finished);
+  }
   return pending;
 }
 
