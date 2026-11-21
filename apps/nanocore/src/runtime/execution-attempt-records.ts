@@ -41,6 +41,7 @@ import {
   type SchedulerPreparationClaim,
   SchedulerPreparationClaimSchema,
 } from './execution-step-journal.js';
+import { nanoHostStartupDeadline } from './nanohost-attempt-clocks.js';
 
 /** The production execution authority budget, fixed once at native submission. */
 export const EXECUTION_ATTEMPT_BUDGET_MS = 7_200_000;
@@ -566,6 +567,22 @@ export function recordSchedulerExecutionGrantInDb(
       throw new ExecutionAttemptRefusal('Original execution clock is unavailable or expired.');
     const now = BigInt(currentMs) * 1_000_000n;
     const proposalDeadline = input.proposal.control.deadlineUnixNano;
+    const preparation =
+      input.submission === true &&
+      currentAttempt.backendId === 'nanohost' &&
+      currentAttempt.deadline === null &&
+      currentAttempt.operationId !== null &&
+      currentAttempt.disposition === 'accepted'
+        ? {
+            operationId: currentAttempt.operationId,
+            actor: entry.triggerActor,
+            turnId: currentAttempt.turnId,
+            admissionHash: entry.inputHash,
+            started: BigInt(startedMs) * 1_000_000n,
+            startupDeadline:
+              BigInt(Date.parse(nanoHostStartupDeadline(currentAttempt))) * 1_000_000n,
+          }
+        : undefined;
     if (
       (proposalDeadline !== null && now >= proposalDeadline) ||
       (currentAttempt.operationId !== null &&
@@ -574,7 +591,8 @@ export function recordSchedulerExecutionGrantInDb(
           execution,
           currentAttempt.deadline !== null,
           now,
-          BigInt(deadlineMs) * 1_000_000n
+          BigInt(deadlineMs) * 1_000_000n,
+          preparation
         ))
     )
       throw new ExecutionAttemptRefusal('Original execution clock is unavailable or expired.');
