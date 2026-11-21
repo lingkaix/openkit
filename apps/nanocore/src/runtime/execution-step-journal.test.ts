@@ -26,21 +26,28 @@ import type { KernelExecutionEvidence } from '../storage/control-kernel-proof-co
 import { controlStoreFor } from '../storage/control-store.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { ControlCoreImageResultSchema } from '../storage/core-journal-codecs.js';
 import {
+  ControlCoreImageResultSchema,
+  ControlNanoHostFirstSubmissionInputSchema,
+} from '../storage/core-journal-codecs.js';
+import {
+  admitNanoHostFirstSubmissionInDb,
   applyControlCoreImageResult,
   readCoreImageAcquisitionRef,
 } from '../storage/core-journal-native.js';
-import { openCoreDb, serverStoragePath } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
 import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
 import { storageRequestId } from '../storage/storage-owner.js';
+import { applyWorkspaceBackendHandoffInDb } from '../storage/workspace-backend-handoff-native.js';
 import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
+import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { createVaultReference, revokeVaultReference } from '../vault/vault-references.js';
@@ -90,6 +97,16 @@ import type {
   ExecutionJournalSettlement,
   ExecutionJournalSpan,
 } from './execution-step-journal.js';
+import {
+  markWorkerBackendWorkspaceHandoffComplete,
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+} from './worker-backend-session-records.js';
+import { withPreparedWorkerSubmission } from './worker-governance-turn-executor.js';
+import {
+  buildWorkspaceInputSnapshots,
+  buildWorkspaceMaterializationRecords,
+} from './workspace-materializer.js';
 
 // These contracts require the real migration and implementation tracked in docs/changes/202610201240000000-core_execution_journal/plan.md.
 // Until then, typecheck only: unavailable methods or tables are blockers, not behavioral RED.
@@ -274,6 +291,244 @@ async function ending(
 }
 
 describe('persisted execution journal contracts', () => {
+  it('decides the first NanoHost submission from both owners and inspects a lost ACK without redispatch', async () => {
+    const f = journalFixture();
+    const workspaceId = testEntityId('ws', 'first-submission');
+    const workspace = openWorkspaceDb(f.root, workspaceId);
+    onTestFinished(() => workspace.sqlite.close());
+    applyScopedMigrations(workspace);
+    f.db.sqlite.pragma('synchronous = FULL');
+    const userId = ensureLocalUser(f.db);
+    const triggerActor = { kind: 'user' as const, id: userId };
+    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+    const pkg = await recordTestAgentEnvironmentPackage(workspace, {
+      suffix: 'first_submit',
+      triggerActor,
+      workspaceInputIds: ['repo'],
+    });
+    const { agentSessionId, threadId, turnId } = pkg.scope;
+    const createdAt = '2026-11-20T08:00:00.000Z';
+    const observedAt = '2026-11-20T08:00:05.000Z';
+    const firstDeadline = '2026-11-20T10:00:05.000Z';
+    const now = () => createdAt;
+    const inputRef = pkg.snapshotId;
+    const bindingRef = 'sandbox-binding-first-submit';
+    const attemptId = testEntityId('attempt', 'first-submit');
+    const operationId = commandInputHash({ attemptId, inputRef, operation: 'submit' });
+    const entry = createSchedulerAdmissionEntry(f.db, {
+      backendId: 'nanohost',
+      queueEntryId: 'first-submit-queue',
+      requestedAgentId: pkg.agent.agentId,
+      triggerActor,
+      workspaceId,
+      threadId,
+      turnId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'Submit the original Work input.'),
+      now,
+    });
+    createSchedulerExecutionAttempt(f.db, { entry, attemptId, preparationInput: {}, now });
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId, agentSessionId, now });
+    const attempt = finalizeSchedulerExecutionAttemptInput(f.db, {
+      attemptId,
+      inputRef,
+      bindingRef,
+      now,
+    });
+    const native = openNanoHostTestOwner();
+    const placement = {
+      runtimeTargetId: 'first-submit-target',
+      identityId: 'first-submit-identity',
+      deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+      physicalEpoch: 'a'.repeat(64),
+      connectionGeneration: 1,
+    };
+    const target = {
+      targetId: placement.runtimeTargetId,
+      identityId: placement.identityId,
+      deploymentId: placement.deploymentId,
+    };
+    await native.transition({ kind: 'allocate', ...target, observedAt: createdAt });
+    await native.transition({
+      kind: 'ready',
+      ...target,
+      connectionGeneration: placement.connectionGeneration,
+      physicalEpoch: placement.physicalEpoch,
+      predecessorFenced: true,
+      ready: true,
+      freshEmpty: true,
+      observedAt: createdAt,
+    });
+    const physical = {
+      backendKind: 'openshell',
+      backendVersion: '0.0.80',
+      workerSessionId: 'sandbox-first-submit',
+    };
+    const input = { attemptId, observedAt, placement };
+    const submit = (command = input) =>
+      f.db.sqlite
+        .transaction(() =>
+          admitNanoHostFirstSubmissionInDb(
+            f.db,
+            ControlNanoHostFirstSubmissionInputSchema.parse(command),
+            { nanoHost: native, workspace }
+          )
+        )
+        .immediate();
+    const history = () => ({
+      attempts: f.db.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY attempt_id')
+        .all(),
+      roots: f.db.sqlite.prepare('SELECT * FROM control_executions ORDER BY id').all(),
+      steps: f.db.sqlite
+        .prepare('SELECT * FROM control_execution_steps ORDER BY execution_id, ordinal')
+        .all(),
+    });
+    const before = history();
+    const refused = (command = input) => {
+      expect(() => submit(command)).toThrow('The original execution grant is unavailable.');
+      expect(history()).toEqual(before);
+    };
+    refused(); // No physical backend record.
+    native.setup((sqlite) => {
+      const owner = { sqlite };
+      recordWorkerBackendSessionMaterializing(
+        f.db,
+        {
+          identity: {
+            agentSessionId,
+            backendKind: physical.backendKind,
+            backendSessionId: physical.workerSessionId,
+            deploymentId: placement.deploymentId,
+            packageSnapshotId: inputRef,
+            runtimeTargetId: placement.runtimeTargetId,
+            stagingDirectoryRef: 'first-submit/staging',
+            transientProviderInstanceId: null,
+          },
+          backendVersion: physical.backendVersion,
+          backendLineage: { kind: 'reference', imageRef: 'test-image' },
+          lineage: { workspaceId, threadId, turnId },
+          sandboxBindingRef: bindingRef,
+          now,
+        },
+        { owner, attempt }
+      );
+      transitionWorkerBackendSessionState(owner, {
+        attemptId,
+        fromState: 'materializing',
+        toState: 'materialized',
+        now,
+      });
+      markWorkerBackendWorkspaceHandoffComplete(owner, { attemptId, now });
+    });
+    refused(); // Native's completed handoff alone cannot prove Workspace rows.
+    const inputSnapshots = buildWorkspaceInputSnapshots({
+      backendCapabilities: ['trusted-worker-inference-relay'],
+      backendKind: physical.backendKind,
+      createdAt,
+      environmentPackage: pkg,
+    });
+    workspace.sqlite
+      .transaction(() =>
+        applyWorkspaceBackendHandoffInDb(workspace, {
+          workspaceId,
+          inputSnapshots,
+          materializationRecords: buildWorkspaceMaterializationRecords({
+            createdAt,
+            inputSnapshots,
+            materialization: {
+              backendKind: physical.backendKind,
+              backendStatus: { health: 'ready', version: physical.backendVersion },
+              packageSnapshotId: inputRef,
+              requiredCapabilities: pkg.backend.requiredCapabilities,
+              sandbox: { name: physical.workerSessionId, state: 'created' },
+              workspaceInputs: pkg.workspace.inputs.map(({ id, target }) => ({ id, target })),
+            },
+          }),
+        })
+      )
+      .immediate();
+    refused({ ...input, placement: { ...placement, connectionGeneration: 2 } });
+    expect(() => submit({ ...input, observedAt: '2026-11-20T08:25:00.000Z' })).toThrow(
+      'Original execution clock or admission is unavailable.'
+    );
+    expect(history()).toEqual(before);
+    const first = submit();
+    expect(first).toMatchObject({
+      state: 'admitted-now',
+      attempt: {
+        attemptId,
+        agentSessionId,
+        inputRef,
+        bindingRef,
+        operationId,
+        deadline: firstDeadline,
+      },
+    });
+    expect(readRetainedNanoHostSubmission(f.db, attemptId)?.lease.grant).toMatchObject({
+      operationId,
+      generation: '1',
+      deadline: firstDeadline,
+    });
+    const execution = { owner: { kind: 'server' as const }, executionId: attemptId };
+    expect(await f.reader.readExecution(execution)).toMatchObject({
+      fingerprint: entry.inputHash,
+      workId: turnId,
+      exclusionRefs: [
+        `workspace:${workspaceId}`,
+        `thread:${threadId}`,
+        `turn:${turnId}`,
+        `session:${agentSessionId}`,
+      ],
+    });
+    expect(await f.reader.readEndedSteps(execution)).toMatchObject([
+      {
+        ref: { execution, stepId: 'submit' },
+        control: {
+          kind: 'admit',
+          actor: triggerActor,
+          inputRefs: [inputRef],
+          invocationId: operationId,
+        },
+        span: { startTimeUnixNano: BigInt(Date.parse(observedAt)) * 1_000_000n },
+      },
+    ]);
+    const retained = history();
+    f.reopen();
+    await native.reopen();
+    native.setup((sqlite) =>
+      transitionWorkerBackendSessionState(
+        { sqlite },
+        { attemptId, fromState: 'materialized', toState: 'launching', now: () => observedAt }
+      )
+    );
+    expect(submit({ ...input, observedAt: '2026-11-20T10:01:00.000Z' })).toEqual({
+      state: 'inspect-original',
+      attempt: first.attempt,
+    });
+    const dispatch = vi.fn(async () => undefined);
+    await expect(
+      withPreparedWorkerSubmission(
+        {
+          coreDb: f.db,
+          attemptId,
+          inputRef,
+          bindingRef,
+          now: () => '2026-11-20T10:01:00.000Z',
+          native: {
+            admit: async ({ observedAt }) =>
+              submit({ ...input, observedAt: observedAt ?? input.observedAt }),
+          },
+        },
+        dispatch
+      )
+    ).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(() =>
+      submit({ ...input, placement: { ...placement, physicalEpoch: 'b'.repeat(64) } })
+    ).toThrow('Execution grant conflicts with its original operation.');
+    expect(history()).toEqual(retained);
+  });
+
   it.each(['intent', 'unknown'] as const)(
     'acknowledges an exact image outcome on the original %s acquisition and inspects it after reopen',
     async (initialState) => {
