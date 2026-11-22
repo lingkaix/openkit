@@ -1226,6 +1226,16 @@ function requireTrustedWorkerInferenceRoute(
   return route;
 }
 
+const WORKER_INFERENCE_STORAGE_MESSAGE = 'NanoHost Worker control storage is unavailable.';
+
+function isWorkerInferenceStorageRefusal(error: unknown): error is WorkerControlGatewayError {
+  return (
+    error instanceof WorkerControlGatewayError &&
+    error.status === 503 &&
+    error.code === 'worker_observation_storage_unavailable'
+  );
+}
+
 /**
  * Converts worker inference failures into stable OpenAI-compatible envelopes.
  *
@@ -1254,6 +1264,19 @@ function asWorkerInferenceError(error: unknown): Response {
           code: error.code,
           message: error.message,
           type: error.type,
+        },
+      },
+      { status: error.status }
+    );
+  }
+
+  if (isWorkerInferenceStorageRefusal(error)) {
+    return Response.json(
+      {
+        error: {
+          code: error.code,
+          message: WORKER_INFERENCE_STORAGE_MESSAGE,
+          type: 'service_unavailable',
         },
       },
       { status: error.status }
@@ -1760,8 +1783,9 @@ function createGatewayTerminalErrorSse(
     errorCode ?? publicGatewayFailureCode(normalized.code, 'gateway_stream_failed');
   const payload = {
     error: {
-      message:
-        publicCode === 'gateway_context_overflow'
+      message: isWorkerInferenceStorageRefusal(error)
+        ? WORKER_INFERENCE_STORAGE_MESSAGE
+        : publicCode === 'gateway_context_overflow'
           ? gatewayProviderFailureMessage(publicCode)
           : (failureMessage ?? gatewayProviderFailureMessage(publicCode)),
       type: normalized.type,
@@ -1793,6 +1817,8 @@ function createGatewayTerminalErrorSse(
  * @returns Public gateway error type and code.
  */
 export function projectGatewayFailure(error: unknown, fallbackCode: string) {
+  if (isWorkerInferenceStorageRefusal(error))
+    return { type: 'service_unavailable', code: error.code };
   if (error instanceof LogicalModelRoutesExhaustedError)
     return { type: error.type, code: error.code };
   const failure = (error as { failure?: PiAiFailure } | null)?.failure;
@@ -1919,7 +1945,10 @@ export function registerWorkerInferenceRoutes({
   readonly workerControlGateway: WorkerControlGateway;
   readonly exposureAvailable?: () => boolean;
   /** Joins an in-flight serving write before rereading the original Worker authority. */
-  readonly afterWorkerControlAcknowledgement?: <Value>(read: () => Value) => Promise<Value>;
+  readonly afterWorkerControlAcknowledgement?: <Value>(
+    read: () => Value,
+    signal?: AbortSignal
+  ) => Promise<Value>;
   /** Existing native stop owner; missing coverage blocks Worker inference before Provider access. */
   readonly onRawOutputStop?: (
     scope: { workspaceId: string; threadId: string; turnId: string },
@@ -1934,8 +1963,8 @@ export function registerWorkerInferenceRoutes({
         403
       );
   };
-  const readWorkerAuthority = <Value>(read: () => Value) =>
-    afterWorkerControlAcknowledgement ? afterWorkerControlAcknowledgement(read) : read();
+  const readWorkerAuthority = <Value>(read: () => Value, signal: AbortSignal) =>
+    afterWorkerControlAcknowledgement ? afterWorkerControlAcknowledgement(read, signal) : read();
   const activeRawCalls = new Map<
     string,
     {
@@ -1970,7 +1999,7 @@ export function registerWorkerInferenceRoutes({
       const authorization = c.req.header('authorization') ?? null;
       const authenticate = () =>
         workerControlGateway.authenticatePackageToken(authorization, { tokenFamily: 'inference' });
-      const environmentPackage = await readWorkerAuthority(authenticate);
+      const environmentPackage = await readWorkerAuthority(authenticate, c.req.raw.signal);
 
       assertExposureAvailable();
       rejectWorkerInferenceAuthorityHeaders(c.req.raw.headers);
@@ -1999,7 +2028,7 @@ export function registerWorkerInferenceRoutes({
       const runtimeOriginRef = runtimeHint
         ? createWorkerRuntimeOriginRef(environmentPackage.snapshotId, runtimeHint.nativeThreadId)
         : null;
-      const assertAuthority = () =>
+      const assertAuthority = (signal = c.req.raw.signal) =>
         readWorkerAuthority(() => {
           authenticate();
           if (
@@ -2025,7 +2054,7 @@ export function registerWorkerInferenceRoutes({
             );
           }
           assertExposureAvailable();
-        });
+        }, signal);
       await assertAuthority();
       let admittedRoute: LogicalModelSupply | null = null;
       try {
@@ -2216,12 +2245,14 @@ export function registerWorkerInferenceRoutes({
           const kind =
             failure?.kind ??
             (error instanceof LogicalModelRoutesExhaustedError ? error.cause : undefined);
-          const status = failure?.status ?? observedHttpRejection;
+          const storageRefusal = isWorkerInferenceStorageRefusal(error) ? error : undefined;
+          const status = storageRefusal?.status ?? failure?.status ?? observedHttpRejection;
           console.warn(
             JSON.stringify({
               code: 'worker_inference_failed',
               message: 'Worker inference call failed.',
               phase: failurePhase,
+              ...(storageRefusal ? { storageCode: storageRefusal.code } : {}),
               failureKind: kind && Object.hasOwn(GATEWAY_FAILURE_CODES, kind) ? kind : 'unknown',
               ...(kind === undefined || kind === 'unknown'
                 ? { exceptionClass: observedExceptionClass ?? workerInferenceExceptionClass(error) }
@@ -2374,7 +2405,10 @@ export function registerWorkerInferenceRoutes({
           }) => {
             activeExecution = execution;
             phase = 'dispatch';
-            let admissionFailure: ModelRequestAdmissionError | undefined;
+            let admissionFailure:
+              | ModelRequestAdmissionError
+              | WorkerControlGatewayError
+              | undefined;
             try {
               const cache = resolveWorkerPromptCacheKey({
                 accountSlotId: provider.accountSlotId ?? null,
@@ -2410,7 +2444,7 @@ export function registerWorkerInferenceRoutes({
               rawObservers.push(rawObserver);
               durableCall.assertAuthority = async () => {
                 await execution.assertAuthority?.();
-                await assertAuthority();
+                await assertAuthority(rawSignal);
               };
               const dispatchContext: LLMGatewayDispatchContext = {
                 openkitGatewayDispatch: 'worker_inference',
@@ -2440,9 +2474,15 @@ export function registerWorkerInferenceRoutes({
                         outputReserveTokens: final.outputReserveTokens,
                       });
                       await execution.assertAuthority?.();
-                      await assertAuthority();
+                      const remaining = Math.max(0, execution.deadline - Date.now());
+                      await assertAuthority(
+                        AbortSignal.any([rawSignal, AbortSignal.timeout(Math.ceil(remaining))])
+                      );
                     } catch (error) {
-                      if (error instanceof ModelRequestAdmissionError) {
+                      if (
+                        error instanceof ModelRequestAdmissionError ||
+                        error instanceof WorkerControlGatewayError
+                      ) {
                         admissionFailure = error;
                         // This trusted callback runs before inference, so its refusal has known zero output.
                         // Source settlement remains required by the existing raw-output closeout.
@@ -2613,19 +2653,20 @@ export function registerWorkerInferenceRoutes({
             } catch (error) {
               observedExceptionClass = workerInferenceExceptionClass(error);
               // Stock can normalize callback errors; retain the trusted pre-inference refusal category.
-              const failure = admissionFailure
-                ? new GatewayAttemptFailure(
-                    {
-                      kind:
-                        admissionFailure.code === 'internal_agent_context_exceeded'
-                          ? 'context_overflow'
-                          : 'invalid_request',
-                      settled: true,
-                    },
-                    admissionFailure,
-                    true
-                  )
-                : error;
+              const failure =
+                admissionFailure instanceof ModelRequestAdmissionError
+                  ? new GatewayAttemptFailure(
+                      {
+                        kind:
+                          admissionFailure.code === 'internal_agent_context_exceeded'
+                            ? 'context_overflow'
+                            : 'invalid_request',
+                        settled: true,
+                      },
+                      admissionFailure,
+                      true
+                    )
+                  : (admissionFailure ?? error);
               observedFailure = (failure as { failure?: PiAiFailure } | null)?.failure;
               throw failure;
             }
@@ -2639,11 +2680,12 @@ export function registerWorkerInferenceRoutes({
       } catch (error) {
         // The native stop signal can wrap the private authority failure as cancellation.
         // Preserve its durable cause instead of reporting a caller disconnect.
-        const failure = durableCall.rawOutputFailureCode
-          ? durableCall.rawOutputFailureCode === 'worker_raw_output_exhausted'
-            ? new WorkerRawOutputBudgetExceededError()
-            : new WorkerRawOutputAuthorityError()
-          : error;
+        const failure =
+          !isWorkerInferenceStorageRefusal(error) && durableCall.rawOutputFailureCode
+            ? durableCall.rawOutputFailureCode === 'worker_raw_output_exhausted'
+              ? new WorkerRawOutputBudgetExceededError()
+              : new WorkerRawOutputAuthorityError()
+            : error;
         if (!isGatewayCancellation(failure, c.req.raw.signal)) reportFailure(failure);
         const cancelled = await finishDurableLlmGatewayFailure(
           durableCall,
@@ -2663,6 +2705,7 @@ export function registerWorkerInferenceRoutes({
         // Unavailable supply can end admitted compaction before a Provider attempt starts.
         if (
           !durableCall.rawOutputFailureCode &&
+          !isWorkerInferenceStorageRefusal(failure) &&
           runtimeHint?.requestKind === 'compaction' &&
           !activeExecution?.outputBegan &&
           (activeExecution !== undefined ||

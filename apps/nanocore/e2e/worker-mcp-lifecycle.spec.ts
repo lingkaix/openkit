@@ -161,6 +161,10 @@ async function runPublicWorkerMcpLifecycle() {
     harness = await startNanoCoreHarness({
       coreMode: 'server',
       dataRoot,
+      env: {
+        NODE_OPTIONS: `--import=${new URL('./_lib/hold-worker-control-ack.mjs', import.meta.url).href}`,
+        OPENKIT_E2E_ACK_MARKERS: fixtureRoot,
+      },
       port: appPort,
       seedDemoWorkspace: false,
       useSimulator: false,
@@ -221,6 +225,10 @@ async function runPublicWorkerMcpLifecycle() {
       requestId: smokeRequestId,
       callFile,
       expectedMcpCalls: 1,
+      delayedAck: {
+        beforeToolOutput: provider.beforeToolOutput,
+        wait: (sequence) => waitForHeldWorkerAcknowledgement(fixtureRoot, sequence),
+      },
       setMcpServerPid,
     });
     assert.ok(firstTurn.artifactId, 'The first Turn must submit a Work Artifact.');
@@ -410,6 +418,10 @@ async function runPublicWorkerMcpTurn(input: {
   requestId: string;
   callFile: string;
   expectedMcpCalls: number;
+  delayedAck?: {
+    beforeToolOutput(callback: () => Promise<void>): void;
+    wait(sequence: number): Promise<void>;
+  };
   priorArtifact?: { artifactId: string; turnId: string };
   retiringSandboxId?: string;
   setMcpServerPid: (pid: number) => void;
@@ -702,6 +714,8 @@ async function runPublicWorkerMcpTurn(input: {
   });
   // The first live observation can already be committing when the result and the Worker call arrive.
   const metadataAppend = append(observation);
+  void metadataAppend.catch(() => undefined);
+  await input.delayedAck?.wait(1);
   const artifact =
     expectedMcpCalls === 1
       ? submitWorkerArtifact(h2, capabilityToken, lineage.agentSessionId)
@@ -730,9 +744,20 @@ async function runPublicWorkerMcpTurn(input: {
     responseFailure('Live Worker observation', metadata.value)
   );
   const artifactId = await artifact;
+  const delayedAck = input.delayedAck;
+  const toolInference = () => inferWorkerTool(h2, inferenceToken, environmentPackage);
+  const bodyAppend = delayedAck ? Promise.withResolvers<Http2Response>() : undefined;
+  if (bodyAppend && delayedAck) {
+    delayedAck.beforeToolOutput(async () => {
+      // The Provider already received the request. Hold its first output until Main owns
+      // a committed Native observation ACK, then exercise the stream delivery recheck.
+      void append(chunk).then(bodyAppend.resolve, bodyAppend.reject);
+      await delayedAck.wait(2);
+    });
+  }
   const [body, toolCall] = await Promise.all([
-    append(chunk),
-    inferWorkerTool(h2, inferenceToken, environmentPackage),
+    bodyAppend?.promise ?? append(chunk),
+    toolInference(),
   ]);
   assert.equal(body.status, 200, responseFailure('Worker observation body', body));
 
@@ -1063,9 +1088,19 @@ async function assertWorkerInferenceAnswer(
   assert.equal(frames.map((delta) => delta?.content ?? '').join(''), 'L3 inference complete');
 }
 
+async function waitForHeldWorkerAcknowledgement(root: string, sequence: number): Promise<void> {
+  const marker = join(root, `held-${sequence}`);
+  const deadline = performance.now() + 5_000;
+  while (!existsSync(marker)) {
+    assert.ok(performance.now() < deadline, `Native acknowledgement ${sequence} was not held.`);
+    await sleep(5);
+  }
+}
+
 /** Local model stub emits a tool call, then requires its real MCP result before answering. */
 async function startInferenceProvider() {
   const calls: string[] = [];
+  let beforeToolOutput: (() => Promise<void>) | undefined;
   const server = createHttpServer(async (request, response) => {
     try {
       assert.equal(request.method, 'POST');
@@ -1080,6 +1115,11 @@ async function startInferenceProvider() {
       assert.equal(body.stream, true);
       const result = body.messages.find((message) => message.role === 'tool');
       if (result) assert.match(JSON.stringify(result.content), /l3-public/);
+      else if (beforeToolOutput) {
+        const callback = beforeToolOutput;
+        beforeToolOutput = undefined;
+        await callback();
+      }
       calls.push(result ? 'answer' : 'tool');
       const base = {
         id: `l3-${randomUUID()}`,
@@ -1129,6 +1169,10 @@ async function startInferenceProvider() {
   assert.ok(address && typeof address === 'object');
   return {
     calls,
+    beforeToolOutput(callback: () => Promise<void>) {
+      assert.equal(beforeToolOutput, undefined);
+      beforeToolOutput = callback;
+    },
     origin: `http://127.0.0.1:${address.port}`,
     close: () =>
       new Promise<void>((resolve) => {
