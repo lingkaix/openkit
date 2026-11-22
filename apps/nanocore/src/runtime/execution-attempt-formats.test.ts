@@ -22,6 +22,7 @@ import {
   listSchedulerExecutionAttemptsForTurn,
   markSchedulerExecutionAttemptClosing,
   readSchedulerExecutionAttemptPagesForTurn,
+  readSchedulerExecutionAttemptPrefix,
   recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
@@ -148,6 +149,91 @@ it('projects the original v1 claim and keeps preparation bytes outside Core', ()
   expect(() => requireSchedulerExecutionAttempt(db, attempt.attemptId)).toThrow(
     'Attempt preparation has no exact original claim.'
   );
+});
+
+it('reads one bounded lazy Core attempt prefix and keeps the exact lifecycle projection', () => {
+  const { db, expected } = attemptHistory(5);
+  expected[4] = markSchedulerExecutionAttemptClosing(db, {
+    attemptId: expected[4]!.attemptId,
+    cause: 'prefix-closing',
+    now: () => '2030-11-20T08:00:01.000Z',
+  });
+  expected.sort((left, right) => (left.attemptId < right.attemptId ? -1 : 1));
+  let consumed = 0;
+  const prepare = db.sqlite.prepare.bind(db.sqlite);
+  const spy = vi.spyOn(db.sqlite, 'prepare').mockImplementation((sql: string) => {
+    const statement = prepare(sql);
+    if (!/\bFROM\s+scheduler_execution_attempts\b/i.test(sql)) return statement;
+    const iterate = statement.iterate.bind(statement);
+    vi.spyOn(statement, 'iterate').mockImplementation(function* (...args: unknown[]) {
+      for (const row of iterate(...args)) {
+        consumed++;
+        yield row;
+      }
+    });
+    const get = statement.get.bind(statement);
+    vi.spyOn(statement, 'get').mockImplementation((...args: unknown[]) => {
+      const row = get(...args);
+      if (row !== undefined) consumed++;
+      return row;
+    });
+    const all = statement.all.bind(statement);
+    vi.spyOn(statement, 'all').mockImplementation((...args: unknown[]) => {
+      const rows = all(...args);
+      consumed += rows.length;
+      return rows;
+    });
+    return statement;
+  });
+  try {
+    db.sqlite.transaction(() => {
+      for (const decode of readSchedulerExecutionAttemptPrefix(db, 3)) {
+        expect(decode()).toEqual(expected[0]);
+        break;
+      }
+      expect(consumed).toBe(1);
+      const prefix = [...readSchedulerExecutionAttemptPrefix(db, 3)].map((decode) => decode());
+      expect(prefix).toEqual(expected.slice(0, 3));
+      expect(consumed).toBe(4);
+      expect([...readSchedulerExecutionAttemptPrefix(db, 5)].map((decode) => decode())).toEqual(
+        expected
+      );
+      expect(consumed).toBe(9);
+      expect(() => [...readSchedulerExecutionAttemptPrefix(db, -1)]).toThrow(RangeError);
+    })();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it('keeps a corrupt Core attempt sentinel unread and refuses it if selected', () => {
+  const { db, expected } = attemptHistory(4);
+  expected.sort((left, right) => (left.attemptId < right.attemptId ? -1 : 1));
+  db.sqlite
+    .prepare('UPDATE scheduler_execution_attempts SET schema_version = 2 WHERE attempt_id = ?')
+    .run(expected[2]!.attemptId);
+  db.sqlite.transaction(() => {
+    const budget = 2;
+    const selected = [];
+    for (const decode of readSchedulerExecutionAttemptPrefix(db, budget + 1)) {
+      if (selected.length === budget) break;
+      selected.push(decode());
+    }
+    expect(selected).toEqual(expected.slice(0, budget));
+    const prefix = readSchedulerExecutionAttemptPrefix(db, budget + 2);
+    const readNext = () => {
+      const row = prefix.next();
+      if (row.done) throw new Error('Fixture attempt prefix is missing.');
+      return row.value();
+    };
+    try {
+      expect(readNext()).toEqual(expected[0]);
+      expect(readNext()).toEqual(expected[1]);
+      expect(readNext).toThrow('Unsupported retained record format.');
+    } finally {
+      prefix.return();
+    }
+  })();
 });
 
 it('refuses unknown attempt versions before recovery reads or lifecycle mutation', () => {
