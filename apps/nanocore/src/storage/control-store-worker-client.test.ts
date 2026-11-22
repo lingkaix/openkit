@@ -2847,6 +2847,10 @@ describe('admitted NanoHost owner worker', () => {
         sandboxIntegrationBindingRef: 'sandbox-integration',
       });
     const completion = vi.fn(() => true);
+    const authority = vi.fn(() => f.owner.read(() => 'admitted'));
+    let joined:
+      | ReturnType<typeof f.owner.afterWorkerControlAcknowledgement<ReturnType<typeof authority>>>
+      | undefined;
     Atomics.store(f.gate, 0, 0);
     const writing = f.owner.harnessLifecycle({
       kind: 'runtime.create',
@@ -2874,10 +2878,28 @@ describe('admitted NanoHost owner worker', () => {
       expect(f.owner.readWorkerCompletion(completion)).toEqual({ state: 'pending' });
       expect(completion).not.toHaveBeenCalled();
       await expect(poll()).resolves.toBeNull();
+
+      const cancelled = new AbortController();
+      const stopped = f.owner.afterWorkerControlAcknowledgement(authority, cancelled.signal);
+      const reason = new Error('Worker request disconnected.');
+      cancelled.abort(reason);
+      await expect(stopped).rejects.toBe(reason);
+      expect(authority).not.toHaveBeenCalled();
+
+      // If the owner loses its bound, break the test's wait before releasing the real writer.
+      const watchdog = AbortSignal.timeout(6500);
+      await expect(
+        f.owner.afterWorkerControlAcknowledgement(authority, watchdog)
+      ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+      expect(authority).not.toHaveBeenCalled();
+      joined = f.owner.afterWorkerControlAcknowledgement(authority);
+      expect(authority).not.toHaveBeenCalled();
     } finally {
       release(f.gate);
     }
     await expect(writing).resolves.toBeUndefined();
+    await expect(joined).resolves.toEqual({ state: 'ready', value: 'admitted' });
+    expect(authority).toHaveBeenCalledTimes(1);
     expect(f.owner.readWorkerCompletion(completion)).toEqual({ state: 'ready', value: true });
     expect(completion).toHaveBeenCalledTimes(1);
 

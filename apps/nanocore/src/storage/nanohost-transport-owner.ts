@@ -6,6 +6,7 @@ import type {
   ControlNanoHostTransportResult,
 } from '../auth/nanohost-transport-codecs.js';
 import type { NanoHostRuntimeTargetRecord } from '../runtime/nanohost-runtime-target-records.js';
+import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import type { ControlHarnessLifecycleInputSchema } from './harness-lifecycle-codecs.js';
 import type { NanoHostRuntimeTargetEpochKernel } from './nanohost-epoch-invalidation.js';
 import {
@@ -22,6 +23,10 @@ import type { StorageResult } from './storage-owner.js';
 export interface AdmittedNanoHostTransportStorage {
   readonly owner: {
     read<Value>(query: (sqlite: Database.Database) => Value): StorageResult<'nanohost', Value>;
+    afterWorkerControlAcknowledgement?<Value>(
+      read: () => Value | Promise<Value>,
+      signal?: AbortSignal
+    ): Promise<Value>;
     /** Reads only the admitted RuntimeTarget when a separate Native write is awaiting its ACK. */
     readRuntimeTarget?(
       targetId: string
@@ -44,10 +49,19 @@ export async function transitionAdmittedNanoHostRuntimeTarget(
   input: ControlRuntimeTargetInput
 ): Promise<StorageResult<'nanohost' | 'control-kernel', ControlRuntimeTargetResult>> {
   const occurrenceId = randomUUID();
-  const original = owner.read((sqlite) =>
-    prepareNanoHostRuntimeTargetTransition(sqlite, input, occurrenceId)
-  );
-  return original.state === 'ready'
-    ? await owner.transitionRuntimeTarget(kernel, original.value)
-    : original;
+  const submit = async () => {
+    const original = owner.read((sqlite) =>
+      prepareNanoHostRuntimeTargetTransition(sqlite, input, occurrenceId)
+    );
+    return original.state === 'ready'
+      ? await owner.transitionRuntimeTarget(kernel, original.value)
+      : original;
+  };
+  try {
+    return await (owner.afterWorkerControlAcknowledgement?.(submit) ?? submit());
+  } catch (error) {
+    if (error instanceof ControlStoreWorkerError)
+      return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+    throw error;
+  }
 }

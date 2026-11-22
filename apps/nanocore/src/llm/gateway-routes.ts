@@ -1715,12 +1715,14 @@ async function finishDurableLlmGatewayFailure(
     cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
     cancelled
       ? cancellationCode
-      : error instanceof GatewayUnsupportedFeatureError ||
-          (error as { failure?: PiAiFailure } | null)?.failure?.kind === 'unsupported'
-        ? 'unsupported_gateway_feature'
-        : error instanceof LogicalModelRoutesExhaustedError
-          ? error.code
-          : failureCode
+      : isWorkerInferenceStorageRefusal(error)
+        ? error.code
+        : error instanceof GatewayUnsupportedFeatureError ||
+            (error as { failure?: PiAiFailure } | null)?.failure?.kind === 'unsupported'
+          ? 'unsupported_gateway_feature'
+          : error instanceof LogicalModelRoutesExhaustedError
+            ? error.code
+            : failureCode
   );
   return cancelled;
 }

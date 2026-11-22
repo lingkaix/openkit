@@ -297,7 +297,6 @@ import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './st
 import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
-import { createNanoHostCoreReads } from './storage/nanohost-core-reads.js';
 import {
   inspectNanoHostRuntimeTargetTransition,
   prepareNanoHostRuntimeTargetTransition,
@@ -2611,7 +2610,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const communicationStorage = options.communicationStorage;
   const readNanoHostTarget =
     nanoHostStorage.state === 'ready'
-      ? createNanoHostCoreReads(nanoHostStorage.value.owner).readTarget
+      ? nanoHostStorage.value.owner.readRuntimeTarget
       : () => nanoHostStorage;
   const enrollmentWriter =
     nanoHostStorage.state === 'ready' ? nanoHostStorage.value.enrollTransport : undefined;
