@@ -1693,6 +1693,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                   admitSubmission: nanoHostStorage.value.owner.firstSubmission,
                   harnessTurnLifecycle: nanoHostStorage.value.owner.harnessTurnLifecycle,
                   readWorkerCompletion: nanoHostStorage.value.owner.readWorkerCompletion,
+                  releaseTerminalScopes: nanoHostStorage.value.owner.releaseTerminalScopes,
                   writeStorageAttachment: nanoHostStorage.value.owner.writeStorageAttachment,
                   commitCloseout: nanoHostStorage.value.owner.classifyRecovery,
                 }
