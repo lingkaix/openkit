@@ -41,7 +41,7 @@ import {
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -711,7 +711,12 @@ describe('Worker environment App composition', () => {
       writeFileSync(agentPath, JSON.stringify(agentSetup.manifest, null, 2));
       const initialRevision = contentRevision(readFileSync(agentPath, 'utf8'));
       const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
-      admitTestNativeEnvironment(coreDb, agentSetup.manifest, {}, IMAGE_DIGEST);
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(
+        coreDb,
+        agentSetup.manifest,
+        {},
+        IMAGE_DIGEST
+      );
       native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => runtimeConfigManager.current(),
       });
@@ -734,6 +739,7 @@ describe('Worker environment App composition', () => {
         });
       restoreCollection = () => collection.mockRestore();
       const app = createApp({
+        nanoHostStorage,
         releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         agentManifests: [agentSetup.manifest],
         auth: ownerSessionAuth(USER_ID),
@@ -1014,7 +1020,8 @@ describe('Worker environment App composition', () => {
               .all(),
             attempts: coreDb.sqlite
               .prepare(
-                'SELECT attempt_id, turn_id, phase, disposition, operation_id, terminal_cause, fence_ref FROM scheduler_execution_attempts'
+                // K8 retired fence_ref from the Core attempt row; this is failure diagnostics only.
+                'SELECT attempt_id, turn_id, phase, disposition, operation_id, terminal_cause FROM scheduler_execution_attempts'
               )
               .all(),
           })

@@ -497,8 +497,9 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
     if (mutate === 'live-lease') {
       fixture.coreDb.sqlite
         .prepare(
+          // K8 retired recovery_state from the Core attempt row.
           `UPDATE scheduler_execution_attempts
-           SET phase = 'open', terminal_cause = NULL, recovery_state = NULL
+           SET phase = 'open', terminal_cause = NULL
            WHERE attempt_id = ?`
         )
         .run(testEntityId('attempt', `lease_${turnId}`));
@@ -506,12 +507,13 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
     if (mutate === 'multiple-leases') {
       fixture.coreDb.sqlite
         .prepare(
+          // K8 retired backend_id, preparation_input_json and updated_at from the Core attempt row.
           `INSERT INTO scheduler_execution_attempts (
-             attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
-             preparation_input_json, phase, disposition, terminal_cause, created_at, updated_at
+             attempt_id, queue_entry_id, workspace_id, thread_id, turn_id,
+             phase, disposition, terminal_cause, created_at
            )
-           SELECT ?, queue_entry_id, backend_id, workspace_id, thread_id,
-                  turn_id, preparation_input_json, phase, disposition, terminal_cause, created_at, updated_at
+           SELECT ?, queue_entry_id, workspace_id, thread_id,
+                  turn_id, phase, disposition, terminal_cause, created_at
            FROM scheduler_execution_attempts WHERE attempt_id = ?`
         )
         .run(

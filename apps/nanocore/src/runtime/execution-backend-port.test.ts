@@ -26,16 +26,15 @@ import {
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attemptRecords from './execution-attempt-records.js';
 import { commandInputHash } from './idempotent-command.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
 import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-maintenance-service.js';
 import {
   type RunSchedulerDispatchLoopInput,
@@ -104,7 +103,7 @@ async function fixture(
   });
 
   const setup = createTestAgentSetup();
-  admitTestNativeEnvironment(db, setup.manifest);
+  await admitTestNativeEnvironmentForRoot(db, setup.manifest);
   const snapshots: Record<string, unknown>[][] = [];
   const effectCalls: Correlation[] = [];
   const nativeStarts: Correlation[] = [];
@@ -158,19 +157,13 @@ async function fixture(
   };
   // Production owns the preparation, effect-capable operation record, and submission crossing.
   // The double owns only external backend behavior; it never grants Core authority.
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(db, {
+  // The RuntimeTarget is retained by the admitted NanoHost owner; the same allocate and ready tuple.
+  await recordTestNativeRuntimeTarget(db, 'fixture-target', {
     deploymentId: 'fixture-deployment',
     identityId: 'fixture-identity',
-    targetId: 'fixture-target',
-    observedAt: '2026-10-06T00:00:00.000Z',
-  });
-  await upsertNanoHostRuntimeTarget(db, {
-    ...target,
-    freshEmpty: true,
-    ready: true,
-    predecessorFenced: true,
+    allocationAt: '2026-10-06T00:00:00.000Z',
+    readyAt: '2026-10-06T00:00:00.000Z',
     physicalEpoch: 'a'.repeat(64),
-    observedAt: '2026-10-06T00:00:00.000Z',
   });
   const controlGateway = createDefaultWorkerControlGateway(db);
   const backend: WorkerGovernanceBackend = {
@@ -352,7 +345,7 @@ describe('execution backend port through real Core coordination', () => {
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    admitTestNativeEnvironment(f.db, setup.manifest);
+    await admitTestNativeEnvironmentForRoot(f.db, setup.manifest);
     const held = Promise.withResolvers<void>();
     const effects = vi.fn(async (request: { kind: string }) => {
       expect(request.kind).toBe('image.acquire');

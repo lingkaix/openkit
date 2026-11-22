@@ -68,7 +68,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestMcpToolCondition } from '../test-support/mcp-tool-policy.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import {
@@ -2292,7 +2292,7 @@ it.each([
           'Inspect the existing admission before retry.',
           409
         );
-      admitTestNativeEnvironment(coreDb, manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, manifest);
       await recordTestNativeRuntimeTarget(coreDb);
       const executor = new SimulatedTurnExecutor({
         coreDb,

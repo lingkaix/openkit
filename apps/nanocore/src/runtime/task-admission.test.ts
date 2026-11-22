@@ -43,7 +43,7 @@ import {
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
@@ -172,7 +172,7 @@ it.each([
             : {}
         ).manifest;
         if (outcome === 'interrupted') manifest.runtime.version = QUALIFIED_STEER_PINS.codex;
-        admitTestNativeEnvironment(coreDb, manifest);
+        await admitTestNativeEnvironmentForRoot(coreDb, manifest);
         await recordTestNativeRuntimeTarget(coreDb);
         const snapshot = createInMemoryRuntimeConfigSnapshot({
           workspaceConfigs:

@@ -27,7 +27,7 @@ import { heldCommit, releaseCommit } from '../test-support/control-native-transp
 import { createMeasurementEffectFixture } from '../test-support/load-effect.fixture.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
@@ -443,7 +443,7 @@ it('opens unborrowed Workspace and Server model capture as readers before native
 it('uses reader opens through the first real simulator execution and retains its terminal Turn', async () => {
   const f = await fixture();
   const agentSetup = createTestAgentSetup();
-  admitTestNativeEnvironment(f.coreDb, agentSetup.manifest);
+  await admitTestNativeEnvironmentForRoot(f.coreDb, agentSetup.manifest);
   await recordTestNativeRuntimeTarget(f.coreDb);
   const executor = new SimulatedTurnExecutor({
     coreDb: f.coreDb,
