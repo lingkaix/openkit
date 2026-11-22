@@ -79,6 +79,7 @@ import {
   getWorkerBackendSessionByPackage,
   readNanoHostSubmissionPlacement,
   readNanoHostWorkerLease,
+  readNanoHostWorkerRouteBinding,
 } from '../runtime/worker-backend-session-records.js';
 import {
   getWorkerControlAcceptedFinalStatus,
@@ -131,6 +132,10 @@ import {
 } from './nanohost-worker-binding.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { recordContainmentGapInDb } from './security-canary-audit-native.js';
+import type {
+  ControlStandaloneAuditInput,
+  SecurityCanaryAuditObservation,
+} from './standalone-audit-codecs.js';
 import {
   type StorageDecision,
   type StorageReceiptLookup,
@@ -1119,7 +1124,10 @@ export function observeAcceptedNanoHostFinalInDb(
       { version: 1, kind: 'submission', intent, proof },
       true,
       verifyNative,
+      // The cancellation receipt observes the final envelope while the closing attempt
+      // retains its original submission disposition and recovery clock.
       () =>
+        intake.kind === 'cancellation-decided' ||
         acceptSchedulerExecutionObservation(db, {
           ...grant,
           disposition: 'accepted',
@@ -1135,6 +1143,55 @@ export function observeAcceptedNanoHostFinalInDb(
         })
       : { state: result.state };
   })();
+}
+
+/** Reads the exact currently live route under the admitted Core and Native snapshots. */
+export function captureSecurityCanaryAuditObservation(
+  coreDb: CoreDb,
+  native: CoreDb['sqlite'],
+  lineage: NonNullable<ControlStandaloneAuditInput['canaryLineage']>,
+  authenticatedCapabilityHash?: string
+): SecurityCanaryAuditObservation | null {
+  if (!coreDb.sqlite.inTransaction || !native.readonly || !native.inTransaction) return null;
+  try {
+    const owner = { sqlite: native };
+    const session = getWorkerBackendSessionByPackage(owner, lineage.packageSnapshotId);
+    if (!session) return null;
+    const original = readRetainedNanoHostSubmission(coreDb, session.attemptId);
+    if (!original) return null;
+    const binding = inspectNanoHostWorkerBinding(native, original, {
+      sandboxBindingRef: session.sandboxBindingRef,
+      lineage,
+      ...(authenticatedCapabilityHash === undefined
+        ? {}
+        : { tokenFamily: 'capability', tokenHash: authenticatedCapabilityHash }),
+    });
+    if (
+      binding.status !== 'accepted' ||
+      nanoHostWorkerBindingLiveness(binding, new Date().toISOString()).status !== 'accepted'
+    )
+      return null;
+
+    const { grant, attempt } = original.lease;
+    const route = readNanoHostWorkerRouteBinding(owner, grant);
+    const target = getNanoHostRuntimeTarget(owner, session.runtimeTargetId);
+    if (!route || !target) return null;
+    return {
+      attemptId: attempt.attemptId,
+      sandboxBindingRef: session.sandboxBindingRef,
+      observationHash: commandInputHash({
+        grant,
+        queueEntryId: attempt.queueEntryId,
+        lineage,
+        session,
+        route,
+        target,
+        recovery: binding.proof,
+      }),
+    };
+  } catch {
+    return null;
+  }
 }
 
 const terminalReleaseStepId = 'worker-terminal-release';

@@ -3,11 +3,11 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
+import { allocateEntityId, canonicalJsonText, RequestIdSchema } from '@openkit/protocol';
 import { policyDigest, sha256CanonicalJson } from '@openkit/protocol/digest';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { listServerAuditEvents } from '../audit-events.js';
+import { listServerAuditEvents, prepareServerAuditEvent } from '../audit-events.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -29,6 +29,7 @@ import type {
 import type { KernelExecutionEvidence } from '../storage/control-kernel-proof-codecs.js';
 import { controlStoreFor } from '../storage/control-store.js';
 import { commandInputHash } from '../storage/control-store-input.js';
+import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   ControlCoreIdleHarnessConsumptionInputSchema,
@@ -44,6 +45,7 @@ import {
   admitNanoHostFirstSubmissionInDb,
   admitNanoHostWorkerFinalInDb,
   applyControlCoreImageResult,
+  captureSecurityCanaryAuditObservation,
   closeNanoHostFailedStartInDb,
   commitCoreNanoHostOrphanAuditInDb,
   inspectCoreNanoHostOrphanAudit,
@@ -65,6 +67,11 @@ import {
   readRetainedNanoHostSubmission,
 } from '../storage/nanohost-submitted-lease.js';
 import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { prepareSecurityCanaryAuditInDb } from '../storage/security-canary-audit-native.js';
+import {
+  ControlStandaloneAuditInputSchema,
+  SECURITY_CANARY_AUDIT_FACT,
+} from '../storage/standalone-audit-codecs.js';
 import { storageRequestId } from '../storage/storage-owner.js';
 import type { ControlWorkerFinalStatusCommand } from '../storage/worker-control-final-status-codecs.js';
 import { applyWorkspaceBackendHandoffInDb } from '../storage/workspace-backend-handoff-native.js';
@@ -642,8 +649,9 @@ describe('persisted execution journal contracts', () => {
       expect(settled.attempt).toMatchObject({
         phase: 'closing',
         terminalCause: cause,
-        disposition: 'accepted',
+        disposition: mode === 'ordinary' ? 'accepted' : 'unknown',
       });
+      if (mode === 'cancellation') expect(settled.attempt).toEqual(accepted.attempt);
       expect(kernelSchedulerScopeIsHeld(f.db, [`turn:${turnId}`])).toBe(true);
       native.setup((sqlite) =>
         sqlite.prepare("DELETE FROM worker_control_records WHERE operation='event_append'").run()
@@ -652,6 +660,175 @@ describe('persisted execution journal contracts', () => {
       expect(history()).toEqual(settled);
     }
   );
+
+  it('checks the original canary actor and subject against the exact live Native route', async () => {
+    const f = journalFixture();
+    const native = openNanoHostTestOwner();
+    const workspaceId = testEntityId('ws', 'canary-audit');
+    const workspace = openWorkspaceDb(f.root, workspaceId);
+    onTestFinished(() => workspace.sqlite.close());
+    applyScopedMigrations(workspace);
+    const userId = ensureLocalUser(f.db);
+    const triggerActor = { kind: 'user' as const, id: userId };
+    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+    const pkg = await recordTestAgentEnvironmentPackage(workspace, {
+      suffix: 'canary_audit',
+      triggerActor,
+      workspaceInputIds: [],
+    });
+    const { threadId, turnId, agentSessionId } = pkg.scope;
+    const requestId = pkg.scope.requestId ?? null;
+    const admission = createSchedulerAdmissionEntry(f.db, {
+      backendId: 'nanohost',
+      queueEntryId: 'canary-audit-queue',
+      workspaceId,
+      threadId,
+      turnId,
+      ...(requestId === null ? {} : { requestId }),
+      triggerActor,
+      requestedAgentId: pkg.agent.agentId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'Original canary input.'),
+    });
+    const attempt = submitTestNanoHostWorkerLease(
+      f.db,
+      admission,
+      'canary-original-sandbox',
+      {
+        agentSessionId,
+        packageSnapshotId: pkg.snapshotId,
+        workerControlTokenHash: 'a'.repeat(64),
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      { nativePath: native.sqlite.name }
+    );
+    const lineage = {
+      workspaceId,
+      threadId,
+      turnId,
+      agentSessionId,
+      requestId,
+      packageSnapshotId: pkg.snapshotId,
+    };
+    const actor = { kind: 'agent' as const, id: pkg.agent.agentId, responsibleUserId: userId };
+    const event = prepareServerAuditEvent({
+      ...SECURITY_CANARY_AUDIT_FACT,
+      coreDb: f.db,
+      workspaceId,
+      threadId,
+      turnId,
+      agentSessionId,
+      itemId: pkg.scope.itemId ?? null,
+      requestId: RequestIdSchema.safeParse(requestId).data ?? null,
+      agentId: pkg.agent.agentId,
+      actor,
+      subject: actor,
+      category: 'capability',
+      outcome: 'denied',
+      severity: 'warning',
+    });
+    const underNative = <Value>(run: () => Value) =>
+      f.db.sqlite.transaction(() => native.sqlite.transaction(run).deferred()).immediate();
+    const capture = (authenticatedCapabilityHash?: string) =>
+      underNative(() =>
+        captureSecurityCanaryAuditObservation(
+          f.db,
+          native.sqlite,
+          lineage,
+          authenticatedCapabilityHash
+        )
+      );
+    expect(capture('c'.repeat(64))).toEqual(capture());
+    expect(capture('a'.repeat(64))).toBeNull();
+    const observation = capture();
+    expect(observation).toMatchObject({
+      attemptId: attempt.attemptId,
+      sandboxBindingRef: attempt.bindingRef,
+    });
+    if (!observation) throw new Error('Expected the original live canary route.');
+    const input = ControlStandaloneAuditInputSchema.parse({
+      stage: 'security.canary',
+      canaryLineage: lineage,
+      canaryObservation: observation,
+      event,
+    });
+    const decide = (candidate = input, available = true) =>
+      underNative(() =>
+        prepareSecurityCanaryAuditInDb(
+          f.db,
+          candidate,
+          available
+            ? (currentLineage) =>
+                captureSecurityCanaryAuditObservation(f.db, native.sqlite, currentLineage)
+            : undefined
+        )
+      );
+    expect(decide()).toBe('inactive');
+    expect(decide()).toBe('inactive');
+    expect(() => decide(input, false)).toThrow(ControlProductPreconditionError);
+    expect(() => decide({ ...input, canaryObservation: undefined })).toThrow(
+      ControlProductPreconditionError
+    );
+    expect(() =>
+      decide({ ...input, canaryLineage: { ...lineage, requestId: 'foreign-request' } })
+    ).toThrow(ControlProductPreconditionError);
+    for (const field of ['actor', 'subject'] as const) {
+      for (const responsibleUserId of [null, testEntityId('usr', 'canary-other-user')]) {
+        const changed = {
+          ...input,
+          event: { ...event, [field]: { ...actor, responsibleUserId } },
+        };
+        expect(() => decide(changed)).toThrow(ControlProductPreconditionError);
+      }
+    }
+
+    const originalBindingJson = native.sqlite
+      .prepare('SELECT worker_route_binding_json FROM worker_backend_sessions WHERE attempt_id = ?')
+      .pluck()
+      .get(attempt.attemptId) as string;
+    native.setup((sqlite) =>
+      sqlite
+        .prepare(
+          'UPDATE worker_backend_sessions SET worker_route_binding_json = ? WHERE attempt_id = ?'
+        )
+        .run(
+          canonicalJsonText({ ...JSON.parse(originalBindingJson), capability: 'd'.repeat(64) }),
+          attempt.attemptId
+        )
+    );
+    expect(capture('c'.repeat(64))).toBeNull();
+    const refreshed = capture('d'.repeat(64));
+    expect(refreshed).toMatchObject({
+      attemptId: observation.attemptId,
+      sandboxBindingRef: observation.sandboxBindingRef,
+    });
+    expect(refreshed?.observationHash).not.toBe(observation.observationHash);
+    expect(() => decide()).toThrow(ControlProductPreconditionError);
+    expect(decide({ ...input, canaryObservation: refreshed! })).toBe('inactive');
+    native.setup((sqlite) =>
+      sqlite
+        .prepare(
+          'UPDATE nanohost_runtime_targets SET connection_generation = connection_generation + 1'
+        )
+        .run()
+    );
+    const targetChanged = capture();
+    expect(targetChanged?.observationHash).not.toBe(refreshed?.observationHash);
+    expect(() => decide({ ...input, canaryObservation: refreshed! })).toThrow(
+      ControlProductPreconditionError
+    );
+    markSchedulerExecutionAttemptClosing(f.db, {
+      attemptId: attempt.attemptId,
+      cause: 'turn-cancelled',
+    });
+    expect(capture()).toBeNull();
+    expect(() => decide({ ...input, canaryObservation: targetChanged! })).toThrow(
+      ControlProductPreconditionError
+    );
+    expect(listServerAuditEvents(f.db).filter((row) => row.action === 'security.canary')).toEqual(
+      []
+    );
+  });
 
   it.each([false, true])(
     'releases exact NanoHost terminal evidence for the next Workspace Turn (outside scope=%s)',
