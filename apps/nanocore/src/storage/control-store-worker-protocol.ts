@@ -1670,6 +1670,7 @@ export type ControlWorkerCommand =
           readonly operation: 'standalone-audit';
           readonly input: ControlScalarText;
           readonly content: ArrayBuffer;
+          readonly nanoHostOwnerIdentity?: string;
         }
       | {
           readonly operation: 'resolved-agent-setup';
@@ -3602,7 +3603,10 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     const parsed = ControlScalarTextSchema.safeParse(value.input);
     return (
       parsed.success &&
-      exactFields(value, [...scoped, 'input', 'content']) &&
+      exactFields(value, [...scoped, 'input', 'content'], ['nanoHostOwnerIdentity']) &&
+      (value.nanoHostOwnerIdentity === undefined ||
+        (typeof value.nanoHostOwnerIdentity === 'string' &&
+          /^\d+:\d+$/.test(value.nanoHostOwnerIdentity))) &&
       parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
       controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );

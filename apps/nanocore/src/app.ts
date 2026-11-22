@@ -288,6 +288,7 @@ import {
   readAdmittedNanoHostAttempt,
 } from './storage/control-store-worker-client.js';
 import {
+  captureSecurityCanaryAuditObservation,
   inspectCoreNanoHostTerminalRelease,
   nanoHostTerminalReleaseWorkspaceStep,
   readContainmentEvidenceHandoff,
@@ -816,6 +817,7 @@ export async function prepareNanoHostOwner(
   const owner = await writer.bindNanoHostOwner(
     coreDb.dataRoot,
     {
+      captureCanaryAuditObservation: captureSecurityCanaryAuditObservation,
       isEnrollmentAdministrator: isCurrentDeploymentAdministrator,
       terminalRelease: {
         inspect: inspectCoreNanoHostTerminalRelease,
